@@ -1,0 +1,5 @@
+bin/
+*.out
+coverage.out
+gpstream
+.env

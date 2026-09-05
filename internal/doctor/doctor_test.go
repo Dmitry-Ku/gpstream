@@ -1,0 +1,89 @@
+package doctor
+
+import (
+	"context"
+	"testing"
+
+	"github.com/gpstream/gpstream/internal/pg"
+)
+
+// healthy returns a fake that answers every doctor query with healthy values.
+func healthy() *pg.FakeConn {
+	f := pg.NewFakeConn()
+	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
+	f.On("gp_segment_configuration", [][]any{{int64(4)}})
+	f.On("has_privilege", [][]any{{int64(1)}})
+	f.On("pg_database", [][]any{{"C"}})
+	f.On("SELECT 1", [][]any{{int64(1)}})
+	return f
+}
+
+// TestDoctorHealthy verifies a clean bench reports PASS with no FAIL.
+func TestDoctorHealthy(t *testing.T) {
+	rep := Run(context.Background(), healthy(), healthy(), Options{MinTLS: "1.2"})
+	if !rep.Healthy {
+		t.Fatalf("expected healthy, got %d FAILs", rep.Failures())
+	}
+}
+
+// TestDoctorDetectsFaults is the CР-7 criterion: the doctor must detect every
+// seeded fault. We inject distinct faults across source/dest and assert each
+// is surfaced (no fault is silently passed).
+func TestDoctorDetectsFaults(t *testing.T) {
+	src := healthy()
+	dst := healthy()
+
+	// Fault 1: source unreachable (ping fails)
+	src.SetPingError(errUnreachable)
+	// Fault 2: dest version query cannot be answered -> FAIL
+	dst.Off("version")
+	// Fault 3: dest has no up segments -> FAIL
+	dst.Off("gp_segment_configuration")
+	// Fault 4: dest missing gp_toolkit EXECUTE -> WARN
+	dst.On("has_privilege", [][]any{{int64(0)}})
+	// Fault 5: dest disk probe cannot be answered -> FAIL
+	dst.Off("SELECT 1")
+	// Fault 6: collation differs (source=C, dest=C.UTF-8) -> WARN
+	src.On("pg_database", [][]any{{"C"}})
+	dst.On("pg_database", [][]any{{"C.UTF-8"}})
+
+	rep := Run(context.Background(), src, dst, Options{MinTLS: "1.2"})
+	if rep.Healthy {
+		t.Fatalf("expected unhealthy with injected faults")
+	}
+	// Each injected fault must appear as a FAIL/WARN finding (not a PASS).
+	if found := find(rep, "source", "reachability"); found != Fail {
+		t.Errorf("source unreachable: got %v, want FAIL", found)
+	}
+	if found := find(rep, "dest", "version"); found != Fail {
+		t.Errorf("dest version: got %v, want FAIL", found)
+	}
+	if found := find(rep, "dest", "segments"); found != Fail {
+		t.Errorf("dest segments: got %v, want FAIL", found)
+	}
+	if found := find(rep, "dest", "permissions"); found != Warn {
+		t.Errorf("dest permissions: got %v, want WARN", found)
+	}
+	if found := find(rep, "dest", "disk"); found != Fail {
+		t.Errorf("dest disk: got %v, want FAIL", found)
+	}
+	if found := find(rep, "network", "collation"); found != Warn {
+		t.Errorf("collation difference: got %v, want WARN", found)
+	}
+	if rep.Failures() < 3 {
+		t.Fatalf("expected >=3 FAILs from injected faults, got %d", rep.Failures())
+	}
+}
+
+// find returns the severity of the first check with the given side+name.
+func find(r *Report, side, name string) Severity {
+	for _, c := range r.Checks {
+		if c.Side == side && c.Name == name {
+			return c.Sev
+		}
+	}
+	return Pass
+}
+
+// errUnreachable simulates an unreachable cluster.
+var errUnreachable = context.Canceled

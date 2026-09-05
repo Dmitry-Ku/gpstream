@@ -1,0 +1,152 @@
+.TH GPSTREAM 8 "2026-09-02" "gpstream 0.1 (M0)" "User Commands"
+.SH NAME
+gpstream \- high-throughput logical copy of data between Greenplum 6 clusters
+
+.SH SYNOPSIS
+.B gpstream
+.I command
+.RI "[ " flags "] "
+
+.SH DESCRIPTION
+.B gpstream
+copies logical data between two Greenplum 6 clusters over a direct high-speed
+network (source -> destination)
+.B "without any intermediate storage"
+, with snapshot consistency, crash-recovery, background index rebuild,
+redistribution accounting, and a fully deterministic
+.BR \-\-dry-run
+plan.
+
+.SH COMMANDS
+.TP
+.B copy
+Stream a database/selection between clusters (M1+).
+.TP
+.B dry-run
+Plan the copy without executing (basic M1, full M4).
+.TP
+.B plan
+Emit the deterministic plan (M4).
+.TP
+.B status
+Report job state (M1+).
+.TP
+.BR cleanup
+.IR "<job-id>
+Remove staging objects and journal of a job (M1+).
+.TP
+.B doctor
+Self-diagnose source/dest clusters; output PASS/FAIL/WARN (this build).
+.TP
+.B selftest
+Internal sanity checks: schema, checksums, limiter, plan determinism, framing (this build).
+.TP
+.BR man
+.IR "[ topic ] "
+Print the built-in man page (M4).
+
+.SH OPTIONS (copy / dry-run, §5)
+.TP
+.BR \-source
+.RI "[ " connstr " ] "
+source cluster connection string.
+.TP
+.BR \-dest
+.RI "[ " connstr " ] "
+destination cluster connection string.
+.TP
+.BR \-full | \-db D | \-schema D.S | \-table D.S.T
+Selection; combinable.
+.TP
+.BR \-metadata\-only | \-data\-only
+Copy only metadata, or only data (default: both).
+.TP
+.BR \-skip\-existing | \-overwrite | \-truncate | \-append
+Conflict policy; default
+.BR skip\-existing .
+.TP
+.BR \-skip\-conflicts
+Skip conflicting tables without stopping (default: off, strict).
+.TP
+.BR \-rename\-db
+.IR "src=dst"
+Create the destination database under another name.
+.TP
+.BR \-rename\-schema
+.IR "src=dst"
+Create the destination schema under another name.
+.TP
+.BR \-compress
+.I "none|zlib|zstd[:1-19]"
+Stream compression; recommended
+.BR zstd .
+.TP
+.BR \-rate\-limit
+.I "Gbps"
+Total and per-pair rate limit.
+.TP
+.BR \-workers\-per\-pair
+.I N
+Workers per host-pair.
+.TP
+.BR \-data\-port\-range
+.I "a-b"
+Range of data ports.
+.TP
+.BR \-auto\-resume
+.I N
+Auto-resume after failure (N >= 0; default 0 = manual).
+.TP
+.BR \-verify
+.I "full|sample|off"
+Verification depth; default sample.
+.TP
+.BR \-index\-workers
+.I N
+Index builder workers (default: half host CPU);
+.BR \-no\-indexes
+defer indexes.
+.TP
+.BR \-no\-redistribute | \-skew\-threshold X
+Skip redistribution, or set the skew threshold.
+.TP
+.BR \-ssl\-cert \-ssl\-key \-ssl\-ca \-ssl\-min\-tls
+TLS configuration (mTLS + chain validation).
+.TP
+.BR \-dry\-run | \-timeout S | \-plan\-file F
+Planning options.
+.TP
+.BR \-config F | \-log\-level L | \-quiet | \-debug
+Configuration and logging.
+
+.SH ENVIRONMENT
+Configuration precedence: CLI > environment > YAML file > defaults. Secrets are
+taken
+.B "only"
+from 0600 files or
+.B GPSTREAM_*
+environment variables,
+.B "never from argv"
+(FR-08). Recognised variables include
+.BR GPSTREAM_RATE_LIMIT ,
+.BR GPSTREAM_WORKERS_PER_PAIR ,
+.BR GPSTREAM_COMPRESS ,
+.BR GPSTREAM_LOG_LEVEL ,
+.BR GPSTREAM_AUTO_RESUME ,
+.BR GPSTREAM_SSL_CERT ,
+.BR GPSTREAM_SSL_KEY ,
+.BR GPSTREAM_SSL_CA .
+
+.SH SEE ALSO
+.RI [ .TH gpstream]
+man
+.BR "gpstream(8)" ,
+.RI [ .TP ]
+docs/architecture, docs/adr/000, docs/adr/001.
+
+.SH NOTES
+M0 provides
+.BR doctor
+and
+.BR selftest
+as working commands; the copy/status/cleanup path lands in M1-M4.

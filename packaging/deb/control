@@ -1,0 +1,16 @@
+# gpstream Debian package control file (FR-05: package delivery).
+# Built by the deb/Makefile from the cross-compiled static binary.
+Package: gpstream
+Version: 0.1.0
+Section: database
+Priority: optional
+Architecture: amd64
+Maintainer: gpstream maintainers <gpstream@example.com>
+Homepage: https://github.com/gpstream/gpstream
+Description: High-throughput logical data copy between Greenplum 6 clusters
+ gpstream streams logical data between two Greenplum 6 clusters over a direct
+ high-speed network without intermediate storage, with snapshot-level
+ consistency, fault tolerance, auto-resume, monitoring, background index
+ rebuild, redistribution awareness and a detailed --dry-run.
+Depends: ${misc:Depends}
+Installed-Size: 20000

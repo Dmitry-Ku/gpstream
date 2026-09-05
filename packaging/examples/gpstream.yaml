@@ -1,0 +1,54 @@
+# Example gpstream configuration.
+# Precedence: CLI flags > environment (GPSTREAM_*) > this file > defaults.
+# Secrets are NEVER read from argv; put them in a 0600 file or the environment.
+
+source: "host=prod-coordinator port=5432 user=gpstream dbname=postgres"
+dest:   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
+
+# Selection (FR-11)
+full: false
+dbs: [orders, analytics]
+# schemas: []
+# tables: []
+# exclude: []
+
+# Metadata / data (FR-11)
+metadata_only: false
+data_only: false
+
+# Conflict / safety (FR-10/FR-11)
+conflict_action: skip-existing   # skip-existing | overwrite | truncate | append
+skip_conflicts: false
+
+# Performance (FR-01/FR-03/FR-12/FR-14)
+compress: zstd              # none | zlib | zstd
+zstd_level: 3              # 1-19
+rate_limit: 80             # Gbps total ceiling
+workers_per_pair: 8
+data_port_range: "20000-20999"
+
+# Resilience (FR-06/FR-07)
+auto_resume: 0             # 0 = manual only; N >= 1 = auto from checkpoint
+verify: sample             # full | sample | off
+
+# Indexes (FR-17)
+index_workers: 4
+no_indexes: false
+index_priority: size       # size | manual
+
+# Redistribution (FR-15)
+no_redistribute: false
+skew_threshold: 0.05
+
+# TLS (FR-13) — secrets from 0600 files or GPSTREAM_* env, never argv
+ssl_min_tls: "1.2"
+# ssl_cert: /etc/gpstream/tls/client.crt
+# ssl_key:  /etc/gpstream/tls/client.key   (mode 0600)
+# ssl_ca:   /etc/gpstream/tls/ca.crt
+
+# Consistency (FR-02)
+consistent_db: true        # default; set consistent_cluster for a maintenance window
+
+# Operational
+log_level: info            # debug | info | warn | error
+timeout: 60                # plan formation, seconds
