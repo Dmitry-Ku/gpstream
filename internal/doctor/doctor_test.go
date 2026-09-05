@@ -12,7 +12,7 @@ func healthy() *pg.FakeConn {
 	f := pg.NewFakeConn()
 	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
 	f.On("gp_segment_configuration", [][]any{{int64(4)}})
-	f.On("has_privilege", [][]any{{int64(1)}})
+	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
 	f.On("SELECT 1", [][]any{{int64(1)}})
 	return f
@@ -23,6 +23,34 @@ func TestDoctorHealthy(t *testing.T) {
 	rep := Run(context.Background(), healthy(), healthy(), Options{MinTLS: "1.2"})
 	if !rep.Healthy {
 		t.Fatalf("expected healthy, got %d FAILs", rep.Failures())
+	}
+}
+
+// plainPG returns a fake modeling plain PostgreSQL 9.4.26 (the GP6 kernel) —
+// no Greenplum catalogs exist. The to_regclass probe answers an empty row,
+// which Row/RowStr surface as NULL: plain-PG single-node mode.
+func plainPG() *pg.FakeConn {
+	f := pg.NewFakeConn()
+	f.On("version", [][]any{{"PostgreSQL 9.4.26 on x86_64-unknown-linux-gnu"}})
+	f.On("gp_segment_configuration", [][]any{{}}) // probe -> NULL (catalog absent)
+	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
+	f.On("pg_database", [][]any{{"C"}})
+	f.On("SELECT 1", [][]any{{int64(1)}})
+	return f
+}
+
+// TestDoctorPlainPGMode is the M0 regression: against plain PostgreSQL (no
+// gp_segment_configuration) the doctor must degrade to WARN single-node mode
+// and stay healthy — never a hard FAIL on a working GP6-kernel instance.
+func TestDoctorPlainPGMode(t *testing.T) {
+	rep := Run(context.Background(), plainPG(), plainPG(), Options{MinTLS: "1.2"})
+	if !rep.Healthy {
+		t.Fatalf("plain PG (GP6 kernel) must be healthy, got %d FAILs", rep.Failures())
+	}
+	for _, side := range []string{"source", "dest"} {
+		if found := find(rep, side, "segments"); found != Warn {
+			t.Errorf("%s segments on plain PG: got %v, want WARN", side, found)
+		}
 	}
 }
 
@@ -40,7 +68,7 @@ func TestDoctorDetectsFaults(t *testing.T) {
 	// Fault 3: dest has no up segments -> FAIL
 	dst.Off("gp_segment_configuration")
 	// Fault 4: dest missing gp_toolkit EXECUTE -> WARN
-	dst.On("has_privilege", [][]any{{int64(0)}})
+	dst.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 	// Fault 5: dest disk probe cannot be answered -> FAIL
 	dst.Off("SELECT 1")
 	// Fault 6: collation differs (source=C, dest=C.UTF-8) -> WARN

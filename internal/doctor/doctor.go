@@ -140,10 +140,30 @@ func (r *Report) checkVersion(side string, q pg.Querier) {
 			Rec: "the query account may lack privilege"})
 		return
 	}
-	r.Add(Check{Name: "version", Side: side, Sev: Pass, Msg: "GP6: " + v})
+	r.Add(Check{Name: "version", Side: side, Sev: Pass, Msg: v})
 }
 
 func (r *Report) checkSegments(side string, q pg.Querier) {
+	// Probe whether we are on Greenplum at all. to_regclass returns NULL (not
+	// an error) when the catalog is absent, so a plain PostgreSQL instance
+	// (M0 PoC on PG 9.4.26, the GP6 kernel) is distinguishable from a real
+	// query fault: probe error -> FAIL (cannot determine), NULL -> plain-PG
+	// single-node mode (WARN), OID -> Greenplum (count up segments).
+	v, err := pg.Row(context.Background(), q,
+		"SELECT to_regclass('gp_toolkit.gp_segment_configuration')")
+	if err != nil {
+		r.Add(Check{Name: "segments", Side: side, Sev: Fail, Msg: "could not determine Greenplum status: " + err.Error(),
+			Rec: "query gp_segment_configuration"})
+		return
+	}
+	if v == nil {
+		// Plain-PostgreSQL mode: a single-node MPP database is equivalent to
+		// one up segment, so this degrades to a WARN with a clear note
+		// instead of a hard FAIL.
+		r.Add(Check{Name: "segments", Side: side, Sev: Warn, Msg: "not a Greenplum cluster (no gp_segment_configuration) — single-node mode",
+			Rec: "expected when running against plain PostgreSQL (GP6 kernel PoC); on a real GP6 cluster all segments must be 'u'"})
+		return
+	}
 	rows, err := q.Query(context.Background(), "SELECT count(*) FROM gp_segment_configuration WHERE status='u'")
 	if err != nil || len(rows) == 0 {
 		r.Add(Check{Name: "segments", Side: side, Sev: Fail, Msg: "could not enumerate segments",
@@ -182,19 +202,22 @@ func (r *Report) checkDisk(side string, q pg.Querier) {
 }
 
 func (r *Report) checkPermissions(side string, q pg.Querier) {
-	// COPY / CREATE / gp_toolkit availability (FR-05/FR-10).
+	// Database-level privileges the streaming path needs (FR-05/FR-10). This
+	// probe is valid on both plain PostgreSQL (GP6 kernel, M0 PoC) and real
+	// GP6 — unlike gp_toolkit object probes, which don't resolve off-Greenplum.
 	rows, err := q.Query(context.Background(),
-		"SELECT has_privilege(current_user,'gp_toolkit.gp_segment_connect()','EXECUTE')")
+		"SELECT has_database_privilege(current_database(), 'CREATE'), "+
+			"has_database_privilege(current_database(), 'CONNECT')")
 	if err != nil {
-		r.Add(Check{Name: "permissions", Side: side, Sev: Warn, Msg: "privilege probe failed",
-			Rec: "grant COPY/CREATE and gp_toolkit EXECUTE"})
+		r.Add(Check{Name: "permissions", Side: side, Sev: Warn, Msg: "privilege probe failed: " + err.Error(),
+			Rec: "check the role's database privileges"})
 		return
 	}
 	if len(rows) > 0 && firstAsInt(rows) == 1 {
-		r.Add(Check{Name: "permissions", Side: side, Sev: Pass, Msg: "COPY/CREATE/gp_toolkit ok"})
+		r.Add(Check{Name: "permissions", Side: side, Sev: Pass, Msg: "CREATE/CONNECT on current database ok"})
 	} else {
-		r.Add(Check{Name: "permissions", Side: side, Sev: Warn, Msg: "missing gp_toolkit EXECUTE",
-			Rec: "GRANT EXECUTE ON gp_toolkit.gp_segment_connect()"})
+		r.Add(Check{Name: "permissions", Side: side, Sev: Warn, Msg: "role lacks CREATE/CONNECT on current database",
+			Rec: "GRANT CREATE, CONNECT ON DATABASE to the streaming role"})
 	}
 }
 
@@ -222,7 +245,9 @@ func (r *Report) checkTLS(minTLS string) {
 		Rec: "provide --ssl-ca / --ssl-cert for mTLS"})
 }
 
-// firstAsInt coerces the first cell of the first row to an int.
+// firstAsInt coerces the first cell of the first row to an int. Live
+// PostgreSQL surfaces booleans as the text "t"/"f" (libpq text protocol),
+// while fakes supply int64 — both map to 1/0.
 func firstAsInt(rows [][]any) int {
 	if len(rows) == 0 || len(rows[0]) == 0 {
 		return 0
@@ -232,6 +257,17 @@ func firstAsInt(rows [][]any) int {
 		return int(v)
 	case int:
 		return v
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	case string:
+		switch v {
+		case "t", "true", "1":
+			return 1
+		}
+		return 0
 	}
 	return 0
 }

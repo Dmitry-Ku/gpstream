@@ -23,8 +23,8 @@ func TestDoctorChaosBench(t *testing.T) {
 	dst.Off("version")
 	// Fault 3 — dest has no up segments (count 0).
 	dst.On("gp_segment_configuration", [][]any{{int64(0)}})
-	// Fault 4 — dest missing gp_toolkit EXECUTE.
-	dst.On("has_privilege", [][]any{{int64(0)}})
+	// Fault 4 — dest lacks database privileges.
+	dst.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 	// Fault 5 — dest disk probe returns no data (full disk).
 	dst.Off("SELECT 1")
 	// Fault 6 — collation differs (source=C, dest=C.UTF-8).
@@ -69,8 +69,8 @@ func TestDoctorChaosSourceSide(t *testing.T) {
 	src.Off("version")
 	// Source has no up segments -> FAIL.
 	src.On("gp_segment_configuration", [][]any{{int64(0)}})
-	// Source missing privilege -> WARN.
-	src.On("has_privilege", [][]any{{int64(0)}})
+	// Source lacks database privileges -> WARN.
+	src.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 
 	rep := Run(context.Background(), src, dst, Options{MinTLS: "1.2"})
 	if find(rep, "source", "version") != Fail {
@@ -108,7 +108,7 @@ func TestDoctorCleanBench(t *testing.T) {
 func seedHealthy(f *pg.FakeConn) {
 	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
 	f.On("gp_segment_configuration", [][]any{{int64(4)}})
-	f.On("has_privilege", [][]any{{int64(1)}})
+	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
 	f.On("SELECT 1", [][]any{{int64(1)}})
 }
