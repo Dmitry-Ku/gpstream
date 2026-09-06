@@ -194,7 +194,8 @@ func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]T
 	rows, err := src.Query(ctx,
 		`SELECT n.nspname, c.relname, c.relkind, COALESCE(pg_total_relation_size(c.oid),0),
 		COALESCE((SELECT count(*) FROM pg_inherits WHERE inhparent = c.oid),0),
-		CASE WHEN c.relkind='p' THEN COALESCE((SELECT count(*) FROM pg_index i WHERE i.indrelid=c.oid),0) ELSE 0 END
+		CASE WHEN c.relkind='p' THEN COALESCE((SELECT count(*) FROM pg_index i WHERE i.indrelid=c.oid),0) ELSE 0 END,
+		current_database()
 		FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 		WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema','gp_toolkit')
 		ORDER BY n.nspname, c.relname`)
@@ -203,10 +204,11 @@ func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]T
 	}
 	var out []Table
 	for _, r := range rows {
-		if len(r) < 6 {
+		if len(r) < 7 {
 			continue
 		}
 		t := Table{
+			DB:      asString(r[6]),
 			Schema:  asString(r[0]),
 			Name:    asString(r[1]),
 			Bytes:   int64(toInt64(r[3])),

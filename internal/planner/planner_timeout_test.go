@@ -44,7 +44,7 @@ func TestBuildHealthyWithinTimeout(t *testing.T) {
 
 	src := pg.NewFakeConn()
 	src.On("pg_class", [][]any{
-		{"public", "t1", "r", int64(10), int64(0), int64(0)},
+		{"public", "t1", "r", int64(10), int64(0), int64(0), "srcdb"},
 	})
 	src.On("gp_segment_configuration", [][]any{{int64(4)}})
 	src.On("has_privilege", [][]any{{int64(1)}})

@@ -35,8 +35,8 @@ func mkFake() pg.Querier {
 	// registered here (registering pg_namespace too would make the
 	// longest-match pick the wrong canned result).
 	f.On("pg_class", [][]any{
-		{"s", "orders", "r", int64(1000), int64(0), int64(1)},
-		{"s", "audit", "r", int64(500), int64(0), int64(0)},
+		{"s", "orders", "r", int64(1000), int64(0), int64(1), "srcdb"},
+		{"s", "audit", "r", int64(500), int64(0), int64(0), "srcdb"},
 	})
 	f.On("pg_database", [][]any{{"orders", "en_US.UTF-8"}})
 	return f
@@ -151,7 +151,7 @@ func containsQuery(fc *pg.FakeConn, substr string) bool {
 // It is the fake used to exercise detectRedistribution (FR-15).
 func mkRedistribFake(hasKey bool) *pg.FakeConn {
 	f := pg.NewFakeConn()
-	f.On("pg_class", [][]any{{"s", "orders", "r", int64(1000), int64(0), int64(1)}})
+	f.On("pg_class", [][]any{{"s", "orders", "r", int64(1000), int64(0), int64(1), "srcdb"}})
 	// The distribution probe returns a boolean in column 0.
 	f.On("gs-redistrib-check", [][]any{{hasKey}})
 	return f
