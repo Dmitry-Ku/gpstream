@@ -1,4 +1,4 @@
-// Package indexer implements index rebuild (FR-17): after a unit's data is
+// Package index implements index rebuild (FR-17): after a unit's data is
 // copied into the staging table, its indexes are rebuilt so the data is
 // indexed before the staging table is renamed to its final name (FR-02/FR-17).
 //

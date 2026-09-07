@@ -165,7 +165,15 @@ func parseConfig(args []string) (config.Config, error) {
 		// Object classes (v4 §8): --include metadata,data. Empty = both.
 		case "--include":
 			i++
-			includeClasses(args[i], &cfg)
+			if err := includeClasses(args[i], &cfg); err != nil {
+				return cfg, err
+			}
+		// v4 F-11: --ddl-only (structure without data) / --data-only (into
+		// existing structure). Mutual exclusion is enforced in Validate.
+		case "--metadata-only", "--ddl-only":
+			cfg.MetadataOnly = true
+		case "--data-only":
+			cfg.DataOnly = true
 
 		// Conflict / safety (FR-10/FR-11). Spec §5 uses discrete flags;
 		// --conflict-action is a convenience alias.
@@ -210,7 +218,7 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--max-bw": // v4 §8 canonical name: Gbps ceiling
 			i++
 			cfg.RateLimit = parseRateLimit(args[i])
-		case "--workers-per-pair":
+		case "--workers-per-pair", "--workers":
 			i++
 			cfg.WorkersPerPair = atoi(args[i])
 		case "--streams": // v4 §8 canonical name: parallel stream workers
@@ -250,9 +258,21 @@ func parseConfig(args []string) (config.Config, error) {
 		// Redistribution (FR-15).
 		case "--no-redistribute":
 			cfg.NoRedistribute = true
+			// Negative skew threshold is the sentinel "skew checks off":
+			// no redistribution means no skew gate to enforce (F-15).
+			cfg.SkewThreshold = -1
 		case "--skew-threshold":
 			i++
 			cfg.SkewThreshold = atof(args[i])
+
+		// Compression level (F-12): --zstd-level 1-19.
+		case "--zstd-level":
+			i++
+			n := atoi(args[i])
+			if n < 1 || n > 19 {
+				return cfg, fmt.Errorf("zstd level must be 1-19, got %d", n)
+			}
+			cfg.ZstdLevel = n
 
 		// TLS (FR-13).
 		case "--tls":
@@ -373,16 +393,19 @@ func splitCSV(s string) []string {
 }
 
 // includeClasses parses the v4 §8 --include metadata,data selector. Empty
-// (no flag) means both classes; the planner honours cfg.Include.
-func includeClasses(v string, cfg *config.Config) {
+// (no flag) means both classes; the planner honours cfg.Include. An unknown
+// class is an error (typo guard — §8 fixes the two classes).
+func includeClasses(v string, cfg *config.Config) error {
 	for _, c := range splitCSV(v) {
-		switch strings.ToLower(c) {
+		c = strings.ToLower(c)
+		switch c {
 		case "metadata", "data":
-			cfg.Include = append(cfg.Include, strings.ToLower(c))
+			cfg.Include = append(cfg.Include, c)
 		default:
-			// Unknown classes are ignored, not errors: §8 fixes the two.
+			return fmt.Errorf("unknown --include class %q (allowed: metadata, data)", c)
 		}
 	}
+	return nil
 }
 
 func compress(v string, c *config.Config) {
