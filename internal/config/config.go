@@ -7,10 +7,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	toml "github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
@@ -293,7 +295,8 @@ func (c *Config) ApplyEnv() {
 	}
 }
 
-// LoadFile reads a YAML config file (FR-08) and overlays known keys onto c.
+// LoadFile reads a config file — YAML or TOML, selected by extension
+// (FR-05: /etc/gpstream/gpstream.toml) — and overlays known keys onto c.
 // Unknown keys are ignored. It is the lowest-precedence non-default source:
 // CLI > env > file > defaults.
 func (c *Config) LoadFile(path string) error {
@@ -302,17 +305,42 @@ func (c *Config) LoadFile(path string) error {
 		return err
 	}
 	var m map[string]any
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		return err
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		if err := toml.Unmarshal(data, &m); err != nil {
+			return err
+		}
+	default: // .yaml / .yml / no extension
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			return err
+		}
 	}
 	for k, v := range m {
-		s, ok := v.(string)
+		s, ok := leafString(v)
 		if !ok {
-			continue // only string leaves are honoured here
+			continue // only scalar leaves are honoured here
 		}
 		assignConfigString(c, strings.ToLower(strings.TrimSpace(k)), s)
 	}
 	return nil
+}
+
+// leafString renders a scalar config leaf (string/number/bool) into string
+// form. Tables and arrays are not honoured (unknown-key tolerance).
+func leafString(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case int:
+		return strconv.Itoa(t), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(t), true
+	}
+	return "", false
 }
 
 // assignConfigString maps a lowercased YAML key to a string-typed Config field.

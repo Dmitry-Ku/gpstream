@@ -17,6 +17,17 @@ func writeTmp(t *testing.T, content string) string {
 	return f
 }
 
+// writeTmpAs writes content to a temp file with the given name (extension
+// matters: LoadFile picks the format by it).
+func writeTmpAs(t *testing.T, name, content string) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+		t.Fatalf("write tmp: %v", err)
+	}
+	return f
+}
+
 // TestLoadFileUnknownMissingFile verifies a missing file surfaces the error.
 func TestLoadFileMissing(t *testing.T) {
 	c := Default()
@@ -31,6 +42,63 @@ func TestLoadFileBadYAML(t *testing.T) {
 	path := writeTmp(t, ": not : valid : yaml\n  - [")
 	if err := c.LoadFile(path); err == nil {
 		t.Error("expected a YAML parse error")
+	}
+}
+
+// TestLoadFileTOML verifies the TOML layer (FR-05: /etc/gpstream/gpstream.toml)
+// overlays known keys, including native numeric/bool values, onto defaults.
+func TestLoadFileTOML(t *testing.T) {
+	c := Default()
+	path := writeTmpAs(t, "cfg.toml", `
+source = "host=src.example.com"
+dest = "host=dst.example.com"
+rate_limit = 12.5
+workers_per_pair = 4
+compress = "zstd"
+zstd_level = 9
+auto_resume = 2
+verify = "full"
+log_level = "warn"
+skew_threshold = 0.2
+`)
+	if err := c.LoadFile(path); err != nil {
+		t.Fatalf("load toml: %v", err)
+	}
+	if c.Source != "host=src.example.com" {
+		t.Errorf("source = %q", c.Source)
+	}
+	if c.RateLimit != 12.5 {
+		t.Errorf("rate limit = %v, want 12.5", c.RateLimit)
+	}
+	if c.WorkersPerPair != 4 {
+		t.Errorf("workers = %d, want 4", c.WorkersPerPair)
+	}
+	if c.Compression != CompZstd {
+		t.Errorf("compression = %v, want zstd", c.Compression)
+	}
+	if c.ZstdLevel != 9 {
+		t.Errorf("zstd level = %d, want 9", c.ZstdLevel)
+	}
+	if c.AutoResume != 2 {
+		t.Errorf("auto resume = %d, want 2", c.AutoResume)
+	}
+	if c.Verify != VerifyFull {
+		t.Errorf("verify = %v, want full", c.Verify)
+	}
+	if c.LogLevel != LogWarn {
+		t.Errorf("log level = %v, want warn", c.LogLevel)
+	}
+	if c.SkewThreshold != 0.2 {
+		t.Errorf("skew = %v, want 0.2", c.SkewThreshold)
+	}
+}
+
+// TestLoadFileBadTOML verifies malformed TOML is rejected.
+func TestLoadFileBadTOML(t *testing.T) {
+	c := Default()
+	path := writeTmpAs(t, "bad.toml", "key = = \"broken")
+	if err := c.LoadFile(path); err == nil {
+		t.Error("expected a TOML parse error")
 	}
 }
 
