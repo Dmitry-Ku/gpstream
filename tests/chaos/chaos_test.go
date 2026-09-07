@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/job"
-	"github.com/gpstream/gpstream/internal/pg"
-	"github.com/gpstream/gpstream/internal/planner"
+	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/plan"
 )
 
 // faultManager wires the real Manager over two fake conns. panicFirst makes
 // the source panic on the first ReadCopy (a data-path fault, CR-7).
-func faultManager(t *testing.T, cfg *config.Config, payload []byte, panicFirst bool) (*job.Manager, *job.Journal) {
+func faultManager(t *testing.T, cfg *config.Config, payload []byte, panicFirst bool) (*manifest.Manager, *manifest.Journal) {
 	t.Helper()
 	src := pg.NewFakeConn()
 	src.On("format_type", [][]any{
@@ -36,14 +36,14 @@ func faultManager(t *testing.T, cfg *config.Config, payload []byte, panicFirst b
 	dst.OnReadCopy("TO STDOUT", payload)
 	dst.On("pg_class", [][]any{})
 
-	j := job.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	return job.NewManager(cfg, src, dst, j), j
+	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	return manifest.NewManager(cfg, src, dst, j), j
 }
 
 // twoUnitPlan lets a panic in unit 1 not need to abort unit 2 (FR-06).
-func twoUnitPlan() *planner.Plan {
-	return &planner.Plan{
-		Units: []planner.Table{
+func twoUnitPlan() *plan.Plan {
+	return &plan.Plan{
+		Units: []plan.Table{
 			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
 			{DB: "db", Schema: "public", Name: "customers", DstSchema: "public", DstName: "customers", Bytes: 100},
 		},
@@ -74,8 +74,8 @@ func TestPanicRecoveryIsNotAcrash(t *testing.T) {
 	dst.OnReadCopy("TO STDOUT", payload)
 	dst.On("pg_class", [][]any{})
 
-	j := job.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	m := job.NewManager(&cfg, src, dst, j)
+	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := manifest.NewManager(&cfg, src, dst, j)
 
 	// Must not panic: a recovered fault surfaces as an error.
 	err := m.Run(context.Background(), twoUnitPlan())
@@ -93,7 +93,7 @@ func TestPanicRecoveryIsNotAcrash(t *testing.T) {
 	}
 	// The failed unit must be journaled failed so a resume can retry it.
 	u := j.Get(1)
-	if u == nil || u.State != job.StateFailed {
+	if u == nil || u.State != manifest.StateFailed {
 		t.Errorf("expected unit 1 journaled failed, got %+v", u)
 	}
 }
@@ -107,8 +107,8 @@ func TestFaultRateRecorded(t *testing.T) {
 	payload := []byte("BINARY-COPY-ROW-BATCH")
 	m, _ := faultManager(t, &cfg, payload, true)
 
-	plan := &planner.Plan{
-		Units: []planner.Table{
+	plan := &plan.Plan{
+		Units: []plan.Table{
 			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
 		},
 	}

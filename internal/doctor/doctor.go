@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gpstream/gpstream/internal/pg"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // Severity of a single check result.

@@ -68,6 +68,10 @@ type Config struct {
 	Schemas []string // "db.schema"
 	Tables  []string // "db.schema.table"
 	Exclude []string // any exclude-* entries
+	// Include (v4 §8 --include metadata,data): restrict which object classes
+	// are copied — "metadata" (structure), "data" (rows), or both. Empty =
+	// both (the default).
+	Include []string
 
 	// Metadata/data (FR-11).
 	MetadataOnly bool
@@ -87,6 +91,7 @@ type Config struct {
 	ZstdLevel      int         // 1-19, default 3
 	RateLimit      float64     // Gbps total ceiling
 	WorkersPerPair int
+	Streams        int // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
 	DataPortRange  string // "a-b"
 
 	// Resilience (FR-06/FR-07).
@@ -149,6 +154,12 @@ type Config struct {
 	ReportJSON string
 	ReportCSV  string
 	ReportText string
+
+	// v4 §8: operation identity. The operation-id is the v4 handle for a job;
+	// the state (journal mirror, staging, reports) lives under
+	// <StateDir>/<operation-id>/ (default /var/lib/gpstream, v4 §8 "State").
+	OperationID string
+	StateDir    string
 }
 
 // Default returns a Config populated with the specification defaults.
@@ -166,6 +177,7 @@ func Default() Config {
 		IndexPriority:  "size",
 		SSLMinTLS:      "1.2",
 		WorkersPerPair: 2,
+		StateDir:       "/var/lib/gpstream", // v4 §8 "State"
 	}
 }
 

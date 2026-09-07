@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gpstream/gpstream/internal/pg"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // TestDoctorChaosBench is the CР-7 acceptance criterion: seed the FULL fault

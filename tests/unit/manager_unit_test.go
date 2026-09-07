@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/job"
-	"github.com/gpstream/gpstream/internal/pg"
-	"github.com/gpstream/gpstream/internal/planner"
+	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/plan"
 )
 
 // newManager wires the real Manager over two fake streaming conns and a
@@ -21,7 +21,7 @@ import (
 // records COPY ... FROM STDIN and re-reads its own payload for verify. Only
 // the SQL layer is faked — framing, compression, verify and the journal are
 // the real code.
-func newManager(t *testing.T, cfg *config.Config, srcPayload, dstPayload []byte) (*job.Manager, *job.Journal) {
+func newManager(t *testing.T, cfg *config.Config, srcPayload, dstPayload []byte) (*manifest.Manager, *manifest.Journal) {
 	t.Helper()
 	src := pg.NewFakeConn()
 	src.On("format_type", [][]any{
@@ -36,14 +36,14 @@ func newManager(t *testing.T, cfg *config.Config, srcPayload, dstPayload []byte)
 	// Swap's existence guard: the target does not exist.
 	dst.On("pg_class", [][]any{})
 
-	j := job.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	return job.NewManager(cfg, src, dst, j), j
+	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	return manifest.NewManager(cfg, src, dst, j), j
 }
 
 // oneUnitPlan is a single-unit plan (no conflict).
-func oneUnitPlan() *planner.Plan {
-	return &planner.Plan{
-		Units: []planner.Table{
+func oneUnitPlan() *plan.Plan {
+	return &plan.Plan{
+		Units: []plan.Table{
 			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
 		},
 	}
@@ -72,7 +72,7 @@ func TestCopyHappyPath(t *testing.T) {
 	// The unit must be journaled as swapped (terminal success) so a resume
 	// would skip it (FR-06/07).
 	u := j.Get(1)
-	if u == nil || u.State != job.StateSwapped {
+	if u == nil || u.State != manifest.StateSwapped {
 		t.Errorf("expected unit 1 journaled swapped (success), got %+v", u)
 	}
 }
@@ -86,8 +86,8 @@ func TestSkipExistingNoCopy(t *testing.T) {
 	m, _ := newManager(t, &cfg, payload, payload)
 
 	// The planner flagged the conflict, so the manager must skip, not copy.
-	plan := &planner.Plan{
-		Units: []planner.Table{
+	plan := &plan.Plan{
+		Units: []plan.Table{
 			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100, HasConflict: true},
 		},
 	}

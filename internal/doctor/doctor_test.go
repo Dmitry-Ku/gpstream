@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gpstream/gpstream/internal/pg"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // healthy returns a fake that answers every doctor query with healthy values.

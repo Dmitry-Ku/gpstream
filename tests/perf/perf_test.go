@@ -14,15 +14,15 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/job"
-	"github.com/gpstream/gpstream/internal/limiter"
-	"github.com/gpstream/gpstream/internal/pg"
-	"github.com/gpstream/gpstream/internal/planner"
+	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/ratelimit"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/plan"
 )
 
 // buildManager wires the real Manager over two fake conns with the same payload
 // on both sides (so verify matches) and a file-mirrored journal.
-func buildManager(t *testing.T, cfg *config.Config, payload []byte) (*job.Manager, *job.Journal) {
+func buildManager(t *testing.T, cfg *config.Config, payload []byte) (*manifest.Manager, *manifest.Journal) {
 	t.Helper()
 	src := pg.NewFakeConn()
 	src.On("format_type", [][]any{
@@ -36,22 +36,22 @@ func buildManager(t *testing.T, cfg *config.Config, payload []byte) (*job.Manage
 	dst.OnReadCopy("TO STDOUT", payload)
 	dst.On("pg_class", [][]any{})
 
-	j := job.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	return job.NewManager(cfg, src, dst, j), j
+	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	return manifest.NewManager(cfg, src, dst, j), j
 }
 
 // nUnitPlan builds a plan of n identical units (FR-03: architecture
 // independent, many tables).
-func nUnitPlan(n int) *planner.Plan {
-	units := make([]planner.Table, 0, n)
+func nUnitPlan(n int) *plan.Plan {
+	units := make([]plan.Table, 0, n)
 	for i := 0; i < n; i++ {
-		units = append(units, planner.Table{
+		units = append(units, plan.Table{
 			DB: "db", Schema: "public", Name: "t" + string(rune('a'+i%26)),
 			DstSchema: "public", DstName: "t" + string(rune('a'+i%26)),
 			Bytes:     1 << 20, // 1 MiB each
 		})
 	}
-	return &planner.Plan{Units: units}
+	return &plan.Plan{Units: units}
 }
 
 // TestBatchManyUnitsComplete verifies (FR-01/FR-03) that a batch of many units
@@ -86,7 +86,7 @@ func TestBatchManyUnitsComplete(t *testing.T) {
 func TestRateLimitBoundsDataPath(t *testing.T) {
 	// A provider that reports a sustained disk/network overload.
 	prov := &overloadedProvider{}
-	l := limiter.New(limiter.Options{
+	l := ratelimit.New(ratelimit.Options{
 		Baseline: 100, // 100 Gbps ceiling
 		Floor:    10,
 		Step:     0.25,
@@ -132,11 +132,11 @@ func TestThroughputIsPositive(t *testing.T) {
 	}
 }
 
-// overloadedProvider is a limiter.Provider that returns a controllable load.
+// overloadedProvider is a ratelimit.Provider that returns a controllable load.
 type overloadedProvider struct{ load float64 }
 
-func (p *overloadedProvider) Snapshot() limiter.Metrics {
-	return limiter.Metrics{IOWaitPercent: p.load}
+func (p *overloadedProvider) Snapshot() ratelimit.Metrics {
+	return ratelimit.Metrics{IOWaitPercent: p.load}
 }
 
 // ensure the package's time import is used even if a test is trimmed.

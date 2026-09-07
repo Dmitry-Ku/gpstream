@@ -13,11 +13,11 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/job"
-	"github.com/gpstream/gpstream/internal/limiter"
-	"github.com/gpstream/gpstream/internal/metrics"
-	"github.com/gpstream/gpstream/internal/pg"
-	"github.com/gpstream/gpstream/internal/planner"
+	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/ratelimit"
+	"github.com/gpstream/gpstream/internal/monitor"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/plan"
 )
 
 // TestConfigFromEnv verifies (FR-08/FR-12) that secrets and compression come
@@ -124,7 +124,7 @@ func TestConfigSafetyDefaults(t *testing.T) {
 // full feedback loop an operator relies on.
 func TestAdaptiveLimiterEndToEnd(t *testing.T) {
 	prov := &provider{load: 0}
-	l := limiter.New(limiter.Options{Baseline: 100, Floor: 10, Step: 0.25, Provider: prov})
+	l := ratelimit.New(ratelimit.Options{Baseline: 100, Floor: 10, Step: 0.25, Provider: prov})
 
 	// Healthy start: at baseline.
 	if l.Current() != 100 {
@@ -154,7 +154,7 @@ func TestAdaptiveLimiterEndToEnd(t *testing.T) {
 // TestMetricsCollectBytes verifies (FR-04) that the metrics collector records
 // the bytes moved by the data path — the throughput signal an operator needs.
 func TestMetricsCollectBytes(t *testing.T) {
-	m := metrics.New()
+	m := monitor.New()
 	m.Record(1<<20, 2<<20) // 1 MiB wire, 2 MiB logical
 	if m.Bytes != 1<<20 {
 		t.Errorf("bytes = %d, want %d", m.Bytes, 1<<20)
@@ -191,11 +191,11 @@ func TestFullFlowConfigToJob(t *testing.T) {
 	dst.OnReadCopy("TO STDOUT", payload)
 	dst.On("pg_class", [][]any{})
 
-	j := job.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	m := job.NewManager(&cfg, src, dst, j)
+	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := manifest.NewManager(&cfg, src, dst, j)
 
-	plan := &planner.Plan{
-		Units: []planner.Table{
+	plan := &plan.Plan{
+		Units: []plan.Table{
 			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
 		},
 	}
@@ -206,14 +206,14 @@ func TestFullFlowConfigToJob(t *testing.T) {
 		t.Errorf("units = %d, want 1", m.Units)
 	}
 	u := j.Get(1)
-	if u == nil || u.State != job.StateSwapped {
+	if u == nil || u.State != manifest.StateSwapped {
 		t.Errorf("expected unit 1 swapped, got %+v", u)
 	}
 }
 
-// provider is a limiter.Provider with a controllable load.
+// provider is a ratelimit.Provider with a controllable load.
 type provider struct{ load float64 }
 
-func (p *provider) Snapshot() limiter.Metrics {
-	return limiter.Metrics{IOWaitPercent: p.load}
+func (p *provider) Snapshot() ratelimit.Metrics {
+	return ratelimit.Metrics{IOWaitPercent: p.load}
 }
