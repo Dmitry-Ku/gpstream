@@ -21,8 +21,11 @@ func TestDoctorChaosBench(t *testing.T) {
 	src.SetPingError(errUnreachable)
 	// Fault 2 — dest version cannot be answered.
 	dst.Off("version")
-	// Fault 3 — dest has no up segments (count 0).
-	dst.On("gp_segment_configuration", [][]any{{int64(0)}})
+	// Fault 3 — dest has no up segments (all primaries down).
+	dst.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "d", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "d", "host1", 6000, "dwh"},
+	})
 	// Fault 4 — dest lacks database privileges.
 	dst.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 	// Fault 5 — dest disk probe returns no data (full disk).
@@ -68,7 +71,10 @@ func TestDoctorChaosSourceSide(t *testing.T) {
 	// Source version cannot be answered -> FAIL.
 	src.Off("version")
 	// Source has no up segments -> FAIL.
-	src.On("gp_segment_configuration", [][]any{{int64(0)}})
+	src.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "d", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "d", "host1", 6000, "dwh"},
+	})
 	// Source lacks database privileges -> WARN.
 	src.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 
@@ -105,9 +111,18 @@ func TestDoctorCleanBench(t *testing.T) {
 }
 
 // seedHealthy loads a clean baseline so any category not faulted reports PASS.
+// The probe answers under "to_regclass" and the catalog under
+// "FROM gp_segment_configuration" (longest-substring match keeps them apart).
+// Catalog rows: content, role, preferred_role, mode, status, hostname, port,
+// datname — primaries up so UpCount() > 0.
 func seedHealthy(f *pg.FakeConn) {
 	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
-	f.On("gp_segment_configuration", [][]any{{int64(4)}})
+	f.On("to_regclass", [][]any{{int64(16384)}}) // probe -> OID (Greenplum)
+	f.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "u", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "u", "host1", 6000, "dwh"},
+		{int64(-1), "p", "p", "n", "u", "coordinator", 5432, "dwh"},
+	})
 	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
 	f.On("SELECT 1", [][]any{{int64(1)}})

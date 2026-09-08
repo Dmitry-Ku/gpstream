@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/gpstream/gpstream/internal/topology"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -148,15 +149,15 @@ func (r *Report) checkSegments(side string, q pg.Querier) {
 	// an error) when the catalog is absent, so a plain PostgreSQL instance
 	// (M0 PoC on PG 9.4.26, the GP6 kernel) is distinguishable from a real
 	// query fault: probe error -> FAIL (cannot determine), NULL -> plain-PG
-	// single-node mode (WARN), OID -> Greenplum (count up segments).
-	v, err := pg.Row(context.Background(), q,
-		"SELECT to_regclass('gp_toolkit.gp_segment_configuration')")
+	// single-node mode (WARN), OID -> Greenplum (count up segments). The
+	// catalog read itself lives in internal/topology (§9 package layout).
+	oid, err := pg.Row(context.Background(), q, topology.ProbeSQL)
 	if err != nil {
 		r.Add(Check{Name: "segments", Side: side, Sev: Fail, Msg: "could not determine Greenplum status: " + err.Error(),
 			Rec: "query gp_segment_configuration"})
 		return
 	}
-	if v == nil {
+	if oid == nil {
 		// Plain-PostgreSQL mode: a single-node MPP database is equivalent to
 		// one up segment, so this degrades to a WARN with a clear note
 		// instead of a hard FAIL.
@@ -164,17 +165,16 @@ func (r *Report) checkSegments(side string, q pg.Querier) {
 			Rec: "expected when running against plain PostgreSQL (GP6 kernel PoC); on a real GP6 cluster all segments must be 'u'"})
 		return
 	}
-	rows, err := q.Query(context.Background(), "SELECT count(*) FROM gp_segment_configuration WHERE status='u'")
-	if err != nil || len(rows) == 0 {
+	top, err := topology.Read(context.Background(), q)
+	if err != nil || top == nil {
 		r.Add(Check{Name: "segments", Side: side, Sev: Fail, Msg: "could not enumerate segments",
 			Rec: "query gp_segment_configuration"})
 		return
 	}
-	// rows[0][0] is the count (int64 or string depending on driver).
-	count := firstAsInt(rows)
 	// A cluster with zero up segments cannot copy data (CР-7): report it as a
 	// FAIL rather than a silent PASS. This is what a fault injection for
 	// "no up segments" seeds.
+	count := top.UpCount()
 	if count == 0 {
 		r.Add(Check{Name: "segments", Side: side, Sev: Fail, Msg: "no up segments",
 			Rec: "all segments are down; bring up gp_segment_configuration before copy"})

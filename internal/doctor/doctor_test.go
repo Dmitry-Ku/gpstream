@@ -8,10 +8,23 @@ import (
 )
 
 // healthy returns a fake that answers every doctor query with healthy values.
+// FakeConn matches by longest substring, so the probe is registered under
+// "to_regclass" (the probe SQL does NOT contain the catalog key) and the
+// catalog under "FROM gp_segment_configuration" (the probe SQL does not
+// contain "FROM " + the table name) — the two queries resolve disjointly.
+// Catalog rows: content, role, preferred_role, mode, status, hostname, port,
+// datname.
 func healthy() *pg.FakeConn {
 	f := pg.NewFakeConn()
 	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
-	f.On("gp_segment_configuration", [][]any{{int64(4)}})
+	f.On("to_regclass", [][]any{{int64(16384)}}) // probe -> OID (Greenplum)
+	f.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "u", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "u", "host1", 6000, "dwh"},
+		{int64(0), "m", "s", "n", "u", "host2", 7000, "dwh"},
+		{int64(1), "m", "s", "n", "u", "host3", 7000, "dwh"},
+		{int64(-1), "p", "p", "n", "u", "coordinator", 5432, "dwh"},
+	})
 	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
 	f.On("SELECT 1", [][]any{{int64(1)}})
@@ -65,8 +78,11 @@ func TestDoctorDetectsFaults(t *testing.T) {
 	src.SetPingError(errUnreachable)
 	// Fault 2: dest version query cannot be answered -> FAIL
 	dst.Off("version")
-	// Fault 3: dest has no up segments -> FAIL
-	dst.Off("gp_segment_configuration")
+	// Fault 3: dest has no up segments (all primaries down) -> FAIL
+	dst.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "d", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "d", "host1", 6000, "dwh"},
+	})
 	// Fault 4: dest missing gp_toolkit EXECUTE -> WARN
 	dst.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
 	// Fault 5: dest disk probe cannot be answered -> FAIL

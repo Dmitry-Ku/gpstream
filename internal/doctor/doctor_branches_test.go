@@ -118,7 +118,11 @@ func TestCheckSegmentsZeroUp(t *testing.T) {
 	r := &Report{Healthy: true}
 	q := pg.NewFakeConn()
 	q.On("to_regclass", [][]any{{int32(16384)}}) // OID -> Greenplum
-	q.On("count(*)", [][]any{{int64(0)}})
+	// Catalog present but all primaries down -> UpCount() = 0.
+	q.On("FROM gp_segment_configuration", [][]any{
+		{int64(0), "p", "p", "n", "d", "host0", 6000, "dwh"},
+		{int64(1), "p", "p", "n", "d", "host1", 6000, "dwh"},
+	})
 	r.checkSegments("dest", q)
 	if got := find(r, "dest", "segments"); got != Fail {
 		t.Errorf("zero up segments: got %v, want FAIL", got)

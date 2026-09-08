@@ -16,3 +16,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   precedence CLI > env > file > defaults.
 - Strict `--include` validation: unknown object classes are rejected as typos.
 - `doctor` self-diagnosis (F-16) with precise problem list.
+- `internal/topology` package: single source of truth for the Greenplum
+  catalog (`gp_segment_configuration`, 8 columns). `IsGreenplum`/`Read`/
+  `SegmentCount`/`UpCount`/`ProbeSQL`; `doctor` now reuses it instead of
+  duplicating catalog SQL (dedup, v4 §9 layout).
+- `SECURITY.md`, `CONTRIBUTING.md`.
