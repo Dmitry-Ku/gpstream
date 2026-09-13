@@ -105,6 +105,51 @@ func (a *Agent) CopyToStream(ctx context.Context, schema, table string, w io.Wri
 	return a.q.ReadCopy(ctx, w, copySQL(schema, table))
 }
 
+// IndexDef describes one index on a source table (FR-17). Def is the verbatim
+// CREATE INDEX definition from pg_get_indexdef; Unique/PK mark the index kind
+// so the background pool can order the rebuild: secondary indexes first,
+// PK/unique last (TASK-SPEC F-17).
+type IndexDef struct {
+	Name   string
+	Unique bool
+	PK     bool
+	Def    string
+}
+
+// Indexes returns the index definitions of the table on the source (FR-17).
+// The background pool applies them to the destination after the swap, in
+// priority order (secondary first, PK/unique last). A source table without
+// indexes yields an empty (non-nil) slice.
+func (a *Agent) Indexes(ctx context.Context, schema, table string) ([]IndexDef, error) {
+	rows, err := a.q.Query(ctx,
+		`SELECT c.relname, i.indisunique, i.indisprimary, pg_get_indexdef(c.oid)
+		   FROM pg_index i
+		   JOIN pg_class c ON c.oid = i.indexrelid
+		   JOIN pg_namespace n ON n.oid = c.relnamespace
+		  WHERE n.nspname = $1 AND i.indrelid = (
+				SELECT c2.oid FROM pg_class c2
+				JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+				WHERE n2.nspname = $2 AND c2.relname = $1)
+		  ORDER BY c.relname`,
+		table, schema)
+	if err != nil {
+		return nil, fmt.Errorf("query indexes: %w", err)
+	}
+	out := make([]IndexDef, 0, len(rows))
+	for _, r := range rows {
+		if len(r) < 4 {
+			continue
+		}
+		out = append(out, IndexDef{
+			Name:   toStr(r[0]),
+			Unique: toBool(r[1]),
+			PK:     toBool(r[2]),
+			Def:    toStr(r[3]),
+		})
+	}
+	return out, nil
+}
+
 // Checksum returns an md5 of the binary COPY payload of schema.table
 // (FR-02). Comparing the source and destination checksums verifies that the
 // data arrived intact without re-copying the table (FR-01/§4.2). On vanilla
