@@ -188,6 +188,97 @@ func TestIsAlreadyExists(t *testing.T) {
 	}
 }
 
+
+// TestCreateIndexesNew issues a CREATE INDEX for each definition (F-17),
+// rewriting the source names to the destination names on a rename.
+func TestCreateIndexesNew(t *testing.T) {
+	f := pg.NewFakeConn()
+	// No index exists yet (empty pg_class lookup).
+	f.On("pg_class", [][]any{})
+	a := mkAgent(f)
+	defs := []pg.IndexDef{
+		{Name: "orders_customer_idx", Def: `CREATE INDEX orders_customer_idx ON public.orders USING btree (customer)`},
+		{Name: "orders_pkey", PK: true, Def: `CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)`},
+	}
+	if err := a.CreateIndexes(context.Background(), "s_new", "orders_v2", "public", "orders", defs); err != nil {
+		t.Fatalf("create indexes: %v", err)
+	}
+	q := f.Queried()
+	sawCreate := 0
+	for _, sql := range q {
+		if strings.Contains(sql, "CREATE INDEX") || strings.Contains(sql, "CREATE UNIQUE INDEX") {
+			// A rename must be rewritten to the destination names.
+			if !strings.Contains(sql, "s_new.orders_v2") {
+				t.Fatalf("index definition not rewritten to destination names: %q", sql)
+			}
+			sawCreate++
+		}
+	}
+	if sawCreate != 2 {
+		t.Fatalf("expected 2 CREATE INDEX statements, saw %d in %v", sawCreate, q)
+	}
+}
+
+// TestCreateIndexesSameName verifies that when src and dst names match, the
+// definition is applied verbatim (no rewrite).
+func TestCreateIndexesSameName(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("pg_class", [][]any{})
+	a := mkAgent(f)
+	defs := []pg.IndexDef{{Name: "i1", Def: `CREATE INDEX i1 ON public.orders (id)`}}
+	if err := a.CreateIndexes(context.Background(), "public", "orders", "public", "orders", defs); err != nil {
+		t.Fatalf("create indexes: %v", err)
+	}
+	q := f.Queried()
+	last := q[len(q)-1]
+	if last != `CREATE INDEX i1 ON public.orders (id)` {
+		t.Fatalf("definition altered on a non-rename: %q", last)
+	}
+}
+
+// TestCreateIndexesIdempotent verifies resume safety (F-17): an index that
+// already exists is REINDEXed by name instead of being re-created, so a
+// crash mid-build leaves no duplicates.
+func TestCreateIndexesIdempotent(t *testing.T) {
+	f := pg.NewFakeConn()
+	// The index already exists (pg_class lookup returns a row).
+	f.On("pg_class", [][]any{{1}})
+	a := mkAgent(f)
+	defs := []pg.IndexDef{{Name: "orders_pkey", PK: true, Def: `CREATE UNIQUE INDEX orders_pkey ON public.orders (id)`}}
+	if err := a.CreateIndexes(context.Background(), "public", "orders", "public", "orders", defs); err != nil {
+		t.Fatalf("create indexes: %v", err)
+	}
+	q := f.Queried()
+	sawReindex, sawCreate := false, false
+	for _, sql := range q {
+		if strings.Contains(sql, "REINDEX INDEX") {
+			sawReindex = true
+		}
+		if strings.Contains(sql, "CREATE INDEX") || strings.Contains(sql, "CREATE UNIQUE INDEX") {
+			sawCreate = true
+		}
+	}
+	if !sawReindex {
+		t.Fatalf("expected REINDEX INDEX for an existing index, got %v", q)
+	}
+	if sawCreate {
+		t.Fatalf("must not re-create an existing index (duplicates): %v", q)
+	}
+}
+
+// TestCreateIndexesEmpty verifies an empty definition list is a no-op
+// (a table without indexes).
+func TestCreateIndexesEmpty(t *testing.T) {
+	f := pg.NewFakeConn()
+	a := mkAgent(f)
+	if err := a.CreateIndexes(context.Background(), "public", "orders", "public", "orders", nil); err != nil {
+		t.Fatalf("create indexes (empty): %v", err)
+	}
+	if len(f.Queried()) != 0 {
+		t.Fatalf("expected no SQL for an empty definition list, got %v", f.Queried())
+	}
+}
+
 func errWith(s string) error { return stringsError(s) }
 
 type stringsError string

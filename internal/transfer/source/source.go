@@ -105,16 +105,12 @@ func (a *Agent) CopyToStream(ctx context.Context, schema, table string, w io.Wri
 	return a.q.ReadCopy(ctx, w, copySQL(schema, table))
 }
 
-// IndexDef describes one index on a source table (FR-17). Def is the verbatim
-// CREATE INDEX definition from pg_get_indexdef; Unique/PK mark the index kind
-// so the background pool can order the rebuild: secondary indexes first,
-// PK/unique last (TASK-SPEC F-17).
-type IndexDef struct {
-	Name   string
-	Unique bool
-	PK     bool
-	Def    string
-}
+// IndexDef is one index of a source table (F-17). It is the shared pg.IndexDef
+// type (also used by the destination agent and the background index pool);
+// Def is the verbatim CREATE INDEX definition from pg_get_indexdef and
+// Unique/PK mark the index kind so the pool orders the rebuild: secondary
+// indexes first, PK/unique last (TASK-SPEC F-17).
+type IndexDef = pg.IndexDef
 
 // Indexes returns the index definitions of the table on the source (FR-17).
 // The background pool applies them to the destination after the swap, in

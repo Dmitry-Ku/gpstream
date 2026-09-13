@@ -16,3 +16,19 @@ type Column struct {
 	// keyword), or "" if none.
 	Default string
 }
+
+// IndexDef is one index of a source table, shared by the source agent (which
+// reads it via pg_get_indexdef) and the destination agent / background index
+// pool (which applies it after the swap) (F-17).
+type IndexDef struct {
+	// Name is the index name.
+	Name string
+	// Unique marks a unique index.
+	Unique bool
+	// PK marks the primary-key index; the background pool rebuilds
+	// secondary indexes first and PK/unique last (F-17).
+	PK bool
+	// Def is the verbatim CREATE INDEX definition from pg_get_indexdef,
+	// referencing the SOURCE schema/table names.
+	Def string
+}

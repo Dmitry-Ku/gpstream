@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -177,6 +178,67 @@ func (a *Agent) EnsureSchema(ctx context.Context, schema string) error {
 	}
 	_, err := a.q.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(schema)))
 	return err
+}
+
+// CreateIndexes applies the source index definitions to schema.table on the
+// destination (F-17). It is called by the background index pool AFTER the
+// staging table has been swapped to its final name, so the table already holds
+// the copied data and the indexes are built over it.
+//
+// Each definition from the source (pg_get_indexdef) references the SOURCE
+// schema/table names; for a rename (FR-11) they are rewritten to the
+// destination names before the statement is issued. The index name itself is
+// kept verbatim, so applying the same definition twice is idempotent: the
+// second pass detects the existing index and falls back to REINDEX (which
+// also makes a resume after a crash in the index phase safe — no duplicates,
+// F-17). Definitions are applied in the order the caller provides them; the
+// pool passes secondary indexes first and PK/unique last (F-17).
+func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
+	for _, d := range defs {
+		def := d.Def
+		// Rewrite the source names to the destination names (no-op when the
+		// unit is not renamed, i.e. src == dst).
+		if srcSchema != schema || srcTable != table {
+			// pg_get_indexdef emits the names as written in the source catalog
+			// (usually unquoted); rewrite both the plain and the quoted form so
+			// a rename (FR-11) is honoured either way.
+			def = strings.ReplaceAll(def, srcSchema+"."+srcTable, schema+"."+table)
+			def = strings.ReplaceAll(def, quoteIdent(srcSchema)+"."+quoteIdent(srcTable),
+				quoteIdent(schema)+"."+quoteIdent(table))
+		}
+		if err := a.createOneIndex(ctx, schema, table, d.Name, def); err != nil {
+			return fmt.Errorf("create index %s on %s.%s: %w", d.Name, schema, table, err)
+		}
+	}
+	return nil
+}
+
+// createOneIndex applies a single index definition, idempotently (F-17). It
+// first checks whether the index already exists; if so it REINDEXes it by name
+// (the index exists but its data may be stale after a crash mid-build).
+// Otherwise it issues the (rewritten) CREATE INDEX definition.
+func (a *Agent) createOneIndex(ctx context.Context, schema, table, name, def string) error {
+	if a.indexExists(ctx, schema, name) {
+		_, err := a.q.Exec(ctx, fmt.Sprintf(`REINDEX INDEX %s`, quoteIdent(schema)+"."+quoteIdent(name)))
+		if err != nil {
+			return fmt.Errorf("reindex existing %s.%s: %w", schema, name, err)
+		}
+		return nil
+	}
+	_, err := a.q.Exec(ctx, def)
+	return err
+}
+
+// indexExists reports whether an index named name exists in schema.
+func (a *Agent) indexExists(ctx context.Context, schema, name string) bool {
+	rows, err := a.q.Query(ctx,
+		`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+		 WHERE c.relname=$1 AND n.nspname=$2 AND c.relkind='i'`,
+		name, schema)
+	if err != nil || len(rows) == 0 {
+		return false
+	}
+	return true
 }
 
 // copySQL returns a binary-format COPY that streams the table to STDOUT
