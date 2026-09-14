@@ -15,6 +15,7 @@ import (
 func mkSkewFake(hasKey bool, seg []int64) *pg.FakeConn {
 	f := pg.NewFakeConn()
 	f.On("pg_class", [][]any{{"s", "orders", "r", int64(1000), int64(0), int64(1), "srcdb"}})
+	f.On("to_regclass('gp_toolkit.gp_distribution_policy')", [][]any{{int32(16384)}})
 	f.On("gs-redistrib-check", [][]any{{hasKey}})
 	if len(seg) > 0 {
 		rows := make([][]any, 0, len(seg))

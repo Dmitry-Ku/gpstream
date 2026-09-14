@@ -16,12 +16,13 @@ import (
 // bottleneck — the channel is. On the reference bench this runs ~GB/s.
 func TestStreamThroughput(t *testing.T) {
 	const payload = 64 * 1024 // 64 KiB payload per frame (COPY row batches)
-	const frames = 4000      // ~256 MiB of payload streamed
+	const frames = 4000       // ~256 MiB of payload streamed
 
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
 	go func() {
+		defer c2.Close() // never leak: a failed send must unblock the receiver
 		s := NewSession(c2, 0) // 0 = no rate limit
 		buf := make([]byte, payload)
 		for i := uint64(0); i < frames; i++ {
@@ -31,7 +32,9 @@ func TestStreamThroughput(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 60s deadline: the whole suite runs -race in parallel, so give the
+	// scheduler slack; on the reference bench this finishes in ~2s.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	recv := NewSession(c1, 0)

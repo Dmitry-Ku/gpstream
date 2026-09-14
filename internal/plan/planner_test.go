@@ -152,7 +152,9 @@ func containsQuery(fc *pg.FakeConn, substr string) bool {
 func mkRedistribFake(hasKey bool) *pg.FakeConn {
 	f := pg.NewFakeConn()
 	f.On("pg_class", [][]any{{"s", "orders", "r", int64(1000), int64(0), int64(1), "srcdb"}})
-	// The distribution probe returns a boolean in column 0.
+	// The preflight probe resolves the distribution catalog by name
+	// (non-nil OID = Greenplum); the distribution probe returns a boolean.
+	f.On("to_regclass('gp_toolkit.gp_distribution_policy')", [][]any{{int32(16384)}})
 	f.On("gs-redistrib-check", [][]any{{hasKey}})
 	return f
 }
@@ -246,4 +248,3 @@ func TestRedistributionQuery(t *testing.T) {
 		}
 	}
 }
-

@@ -22,36 +22,36 @@ import (
 
 // Table is one transferable table in the object graph (FR-03).
 type Table struct {
-	DB          string
-	Schema      string
-	Name        string
+	DB     string
+	Schema string
+	Name   string
 	// DstDB/DstSchema/DstName are the destination names after rename (FR-11/
 	// §4.10); they equal DB/Schema/Name when no rename applies. Conflicts are
 	// detected against the destination schema+name, so a rename avoids a
 	// would-be overwrite.
-	DstDB     string
-	DstSchema string
-	DstName   string
-	LeafPart  []string // leaf partition names, for explicit routing (FR-03)
-	IsAO      bool     // Append-Optimized
-	IsCO      bool     // Column-Oriented
-	Bytes     int64    // estimated size
-	RowEst    int64    // estimated rows
-	Indexes   int      // number of indexes
-	HasConflict bool    // exists in dest and not overwritten (FR-10)
+	DstDB       string
+	DstSchema   string
+	DstName     string
+	LeafPart    []string // leaf partition names, for explicit routing (FR-03)
+	IsAO        bool     // Append-Optimized
+	IsCO        bool     // Column-Oriented
+	Bytes       int64    // estimated size
+	RowEst      int64    // estimated rows
+	Indexes     int      // number of indexes
+	HasConflict bool     // exists in dest and not overwritten (FR-10)
 }
 
 // Plan is the deterministic transfer plan (FR-10).
 type Plan struct {
-	Units          []Table         `json:"units"`
-	TotalBytes     int64           `json:"total_bytes"`
-	Pairs          []string        `json:"pairs"` // host-pairs, e.g. "src-host1:5432->dst-host2:5432"
-	WorkPerPair    int             `json:"work_per_pair"`
-	ETASeconds     int             `json:"eta_seconds"`
-	Redistrib      Redistribution  `json:"redistribution"` // FR-15 accounting
-	Collations     []CollationDiff `json:"collation_diffs"` // FR-10/FR-16
-	Conflicts      []Conflict      `json:"conflicts"`
-	Hash           string          `json:"hash"`
+	Units       []Table         `json:"units"`
+	TotalBytes  int64           `json:"total_bytes"`
+	Pairs       []string        `json:"pairs"` // host-pairs, e.g. "src-host1:5432->dst-host2:5432"
+	WorkPerPair int             `json:"work_per_pair"`
+	ETASeconds  int             `json:"eta_seconds"`
+	Redistrib   Redistribution  `json:"redistribution"`  // FR-15 accounting
+	Collations  []CollationDiff `json:"collation_diffs"` // FR-10/FR-16
+	Conflicts   []Conflict      `json:"conflicts"`
+	Hash        string          `json:"hash"`
 	// EstimatedVolume/EstimatedETA carry the volume/time prediction (FR-10).
 	EstimatedVolume int64 `json:"estimated_volume"`
 	EstimatedETA    int   `json:"estimated_eta"`
@@ -90,7 +90,7 @@ type Redistribution struct {
 	NeedsRedistrib bool    `json:"needs_redistribution"` // FR-15: skew > threshold
 	Skew           float64 `json:"skew"`                 // FR-15/CR-5: measured segment skew (0..1)
 	Threshold      float64 `json:"threshold"`            // the --skew-threshold applied
-	Reason         string  `json:"reason"`              // why redistribution is (not) needed
+	Reason         string  `json:"reason"`               // why redistribution is (not) needed
 }
 
 // Build produces the plan for a config against source + destination clusters.
@@ -547,14 +547,26 @@ func sum(v []int64) int64 {
 	return t
 }
 
-// distKey probes a cluster for whether its tables carry a distribution key.
-// The "gs-redistrib-check" marker lets a test fake register the distribution
-// answer separately from the pg_class listing (CР-4/CР-7), and a missing or
-// failed probe yields "" (so the caller is conservative, FR-15). It reads the
-// real Greenplum distribution policy (gp_distribution_policy) so a broken query
-// cannot silently pass — the test asserts the query is present (the same guard
-// that caught the pg_encoding_to_char bug).
+// distKey probes a cluster for whether any of its user tables carry a
+// distribution key. It first resolves gp_distribution_policy with
+// to_regclass (the gp_toolkit schema qualifies it to Greenplum), so on a
+// plain-PostgreSQL destination the probe returns an empty row set instead of
+// raising an error (the inner count is only evaluated when the catalog exists).
+// A missing or failed probe yields "" (so the caller is conservative, FR-15).
+// It reads the real Greenplum distribution policy (gp_distribution_policy) so
+// a broken query cannot silently pass — the test asserts the query is present
+// (the same guard that caught the pg_encoding_to_char bug).
 func distKey(ctx context.Context, q pg.Querier) string {
+	// Preflight: resolve the Greenplum distribution catalog by name. This is
+	// safe on a plain-PostgreSQL cluster (to_regclass returns NULL without an
+	// error), whereas the main query references the catalog by name and would
+	// fail at parse time there. A non-Greenplum cluster therefore yields ""
+	// (conservative, FR-15) with no error noise in the server log.
+	oid, err := pg.Row(ctx, q,
+		`SELECT to_regclass('gp_toolkit.gp_distribution_policy')`)
+	if err != nil || oid == nil {
+		return ""
+	}
 	rows, err := q.Query(ctx,
 		`SELECT (SELECT count(*) FROM gp_distribution_policy dp WHERE dp.localoid = c.oid) > 0
 		 FROM pg_class c

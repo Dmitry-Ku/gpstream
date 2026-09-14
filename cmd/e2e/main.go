@@ -54,9 +54,17 @@ INSERT INTO public.orders VALUES (1,'alice',10.50),(2,'bob',20.25),(3,'carol',30
 	// --- run the actual binary ---
 	fmt.Println("\n### running: ./bin/gpstream run --source <src> --dest <dst> --tables public.orders --auto-resume 3 --compression zstd")
 	fmt.Println("------------------------------------------------------------------------")
+	stateDir, err := os.MkdirTemp("", "gpstream-e2e-state-")
+	if err != nil {
+		fmt.Println("state dir:", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(stateDir)
+
 	out := exec.Command("./bin/gpstream", "run",
 		"--source", srcURL, "--dest", dstURL,
-		"--tables", "public.orders", "--auto-resume", "3", "--compression", "zstd")
+		"--tables", "public.orders", "--auto-resume", "3", "--compression", "zstd",
+		"--state-dir", stateDir)
 	out.Dir = "."
 	out.Stdout = os.Stdout
 	out.Stderr = os.Stderr
