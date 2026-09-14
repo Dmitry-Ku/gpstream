@@ -151,6 +151,42 @@ func TestPoolNoIndexes(t *testing.T) {
 	}
 }
 
+// TestPoolIdempotent enqueues the same unit twice (a resume re-run). The
+// second CreateIndexes call must REINDEX the already-created index rather
+// than re-issue CREATE INDEX (F-17 resume-safety).
+func TestPoolIdempotent(t *testing.T) {
+	f := pg.NewFakeConn()
+	p := NewPool(1, false, false)
+	j := jobFor(f, 1)
+	// jobFor resets the pg_class stub to empty; mark the index as already
+	// present so CreateIndexes takes the REINDEX branch (no duplicate
+	// CREATE INDEX on a resume re-run, F-17).
+	f.On("pg_class", [][]any{{1}})
+	p.Enqueue(j)
+	p.Enqueue(j) // same unit again
+	p.Close()
+	p.Run(context.Background())
+	if p.Done() != 2 || p.Err() != nil {
+		t.Fatalf("pool done=%d err=%v, want 2/nil", p.Done(), p.Err())
+	}
+	q := f.Queried()
+	sawCreate, sawReindex := false, false
+	for _, sql := range q {
+		if strings.Contains(sql, "CREATE INDEX") || strings.Contains(sql, "CREATE UNIQUE INDEX") {
+			sawCreate = true
+		}
+		if strings.Contains(sql, "REINDEX INDEX") {
+			sawReindex = true
+		}
+	}
+	if sawCreate {
+		t.Fatalf("pool must not re-CREATE an existing index (duplicates): %v", q)
+	}
+	if !sawReindex {
+		t.Fatalf("pool should REINDEX an existing index on re-run, got %v", q)
+	}
+}
+
 // TestPoolWorkersDefault clamps the worker count to the F-17 default of 2.
 func TestPoolWorkersDefault(t *testing.T) {
 	p := NewPool(0, false, false)
