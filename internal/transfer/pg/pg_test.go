@@ -76,14 +76,13 @@ func TestFormatConn(t *testing.T) {
 	}
 }
 
-
 // FR-13: an unspecified sslmode must default to verify-full; an explicit
 // sslmode is respected as-is.
 func TestEnsureVerifyFull(t *testing.T) {
 	cases := []struct {
-		name  string
-		in    string
-		want  string
+		name string
+		in   string
+		want string
 	}{
 		{"url no query", "postgresql://u:***@h:5432/db", "postgresql://u:***@h:5432/db?sslmode=verify-full"},
 		{"url with query", "postgresql://u:***@h:5432/db?sslrootcert=/x", "postgresql://u:***@h:5432/db?sslrootcert=/x&sslmode=verify-full"},
