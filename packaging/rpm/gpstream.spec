@@ -13,6 +13,9 @@ Source0:     gpstream-%{version}.tar.gz
 # bundles; TLS/zlib are in-process, zstd is pure-Go (klauspost, BSD).
 BuildRequires: go
 
+# %unitdir: путь для systemd-юнитов (стандартный для CentOS 7/8/9 и Fedora)
+%define unitdir /usr/lib/systemd/system
+
 %description
 gpstream streams logical data between two Greenplum 6 clusters over a direct
 high-speed network without intermediate storage, with snapshot-level
@@ -50,10 +53,10 @@ install man/gpstream.8 %{buildroot}%{_mandir}/man8/gpstream.8
 %{_bindir}/gpstream
 %unitdir/gpstream.service
 %config(noreplace) %{_sysconfdir}/gpstream/gpstream.toml
-%{_mandir}/man8/gpstream.8
+%{_mandir}/man8/gpstream.8*
 
 %changelog
-* Mon Sep 01 2026 gpstream maintainers <gpstream@example.com> - 0.1.0-1
+* Sat Sep 12 2026 gpstream maintainers <gpstream@example.com> - 0.1.0-1
 - Initial release: M0-M4 (doctor/selftest, job journal, stream, limiter,
   metrics, compress, resume/crash-recovery, index rebuild, dry-run, plan,
   status, cleanup, man, cross-compile amd64/arm64, packaging).

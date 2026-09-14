@@ -12,5 +12,5 @@ Description: High-throughput logical data copy between Greenplum 6 clusters
  high-speed network without intermediate storage, with snapshot-level
  consistency, fault tolerance, auto-resume, monitoring, background index
  rebuild, redistribution awareness and a detailed --dry-run.
-Depends: ${misc:Depends}
+Depends: libc6 (>= 2.34)
 Installed-Size: 20000
