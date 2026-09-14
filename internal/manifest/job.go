@@ -46,17 +46,17 @@ type Unit struct {
 	Table  string `json:"table"`  // SOURCE table  (read from the source cluster)
 	// DstSchema/DstName are the destination names after rename (FR-11/§4.10);
 	// they equal Schema/Table when no rename applies. The copy writes to these.
-	DstSchema string `json:"dst_schema,omitempty"`
-	DstName   string `json:"dst_name,omitempty"`
-	Part     string `json:"part,omitempty"`
-	Kind     string `json:"kind"` // table|partition|index|view|...
-	State    State  `json:"state"`
-	Checksum string `json:"checksum,omitempty"`
-	RowCount int64  `json:"row_count"`
-	Bytes    int64  `json:"bytes"`
-	Conflict bool   `json:"conflict,omitempty"` // planner-flagged conflict (FR-10/FR-11)
-	Attempts int    `json:"attempts"`
-	Updated  time.Time `json:"updated"`
+	DstSchema string    `json:"dst_schema,omitempty"`
+	DstName   string    `json:"dst_name,omitempty"`
+	Part      string    `json:"part,omitempty"`
+	Kind      string    `json:"kind"` // table|partition|index|view|...
+	State     State     `json:"state"`
+	Checksum  string    `json:"checksum,omitempty"`
+	RowCount  int64     `json:"row_count"`
+	Bytes     int64     `json:"bytes"`
+	Conflict  bool      `json:"conflict,omitempty"` // planner-flagged conflict (FR-10/FR-11)
+	Attempts  int       `json:"attempts"`
+	Updated   time.Time `json:"updated"`
 }
 
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier

@@ -19,7 +19,7 @@ import (
 // `COPY ... FROM STDIN` (read side). It never touches local storage in the
 // middle (FR-01) — only RAM with back-pressure.
 //
-//   source agent --(FramedWriter)--> FramedPipe --(FramedReader)--> dest agent
+//	source agent --(FramedWriter)--> FramedPipe --(FramedReader)--> dest agent
 //
 // The write side compresses (FR-12) and frames; the read side frames-verify
 // and decompresses. A CRC mismatch (ErrCorrupt) is surfaced, not swallowed.

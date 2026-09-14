@@ -22,16 +22,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/index"
-	"github.com/gpstream/gpstream/internal/ratelimit"
 	"github.com/gpstream/gpstream/internal/monitor"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/plan"
-	"github.com/gpstream/gpstream/internal/transfer/source"
+	"github.com/gpstream/gpstream/internal/ratelimit"
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/compress"
+	"github.com/gpstream/gpstream/internal/transfer/dest"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
 // Manager orchestrates a copy across the planned units.
@@ -676,12 +676,12 @@ func (m *Manager) startLimiterSampler(ctx context.Context) func() {
 // point-in-time snapshot, realised as a long-lived read-only REPEATABLE READ
 // transaction on the source with every COPY executed inside it.
 //
-//   --consistent-db (default): begin a snapshot transaction up front; the first
-//     unit's COPY establishes the snapshot and the remaining units read from
-//     the same one (all COPYs of the database are inside one snapshot).
-//   --consistent-cluster: additionally place the source in a single frozen
-//     state (maintenance window) so the whole cluster is frozen, then begin the
-//     snapshot transaction.
+//	--consistent-db (default): begin a snapshot transaction up front; the first
+//	  unit's COPY establishes the snapshot and the remaining units read from
+//	  the same one (all COPYs of the database are inside one snapshot).
+//	--consistent-cluster: additionally place the source in a single frozen
+//	  state (maintenance window) so the whole cluster is frozen, then begin the
+//	  snapshot transaction.
 //
 // A failure to begin the transaction is non-fatal: the copy still proceeds
 // (unit-by-unit) and is recorded in the journal, but the operator is told the

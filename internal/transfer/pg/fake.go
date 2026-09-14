@@ -18,18 +18,18 @@ import (
 // FakeConn is an in-memory implementation of Querier. Each registered SQL
 // pattern returns its canned rows; patterns are matched by substring.
 type FakeConn struct {
-	mu        sync.Mutex
-	results   map[string][][]any // substring key -> rows
-	queries   []string           // log of executed queries (for assertions)
-	pingErr   error
-	pingDelay time.Duration      // blocks Ping for this long (FR-10 hung segment)
-	panicQuery string            // Query panics if the SQL contains this (CR-7/FR-06)
-	panicCopy  bool              // ReadCopy panics (CR-7 data-path fault / FR-06)
-	panicCopyTimes int          // panic on the N-th ReadCopy call (0 = first)
-	readCopyN  int             // ReadCopy calls so far
-	closed    bool
-	readCopy  map[string][]byte // substring key -> COPY ... TO STDOUT payload
-	writeCopy map[string][]byte // substring key -> recorded COPY ... FROM STDIN payload
+	mu             sync.Mutex
+	results        map[string][][]any // substring key -> rows
+	queries        []string           // log of executed queries (for assertions)
+	pingErr        error
+	pingDelay      time.Duration // blocks Ping for this long (FR-10 hung segment)
+	panicQuery     string        // Query panics if the SQL contains this (CR-7/FR-06)
+	panicCopy      bool          // ReadCopy panics (CR-7 data-path fault / FR-06)
+	panicCopyTimes int           // panic on the N-th ReadCopy call (0 = first)
+	readCopyN      int           // ReadCopy calls so far
+	closed         bool
+	readCopy       map[string][]byte // substring key -> COPY ... TO STDOUT payload
+	writeCopy      map[string][]byte // substring key -> recorded COPY ... FROM STDIN payload
 }
 
 // NewFakeConn returns an empty fake.

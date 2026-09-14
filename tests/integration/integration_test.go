@@ -14,10 +14,10 @@ import (
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
-	"github.com/gpstream/gpstream/internal/ratelimit"
 	"github.com/gpstream/gpstream/internal/monitor"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/ratelimit"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // TestConfigFromEnv verifies (FR-08/FR-12) that secrets and compression come

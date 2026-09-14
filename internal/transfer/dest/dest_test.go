@@ -188,7 +188,6 @@ func TestIsAlreadyExists(t *testing.T) {
 	}
 }
 
-
 // TestCreateIndexesNew issues a CREATE INDEX for each definition (F-17),
 // rewriting the source names to the destination names on a rename.
 func TestCreateIndexesNew(t *testing.T) {

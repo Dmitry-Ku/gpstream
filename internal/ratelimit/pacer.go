@@ -12,9 +12,9 @@ import (
 // data flow, and when the load subsides the pacer recovers. When the baseline
 // is 0 the pacer is a no-op (unlimited, FR-14).
 type Pacer struct {
-	l   *Limiter
-	mu  sync.Mutex
-	tok float64 // available bytes to send now
+	l    *Limiter
+	mu   sync.Mutex
+	tok  float64 // available bytes to send now
 	last time.Time
 }
 

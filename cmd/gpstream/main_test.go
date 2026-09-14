@@ -40,7 +40,10 @@ func TestRunHelp(t *testing.T) {
 
 // TestHumanBytes covers the unit ladder (B → KiB → MiB → GiB → …).
 func TestHumanBytes(t *testing.T) {
-	cases := []struct{ n int64; want string }{
+	cases := []struct {
+		n    int64
+		want string
+	}{
 		{0, "0 B"},
 		{512, "512 B"},
 		{1023, "1023 B"},
@@ -58,7 +61,10 @@ func TestHumanBytes(t *testing.T) {
 
 // TestHumanDuration covers the second/minute/hour branches.
 func TestHumanDuration(t *testing.T) {
-	cases := []struct{ sec int; want string }{
+	cases := []struct {
+		sec  int
+		want string
+	}{
 		{0, "0s"},
 		{-1, "0s"},
 		{30, "30s"},
@@ -319,4 +325,3 @@ func TestParseConfigRateLimitUnits(t *testing.T) {
 		}
 	}
 }
-

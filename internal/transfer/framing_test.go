@@ -170,4 +170,4 @@ type dummyPipe struct{}
 
 func (dummyPipe) Read(p []byte) (int, error)  { return 0, nil }
 func (dummyPipe) Write(p []byte) (int, error) { return len(p), nil }
-func (dummyPipe) Close() error               { return nil }
+func (dummyPipe) Close() error                { return nil }

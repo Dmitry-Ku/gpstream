@@ -143,9 +143,9 @@ func TestParseConfigFull(t *testing.T) {
 // TestParseCompressLevels covers the --compress variants (none/zlib/zstd:level).
 func TestParseCompressLevels(t *testing.T) {
 	cases := []struct {
-		flag   string
-		alg    string
-		level  int
+		flag  string
+		alg   string
+		level int
 	}{
 		{"none", "none", 0},
 		{"zlib", "zlib", 0},
@@ -230,4 +230,3 @@ func TestDoctorConnectError(t *testing.T) {
 		t.Fatal("expected doctor to fail on an unparseable source DSN")
 	}
 }
-

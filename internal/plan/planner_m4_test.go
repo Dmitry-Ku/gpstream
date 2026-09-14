@@ -126,7 +126,6 @@ func TestApplyRenameMaps(t *testing.T) {
 	}
 }
 
-
 // TestSelectionBySchema verifies a bare schema selection matches by schema.
 func TestSelectionBySchema(t *testing.T) {
 	cfg := config.Default()

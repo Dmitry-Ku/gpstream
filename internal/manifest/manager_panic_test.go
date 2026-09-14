@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // twoUnitPlan returns a plan with two units so a panic in one does not need to

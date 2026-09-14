@@ -12,8 +12,8 @@ import (
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // newManager wires the real Manager over two fake streaming conns and a

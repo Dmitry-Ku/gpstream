@@ -15,9 +15,9 @@ import (
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/ratelimit"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
-	"github.com/gpstream/gpstream/internal/plan"
 )
 
 // buildManager wires the real Manager over two fake conns with the same payload
@@ -48,7 +48,7 @@ func nUnitPlan(n int) *plan.Plan {
 		units = append(units, plan.Table{
 			DB: "db", Schema: "public", Name: "t" + string(rune('a'+i%26)),
 			DstSchema: "public", DstName: "t" + string(rune('a'+i%26)),
-			Bytes:     1 << 20, // 1 MiB each
+			Bytes: 1 << 20, // 1 MiB each
 		})
 	}
 	return &plan.Plan{Units: units}

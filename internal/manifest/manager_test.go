@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // newPair builds the source and destination fake conns used by a Manager test.

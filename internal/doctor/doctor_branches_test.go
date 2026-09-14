@@ -10,7 +10,7 @@ import (
 // TestSeverityString covers every label, including the unknown fallback.
 func TestSeverityString(t *testing.T) {
 	for _, tc := range []struct {
-		s  Severity
+		s    Severity
 		want string
 	}{{Pass, "PASS"}, {Warn, "WARN"}, {Fail, "FAIL"}, {Severity(99), "?"}} {
 		if got := tc.s.String(); got != tc.want {

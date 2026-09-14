@@ -96,9 +96,9 @@ func TestChecksumEmpty(t *testing.T) {
 // TestQuoteIdent checks the identifier quoting (escaping embedded quotes).
 func TestQuoteIdent(t *testing.T) {
 	cases := map[string]string{
-		"public":        `"public"`,
-		`a"b`:          `"a""b"`,
-		"":              `""`,
+		"public": `"public"`,
+		`a"b`:    `"a""b"`,
+		"":       `""`,
 	}
 	for in, want := range cases {
 		if got := quoteIdent(in); got != want {

@@ -22,11 +22,11 @@ import (
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/doctor"
 	"github.com/gpstream/gpstream/internal/manifest"
-	"github.com/gpstream/gpstream/internal/monitor"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
-	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/manifest/resume"
+	"github.com/gpstream/gpstream/internal/monitor"
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/selftest"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // version is the gpstream build version reported by --help/version.
@@ -367,7 +367,7 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.ReportText = args[i]
 		}
-		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, err

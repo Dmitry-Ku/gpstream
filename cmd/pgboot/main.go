@@ -16,7 +16,7 @@ import (
 
 func main() {
 	port := os.Args[1] // port
-	db := os.Args[2]    // database name
+	db := os.Args[2]   // database name
 	seed := os.Args[3] // seed SQL (optional)
 	dataDir := "/tmp/pgdata_" + db
 	os.RemoveAll(dataDir)
@@ -29,7 +29,7 @@ func main() {
 		Port(uint32(mustInt(port))).
 		DataPath(dataDir).
 		StartTimeout(60000000000). // 60s
-		Logger(os.Stderr) // keep stdout clean so the URL can be grepped
+		Logger(os.Stderr)          // keep stdout clean so the URL can be grepped
 
 	srv := embeddedpostgres.NewDatabase(cfg)
 	if err := srv.Start(); err != nil {

@@ -93,7 +93,7 @@ type Config struct {
 	ZstdLevel      int         // 1-19, default 3
 	RateLimit      float64     // Gbps total ceiling
 	WorkersPerPair int
-	Streams        int // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
+	Streams        int    // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
 	DataPortRange  string // "a-b"
 
 	// Resilience (FR-06/FR-07).
@@ -110,8 +110,8 @@ type Config struct {
 	SkewThreshold  float64
 
 	// TLS (FR-13).
-	SSL     bool   // --tls: force an encrypted (TLS) connection (v2 §4.12)
-	SSLCert string
+	SSL       bool // --tls: force an encrypted (TLS) connection (v2 §4.12)
+	SSLCert   string
 	SSLKey    string
 	SSLCA     string
 	SSLMinTLS string // e.g. "1.2"
@@ -140,11 +140,11 @@ type Config struct {
 	OverwriteOnlyConflicts bool
 
 	// v2 diagnostics / checks (§6.10, §4.13, §4.14, §4.16).
-	CollationCheck      bool // detect LC_COLLATE/collation differences
-	LocaleCheck        bool   // detect locale/encoding/timezone differences
-	DistributionCheck  bool   // detect distribution mismatch
-	RedistributionPlan bool   // surface redistribution in the plan
-	AdaptiveRateLimit  bool   // throttle per host-pair on a detected bottleneck
+	CollationCheck     bool // detect LC_COLLATE/collation differences
+	LocaleCheck        bool // detect locale/encoding/timezone differences
+	DistributionCheck  bool // detect distribution mismatch
+	RedistributionPlan bool // surface redistribution in the plan
+	AdaptiveRateLimit  bool // throttle per host-pair on a detected bottleneck
 
 	// v2 checksum / dedup (§6.4).
 	ChecksumAlgorithm  string // sha256|blake3 (default sha256)
@@ -152,7 +152,7 @@ type Config struct {
 	SkipIfSameChecksum bool   // alias for Dedup
 
 	// v2 observability / reports (§4.4, §6.9).
-	MetricsOn bool   // enable the Prometheus endpoint
+	MetricsOn  bool // enable the Prometheus endpoint
 	ReportJSON string
 	ReportCSV  string
 	ReportText string

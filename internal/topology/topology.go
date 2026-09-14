@@ -52,7 +52,7 @@ func (s Segment) Description() string {
 
 // Topology is the parsed view of a cluster's gp_segment_configuration.
 type Topology struct {
-	Coordinator *Segment `json:"coordinator,omitempty"`
+	Coordinator *Segment  `json:"coordinator,omitempty"`
 	Segments    []Segment `json:"segments"` // primary+mirror rows, sorted by (content, role)
 }
 

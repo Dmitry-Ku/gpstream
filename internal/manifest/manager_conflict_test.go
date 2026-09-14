@@ -92,7 +92,7 @@ func TestManagerAppend(t *testing.T) {
 // selects the right (inPlace, truncate, verify) combination.
 func TestManagerResolve(t *testing.T) {
 	cases := []struct {
-		action        config.ConflictAction
+		action                config.ConflictAction
 		inPlace, trun, verify bool
 	}{
 		{config.SkipExisting, false, false, true}, // skipped upstream; default path
