@@ -22,8 +22,8 @@ A copy has six steps:
 1. **Set the endpoints** — `--source` / `--dest` connstrings (or the
    `GPSTREAM_SOURCE` / `GPSTREAM_DEST` environment variables).
 2. **Select the scope** — `--full`, `--db`, `--schema`, `--table`, or `--exclude-*`.
-3. **Dry-run first** — `gpstream copy --dry-run ...` to preview the deterministic plan.
-4. **Run** — `gpstream copy ...` to execute the copy.
+3. **Dry-run first** — `gpstream dry-run ...` to preview the deterministic plan.
+4. **Run** — `gpstream run ...` to execute the copy.
 5. **Monitor** — `gpstream status` and `gpstream metrics`.
 6. **Recover** — `gpstream resume --mirror F` / `gpstream rollback --mirror F`.
 
@@ -36,13 +36,13 @@ the `GPSTREAM_*` environment variables:
 
 ```bash
 # Option A: CLI flags
-gpstream copy --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
+gpstream run --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
               --dest   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
 
 # Option B: environment variables (GPSTREAM_SOURCE / GPSTREAM_DEST)
 export GPSTREAM_SOURCE="host=prod-coordinator port=5432 user=gpstream dbname=postgres"
 export GPSTREAM_DEST="host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
-gpstream copy
+gpstream run
 ```
 
 Precedence is **CLI > env (`GPSTREAM_*`) > `--config` file > defaults**, so a
@@ -74,7 +74,7 @@ Additional metadata/data flags: `--metadata-only` and `--data-only`
 Example — copy the `orders` database, excluding an audit schema:
 
 ```bash
-gpstream copy --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
+gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
               --db orders --exclude "public.audit"
 ```
 
@@ -89,13 +89,13 @@ ETA, conflicts (with the action that would apply), redistribution accounting,
 and the plan hash:
 
 ```bash
-gpstream copy --dry-run \
+gpstream dry-run \
   --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
   --db orders
 ```
 
 You can persist the plan to a file with `--plan-file` (e.g.
-`gpstream copy --dry-run --plan-file /tmp/plan.json --db orders`). `gpstream
+`gpstream dry-run --plan-file /tmp/plan.json --db orders`). `gpstream
 plan` is the equivalent command that emits the plan as JSON (`--plan-file` or
 stdout). The **plan hash is deterministic**, so two dry-runs of the same scope
 produce the same hash — use it to confirm a plan has not changed between runs.
@@ -107,7 +107,7 @@ produce the same hash — use it to confirm a plan has not changed between runs.
 Once the dry-run looks right, run the copy:
 
 ```bash
-gpstream copy --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" --db orders
+gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" --db orders
 ```
 
 What happens:
@@ -125,7 +125,7 @@ Example output (a unit prints the **journal mirror path** if any unit is
 skipped or failed, so you can resume or inspect it):
 
 ```
-gpstream copy
+gpstream run
 =============
 units:          3
 volume:         1.5 GB
@@ -160,7 +160,7 @@ Prometheus endpoint. Serve it during a copy with `--metrics-addr`:
 
 ```bash
 gpstream metrics --metrics-addr http://localhost:9100
-gpstream copy --metrics-addr http://localhost:9100 --db orders
+gpstream run --metrics-addr http://localhost:9100 --db orders
 ```
 
 ### 6.3 Other observability commands
@@ -243,13 +243,13 @@ export GPSTREAM_DEST="host=preprod-coordinator  port=5432 user=gpstream dbname=p
 # export GPSTREAM_SSL_CA=/etc/gpstream/tls/ca.crt
 
 # 2. Dry-run first — preview the deterministic plan
-gpstream copy --dry-run --db orders
+gpstream dry-run --dbs orders
 #   (add --plan-file /tmp/plan.json to persist it)
 
 # 3. Inspect: units, volume, ETA, conflicts (action=skip-existing), redistribution, plan hash
 
 # 4. Run the copy (default conflict action = skip-existing; never overwrites)
-gpstream copy --db orders --metrics-addr http://localhost:9100
+gpstream run --db orders --metrics-addr http://localhost:9100
 
 # 5. Monitor
 gpstream status  --mirror /tmp/gpstream_<hash>.mirror
@@ -291,7 +291,7 @@ Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.
 - **`OPERATOR_GUIDE`** — running, monitoring, and operating copies in production.
 - **`ADMIN_GUIDE`** — cluster-level setup, security/TLS, and administration.
 - **`CLI_REFERENCE`** — the full flag surface for every subcommand.
-- **`CONFIGURATION`** — the `gpstream.yaml` config file, env variables, and precedence.
+- **`CONFIGURATION`** — the `gpstream.toml` config file, env variables, and precedence.
 - **`docs/INSTALL.md`** — building, cross-compiling, packaging, systemd, and logrotate.
 - **`gpstream man`** / `man/gpstream.8` — the man page.
 - **`gpstream --help`** — commands and flags.

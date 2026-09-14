@@ -139,7 +139,7 @@ independently of the data copy.
 - Low **confidence** means some inputs (volume, collation, redistribution)
   could not be determined offline — the fields that cannot be predicted
   without a live copy are labelled as **predictions**, not fake numbers.
-- Inspect the full plan: `gpstream plan --plan-file <F>`; compare with
+- Inspect the full plan: `gpstream dry-run --plan-file <F>`; compare with
   `gpstream report --report-json` / `--report-csv` / `--report-text`.
 
 ---

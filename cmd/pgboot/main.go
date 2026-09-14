@@ -3,7 +3,7 @@ package main
 // pgboot starts an embedded (real) PostgreSQL cluster, seeds it, prints its
 // connection URL to stdout, and keeps running until killed. It is used by the
 // end-to-end smoke test to provide two real clusters (source + destination)
-// for `gpstream copy` to copy between — proving the binary moves real bytes.
+// for `gpstream run` to copy between — proving the binary moves real bytes.
 import (
 	"context"
 	"fmt"

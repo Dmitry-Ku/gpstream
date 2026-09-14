@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" alt="gpstream" width="180"></p>
+
 # gpstream
 
 High-throughput **logical** data copy between two Greenplum 6 clusters over a
@@ -5,7 +7,7 @@ direct high-speed network — **no intermediate storage**, snapshot consistency,
 crash-recovery, background index rebuild, redistribution accounting, and a
 fully deterministic `--dry-run` plan.
 
-> **Milestone status (this build):** M1 core **verified**. `copy` now performs a
+> **Milestone status (this build):** M1 core **verified**. `run` now performs a
 > real transfer — it is wired into the job Manager (source → stream → dest) and
 > proven against live PostgreSQL clusters by `cmd/e2e` and the `integration`
 > suite (build tag `integration`). `doctor` reports real reachability failures
@@ -49,25 +51,27 @@ fully deterministic `--dry-run` plan.
 ## CLI contract (§5)
 
 ```
-gpstream copy
+gpstream run
   --source "<connstr>" --dest "<connstr>"
-  (--full | --db D... | --schema D.S... | --table D.S.T...) [--exclude-...]
+  (--full | --dbs D... | --schemas D.S... | --tables D.S.T...) [--exclude ...]
   [--metadata-only | --data-only]
   [--skip-existing | --overwrite | --truncate | --append]      # default: skip-existing
-  [--skip-conflicts]                                          # default: off
-  [--rename-db src=dst] [--rename-schema src=dst]
-  [--compress none|zlib|zstd[:level]]
-  [--rate-limit <Gbps>] [--workers-per-pair N] [--data-port-range a-b]
+  [--skip-conflicts | --conflict-action skip|fail]
+  [--map-db src=dst] [--map-schema src=dst] [--map-table src=dst]
+  [--compression none|zlib|zstd[:level]] [--zstd-level N]
+  [--max-bw <Gbps>] [--workers-per-pair N] [--data-port-range a-b]
   [--auto-resume N] [--verify full|sample|off]
-  [--index-workers N | --no-indexes]
+  [--index-workers N | --no-indexes] [--index-priority size|manual]
   [--no-redistribute | --skew-threshold X]
-  [--ssl-cert F --ssl-key F --ssl-ca F --ssl-min-tls V]
-  [--dry-run] [--timeout S] [--plan-file F]
-  [--config file.yaml] [--log-level debug|info|warn|error] [--quiet | --debug]
+  [--tls] [--ssl-cert F --ssl-key F --ssl-ca F --ssl-min-tls V]
+  [--timeout S] [--plan-file F]
+  [--config file.toml] [--state-dir D] [--log-level debug|info|warn|error] [--quiet | --debug]
 
-gpstream status <job-id>
-gpstream cleanup <job-id> [--yes] [--auto-cleanup]
-gpstream doctor [--source ...] [--dest ...]
+gpstream dry-run  [--timeout S] [--plan-file F]   # same selection flags as run
+gpstream status   --operation-id <id>
+gpstream resume   --operation-id <id>
+gpstream cleanup  <operation-id> [--all-incomplete] [--mode drop]
+gpstream doctor   [--source ...] [--dest ...]
 gpstream selftest
 gpstream man [topic]
 ```

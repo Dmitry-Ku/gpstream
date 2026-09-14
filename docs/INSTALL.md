@@ -127,13 +127,13 @@ The `packaging/` tree holds the distribution artifacts:
 | `packaging/rpm/` | RPM spec (`gpstream.spec`, v0.1.0, License Apache-2.0). |
 | `packaging/systemd/` | systemd unit file `gpstream.service`. |
 | `packaging/logrotate.conf` | logrotate configuration for gpstream logs. |
-| `packaging/examples/` | Example configuration `gpstream.yaml`. |
+| `packaging/examples/` | Example configuration `gpstream.toml`. |
 
 ### 6.1 Install the RPM
 
 The RPM spec builds the static binary and installs it to `%{_bindir}`
 (typically `/usr/local/bin/gpstream`), the systemd unit to `%{_unitdir}`,
-the example config to `/etc/gpstream/gpstream.yaml`, and the man page
+the example config to `/etc/gpstream/gpstream.toml`, and the man page
 (`gpstream.8`) to `%{_mandir}/man8`. It sets the proxy fallback for the build
 step (`export GOPROXY=https://proxy.golang.org,direct`; `go build -o bin/gpstream ./cmd/gpstream`).
 Its `%post` / `%preun` / `%postun` scripts wire the systemd unit in and out via
@@ -161,7 +161,7 @@ continuous copy from a configuration file:
 [Service]
 Type=simple
 # Worker processes are children; a worker death does not kill the job (FR-06).
-ExecStart=/usr/local/bin/gpstream copy --config /etc/gpstream/gpstream.yaml
+ExecStart=/usr/local/bin/gpstream run --config /etc/gpstream/gpstream.toml
 Restart=on-failure
 RestartSec=3
 # Internal watchdog + systemd restart together provide resilience (FR-06).
@@ -276,7 +276,7 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 | `WorkersPerPair` | `2` |
 
 Secrets (SSL cert / key / CA) come from **env or file, never from argv**. The
-example configuration is at `packaging/examples/gpstream.yaml`; TLS paths in it
+example configuration is at `packaging/examples/gpstream.toml`; TLS paths in it
 are shown commented with mode `0600` for the key file.
 
 ---

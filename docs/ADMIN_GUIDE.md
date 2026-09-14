@@ -107,7 +107,7 @@ Reference unit: `packaging/systemd/gpstream.service`. It is an
 **oneshot-style** invocation (a copy is a bounded job), not a long-lived
 daemon. Typical layout:
 
-- `ExecStart=/usr/bin/gpstream copy --source ... --dest ...`
+- `ExecStart=/usr/bin/gpstream run --source ... --dest ...`
 - Restart policy is usually **no** (or `on-failure` with an attempt cap),
   because the correct recovery mechanism is `resume`, not a silent restart
   (see `FAILOVER.md`).

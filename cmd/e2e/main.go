@@ -1,7 +1,7 @@
 package main
 
 // e2e is an end-to-end smoke test that starts two REAL PostgreSQL clusters,
-// seeds the source, runs the actual `bin/gpstream copy` binary between them,
+// seeds the source, runs the actual `bin/gpstream run` binary between them,
 // and verifies the data arrived in the destination. It proves the binary
 // moves real bytes (not a fake / "no bytes transferred").
 import (
@@ -52,16 +52,16 @@ INSERT INTO public.orders VALUES (1,'alice',10.50),(2,'bob',20.25),(3,'carol',30
 	fmt.Printf("DST = %s\n", dstURL)
 
 	// --- run the actual binary ---
-	fmt.Println("\n### running: ./bin/gpstream copy --source <src> --dest <dst> --table public.orders --auto-resume 3 --compress zstd")
+	fmt.Println("\n### running: ./bin/gpstream run --source <src> --dest <dst> --tables public.orders --auto-resume 3 --compression zstd")
 	fmt.Println("------------------------------------------------------------------------")
-	out := exec.Command("./bin/gpstream", "copy",
+	out := exec.Command("./bin/gpstream", "run",
 		"--source", srcURL, "--dest", dstURL,
-		"--table", "public.orders", "--auto-resume", "3", "--compress", "zstd")
+		"--tables", "public.orders", "--auto-resume", "3", "--compression", "zstd")
 	out.Dir = "."
 	out.Stdout = os.Stdout
 	out.Stderr = os.Stderr
 	if err := out.Run(); err != nil {
-		fmt.Println("gpstream copy exit:", err)
+		fmt.Println("gpstream run exit:", err)
 	}
 	fmt.Println("------------------------------------------------------------------------")
 

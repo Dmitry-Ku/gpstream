@@ -1,7 +1,7 @@
 // Command gpstream is the entry point for the gpstream CLI (FR-18). It
 // dispatches the subcommands from the §5 contract:
 //
-//	gpstream copy|dry-run|plan|status|cleanup|doctor|selftest|man
+//	gpstream run|dry-run|status|resume|cleanup|doctor|selftest|man
 //
 // The full flag surface (§5) is bound here by a single shared parser so every
 // subcommand honours the same contract; CLI flags > env > file > defaults.

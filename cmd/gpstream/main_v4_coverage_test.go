@@ -242,8 +242,8 @@ func TestStartMetricsServerServesPrometheus(t *testing.T) {
 // overlay, Validate).
 func TestParseConfigKitchenSink(t *testing.T) {
 	dir := t.TempDir()
-	f := filepath.Join(dir, "gpstream.yaml")
-	if err := os.WriteFile(f, []byte("rate-limit: \"1.5\"\nworkers-per-pair: \"4\"\n"), 0o600); err != nil {
+	f := filepath.Join(dir, "gpstream.toml")
+	if err := os.WriteFile(f, []byte("rate-limit = \"1.5\"\nworkers-per-pair = \"4\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

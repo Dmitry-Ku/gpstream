@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+// TestExampleConfigLoads guards the shipped example (F-18: canonical TOML at
+// /etc/gpstream/gpstream.toml) against the real loader — every key in
+// packaging/examples/gpstream.toml must be a supported scalar key.
+func TestExampleConfigLoads(t *testing.T) {
+	path := "../../packaging/examples/gpstream.toml"
+	c := Default()
+	if err := c.LoadFile(path); err != nil {
+		t.Fatalf("LoadFile(%s) = %v", path, err)
+	}
+	if c.Compression != CompZstd {
+		t.Errorf("compression = %v, want zstd from example", c.Compression)
+	}
+	if c.RateLimit != 80 {
+		t.Errorf("rate limit = %v, want 80 from example", c.RateLimit)
+	}
+	if c.IndexPriority != "size" {
+		t.Errorf("index priority = %v, want size from example", c.IndexPriority)
+	}
+	if c.WorkersPerPair != 8 {
+		t.Errorf("workers per pair = %v, want 8 from example", c.WorkersPerPair)
+	}
+}
+
 func TestDefault(t *testing.T) {
 	c := Default()
 	if c.ConflictAction != SkipExisting {

@@ -34,7 +34,7 @@ install -d %{buildroot}%{_sysconfdir}/gpstream
 install -d %{buildroot}%{_mandir}/man8
 install bin/gpstream %{buildroot}%{_bindir}/gpstream
 install packaging/systemd/gpstream.service %{buildroot}%{unitdir}/gpstream.service
-install packaging/examples/gpstream.yaml %{buildroot}%{_sysconfdir}/gpstream/gpstream.yaml
+install packaging/examples/gpstream.toml %{buildroot}%{_sysconfdir}/gpstream/gpstream.toml
 install man/gpstream.8 %{buildroot}%{_mandir}/man8/gpstream.8
 
 %post
@@ -49,7 +49,7 @@ install man/gpstream.8 %{buildroot}%{_mandir}/man8/gpstream.8
 %files
 %{_bindir}/gpstream
 %unitdir/gpstream.service
-%config(noreplace) %{_sysconfdir}/gpstream/gpstream.yaml
+%config(noreplace) %{_sysconfdir}/gpstream/gpstream.toml
 %{_mandir}/man8/gpstream.8
 
 %changelog

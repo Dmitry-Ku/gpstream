@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-label="gpstream logo">
+  <!-- gpstream: high-throughput logical data copy between Greenplum 6 clusters -->
+  <defs>
+    <linearGradient id="stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2e8b57"/>
+      <stop offset="1" stop-color="#7fd1a8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- source cluster (3 segments) -->
+  <g fill="#2e8b57">
+    <rect x="24" y="66" width="44" height="18" rx="4"/>
+    <rect x="24" y="90" width="44" height="18" rx="4"/>
+    <rect x="24" y="114" width="44" height="18" rx="4"/>
+  </g>
+  <!-- dest cluster (3 segments) -->
+  <g fill="#5aa87e">
+    <rect x="172" y="66" width="44" height="18" rx="4"/>
+    <rect x="172" y="90" width="44" height="18" rx="4"/>
+    <rect x="172" y="114" width="44" height="18" rx="4"/>
+  </g>
+
+  <!-- streaming lanes: direct, no intermediate storage -->
+  <g stroke="url(#stream)" stroke-width="6" stroke-linecap="round" fill="none">
+    <path d="M74 75  H166"/>
+    <path d="M74 99  H166" opacity="0.75"/>
+    <path d="M74 123 H166" opacity="0.5"/>
+  </g>
+
+  <!-- motion chevrons -->
+  <g fill="#2e8b57">
+    <path d="M104 88 l10 11 -10 11 v-7 h-6 v-18 h6 z"/>
+    <path d="M128 96 l8 8 -8 8 v-6 h-5 v-12 h5 z" opacity="0.65"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="120" y="176" text-anchor="middle"
+        font-family="DejaVu Sans, Helvetica, Arial, sans-serif"
+        font-size="34" font-weight="700" letter-spacing="1">
+    <tspan fill="#1f5c3d">gp</tspan><tspan fill="#2e8b57">stream</tspan>
+  </text>
+  <text x="120" y="202" text-anchor="middle"
+        font-family="DejaVu Sans, Helvetica, Arial, sans-serif"
+        font-size="13" letter-spacing="2" fill="#6b7d72">
+    GREENPLUM 6 LOGICAL COPY
+  </text>
+</svg>

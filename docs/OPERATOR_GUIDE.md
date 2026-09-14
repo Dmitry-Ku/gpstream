@@ -46,11 +46,11 @@ gpstream dry-run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
   --db app --schema public --table orders,customers
 
 # 3. Produce a deterministic plan (hash-pinned) you can inspect / diff.
-gpstream plan --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
+gpstream dry-run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
   --db app --plan-file plan.yaml
 
 # 4. Run the copy.
-gpstream copy --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
+gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
   --plan-file plan.yaml
 
 # 5. Watch progress and final outcome.
@@ -102,7 +102,7 @@ The destination may already contain objects. The default is deliberately
 | `--append` | — | Append rows to the destination object. |
 | `--conflict-action` | — | Pick one of the above explicitly. |
 
-The **default `ConflictAction` is `SkipExisting`**, so a bare `gpstream copy`
+The **default `ConflictAction` is `SkipExisting`**, so a bare `gpstream run`
 will **never** destroy existing destination data. If you must overwrite, say so
 explicitly.
 
@@ -186,7 +186,7 @@ retransmits > 100/s.
 Run the metrics server alongside a long job:
 
 ```bash
-gpstream copy --plan-file plan.yaml --metrics --metrics-addr :9090
+gpstream dry-run --plan-file plan.yaml --metrics --metrics-addr :9090
 ```
 
 The metrics package serves a Prometheus textformat endpoint (`/metrics`) via the

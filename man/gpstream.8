@@ -1,4 +1,4 @@
-.TH GPSTREAM 8 "2026-09-02" "gpstream 0.1 (M0)" "User Commands"
+.TH GPSTREAM 8 "2026-09-14" "gpstream 0.1.0" "User Commands"
 .SH NAME
 gpstream \- high-throughput logical copy of data between Greenplum 6 clusters
 
@@ -19,21 +19,21 @@ plan.
 
 .SH COMMANDS
 .TP
-.B copy
-Stream a database/selection between clusters (M1+).
+.B run
+Execute the copy: stream source to dest with no intermediate storage (v4 §8).
 .TP
 .B dry-run
-Plan the copy without executing (basic M1, full M4).
-.TP
-.B plan
-Emit the deterministic plan (M4).
+Plan the copy without executing (\-\-timeout S bounds the plan; \-\-plan-file F emits it).
 .TP
 .B status
-Report job state (M1+).
+Report operation state (\-\-operation-id <id>).
+.TP
+.B resume
+Resume an interrupted operation (\-\-operation-id <id>).
 .TP
 .BR cleanup
-.IR "<job-id>
-Remove staging objects and journal of a job (M1+).
+.IR "<operation-id>
+Remove operation state (\-\-all-incomplete, \-\-mode drop).
 .TP
 .B doctor
 Self-diagnose source/dest clusters; output PASS/FAIL/WARN (this build).
@@ -45,7 +45,7 @@ Internal sanity checks: schema, checksums, limiter, plan determinism, framing (t
 .IR "[ topic ] "
 Print the built-in man page (M4).
 
-.SH OPTIONS (copy / dry-run, §5)
+.SH OPTIONS (run / dry-run, §8)
 .TP
 .BR \-source
 .RI "[ " connstr " ] "
@@ -120,7 +120,7 @@ Planning options.
 Configuration and logging.
 
 .SH ENVIRONMENT
-Configuration precedence: CLI > environment > YAML file > defaults. Secrets are
+Configuration precedence: CLI > environment > config file (TOML) > defaults. Secrets are
 taken
 .B "only"
 from 0600 files or
@@ -149,4 +149,4 @@ M0 provides
 .BR doctor
 and
 .BR selftest
-as working commands; the copy/status/cleanup path lands in M1-M4.
+as working commands; run/status/resume/cleanup execute real transfers.
