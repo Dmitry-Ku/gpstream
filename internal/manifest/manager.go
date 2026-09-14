@@ -43,6 +43,11 @@ type Manager struct {
 	dst     *dest.Agent
 	journal *Journal
 	index   *index.Builder
+	idxPool *index.Pool // background index pool (FR-17); drained after the data path
+	// idxSeen marks units whose index build this run has enqueued, so the
+	// journal scan does not enqueue them twice (FR-17 resume).
+	idxSeen map[uint32]bool
+	idxMu   sync.Mutex // guards idxSeen
 	monitor *monitor.Metrics
 	comp    *compress.Compressor
 	dec     *compress.Decompressor
@@ -90,6 +95,8 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		dst:     dest.New(dstQ),
 		journal: j,
 		index:   index.New(cfg),
+		idxPool: index.NewPool(cfg.IndexWorkers, cfg.NoIndexes, cfg.IndexPriority == "size"),
+		idxSeen: map[uint32]bool{},
 		monitor: monitor.New(),
 		comp:    compress.New(mode, level),
 		dec:     compress.NewDec(mode),
@@ -205,6 +212,18 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	}
 	close(work)
 	wg.Wait()
+
+	// FR-17: drain the background index pool. First re-enqueue units that
+	// reached the final name in an earlier (killed) run but never got their
+	// index build — the journal is the source of truth, and createOneIndex is
+	// idempotent per index name, so a re-enqueue is duplicate-safe.
+	m.requeueIndexes(ctx)
+	m.idxPool.Close()
+	m.idxPool.Run(ctx)
+	if err := m.idxPool.Err(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+
 	// Release the source snapshot (FR-02) once every unit has been copied.
 	m.releaseSnapshot(ctx)
 	return firstErr
@@ -431,12 +450,10 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		m.statMu.Unlock()
 	}
 
-	// 7. Rebuild indexes on the copy target (FR-17): the staging table was
-	//    created without data, so REINDEX rebuilds its indexes over the copied
-	//    rows before the swap (or, in-place, over the final table).
-	if err := m.index.Rebuild(ctx, m.dstQ, ds, target); err != nil {
-		return fmt.Errorf("reindex: %w", err)
-	}
+	// 7. (FR-17) Indexes are NOT rebuilt here: the staging table is created
+	//    without indexes, so a pre-swap REINDEX was a no-op. The index build is
+	//    enqueued to the background pool after the swap (step 10), where it
+	//    runs over the final table without blocking the data path.
 
 	// 8. Record completed (data + checksum, ADR-001 §4.4).
 	u.State = StateCompleted
@@ -461,7 +478,75 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	if err := m.journal.SetState(u); err != nil {
 		return fmt.Errorf("journal swapped: %w", err)
 	}
+
+	// 10. Enqueue the index build to the background pool (FR-17). Non-fatal by
+	//     design: the data is already in place, and a failed/missing read is
+	//     covered by the journal scan in Run on the next resume.
+	m.enqueueIndexes(ctx, u)
 	return nil
+}
+
+// enqueueIndexes reads the source table's index definitions and enqueues a
+// background build over the destination's final name (FR-17). Failures are
+// non-fatal by design: the unit's data is already in place, and the journal
+// scan in Run (requeueIndexes) re-enqueues the build on the next resume.
+func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
+	defs, err := m.src.Indexes(ctx, u.Schema, u.Table)
+	if err != nil {
+		return
+	}
+	if len(defs) == 0 {
+		return
+	}
+	m.idxMu.Lock()
+	m.idxSeen[uint32(u.UnitID)] = true
+	m.idxMu.Unlock()
+	m.idxPool.Enqueue(index.Job{
+		UnitID:    uint32(u.UnitID),
+		Dst:       m.dst,
+		Schema:    u.DstSchema,
+		Table:     u.DstName,
+		SrcSchema: u.Schema,
+		SrcTable:  u.Table,
+		Defs:      defs,
+		Priority:  u.Bytes, // --index-priority=size: larger tables first
+	})
+}
+
+// requeueIndexes re-enqueues the index build for every unit the journal holds
+// in the final ("swapped") state but that this run has not yet enqueued — e.g.
+// a previous run killed after the swap and before the pool drained. The
+// idempotent createOneIndex (existing index -> REINDEX by name) makes the
+// re-enqueue duplicate-safe (FR-17 acceptance: clean resume, no duplicates).
+func (m *Manager) requeueIndexes(ctx context.Context) {
+	for _, u := range m.journal.Units() {
+		if u.State != StateSwapped {
+			continue
+		}
+		m.idxMu.Lock()
+		_, seen := m.idxSeen[uint32(u.UnitID)]
+		if !seen {
+			m.idxSeen[uint32(u.UnitID)] = true
+		}
+		m.idxMu.Unlock()
+		if seen {
+			continue
+		}
+		defs, err := m.src.Indexes(ctx, u.Schema, u.Table)
+		if err != nil || len(defs) == 0 {
+			continue
+		}
+		m.idxPool.Enqueue(index.Job{
+			UnitID:    uint32(u.UnitID),
+			Dst:       m.dst,
+			Schema:    u.DstSchema,
+			Table:     u.DstName,
+			SrcSchema: u.Schema,
+			SrcTable:  u.Table,
+			Defs:      defs,
+			Priority:  u.Bytes,
+		})
+	}
 }
 
 // framedPipe builds a framed, compressed transport over a net.Pipe (FR-01).

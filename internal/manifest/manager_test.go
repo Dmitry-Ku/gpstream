@@ -268,3 +268,136 @@ func TestManagerParallelConcurrentStats(t *testing.T) {
 		t.Errorf("journal has %d units, want 6", len(j.Units()))
 	}
 }
+
+// indexRows is the canned pg_index payload the source fake serves for
+// src.Indexes (F-17). The definition embeds the SOURCE table name, as
+// pg_get_indexdef does.
+func indexRows() [][]any {
+	return [][]any{{"orders_id_idx", false, false, "CREATE INDEX orders_id_idx ON public.orders (id)"}}
+}
+
+// TestManagerRunBuildsIndexesAfterSwap verifies the F-17 data path: the index
+// build is NOT issued during the copy (no pre-swap REINDEX on the index-less
+// staging) and IS issued on the destination's final name after the swap, by
+// the background pool.
+func TestManagerRunBuildsIndexesAfterSwap(t *testing.T) {
+	cfg := config.Default()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", indexRows())
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	u := j.Units()[0]
+	if u.State != StateSwapped {
+		t.Fatalf("state = %s, want %s", u.State, StateSwapped)
+	}
+	if m.idxPool.Done() != 1 || m.idxPool.Err() != nil {
+		t.Fatalf("index pool done=%d err=%v, want 1/nil", m.idxPool.Done(), m.idxPool.Err())
+	}
+	found := false
+	for _, sql := range dst.Queried() {
+		if strings.Contains(sql, "CREATE INDEX orders_id_idx") && strings.Contains(sql, "public.orders") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("index build not issued on the destination final name: %v", dst.Queried())
+	}
+}
+
+// TestManagerRunIndexesHonourRename rewrites the source name in the index
+// definition to the destination name (FR-11 + F-17).
+func TestManagerRunIndexesHonourRename(t *testing.T) {
+	cfg := config.Default()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", indexRows()) // definition still says public.orders
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	if err := m.Run(context.Background(), renamedPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	found := false
+	for _, sql := range dst.Queried() {
+		if strings.Contains(sql, "CREATE INDEX orders_id_idx") && strings.Contains(sql, `s_new.orders_v2`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("index definition not rewritten to the destination name: %v", dst.Queried())
+	}
+}
+
+// TestManagerRunNoIndexesSkipsPool drops the build entirely with --no-indexes
+// (FR-17): the pool is empty and no index SQL reaches the destination.
+func TestManagerRunNoIndexesSkipsPool(t *testing.T) {
+	cfg := config.Default()
+	cfg.NoIndexes = true
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", indexRows())
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, sql := range dst.Queried() {
+		if strings.Contains(sql, "CREATE INDEX") {
+			t.Fatalf("no index SQL expected with NoIndexes, got: %s", sql)
+		}
+	}
+	if m.idxPool.Done() != 0 {
+		t.Fatalf("pool done = %d with NoIndexes, want 0", m.idxPool.Done())
+	}
+}
+
+// TestManagerResumeRequeuesSwappedUnitIndexes covers the F-17 acceptance for
+// a run killed after the swap and before the pool drained: the journal holds
+// the unit in the final ("swapped") state, and a fresh run re-enqueues its
+// index build (createOneIndex is idempotent, so no duplicates).
+func TestManagerResumeRequeuesSwappedUnitIndexes(t *testing.T) {
+	cfg := config.Default()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", indexRows())
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	// Simulate the previous (killed) run: the unit reached the final name.
+	if _, err := j.CreateUnit(&Unit{
+		JobID:     "job-resume",
+		UnitID:    1,
+		DB:        "db",
+		Schema:    "public",
+		Table:     "orders",
+		DstSchema: "public",
+		DstName:   "orders",
+		Kind:      "table",
+		Bytes:     100,
+	}, StateSwapped); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+	m := NewManager(&cfg, src, dst, j)
+
+	// An empty plan: nothing to copy, but the journal scan must still rebuild
+	// the missing indexes.
+	if err := m.Run(context.Background(), &plan.Plan{Hash: "job-resume"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if m.idxPool.Done() != 1 || m.idxPool.Err() != nil {
+		t.Fatalf("index pool done=%d err=%v, want 1/nil", m.idxPool.Done(), m.idxPool.Err())
+	}
+	found := false
+	for _, sql := range dst.Queried() {
+		if strings.Contains(sql, "CREATE INDEX orders_id_idx") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("resume did not rebuild the swapped unit's indexes: %v", dst.Queried())
+	}
+}
