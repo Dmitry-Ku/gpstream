@@ -101,6 +101,10 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		comp:    compress.New(mode, level),
 		dec:     compress.NewDec(mode),
 	}
+	// FR-17/FR-04: expose the background index pool's progress as metrics.
+	m.idxPool.SetOnProgress(func(queueDepth, done int) {
+		m.monitor.SetIndexProgress(queueDepth, done)
+	})
 	// FR-14: when a rate-limit is set, build the adaptive limiter over the host
 	// metrics provider and the pacer that throttles the data path. A rate change
 	// is observable as a metric (FR-04) via the diagnostic callback.

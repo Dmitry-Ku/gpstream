@@ -96,6 +96,10 @@ type Pool struct {
 	firstErr error
 	doneJobs int
 	done     chan struct{}
+	// onProgress, if set, is invoked (outside the pool lock) after every job
+	// finishes with the current queue depth and finished-job count. The
+	// manager wires this to monitor.Metrics (FR-04/FR-17).
+	onProgress func(queueDepth, done int)
 }
 
 // NewPool creates a background index pool with the given worker count
@@ -177,13 +181,19 @@ func (p *Pool) Run(ctx context.Context) {
 				if !ok {
 					return
 				}
+
 				err := j.Dst.CreateIndexes(ctx, j.Schema, j.Table, j.SrcSchema, j.SrcTable, j.Defs)
 				p.mu.Lock()
 				p.doneJobs++
 				if err != nil && p.firstErr == nil {
 					p.firstErr = fmt.Errorf("index pool: unit %d: %w", j.UnitID, err)
 				}
+				depth, done := len(p.queue), p.doneJobs
+				cb := p.onProgress
 				p.mu.Unlock()
+				if cb != nil {
+					cb(depth, done)
+				}
 			}
 		}()
 	}
@@ -192,6 +202,14 @@ func (p *Pool) Run(ctx context.Context) {
 		close(p.done)
 	}()
 	<-p.done
+}
+
+// SetOnProgress installs the progress callback (see the onProgress field).
+// It must be called before Run; workers invoke it after each job.
+func (p *Pool) SetOnProgress(f func(queueDepth, done int)) {
+	p.mu.Lock()
+	p.onProgress = f
+	p.mu.Unlock()
 }
 
 // Len reports the number of pending jobs (queue depth, for status/metrics).

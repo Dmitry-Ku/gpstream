@@ -26,6 +26,8 @@ type Metrics struct {
 	RateLimit     float64 // current Gbps (from the limiter)
 	CompressLevel int     // current zstd level (degrades on CPU saturation)
 	CompressMode  string  // none / zlib / zstd
+	IndexQueue    int     // pending background index builds (FR-17/FR-04)
+	IndexDone     int     // finished background index builds (FR-17/FR-04)
 	compressHits  map[string]uint64
 	rateHistory   []sample // for throughput window
 }
@@ -90,6 +92,16 @@ func (m *Metrics) SetCompression(mode string, level int) {
 	m.compressHits[key]++
 }
 
+// SetIndexProgress records the background index pool's queue depth and
+// finished-job count (FR-17/FR-04). It is invoked by the pool after every
+// job completes.
+func (m *Metrics) SetIndexProgress(queueDepth, done int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IndexQueue = queueDepth
+	m.IndexDone = done
+}
+
 // Throughput returns the recent throughput in bytes/sec (FR-04).
 func (m *Metrics) Throughput() float64 {
 	m.mu.Lock()
@@ -134,6 +146,8 @@ func (m *Metrics) Prometheus() string {
 		rate:         m.RateLimit,
 		compressMode: m.CompressMode,
 		compressLv:   m.CompressLevel,
+		indexQueue:   m.IndexQueue,
+		indexDone:    m.IndexDone,
 	}
 	m.mu.Unlock()
 	return snap.render(m.Throughput())
@@ -148,6 +162,8 @@ type snapshot struct {
 	rate         float64
 	compressMode string
 	compressLv   int
+	indexQueue   int
+	indexDone    int
 }
 
 func (s snapshot) render(throughput float64) string {
@@ -183,6 +199,14 @@ func (s snapshot) render(throughput float64) string {
 	out = append(out, "# HELP gpstream_compression_mode Current compression mode (FR-12).")
 	out = append(out, "# TYPE gpstream_compression_mode gauge")
 	out = append(out, fmt.Sprintf("gpstream_compression_mode{mode=%q} 1", s.compressMode))
+
+	out = append(out, "# HELP gpstream_index_queue Background index builds pending (FR-17).")
+	out = append(out, "# TYPE gpstream_index_queue gauge")
+	out = append(out, fmt.Sprintf("gpstream_index_queue %d", s.indexQueue))
+
+	out = append(out, "# HELP gpstream_index_done_total Background index builds finished (FR-17).")
+	out = append(out, "# TYPE gpstream_index_done_total counter")
+	out = append(out, fmt.Sprintf("gpstream_index_done_total %d", s.indexDone))
 
 	return joinLines(out)
 }

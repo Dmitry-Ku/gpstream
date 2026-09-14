@@ -75,3 +75,20 @@ func TestLatency(t *testing.T) {
 		t.Errorf("latency = %v, want >= 5ms", m.Latency())
 	}
 }
+
+func TestIndexProgressMetrics(t *testing.T) {
+	m := New()
+	m.SetIndexProgress(3, 5)
+	out := m.Prometheus()
+	if !strings.Contains(out, "gpstream_index_queue 3") {
+		t.Fatalf("index queue gauge missing or wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "gpstream_index_done_total 5") {
+		t.Fatalf("index done counter missing or wrong:\n%s", out)
+	}
+	m.SetIndexProgress(0, 7)
+	out = m.Prometheus()
+	if !strings.Contains(out, "gpstream_index_queue 0") || !strings.Contains(out, "gpstream_index_done_total 7") {
+		t.Fatalf("index metrics not updated:\n%s", out)
+	}
+}
