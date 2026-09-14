@@ -120,7 +120,7 @@ func startCluster(db string, port uint32) (*embeddedpostgres.EmbeddedPostgres, s
 	if err := srv.Start(); err != nil {
 		return nil, "", fmt.Errorf("start %s: %w", db, err)
 	}
-	url := cfg.GetConnectionURL()
+	url := cfg.GetConnectionURL() + "?sslmode=disable" // local test cluster: no TLS (FR-13 default verify-full would not apply)
 	// Wait until it accepts connections.
 	for i := 0; i < 40; i++ {
 		c, err := pgx.Connect(context.Background(), url)

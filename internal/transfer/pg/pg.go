@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"crypto/tls"
@@ -54,10 +55,31 @@ type Conn struct {
 	c *pgx.Conn
 }
 
+// ensureVerifyFull enforces FR-13: when the user's DSN does not specify
+// sslmode explicitly, the connection is made with sslmode=verify-full.
+// An explicit sslmode (any value) is respected as-is.
+func ensureVerifyFull(connStr string) string {
+	if strings.Contains(connStr, "sslmode=") {
+		return connStr
+	}
+	if strings.HasPrefix(connStr, "postgres://") || strings.HasPrefix(connStr, "postgresql://") {
+		if strings.Contains(connStr, "?") {
+			return connStr + "&sslmode=verify-full"
+		}
+		return connStr + "?sslmode=verify-full"
+	}
+	// Keyword/value form: "host=... port=..."
+	if connStr != "" && !strings.HasSuffix(connStr, " ") {
+		connStr += " "
+	}
+	return connStr + "sslmode=verify-full"
+}
+
 // NewConn opens a connection from a connection string, honouring the TLS
 // flags from FR-13. The secret material (cert/key/ca paths) is resolved here,
 // never passed via argv.
 func NewConn(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string) (*Conn, error) {
+	connStr = ensureVerifyFull(connStr)
 	cfg, err := pgx.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse conn: %w", err)

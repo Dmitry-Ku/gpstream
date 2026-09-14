@@ -75,3 +75,28 @@ func TestFormatConn(t *testing.T) {
 		t.Fatal("expected non-empty")
 	}
 }
+
+
+// FR-13: an unspecified sslmode must default to verify-full; an explicit
+// sslmode is respected as-is.
+func TestEnsureVerifyFull(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		want  string
+	}{
+		{"url no query", "postgresql://u:***@h:5432/db", "postgresql://u:***@h:5432/db?sslmode=verify-full"},
+		{"url with query", "postgresql://u:***@h:5432/db?sslrootcert=/x", "postgresql://u:***@h:5432/db?sslrootcert=/x&sslmode=verify-full"},
+		{"url explicit respected", "postgresql://u:***@h:5432/db?sslmode=require", "postgresql://u:***@h:5432/db?sslmode=require"},
+		{"url explicit disable respected", "postgresql://u:***@h:5432/db?sslmode=disable", "postgresql://u:***@h:5432/db?sslmode=disable"},
+		{"kv form", "host=h port=5432 user=u password=*** dbname=db", "host=h port=5432 user=u password=*** dbname=db sslmode=verify-full"},
+		{"kv explicit respected", "host=h sslmode=require", "host=h sslmode=require"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ensureVerifyFull(tc.in); got != tc.want {
+				t.Errorf("ensureVerifyFull(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
