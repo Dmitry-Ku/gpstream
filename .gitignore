@@ -3,3 +3,10 @@ bin/
 coverage.out
 /gpstream
 .env
+
+# PoC build artifacts (568MB): local only, rebuild via poc/build-pg.sh
+poc/pg-src/
+poc/pg-dst/
+poc/postgresql-9.4.26/
+poc/pg9426.tar
+poc/pg9426.tar.bz2
