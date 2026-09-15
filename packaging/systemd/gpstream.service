@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Worker processes are children; a worker death does not kill the job (FR-06).
-ExecStart=/usr/local/bin/gpstream run --config /etc/gpstream/gpstream.toml
+ExecStart=/usr/bin/gpstream run --config /etc/gpstream/gpstream.toml
 Restart=on-failure
 RestartSec=3
 # Internal watchdog + systemd restart together provide resilience (FR-06).
