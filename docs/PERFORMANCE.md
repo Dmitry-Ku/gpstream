@@ -130,7 +130,7 @@ the many **host-pair** connections (source-host → destination-host).
 
 **Status (v0.1):** all data flows **through the coordinator hosts** of
 each cluster (source coordinator → dest coordinator); the planner reports
-the resulting host pairs on `copy`. Direct **segment→segment** routing
+the resulting host pairs in the `run` plan output. Direct **segment→segment** routing
 (bypassing the coordinators) is **designed but not yet implemented** —
 see `DESIGN-SNAPSHOT-CHUNK-2026-09-15.md` §5 (hash-aware routing, the
 `direct_1to1`/`router_*` modes) and §6 (planned `internal/route`). Until
