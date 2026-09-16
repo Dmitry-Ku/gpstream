@@ -126,10 +126,15 @@ to live workers (FR-06).
 
 `--data-port-range a-b` sets the **range of data ports** the stream uses,
 in the gpcopy option model. Combined with `--workers-per-pair`, it bounds
-the many **host-pair** connections (source-host → destination-host) so
-segment→segment traffic can be routed **directly** (with a fallback through
-the coordinator where direct segment access is policy-blocked). The
-planner reports the resulting host pairs (e.g. `pairs: ...`) on `copy`.
+the many **host-pair** connections (source-host → destination-host).
+
+**Status (v0.1):** all data flows **through the coordinator hosts** of
+each cluster (source coordinator → dest coordinator); the planner reports
+the resulting host pairs on `copy`. Direct **segment→segment** routing
+(bypassing the coordinators) is **designed but not yet implemented** —
+see `DESIGN-SNAPSHOT-CHUNK-2026-09-15.md` §5 (hash-aware routing, the
+`direct_1to1`/`router_*` modes) and §6 (planned `internal/route`). Until
+it lands, do not treat segment-direct as available.
 
 ## Compression
 
@@ -182,7 +187,7 @@ clusters; **do not cite the perf suite as evidence for the target.**
 | Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` + `--adaptive-rate-limit` |
 | Push a fast link, let it adapt         | `--rate-limit` high, let the limiter auto-degrade |
 | Many small tables / more concurrency   | `--workers-per-pair N` up |
-| Direct segment→segment routing        | `--data-port-range a-b` + `--workers-per-pair` |
+| Direct segment→segment routing        | *planned* — DESIGN §5/§6; v0.1: coordinator path only |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
 | Protect integrity during the push     | `--verify full` for small/critical, `sample` default |
 
