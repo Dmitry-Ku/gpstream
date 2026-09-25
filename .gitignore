@@ -13,3 +13,10 @@ poc/pg9426.tar.bz2
 
 # артефакты сборки пакетов (.deb/.rpm)
 /dist/
+
+# build artifacts
+/e2e
+/epoint
+/eptest
+/pgboot
+/pg94probe

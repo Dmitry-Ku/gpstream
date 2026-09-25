@@ -8,27 +8,20 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gpstream/gpstream/internal/pgtest"
 )
 
 func main() {
-	cfg := embeddedpostgres.DefaultConfig().
-		Version(embeddedpostgres.V16).
-		Username("gp").
-		Password("secret").
-		Database("gptest").
-		Port(5457).
-		DataPath("/tmp/pgdata_eptest2")
-	os.RemoveAll("/tmp/pgdata_eptest2")
-	srv := embeddedpostgres.NewDatabase(cfg)
-	if err := srv.Start(); err != nil {
+	cl, err := pgtest.Start(5457, "gptest")
+	if err != nil {
 		fmt.Println("start err:", err)
 		os.Exit(1)
 	}
-	defer srv.Stop()
+	defer cl.Stop()
 
-	c, err := pgx.Connect(context.Background(), cfg.GetConnectionURL())
+	c, err := pgx.Connect(context.Background(), cl.URL())
 	if err != nil {
 		fmt.Println("connect:", err)
 		os.Exit(1)

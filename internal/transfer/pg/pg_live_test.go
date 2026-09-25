@@ -4,12 +4,10 @@ package pg
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/fergusstrange/embedded-postgres"
+	"github.com/gpstream/gpstream/internal/pgtest"
 )
 
 // startPGLive starts a real (embedded) PostgreSQL server and returns a pgx
@@ -18,26 +16,14 @@ import (
 // fake-backed tests cannot reach.
 func startPGLive(t *testing.T, port uint32) *Conn {
 	t.Helper()
-	dataDir := "/tmp/pg_live_" + t.Name()
-	if err := os.RemoveAll(dataDir); err != nil {
-		t.Fatalf("rm data dir: %v", err)
-	}
-	cfg := embeddedpostgres.DefaultConfig().
-		Version(embeddedpostgres.V16).
-		Username("gp").
-		Password("secret").
-		Database("gp_test").
-		Port(port).
-		DataPath(dataDir).
-		StartTimeout(60 * time.Second)
-	srv := embeddedpostgres.NewDatabase(cfg)
-	if err := srv.Start(); err != nil {
+	cl, err := pgtest.Start(port, "gp_test")
+	if err != nil {
 		t.Fatalf("start %s: %v", t.Name(), err)
 	}
-	t.Cleanup(func() { _ = srv.Stop() })
+	t.Cleanup(func() { cl.Stop() })
 
 	ctx := context.Background()
-	c, err := NewConn(ctx, cfg.GetConnectionURL(), "", "", "", "")
+	c, err := NewConn(ctx, cl.URL(), "", "", "", "")
 	if err != nil {
 		t.Fatalf("connect %s: %v", t.Name(), err)
 	}

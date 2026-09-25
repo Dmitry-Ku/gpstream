@@ -14,8 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gpstream/gpstream/internal/pgtest"
 )
 
 func main() {
@@ -104,33 +105,12 @@ INSERT INTO public.orders VALUES (1,'alice',10.50),(2,'bob',20.25),(3,'carol',30
 	}
 }
 
-func startCluster(db string, port uint32) (*embeddedpostgres.EmbeddedPostgres, string, error) {
-	dataDir := "/tmp/pgdata_" + db
-	_ = os.RemoveAll(dataDir)
-	cfg := embeddedpostgres.DefaultConfig().
-		Version(embeddedpostgres.V16).
-		Username("gp").
-		Password("secret").
-		Database(db).
-		Port(port).
-		DataPath(dataDir).
-		StartTimeout(60000000000).
-		Logger(os.Stderr)
-	srv := embeddedpostgres.NewDatabase(cfg)
-	if err := srv.Start(); err != nil {
+func startCluster(db string, port uint32) (*pgtest.Cluster, string, error) {
+	cl, err := pgtest.Start(port, db)
+	if err != nil {
 		return nil, "", fmt.Errorf("start %s: %w", db, err)
 	}
-	url := cfg.GetConnectionURL() + "?sslmode=disable" // local test cluster: no TLS (FR-13 default verify-full would not apply)
-	// Wait until it accepts connections.
-	for i := 0; i < 40; i++ {
-		c, err := pgx.Connect(context.Background(), url)
-		if err == nil {
-			c.Close(context.Background())
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return srv, url, nil
+	return cl, cl.URL(), nil
 }
 
 func seedCluster(url, seed string) (string, error) {
