@@ -68,6 +68,22 @@ func PairMap(S, D int32) map[int32][]int32 {
 	return pairMapBruteForce(S, D)
 }
 
+// PairCount — число достижимых пар (s,d) для (S,D): S==D -> S; S,D>=1 ->
+// len(PairMap); иначе 0.
+func PairCount(S, D int32) int {
+	if S < 1 || D < 1 {
+		return 0
+	}
+	if S == D {
+		return int(S)
+	}
+	n := 0
+	for _, ds := range PairMap(S, D) {
+		n += len(ds)
+	}
+	return n
+}
+
 var (
 	pairMapMu sync.Mutex
 	pairMapM  = map[[2]int32]map[int32][]int32{}

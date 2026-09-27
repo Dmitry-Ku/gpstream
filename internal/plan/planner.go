@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -39,6 +40,13 @@ type Table struct {
 	RowEst      int64    // estimated rows
 	Indexes     int      // number of indexes
 	HasConflict bool     // exists in dest and not overwritten (FR-10)
+	// RouteMode (M4/T4b): how this table's data lands on the destination —
+	// route.Direct1to1 (S==D, keys equal, same major; 0 CPU on hash),
+	// route.RouterFull (per-row hash by K_dest), or "" when not resolvable
+	// (plain-PG / catalog unavailable — conservative, no routing decision).
+	RouteMode route.Mode `json:"route_mode,omitempty"`
+	// RoutePairs: number of eligible (src,dst) content pairs for this unit.
+	RoutePairs int `json:"route_pairs,omitempty"`
 }
 
 // Plan is the deterministic transfer plan (FR-10).
@@ -51,6 +59,7 @@ type Plan struct {
 	Redistrib   Redistribution  `json:"redistribution"`  // FR-15 accounting
 	Collations  []CollationDiff `json:"collation_diffs"` // FR-10/FR-16
 	Conflicts   []Conflict      `json:"conflicts"`
+	Route       RouteSummary    `json:"route"` // M4/T4b: route-mode summary (per-unit in Units)
 	Hash        string          `json:"hash"`
 	// EstimatedVolume/EstimatedETA carry the volume/time prediction (FR-10).
 	EstimatedVolume int64 `json:"estimated_volume"`
@@ -133,6 +142,12 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// in distribution keys means the destination lays the data out differently
 	// and the data would be redistributed on the destination.
 	p.Redistrib = detectRedistribution(ctx, cfg, src, dst, tabs)
+
+	// 4c. Route-mode (M4/T4b): per-unit direct_1to1 vs router_full from the
+	// clusters' distribution policies + segment counts. Degrades to "" (not
+	// resolvable) on plain-PostgreSQL / unavailable catalogs — conservative,
+	// never fails the plan.
+	p.Route = resolveRoutes(ctx, src, dst, tabs)
 
 	// 5. Aggregate units + volume.
 	for _, t := range tabs {

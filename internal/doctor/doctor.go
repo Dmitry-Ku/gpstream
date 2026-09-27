@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/topology"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
@@ -117,6 +118,7 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkVersion("dest", dst)
 	r.checkSegments("source", src)
 	r.checkSegments("dest", dst)
+	r.checkRoute(ctx, src, dst)
 	r.checkOnSegment("source", src, opts.SegmentBinary)
 	r.checkDisk("dest", dst)
 	r.checkPermissions("source", src)
@@ -124,6 +126,45 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkCollation(src, dst)
 	r.checkTLS(opts.MinTLS)
 	return r
+}
+
+// checkRoute is an INFORMATIONAL route-mode summary (M4/T4b) printed before
+// start: it reports the source/dest segment counts, whether a direct_1to1
+// fast path is even possible (only when S==D), and how many eligible (s,d)
+// content pairs the destination layout admits for this (S,D). It never FAILs:
+// routing is a planning concern (the plan resolves the per-table mode), and a
+// plain-PostgreSQL endpoint simply has no route to report (WARN).
+func (r *Report) checkRoute(ctx context.Context, src, dst pg.Querier) {
+	srcTop, _ := topology.Read(ctx, src)
+	dstTop, _ := topology.Read(ctx, dst)
+	srcSeg := int32(0)
+	dstSeg := int32(0)
+	if srcTop != nil && srcTop.IsGreenplum() {
+		srcSeg = int32(srcTop.SegmentCount())
+	}
+	if dstTop != nil && dstTop.IsGreenplum() {
+		dstSeg = int32(dstTop.SegmentCount())
+	}
+	if srcSeg == 0 || dstSeg == 0 {
+		r.Add(Check{Name: "route", Side: "src->dst", Sev: Warn,
+			Msg: "route-mode: not resolvable (plain-PostgreSQL or no segments) — coordinator path only",
+			Rec: "expected on plain PostgreSQL; on a GP6 pair the plan reports direct_1to1 / router_full per table"})
+		return
+	}
+	pairs := route.PairCount(srcSeg, dstSeg)
+	directOK := srcSeg == dstSeg
+	r.Add(Check{Name: "route", Side: "src->dst", Sev: Pass,
+		Msg: fmt.Sprintf("route-mode: src=%d dst=%d segments, %d eligible (s,d) pair(s)%s",
+			srcSeg, dstSeg, pairs,
+			boolStr(directOK, "direct_1to1 possible", "direct_1to1 not possible (S!=D) — router_full"))})
+}
+
+// boolStr returns yes when cond, else no.
+func boolStr(cond bool, yes, no string) string {
+	if cond {
+		return " — " + yes
+	}
+	return " — " + no
 }
 
 // checkOnSegment probes the segment-direct capability (DESIGN §1.3:
@@ -143,7 +184,7 @@ func (r *Report) checkOnSegment(side string, q pg.Querier, binPath string) {
 	if pg.RowStr(context.Background(), q, "SELECT to_regclass('gp_segment_configuration')::text") == "" {
 		r.Add(Check{Name: "on_segment", Side: side, Sev: Warn,
 			Msg: "segment-direct capability: not a Greenplum cluster (coordinator path only)",
-			Rec:  "expected on plain PostgreSQL; on GP6 install gpstream-segreceiver on the segment hosts and set --seg-binary"})
+			Rec: "expected on plain PostgreSQL; on GP6 install gpstream-segreceiver on the segment hosts and set --seg-binary"})
 		return
 	}
 	p := segstream.CheckOnSegment(context.Background(), q, binPath)

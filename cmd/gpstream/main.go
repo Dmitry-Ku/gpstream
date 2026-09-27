@@ -618,6 +618,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 		fmt.Printf("redistribution: %v (skew %.0f%%, threshold %.0f%%) — %s (FR-15/CR-5)\n",
 			p.Redistrib.NeedsRedistrib, p.Redistrib.Skew*100, p.Redistrib.Threshold*100, p.Redistrib.Reason)
 	}
+	fmt.Printf("route:         %s (T4b)\n", routeSummaryLine(p))
 	if len(p.Collations) > 0 {
 		fmt.Printf("collation:     %d difference(s) (FR-10/FR-16)\n", len(p.Collations))
 		for _, cd := range p.Collations {
@@ -657,6 +658,35 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	} else if p.Partial {
 		fmt.Printf("plan hash:     — (partial plan; no deterministic hash)\n")
 	}
+}
+
+// routeSummaryLine renders the T4b route-mode summary for the dry-run report:
+// the (S,D) segment counts, how many (s,d) pairs the layout admits, and the
+// per-unit mode mix (direct_1to1 vs router_full). When the route is not
+// resolvable (plain PostgreSQL) it degrades to a clear note instead of a number.
+func routeSummaryLine(p *plan.Plan) string {
+	if !p.Route.Resolved {
+		return "not resolvable (plain-PostgreSQL or no segments) — coordinator path only"
+	}
+	direct, router := 0, 0
+	for _, u := range p.Units {
+		switch u.RouteMode {
+		case "direct_1to1":
+			direct++
+		case "router_full":
+			router++
+		}
+	}
+	ver := "same-major"
+	if !p.Route.GPVersionEqual {
+		ver = "mixed-major"
+	}
+	d1 := "router_full (S!=D)"
+	if p.Route.PossibleDirect1to1 {
+		d1 = "direct_1to1 possible"
+	}
+	return fmt.Sprintf("src=%d dst=%d segs, %s, %d eligible pair(s), %s; units: %d direct_1to1 / %d router_full",
+		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router)
 }
 
 // rateLimitNote renders the rate-limit expectation for the dry-run (v2 §26).
