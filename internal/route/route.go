@@ -6,9 +6,12 @@
 //
 // Алгоритм (non-legacy, дефолт свежего кластера):
 //  1. hash = 0
-//  2. на каждый атрибут ключа в порядке: hash = rotr1(hash);
+//  2. на каждый атрибут ключа в порядке: hash = rotl1(hash);
 //     hash ^= HashPGAny(datumBytes)  (NULL — без XOR)
 //  3. segment = JumpConsistentHash(hash, numSegments)
+//
+// Направление rotl1 критично только для multi-attr (для одного атрибута
+// rot(0)=0) — cdbhash.c:191 (open-gpdb 6.30.1), см. multi.go.
 //
 // Result = content (0..numSegments-1).
 package route
