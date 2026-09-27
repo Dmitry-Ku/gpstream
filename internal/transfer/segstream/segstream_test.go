@@ -403,3 +403,34 @@ func (f *frameBuilder) data(content int16, payload []byte) error {
 	f.seq++
 	return err
 }
+
+func TestUnitListen(t *testing.T) {
+	cases := []struct {
+		base, unit, want string
+	}{
+		{"10.0.0.11:9432", "0", "10.0.0.11:9432"},
+		{"10.0.0.11:9432", "1", "10.0.0.11:9433"},
+		{"10.0.0.11:9432", "2", "10.0.0.11:9434"},
+		{"[::1]:9432", "3", "[::1]:9435"},
+	}
+	for _, c := range cases {
+		var unit uint32
+		fmt.Sscanf(c.unit, "%d", &unit)
+		got, err := UnitListen(c.base, unit)
+		if err != nil {
+			t.Fatalf("UnitListen(%s, %s): %v", c.base, c.unit, err)
+		}
+		if got != c.want {
+			t.Errorf("UnitListen(%s, %s) = %s, want %s", c.base, c.unit, got, c.want)
+		}
+	}
+	for _, bad := range []string{"", "hostonly", "h:0", "h:99999"} {
+		if _, err := UnitListen(bad, 0); err == nil {
+			t.Errorf("UnitListen(%q): expected error, got nil", bad)
+		}
+	}
+	// Port overflow: base near 65535.
+	if _, err := UnitListen("h:65535", 1); err == nil {
+		t.Error("UnitListen(h:65535, 1): expected out-of-range error")
+	}
+}

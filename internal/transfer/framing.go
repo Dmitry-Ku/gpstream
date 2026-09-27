@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 
@@ -45,16 +46,26 @@ func (fp *FramedPipe) Read(p []byte) (int, error) { return fp.read.Read(p) }
 // Write is the source side (writes framed, compressed bytes to the pipe).
 func (fp *FramedPipe) Write(p []byte) (int, error) { return fp.write.Write(p) }
 
-// Close closes both ends of the transport (signals end-of-copy to the
-// destination, FR-01).
+// Close flushes the write side's tail (the batched frame buffer), then
+// closes both ends of the transport (signals end-of-copy to the
+// destination, FR-01). Safe to call more than once.
 func (fp *FramedPipe) Close() error {
-	err1 := fp.write.conn.Close()
+	err1 := fp.write.CloseFlush()
 	err2 := fp.read.conn.Close()
 	if err1 != nil {
 		return err1
 	}
 	return err2
 }
+
+// frameBufLimit is the source-side accumulator size before a frame is
+// encoded and written. One frame per ~256 KiB keeps per-frame overhead
+// (compress init, header, CRC) at ~0.1% and gives the in-memory net.Pipe
+// back-pressure granularity that the coordinator path already relies on.
+// The segment-direct path feeds the mux in per-field chunks (6 B..4 KiB),
+// so without this batching every field became a frame — ~15 MB/s on the
+// 4-vCPU vm1 controller (E2 e2e, 27.09).
+const frameBufLimit = 256 * 1024
 
 // FramedWriter compresses and frames the source-side bytes.
 type FramedWriter struct {
@@ -63,21 +74,56 @@ type FramedWriter struct {
 	unitID uint32
 	comp   *compress.Compressor
 	seq    uint64
+	buf    []byte
+	closed bool
 }
 
-// Write compresses p (FR-12) and writes it as a CRC-framed frame (§4.2).
+// Write buffers p and flushes a compressed, CRC-framed frame once the
+// accumulator reaches frameBufLimit (or on Flush/Close). It returns len(p)
+// once the bytes are accepted into the transport (io.Writer contract).
 func (fw *FramedWriter) Write(p []byte) (int, error) {
+	if fw.closed {
+		return 0, fmt.Errorf("framed writer: write after close")
+	}
 	if len(p) == 0 {
 		return 0, nil
 	}
-	// Compress on the source (FR-12); the destination decompresses.
-	data := fw.comp.Encode(p)
-	f := &Frame{JobID: fw.jobID, UnitID: fw.unitID, Seq: fw.seq, Data: data}
-	fw.seq++
-	if err := WriteFrame(fw.conn, f); err != nil {
-		return 0, err
+	fw.buf = append(fw.buf, p...)
+	if len(fw.buf) >= frameBufLimit {
+		if err := fw.Flush(); err != nil {
+			return 0, err
+		}
 	}
 	return len(p), nil
+}
+
+// Flush encodes and frames any buffered bytes. It is idempotent when the
+// buffer is empty and is called by Close so the tail is never lost.
+func (fw *FramedWriter) Flush() error {
+	if len(fw.buf) == 0 {
+		return nil
+	}
+	// Compress on the source (FR-12); the destination decompresses.
+	data := fw.comp.Encode(fw.buf)
+	f := &Frame{JobID: fw.jobID, UnitID: fw.unitID, Seq: fw.seq, Data: data}
+	fw.seq++
+	err := WriteFrame(fw.conn, f)
+	fw.buf = fw.buf[:0]
+	return err
+}
+
+// CloseFlush flushes the tail and closes the write side of the transport
+// (end-of-copy for the destination, FR-01).
+func (fw *FramedWriter) CloseFlush() error {
+	if fw.closed {
+		return nil
+	}
+	fw.closed = true
+	err := fw.Flush()
+	if cerr := fw.conn.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // FramedReader frames-verifies and decompresses the destination-side bytes.

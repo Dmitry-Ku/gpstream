@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -171,3 +172,94 @@ type dummyPipe struct{}
 func (dummyPipe) Read(p []byte) (int, error)  { return 0, nil }
 func (dummyPipe) Write(p []byte) (int, error) { return len(p), nil }
 func (dummyPipe) Close() error                { return nil }
+
+// TestFramedPipeBatchedFlush verifies the source-side frame batching:
+// small writes are held in the accumulator (nothing reaches the reader),
+// a write crossing frameBufLimit flushes a frame, and Close flushes the
+// tail so the destination always sees the complete byte stream (E2 e2e,
+// 27.09: the segment-direct mux feeds per-field chunks).
+func TestFramedPipeBatchedFlush(t *testing.T) {
+	comp := compress.New(compress.ModeNone, 3)
+	dec := compress.NewDec(compress.ModeNone)
+	fp := framedPipeNet(t, comp, dec)
+
+	small := make([]byte, 1024)
+	for i := range small {
+		small[i] = byte(i % 251)
+	}
+	big := make([]byte, frameBufLimit-512)
+	for i := range big {
+		big[i] = byte(i % 199)
+	}
+
+	// The reader runs once and collects everything until EOF; phase 1
+	// (small write only) must produce no data at all.
+	type done struct {
+		out []byte
+		err error
+	}
+	ch := make(chan done, 1)
+	go func() {
+		var out []byte
+		b := make([]byte, 4096)
+		for {
+			n, err := fp.Read(b)
+			if n > 0 {
+				out = append(out, b[:n]...)
+			}
+			if err != nil {
+				ch <- done{out, err}
+				return
+			}
+		}
+	}()
+
+	if _, err := fp.Write(small); err != nil {
+		t.Fatalf("write small: %v", err)
+	}
+	select {
+	case d := <-ch:
+		if len(d.out) != 0 {
+			t.Fatalf("small write leaked through the buffer: %d bytes on the wire", len(d.out))
+		}
+		t.Fatalf("reader ended early: %v", d.err)
+	case <-time.After(300 * time.Millisecond):
+		// expected: the reader is still blocked, nothing flushed
+	}
+
+	// Crossing the limit flushes a frame without Close.
+	if _, err := fp.Write(big); err != nil {
+		t.Fatalf("write big: %v", err)
+	}
+	// Close flushes the (now empty) tail and ends the stream.
+	_ = fp.Close()
+
+	select {
+	case d := <-ch:
+		if d.err != nil && !errors.Is(d.err, io.EOF) {
+			t.Fatalf("read: %v", d.err)
+		}
+		want := make([]byte, len(small)+len(big))
+		copy(want, small)
+		copy(want[len(small):], big)
+		if !bytes.Equal(d.out, want) {
+			t.Fatalf("round-trip mismatch: got %d bytes, want %d (first-diff %d)",
+				len(d.out), len(want), firstDiff(d.out, want))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the reader (batched flush lost data?)")
+	}
+}
+
+func firstDiff(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}

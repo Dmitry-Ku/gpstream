@@ -225,6 +225,24 @@ func validListen(listen string) bool {
 	return err == nil && p > 0 && p < 65536
 }
 
+// UnitListen derives the listen address for one unit from the operator's
+// base address: the same host with port + unitID. Units copy in parallel
+// (WorkersPerPair > 1) and each runs its own controller listener, so they
+// must not share one port — a second net.Listen on the same address fails
+// immediately (E2 e2e, 27.09: units 2/3 failed their segment-direct
+// listen while unit 1 held the port).
+func UnitListen(base string, unitID uint32) (string, error) {
+	host, port, err := net.SplitHostPort(base)
+	if err != nil || host == "" {
+		return "", fmt.Errorf("segstream: bad listen address %q (want host:port)", base)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p+int(unitID) > 65535 {
+		return "", fmt.Errorf("segstream: listen port %d + unit %d out of range", p, unitID)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(p+int(unitID))), nil
+}
+
 // ProgramCommand builds the shell command the kernel executes on each
 // segment (the COPY TO PROGRAM argument). <SEGID> is the mandatory
 // placeholder (copy.c MangleCopyFileName replaces every occurrence with the

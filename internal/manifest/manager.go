@@ -663,15 +663,20 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	if n < 1 {
 		return 0, fmt.Errorf("segment-direct: no up primary segments")
 	}
-
-	l, err := net.Listen("tcp", m.cfg.SegListen)
+	// Each parallel unit runs its own controller listener, so derive a
+	// per-unit port from the operator's base address (port + unitID).
+	listen, err := segstream.UnitListen(m.cfg.SegListen, uint32(u.UnitID))
 	if err != nil {
-		return 0, fmt.Errorf("segment-direct: listen %s: %w", m.cfg.SegListen, err)
+		return 0, fmt.Errorf("segment-direct: %w", err)
+	}
+	l, err := net.Listen("tcp", listen)
+	if err != nil {
+		return 0, fmt.Errorf("segment-direct: listen %s: %w", listen, err)
 	}
 	defer l.Close()
 
 	jobID, unitID := uint32(1), uint32(u.UnitID)
-	prog, err := segstream.ProgramCommand(m.cfg.SegBinary, m.cfg.SegListen, jobID, unitID)
+	prog, err := segstream.ProgramCommand(m.cfg.SegBinary, listen, jobID, unitID)
 	if err != nil {
 		return 0, fmt.Errorf("segment-direct: %w", err)
 	}
@@ -765,13 +770,20 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	return dstRows, nil
 }
 
-// primarySegmentCount returns the number of up primary segments on the source
-// (the segreceivers the kernel will launch). It requires a Greenplum source
-// (gp_segment_configuration); on plain PostgreSQL it errors, which the caller
-// surfaces as a clear "segment-direct requires Greenplum" failure.
+// primarySegmentCount returns the number of up primary CONTENTS on the
+// source — i.e. the number of segreceivers the kernel launches with
+// ON SEGMENT (GANGTYPE_PRIMARY_WRITER, one per content; the master's
+// content=-1 row is not a segment). It requires a Greenplum source
+// (gp_segment_configuration); on plain PostgreSQL it errors, which the
+// caller surfaces as a clear "segment-direct requires Greenplum" failure.
+//
+// count(*) would include the master row (content=-1) and overcount by one
+// (E2 e2e, 27.09: n=3 on a 2-segment cluster — the receiver waited for a
+// third slice that never came).
 func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
 	v := pg.RowStr(ctx, m.srcRead(),
-		`SELECT count(*) FROM gp_segment_configuration WHERE role = 'p' AND status = 'u'`)
+		`SELECT count(DISTINCT content) FROM gp_segment_configuration
+		 WHERE role = 'p' AND status = 'u' AND content >= 0`)
 	if v == "" {
 		return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
 	}
