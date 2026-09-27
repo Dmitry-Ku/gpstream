@@ -242,6 +242,19 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--consistent-cluster":
 			cfg.ConsistentCluster = true
 
+		// Transport (T-B, DESIGN §1.3). --copy-mode selects the source data
+		// path; on_segment needs the segreceiver binary path (on the segment
+		// hosts) and the controller listen address the segreceivers dial.
+		case "--copy-mode":
+			i++
+			cfg.CopyMode = config.CopyMode(args[i])
+		case "--seg-listen":
+			i++
+			cfg.SegListen = args[i]
+		case "--seg-binary":
+			i++
+			cfg.SegBinary = args[i]
+
 		// Indexes (FR-17).
 		case "--index-workers":
 			i++
@@ -485,7 +498,7 @@ func cmdDoctor(args []string) error {
 	srcQ := diagnoseConn(ctx, cfg, "source")
 	dstQ := diagnoseConn(ctx, cfg, "dest")
 
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS})
+	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary})
 	printReport(rep)
 	if !rep.Healthy {
 		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())
@@ -1188,6 +1201,9 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --include metadata,data          object classes (empty = both)
   --overwrite, --skip-conflicts    conflict handling
   --compression zstd[:level]       compression (none|zlib|zstd)
+  --copy-mode on_segment           segment-direct fast path (Fallback B, T-B)
+  --seg-listen HOST:PORT           controller listen addr for the segreceivers
+  --seg-binary PATH                gpstream-segreceiver path on the segment hosts
   --streams N                      parallel stream workers
   --max-bw <Gbps>                  total bandwidth ceiling
   --auto-resume N                  resume attempts on failure

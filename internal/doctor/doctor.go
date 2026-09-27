@@ -9,9 +9,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/gpstream/gpstream/internal/topology"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
 // Severity of a single check result.
@@ -99,6 +101,10 @@ type Options struct {
 	TimeoutMS int
 	// MinTLSSupported is the required minimum TLS version (FR-13).
 	MinTLS string
+	// SegmentBinary is the absolute path the gpstream-segreceiver binary
+	// will have on the SOURCE segment hosts (it is a required component of
+	// the segment-direct capability; empty disables the on_segment check).
+	SegmentBinary string
 }
 
 // Run performs the diagnostic and returns a Report. It never panics on an
@@ -111,12 +117,44 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkVersion("dest", dst)
 	r.checkSegments("source", src)
 	r.checkSegments("dest", dst)
+	r.checkOnSegment("source", src, opts.SegmentBinary)
 	r.checkDisk("dest", dst)
 	r.checkPermissions("source", src)
 	r.checkPermissions("dest", dst)
 	r.checkCollation(src, dst)
 	r.checkTLS(opts.MinTLS)
 	return r
+}
+
+// checkOnSegment probes the segment-direct capability (DESIGN §1.3:
+// capability on_segment). It runs only when the source is a Greenplum
+// cluster (the segments check found gp_segment_configuration) and a
+// segreceiver binary path was supplied. The capability is informational for
+// the planner (copy_mode selection) — a missing piece downgrades the
+// capability to WARN (the job can still run on the coordinator path),
+// except a reachable cluster where the GUC is explicitly off is reported
+// with a precise fix. It never fails the whole doctor: the coordinator
+// path (C) always works.
+func (r *Report) checkOnSegment(side string, q pg.Querier, binPath string) {
+	if binPath == "" {
+		return
+	}
+	// Only meaningful on Greenplum.
+	if pg.RowStr(context.Background(), q, "SELECT to_regclass('gp_segment_configuration')::text") == "" {
+		r.Add(Check{Name: "on_segment", Side: side, Sev: Warn,
+			Msg: "segment-direct capability: not a Greenplum cluster (coordinator path only)",
+			Rec:  "expected on plain PostgreSQL; on GP6 install gpstream-segreceiver on the segment hosts and set --seg-binary"})
+		return
+	}
+	p := segstream.CheckOnSegment(context.Background(), q, binPath)
+	if p.OK() {
+		r.Add(Check{Name: "on_segment", Side: side, Sev: Pass,
+			Msg: "segment-direct capability ok: " + strings.Join(p.Summary(), "; ")})
+		return
+	}
+	r.Add(Check{Name: "on_segment", Side: side, Sev: Warn,
+		Msg: "segment-direct capability degraded: " + strings.Join(p.Summary(), "; "),
+		Rec: "the job will fall back to the coordinator path; fix the items above to enable the 2.0x segment-direct fast path"})
 }
 
 func (r *Report) checkReachability(side string, q pg.Querier) {

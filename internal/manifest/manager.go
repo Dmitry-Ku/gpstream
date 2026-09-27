@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
@@ -566,7 +568,18 @@ func (m *Manager) framedPipe(unitID uint32) *transfer.FramedPipe {
 // destination reads it into `COPY ... FROM STDIN`. It returns the number of
 // rows the destination received. The FramedPipe is both the io.Writer (source)
 // and the io.Reader (destination) over one back-pressure-respecting pipe.
+//
+// With --copy-mode on_segment (T-B) the source side is the segment-direct
+// transport instead: the kernel streams one framed slice per primary segment
+// to the controller listener, which merges them into the same pipe.
 func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe) (int64, error) {
+	if m.cfg.CopyMode == config.CopyOnSegment {
+		// The segment-direct path builds its own framed pipe (the merged slice
+		// stream); the coordinator pipe the caller pre-created is unused, so
+		// close it to avoid a leaked net.Pipe.
+		_ = fp.Close()
+		return m.copyStreamSegmentDirect(ctx, t, u, staging)
+	}
 	var (
 		dstRows int64
 		dstErr  error
@@ -624,6 +637,142 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 	}
 	// The destination is authoritative for the row count (it wrote the table).
 	return dstRows, nil
+}
+
+// copyStreamSegmentDirect is the segment-direct data path (T-B, Fallback B).
+// Instead of `COPY ... TO STDOUT` through the coordinator, the GPDB kernel
+// launches gpstream-segreceiver on every primary segment via
+// `COPY ... TO PROGRAM ... ON SEGMENT BINARY` (dispatched with
+// DF_WITH_SNAPSHOT, so every slice reads the coordinator's pinned snapshot —
+// the same consistency as the coordinator path). Each segreceiver frames its
+// local slice (Frame v2, content-tagged) and streams it over direct TCP to
+// the controller listener; the controller merges the N slices into one
+// binary-COPY stream and feeds it through the same framed/compressed pipe as
+// the coordinator path, so the destination is unchanged. The kernel waits for
+// all segreceivers to exit (DF_NEED_TWO_PHASE) before the COPY returns.
+func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string) (int64, error) {
+	n, err := m.primarySegmentCount(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("segment-direct: %w", err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("segment-direct: no up primary segments")
+	}
+
+	l, err := net.Listen("tcp", m.cfg.SegListen)
+	if err != nil {
+		return 0, fmt.Errorf("segment-direct: listen %s: %w", m.cfg.SegListen, err)
+	}
+	defer l.Close()
+
+	jobID, unitID := uint32(1), uint32(u.UnitID)
+	prog, err := segstream.ProgramCommand(m.cfg.SegBinary, m.cfg.SegListen, jobID, unitID)
+	if err != nil {
+		return 0, fmt.Errorf("segment-direct: %w", err)
+	}
+	sql := segstream.CopyOnSegmentSQL(t.Schema, t.Name, prog)
+
+	// Data plane: the merged slice stream goes through the same framed,
+	// compressed pipe as the coordinator path, so the destination is unchanged.
+	fp := m.framedPipe(uint32(u.UnitID))
+
+	var (
+		dstRows int64
+		dstErr  error
+	)
+	dstDone := make(chan struct{})
+	// Destination: read the merged binary-COPY stream into the staging table.
+	go func() {
+		defer close(dstDone)
+		defer func() {
+			if r := recover(); r != nil {
+				dstErr = fmt.Errorf("destination copy panic: %v", r)
+			}
+		}()
+		rows, err := m.dst.CopyIntoStream(ctx, u.DstSchema, staging, fp)
+		if err != nil && !isEOF(err) {
+			dstErr = err
+		}
+		dstRows = rows
+	}()
+
+	// Source: merge the N per-segment slices into one binary-COPY stream on fp.
+	mux := segstream.NewSliceMux(fp, n)
+	if err := mux.Begin(); err != nil {
+		_ = fp.Close()
+		<-dstDone
+		return 0, fmt.Errorf("segment-direct: %w", err)
+	}
+
+	type recvOut struct {
+		results []*segstream.SliceResult
+		err     error
+	}
+	recvCh := make(chan recvOut, 1)
+	go func() {
+		res, err := segstream.Receive(ctx, l, n, mux.Write)
+		recvCh <- recvOut{res, err}
+	}()
+
+	// The kernel runs the segreceiver on each primary and waits for all of
+	// them to exit before the COPY returns (DF_NEED_TWO_PHASE); this blocks
+	// until every slice stream is complete.
+	if _, err := m.srcQ.Exec(ctx, sql); err != nil {
+		_ = fp.Close()
+		<-dstDone
+		return 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
+	}
+
+	out := <-recvCh
+	if out.err != nil {
+		_ = fp.Close()
+		<-dstDone
+		return 0, fmt.Errorf("segment-direct receive: %w", out.err)
+	}
+	// Cross-check: the sum of the per-slice trailer row counts must equal the
+	// rows the destination actually wrote (a merge bug would break this).
+	var trailerRows int64
+	for _, r := range out.results {
+		if r.Err != nil {
+			_ = fp.Close()
+			<-dstDone
+			return 0, fmt.Errorf("segment-direct slice content=%d: %w", r.ContentID, r.Err)
+		}
+		trailerRows += r.Rows
+	}
+	if err := mux.End(); err != nil {
+		_ = fp.Close()
+		<-dstDone
+		return 0, fmt.Errorf("segment-direct: %w", err)
+	}
+	// Close the write side so the destination sees end-of-copy.
+	_ = fp.Close()
+	<-dstDone
+
+	if dstErr != nil {
+		return 0, fmt.Errorf("dest copy: %w", dstErr)
+	}
+	if trailerRows != dstRows {
+		return 0, fmt.Errorf("segment-direct: trailer rows %d != dest rows %d", trailerRows, dstRows)
+	}
+	return dstRows, nil
+}
+
+// primarySegmentCount returns the number of up primary segments on the source
+// (the segreceivers the kernel will launch). It requires a Greenplum source
+// (gp_segment_configuration); on plain PostgreSQL it errors, which the caller
+// surfaces as a clear "segment-direct requires Greenplum" failure.
+func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
+	v := pg.RowStr(ctx, m.srcQ,
+		`SELECT count(*) FROM gp_segment_configuration WHERE role = 'p' AND status = 'u'`)
+	if v == "" {
+		return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("bad segment count %q: %w", v, err)
+	}
+	return n, nil
 }
 
 // pacedWriter throttles the source-side writes to the limiter's current rate

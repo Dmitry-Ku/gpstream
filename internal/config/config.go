@@ -56,6 +56,21 @@ const (
 	LogError LogLevel = "error"
 )
 
+// CopyMode selects the source data-path transport (DESIGN §1.3 / T-B). The
+// operator can override the doctor-detected capability with --copy-mode.
+type CopyMode string
+
+const (
+	// CopyCoordinator is the default: COPY ... TO STDOUT through the source
+	// coordinator (always works, single network path).
+	CopyCoordinator CopyMode = "coordinator"
+	// CopyOnSegment is the segment-direct fast path (Fallback B, T-B): the
+	// kernel launches gpstream-segreceiver on every primary segment via
+	// COPY ... TO PROGRAM ... ON SEGMENT; slices stream over direct TCP to
+	// the controller (~2.0x throughput, verified on the lab).
+	CopyOnSegment CopyMode = "on_segment"
+)
+
 // Config is the fully resolved runtime configuration. It is the single source
 // of truth consumed by every component; CLI flags, YAML and env all fold into
 // it (CLI > env > file > defaults).
@@ -133,6 +148,12 @@ type Config struct {
 	// Consistency (FR-02).
 	ConsistentDB      bool // default
 	ConsistentCluster bool
+
+	// Transport (T-B, DESIGN §1.3). CopyMode selects the source data path;
+	// the on_segment fields configure the segment-direct fast path.
+	CopyMode  CopyMode // default coordinator
+	SegListen string   // controller listen address the segreceivers dial (host:port)
+	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
 
 	// v2 conflict refinement (§6.3).
 	// OverwriteOnlyConflicts refines Overwrite: only conflicting objects are
@@ -213,6 +234,17 @@ func (c Config) Validate() error {
 	case VerifyFull, VerifySample, VerifyOff:
 	default:
 		return fmt.Errorf("unknown verify mode %q", c.Verify)
+	}
+	switch c.CopyMode {
+	case "", CopyCoordinator, CopyOnSegment:
+	default:
+		return fmt.Errorf("unknown copy mode %q (want coordinator|on_segment)", c.CopyMode)
+	}
+	if c.CopyMode == CopyOnSegment && c.SegBinary == "" {
+		return fmt.Errorf("--copy-mode on_segment requires --seg-binary (gpstream-segreceiver path on the segment hosts)")
+	}
+	if c.CopyMode == CopyOnSegment && c.SegListen == "" {
+		return fmt.Errorf("--copy-mode on_segment requires --seg-listen (controller listen address the segreceivers dial, e.g. 10.0.0.5:9432)")
 	}
 	return nil
 }
