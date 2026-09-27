@@ -39,13 +39,17 @@ func StagingName(jobID string, unitID int64) string {
 }
 
 // CreateStaging creates an empty staging table in schema with the same column
-// layout as src (FR-02). It uses the column definitions read from the source
-// cluster (via source.Agent.Columns -> format_type) so the staging table is
-// created faithfully across clusters (a CREATE TABLE ... LIKE would not work
-// across clusters). It is a no-op if the staging table already exists
+// layout and — on a Greenplum source — the same distribution policy as src
+// (FR-02; F-11 metadata: «ДДЛ таблиц (типы, распределение, AO-параметры)»).
+// It uses the column definitions read from the source cluster (via
+// source.Agent.Columns -> format_type) so the staging table is created
+// faithfully across clusters (a CREATE TABLE ... LIKE would not work across
+// clusters). dist carries the source's distribution policy; a zero value (or
+// a non-Greenplum source) omits the clause and the destination applies its
+// own default. It is a no-op if the staging table already exists
 // (crash-recovery re-uses it), which is why it swallows an "already exists"
 // error.
-func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Column, stagingName string) error {
+func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Column, stagingName string, dist pg.Distribution) error {
 	sql := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(schema) + "." + quoteIdent(stagingName) + " ("
 	for i, c := range cols {
 		if i > 0 {
@@ -59,7 +63,7 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 			sql += " NOT NULL"
 		}
 	}
-	sql += ")"
+	sql += ")" + dist.SQLClause()
 	_, err := a.q.Exec(ctx, sql)
 	if err != nil {
 		// "relation already exists" is fine on resume; anything else is fatal.
@@ -92,8 +96,8 @@ func (a *Agent) Truncate(ctx context.Context, schema, table string) error {
 // CreateTable creates the final table from the source's column layout (FR-11).
 // Used by the truncate/append paths when the destination table does not exist
 // yet (create-then-truncate/append). It is a no-op if the table already exists.
-func (a *Agent) CreateTable(ctx context.Context, schema string, cols []pg.Column, table string) error {
-	return a.CreateStaging(ctx, schema, cols, table)
+func (a *Agent) CreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution) error {
+	return a.CreateStaging(ctx, schema, cols, table, dist)
 }
 
 // CopyIntoStream writes the streamed binary-COPY payload r into the staging

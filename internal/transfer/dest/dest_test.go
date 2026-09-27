@@ -30,7 +30,7 @@ func TestCreateStaging(t *testing.T) {
 		{Name: "id", Type: "integer", Nullable: false},
 		{Name: "customer", Type: "text", Nullable: true, Default: `''::text`},
 	}
-	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_5"); err != nil {
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_5", pg.Distribution{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	q := f.Queried()
@@ -40,6 +40,40 @@ func TestCreateStaging(t *testing.T) {
 	}
 	if !strings.Contains(last, "NOT NULL") {
 		t.Fatalf("expected NOT NULL for non-null col in %q", last)
+	}
+	// A zero distribution (plain-PG source) must not emit a DISTRIBUTED BY
+	// clause (F-11: only Greenplum sources carry a policy).
+	if strings.Contains(last, "DISTRIBUTED") {
+		t.Fatalf("no distribution clause expected for a zero policy, got %q", last)
+	}
+}
+
+// TestCreateStagingDistribution reproduces the source distribution policy in
+// the DDL (F-11 metadata: «типы, распределение») — lab e2e, 27.09: a
+// multi-key source (a, b) must not silently become (a) on the destination.
+func TestCreateStagingDistribution(t *testing.T) {
+	f := pg.NewFakeConn()
+	a := mkAgent(f)
+	cols := []pg.Column{{Name: "a", Type: "integer"}}
+	dist := pg.Distribution{Kind: "hash", Keys: []string{"a", "b"}}
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_9", dist); err != nil {
+		t.Fatalf("create staging: %v", err)
+	}
+	last := f.Queried()[len(f.Queried())-1]
+	if !strings.HasSuffix(last, `) DISTRIBUTED BY ("a", "b")`) {
+		t.Fatalf("expected a DISTRIBUTED BY (\"a\", \"b\") clause, got %q", last)
+	}
+
+	// RANDOMLY / REPLICATED render verbatim.
+	f2 := pg.NewFakeConn()
+	a2 := mkAgent(f2)
+	if err := a2.CreateStaging(context.Background(), "public", cols, "_gs_j1_10",
+		pg.Distribution{Kind: "randomly"}); err != nil {
+		t.Fatalf("create staging: %v", err)
+	}
+	last2 := f2.Queried()[len(f2.Queried())-1]
+	if !strings.HasSuffix(last2, ") DISTRIBUTED RANDOMLY") {
+		t.Fatalf("expected DISTRIBUTED RANDOMLY, got %q", last2)
 	}
 }
 

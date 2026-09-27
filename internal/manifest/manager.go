@@ -358,14 +358,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 
 	// 2. Read the schema off the SOURCE, then create the DESTINATION schema
 	//    (and the copy target) from it (FR-02). The target is built from the
-	//    source's own column definitions (format_type) so it is faithful across
-	//    clusters.
+	//    source's own column definitions (format_type) so it is faithful
+	//    across clusters; the distribution policy is reproduced on a
+	//    Greenplum source (F-11 metadata: «типы, распределение»).
 	t := m.tableFor(u)
 	schema, name := u.Schema, u.Table
 	cols, err := m.src.Columns(ctx, schema, name)
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
 	}
+	dist := m.src.Distribution(ctx, schema, name)
 	if err := m.dst.EnsureSchema(ctx, ds); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
@@ -380,7 +382,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// if it does not exist yet, then (optionally) truncate it.
 		target = dn
 		if !m.dst.Exists(ctx, ds, dn) {
-			if err := m.dst.CreateTable(ctx, ds, cols, dn); err != nil {
+			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist); err != nil {
 				return fmt.Errorf("create table: %w", err)
 			}
 		}
@@ -391,7 +393,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		}
 	} else {
 		target = dest.StagingName(u.JobID, u.UnitID)
-		if err := m.dst.CreateStaging(ctx, ds, cols, target); err != nil {
+		if err := m.dst.CreateStaging(ctx, ds, cols, target, dist); err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
 	}

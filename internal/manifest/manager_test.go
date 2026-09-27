@@ -147,6 +147,40 @@ func TestManagerRunHappyPath(t *testing.T) {
 	}
 }
 
+// TestManagerRunHonoursDistribution is the F-11 metadata regression: a
+// Greenplum source table's distribution policy must be reproduced in the
+// destination DDL (lab e2e, 27.09 — a multi-key (a, b) source was
+// silently becoming (a) because the clause was never emitted). The run drives
+// the REAL runUnit path; the source fake serves a hash policy on the leading
+// column, and the destination staging CREATE must carry the clause.
+func TestManagerRunHonoursDistribution(t *testing.T) {
+	cfg := config.Default()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	// Source is a Greenplum cluster with a hash distribution policy on "id".
+	src.On("to_regclass", [][]any{{int64(16384)}})
+	src.On("policytype", [][]any{{"p", "id"}})
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The destination CREATE TABLE for the staging table must carry the
+	// distribution clause (F-11 metadata phase: «типы, распределение»).
+	sawDist := false
+	for _, sql := range dst.Queried() {
+		if strings.Contains(sql, "CREATE TABLE IF NOT EXISTS") &&
+			strings.Contains(sql, `DISTRIBUTED BY ("id")`) {
+			sawDist = true
+		}
+	}
+	if !sawDist {
+		t.Fatalf("destination DDL did not reproduce the source distribution policy; CREATE SQLs: %v",
+			dst.Queried())
+	}
+}
+
 // TestManagerSkipConflict verifies a conflicting unit is skipped under the
 // default skip-existing policy (FR-10/FR-11) and the run still succeeds.
 func TestManagerSkipConflict(t *testing.T) {

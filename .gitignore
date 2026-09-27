@@ -20,3 +20,6 @@ poc/pg9426.tar.bz2
 /eptest
 /pgboot
 /pg94probe
+
+# diagnostic driver build artifact
+/segdump

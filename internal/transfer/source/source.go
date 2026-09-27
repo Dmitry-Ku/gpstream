@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -64,6 +65,55 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 		})
 	}
 	return out, nil
+}
+
+// Distribution reads the table's Greenplum distribution policy (F-11: the
+// metadata phase must reproduce «типы, распределение, AO-параметры»). It
+// degrades to pg.Distribution{} (Kind "") on a plain-PostgreSQL source or a
+// read fault — the destination then uses its own default, which is the
+// conservative, non-fatal choice (the data copy itself is unaffected).
+//
+// policytype: 'p' = hash/randomly (empty distkey => DISTRIBUTED RANDOMLY),
+// 'r' = replicated (lab e2e, 27.09). The catalog lives in pg_catalog on
+// this GP6 build (unqualified name resolves); COALESCE with the gp_toolkit
+// qualifier covers builds that expose it there. The keys are aggregated as
+// text in SQL (int2vector -> string) so the result is driver-type-agnostic.
+func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distribution {
+	oid, err := pg.Row(ctx, a.q,
+		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy'))`)
+	if err != nil || oid == nil {
+		return pg.Distribution{} // not Greenplum / catalog absent
+	}
+	rows, err := a.q.Query(ctx,
+		`SELECT dp.policytype,
+		        (SELECT string_agg(a.attname, ',' ORDER BY array_position(dp.distkey, a.attnum))
+		         FROM pg_attribute a
+		         WHERE a.attrelid = dp.localoid AND a.attnum = ANY(dp.distkey))
+		 FROM gp_distribution_policy dp
+		 JOIN pg_class c ON c.oid = dp.localoid
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relname = $1 AND n.nspname = $2`,
+		table, schema)
+	if err != nil || len(rows) == 0 || len(rows[0]) < 2 {
+		return pg.Distribution{}
+	}
+	var d pg.Distribution
+	switch toStr(rows[0][0]) {
+	case "r":
+		d.Kind = "replicated"
+	case "p":
+		if keys := toStr(rows[0][1]); keys != "" {
+			d.Kind = "hash"
+			for _, k := range strings.Split(keys, ",") {
+				if k != "" {
+					d.Keys = append(d.Keys, k)
+				}
+			}
+		} else {
+			d.Kind = "randomly"
+		}
+	}
+	return d
 }
 
 // toStr renders an any as a string ("" for nil).

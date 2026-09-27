@@ -8,6 +8,54 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
+// TestDistribution reads the source distribution policy and renders the
+// destination DDL clause (F-11) — the regression guard for the lab e2e
+// finding (27.09): a multi-key source (a, b) must not silently become (a).
+func TestDistribution(t *testing.T) {
+	// GP source: catalog resolves (OID) and the policy row is hash (a, b).
+	f := pg.NewFakeConn()
+	f.On("to_regclass", [][]any{{int64(16384)}})
+	f.On("policytype", [][]any{{"p", "a,b"}})
+	a := New(f)
+	d := a.Distribution(context.Background(), "public", "orders")
+	if d.Kind != "hash" || len(d.Keys) != 2 || d.Keys[0] != "a" || d.Keys[1] != "b" {
+		t.Fatalf("distribution = %+v, want hash (a, b)", d)
+	}
+	if got := d.SQLClause(); got != ` DISTRIBUTED BY ("a", "b")` {
+		t.Fatalf("clause = %q", got)
+	}
+
+	// DISTRIBUTED RANDOMLY: 'p' with an empty distkey.
+	f2 := pg.NewFakeConn()
+	f2.On("to_regclass", [][]any{{int64(16384)}})
+	f2.On("policytype", [][]any{{"p", ""}})
+	a2 := New(f2)
+	d2 := a2.Distribution(context.Background(), "public", "orders")
+	if d2.Kind != "randomly" || d2.SQLClause() != " DISTRIBUTED RANDOMLY" {
+		t.Fatalf("distribution = %+v, want randomly", d2)
+	}
+
+	// DISTRIBUTED REPLICATED: 'r'.
+	f3 := pg.NewFakeConn()
+	f3.On("to_regclass", [][]any{{int64(16384)}})
+	f3.On("policytype", [][]any{{"r", nil}})
+	a3 := New(f3)
+	d3 := a3.Distribution(context.Background(), "public", "orders")
+	if d3.Kind != "replicated" || d3.SQLClause() != " DISTRIBUTED REPLICATED" {
+		t.Fatalf("distribution = %+v, want replicated", d3)
+	}
+
+	// Plain PostgreSQL: the catalog probe returns NULL -> empty policy
+	// (no clause, destination default), no error.
+	f4 := pg.NewFakeConn()
+	f4.On("to_regclass", [][]any{{nil}})
+	a4 := New(f4)
+	d4 := a4.Distribution(context.Background(), "public", "orders")
+	if d4.Kind != "" || d4.SQLClause() != "" {
+		t.Fatalf("plain-PG source must yield an empty policy, got %+v", d4)
+	}
+}
+
 // TestColumns reads faithful column definitions through the streaming fake.
 func TestColumns(t *testing.T) {
 	f := pg.NewFakeConn()
