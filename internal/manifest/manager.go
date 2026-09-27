@@ -59,8 +59,13 @@ type Manager struct {
 	// run ("db", "cluster", or "" when no snapshot is pinned). snapshotTx is
 	// true while a read-only REPEATABLE READ transaction is open on the source
 	// (all unit COPY statements read from that one snapshot, FR-02).
+	// pinnedSrc is the single source connection the snapshot transaction runs
+	// on (set for pool-backed sources with parallel workers, FR-03+FR-02);
+	// pinRelease returns it to the pool after the COMMIT.
 	snapshotMode string
 	snapshotTx   bool
+	pinnedSrc    pg.StreamingQuerier
+	pinRelease   func()
 	// statMu guards Stats, which multiple workers mutate under the FR-03 pool.
 	statMu sync.Mutex
 	// Stats accumulates the observed result of the run.
@@ -716,8 +721,10 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 
 	// The kernel runs the segreceiver on each primary and waits for all of
 	// them to exit before the COPY returns (DF_NEED_TWO_PHASE); this blocks
-	// until every slice stream is complete.
-	if _, err := m.srcQ.Exec(ctx, sql); err != nil {
+	// until every slice stream is complete. The ON SEGMENT COPY dispatches
+	// the coordinator's snapshot to the segments (DF_WITH_SNAPSHOT), so it
+	// must run on the snapshot connection in FR-02 mode (m.srcRead()).
+	if _, err := m.srcRead().Exec(ctx, sql); err != nil {
 		_ = fp.Close()
 		<-dstDone
 		return 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
@@ -763,7 +770,7 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 // (gp_segment_configuration); on plain PostgreSQL it errors, which the caller
 // surfaces as a clear "segment-direct requires Greenplum" failure.
 func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
-	v := pg.RowStr(ctx, m.srcQ,
+	v := pg.RowStr(ctx, m.srcRead(),
 		`SELECT count(*) FROM gp_segment_configuration WHERE role = 'p' AND status = 'u'`)
 	if v == "" {
 		return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
@@ -851,6 +858,20 @@ func (m *Manager) establishSnapshot(ctx context.Context) {
 		mode = "cluster"
 	}
 
+	// FR-02 + FR-03: a snapshot is per-connection (a transaction lives on one
+	// backend), so a pool-backed source must pin ONE connection for the whole
+	// run; every source read then shares the single REPEATABLE READ snapshot
+	// even under parallel workers. Without the pin, each pool COPY would take
+	// a fresh connection and see a different snapshot, silently breaking the
+	// consistency guarantee. The pin serialises source reads (pinnedConn.mu).
+	if pool, ok := m.srcQ.(*pg.Pool); ok {
+		if q, release, err := pool.Pin(ctx); err == nil {
+			m.pinnedSrc = q
+			m.pinRelease = release
+			m.src = source.New(q) // route all source reads through the pinned conn
+		}
+	}
+
 	// A live snapshot requires a streaming connection. The integration tests
 	// and fakes do not run a real transaction, so when the source is a fake
 	// (no streaming transaction support) we record the intended mode without
@@ -858,24 +879,46 @@ func (m *Manager) establishSnapshot(ctx context.Context) {
 	if err := m.beginSnapshotTx(ctx, mode); err != nil {
 		// Non-fatal: proceed without a pinned snapshot but surface it.
 		m.snapshotMode = ""
+		m.unpinSource()
 		return
 	}
 	m.snapshotMode = mode
 	m.snapshotTx = true
 }
 
+// srcRead returns the querier that source reads (data COPYs, catalog, checksum)
+// run on. In FR-02 snapshot mode over a pool it is the pinned connection so all
+// reads share one snapshot; otherwise it is the source querier (pool or conn).
+func (m *Manager) srcRead() pg.StreamingQuerier {
+	if m.pinnedSrc != nil {
+		return m.pinnedSrc
+	}
+	return m.srcQ
+}
+
+// unpinSource returns a pinned snapshot connection to its pool (idempotent).
+func (m *Manager) unpinSource() {
+	if m.pinRelease != nil {
+		m.pinRelease()
+		m.pinRelease = nil
+		m.pinnedSrc = nil
+	}
+}
+
 // beginSnapshotTx opens the read-only REPEATABLE READ transaction that pins the
 // source snapshot for the run (FR-02). For --consistent-cluster it first
-// requests a cluster-wide freeze. It returns an error if the transaction
-// cannot be started (the caller then proceeds without a snapshot).
+// requests a cluster-wide freeze. It runs on the snapshot connection (the
+// pinned pool connection in snapshot mode, else the source querier) so the
+// BEGIN is on the same backend the COPYs will use. It returns an error if the
+// transaction cannot be started (the caller then proceeds without a snapshot).
 func (m *Manager) beginSnapshotTx(ctx context.Context, mode string) error {
 	// --consistent-cluster: single source freeze (maintenance window, FR-02).
 	if mode == "cluster" {
-		if _, err := m.srcQ.Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
+		if _, err := m.srcRead().Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
 			return fmt.Errorf("consistent-cluster freeze: %w", err)
 		}
 	}
-	if _, err := m.srcQ.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
+	if _, err := m.srcRead().Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
 		return fmt.Errorf("begin snapshot tx: %w", err)
 	}
 	return nil
@@ -887,8 +930,9 @@ func (m *Manager) releaseSnapshot(ctx context.Context) {
 	if !m.snapshotTx {
 		return
 	}
-	_, _ = m.srcQ.Exec(ctx, `COMMIT`)
+	_, _ = m.srcRead().Exec(ctx, `COMMIT`)
 	m.snapshotTx = false
+	m.unpinSource()
 }
 
 // jobID derives a stable job identifier from the plan hash (FR-10). It is used

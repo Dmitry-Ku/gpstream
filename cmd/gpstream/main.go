@@ -1076,12 +1076,22 @@ func cmdRun(args []string) error {
 	}
 
 	ctx := context.Background()
-	srcQ, err := pg.NewConn(ctx, cfg.Source, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS)
+	// The data path runs WorkersPerPair parallel stream workers (FR-03); a
+	// single pgx.Conn is not safe for concurrent statements (a second
+	// in-flight COPY → "conn busy"). Use a pgxpool-backed Pool for both
+	// clusters so each worker/journal operation takes its own connection.
+	// Size the pool for the worker pool plus the journal and the (optional)
+	// FR-02 snapshot pin.
+	maxConns := cfg.WorkersPerPair + 4
+	if cfg.Streams > maxConns {
+		maxConns = cfg.Streams + 4
+	}
+	srcQ, err := pg.NewPool(ctx, cfg.Source, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
 	if err != nil {
 		return fmt.Errorf("run: connect source %q: %w", cfg.Source, err)
 	}
 	defer srcQ.Close()
-	dstQ, err := pg.NewConn(ctx, cfg.Dest, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS)
+	dstQ, err := pg.NewPool(ctx, cfg.Dest, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
 	if err != nil {
 		return fmt.Errorf("run: connect dest %q: %w", cfg.Dest, err)
 	}
