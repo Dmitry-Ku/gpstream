@@ -11,11 +11,10 @@ package source
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"io"
 
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -146,11 +145,13 @@ func (a *Agent) Indexes(ctx context.Context, schema, table string) ([]IndexDef, 
 	return out, nil
 }
 
-// Checksum returns an md5 of the binary COPY payload of schema.table
-// (FR-02). Comparing the source and destination checksums verifies that the
-// data arrived intact without re-copying the table (FR-01/§4.2). On vanilla
-// PostgreSQL (where gp_toolkit.gp_table_checksum is unavailable) this is the
-// portable content check; on Greenplum it can be replaced by gp_table_checksum.
+// Checksum returns a row-order-independent content digest of the binary COPY
+// payload of schema.table (FR-02). Comparing the source and destination
+// checksums verifies that the data arrived intact without re-copying the table
+// (FR-01/§4.2). The digest is order-independent because the source (a
+// distributed table, gathered in segment order) and the destination staging
+// (a plain heap, insertion order) lay the same rows down in different orders —
+// a raw-payload md5 would mismatch on identical data (E1 e2e, 27.09).
 func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
 	var buf writeCloserBuf
 	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, table))
@@ -160,8 +161,7 @@ func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, err
 	if rows == 0 {
 		return "0", nil
 	}
-	sum := md5.Sum(buf.data)
-	return hex.EncodeToString(sum[:]), nil
+	return transfer.ContentDigest(buf.data)
 }
 
 // writeCloserBuf is an io.Writer that buffers into a []byte. pgx.CopyTo writes

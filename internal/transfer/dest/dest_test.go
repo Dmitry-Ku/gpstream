@@ -3,12 +3,11 @@ package dest
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"io"
 	"strings"
 	"testing"
 
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -100,8 +99,10 @@ func TestVerifyMatch(t *testing.T) {
 	payload := []byte("verify-payload")
 	f.OnReadCopy("TO STDOUT", payload)
 	a := mkAgent(f)
-	sum := md5.Sum(payload)
-	want := hex.EncodeToString(sum[:])
+	want, err := transfer.ContentDigest(payload)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
 	ok, rows, err := a.Verify(context.Background(), "public", "_gs_j1_5", want)
 	if err != nil {
 		t.Fatalf("verify: %v", err)

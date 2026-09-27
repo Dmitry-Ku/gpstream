@@ -11,12 +11,11 @@ package dest
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -108,9 +107,11 @@ func (a *Agent) CopyIntoStream(ctx context.Context, schema, stagingName string, 
 
 // Verify re-derives the content checksum of the staging table and compares it
 // to the expected source checksum (FR-02). A mismatch fails the unit so it is
-// re-copied rather than swapped (FR-07). On vanilla PostgreSQL this is a
-// portable md5 of the binary COPY payload; on Greenplum it can be replaced by
-// gp_toolkit.gp_table_checksum. It returns the row count too (FR-02).
+// re-copied rather than swapped (FR-07). The digest is row-order-independent
+// (transfer.ContentDigest): the destination staging (a plain heap) lays the
+// same rows down in a different order than the distributed source, so a
+// raw-payload md5 would mismatch on identical data (E1 e2e, 27.09). It returns
+// the row count too (FR-02).
 func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum string) (bool, int64, error) {
 	var buf writeCloserBuf
 	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, stagingName))
@@ -119,8 +120,10 @@ func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum st
 	}
 	got := "0"
 	if rows > 0 {
-		sum := md5.Sum(buf.data)
-		got = hex.EncodeToString(sum[:])
+		got, err = transfer.ContentDigest(buf.data)
+		if err != nil {
+			return false, rows, fmt.Errorf("verify: digest: %w", err)
+		}
 	}
 	if got != wantChecksum {
 		return false, rows, fmt.Errorf("verify: checksum mismatch (want %s, got %s)", wantChecksum, got)
