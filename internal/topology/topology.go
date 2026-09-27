@@ -89,9 +89,13 @@ func (t *Topology) IsGreenplum() bool {
 }
 
 // ProbeSQL resolves gp_segment_configuration by name. Returning a NULL OID
-// means the catalog does not exist (plain PostgreSQL, not Greenplum). The
-// gp_toolkit schema qualifier matches how the doctor has always probed.
-const ProbeSQL = `SELECT to_regclass('gp_toolkit.gp_segment_configuration')`
+// means the catalog does not exist (plain PostgreSQL, not Greenplum). This
+// Greenplum build exposes the catalog in pg_catalog (always in the implicit
+// search_path); some builds also expose it in gp_toolkit, so try that
+// qualifier first and fall back to the unqualified name (lab e2e,
+// 27.09: to_regclass('gp_toolkit.gp_segment_configuration') = NULL while the
+// unqualified form resolves).
+const ProbeSQL = `SELECT COALESCE(to_regclass('gp_toolkit.gp_segment_configuration'), to_regclass('gp_segment_configuration'))`
 
 // catalogSQL reads the rows we need for planning and doctor.
 const catalogSQL = `SELECT content, role, preferred_role, mode, status, hostname, port, datname

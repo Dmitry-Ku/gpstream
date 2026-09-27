@@ -576,9 +576,11 @@ func distKey(ctx context.Context, q pg.Querier) string {
 	// safe on a plain-PostgreSQL cluster (to_regclass returns NULL without an
 	// error), whereas the main query references the catalog by name and would
 	// fail at parse time there. A non-Greenplum cluster therefore yields ""
-	// (conservative, FR-15) with no error noise in the server log.
+	// (conservative, FR-15) with no error noise in the server log. COALESCE
+	// covers both catalog homes: gp_toolkit (some builds) and pg_catalog /
+	// unqualified (this GP6 build — lab e2e, 27.09).
 	oid, err := pg.Row(ctx, q,
-		`SELECT to_regclass('gp_toolkit.gp_distribution_policy')`)
+		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy'))`)
 	if err != nil || oid == nil {
 		return ""
 	}

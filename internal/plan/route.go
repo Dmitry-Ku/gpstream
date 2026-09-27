@@ -133,9 +133,11 @@ func routeMajor(ctx context.Context, q pg.Querier) int {
 
 // tableDistMap — карта "schema.name" -> routeLayout для всех таблиц с
 // gp_distribution_policy. Ошибка/отсутствие каталога -> пустая карта.
+// Препроф-запрос COALESCE(gp_toolkit., unqualified): на этом GP6 каталог в
+// pg_catalog (unqualified резолвится), на других сборках — в gp_toolkit.
 func tableDistMap(ctx context.Context, q pg.Querier) map[string]routeLayout {
 	m := map[string]routeLayout{}
-	oid, err := pg.Row(ctx, q, `SELECT to_regclass('gp_toolkit.gp_distribution_policy')`)
+	oid, err := pg.Row(ctx, q, `SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy'))`)
 	if err != nil || oid == nil {
 		return m // plain-PG / каталог нет
 	}
