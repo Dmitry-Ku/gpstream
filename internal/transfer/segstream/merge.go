@@ -54,11 +54,33 @@ type sliceParser struct {
 	dataLeft int
 	done     bool
 	counted  bool
+	// rowBuf accumulates the CURRENT row's bytes (header + field lengths +
+	// data) so that a row is written to the sink as ONE atomic unit. Without
+	// this, a row that straddles a chunk boundary is emitted across two
+	// feed() calls, and a concurrent sibling slice's complete rows can be
+	// interleaved in the MIDDLE of the row, corrupting the merged stream
+	// (E2 on_segment live bug, 28.09). Bounded to one row's size.
+	rowBuf []byte
 }
 
 // newSliceParser returns a parser ready to consume a slice from its start.
 func newSliceParser() *sliceParser {
-	return &sliceParser{phase: spSig, acc: make([]byte, 0, 16), state: rsRowHdr, need: 2}
+	return &sliceParser{phase: spSig, acc: make([]byte, 0, 16), state: rsRowHdr, need: 2, rowBuf: make([]byte, 0, 256)}
+}
+
+// flushRow writes the buffered complete row to w and resets rowBuf. It is a
+// no-op when no row is buffered. Row emission is atomic: a row is only ever
+// handed to the sink as a single Write, so concurrent sibling slices cannot
+// interleave their rows inside it.
+func (sp *sliceParser) flushRow(w io.Writer) error {
+	if len(sp.rowBuf) == 0 {
+		return nil
+	}
+	if _, err := w.Write(sp.rowBuf); err != nil {
+		return err
+	}
+	sp.rowBuf = sp.rowBuf[:0]
+	return nil
 }
 
 // take appends up to want bytes from p to sp.acc and returns the count taken.
@@ -71,17 +93,20 @@ func (sp *sliceParser) take(p []byte, want int) int {
 }
 
 // fieldDone decrements the current row's field counter and advances the
-// sub-state (next field, or next row header).
-func (sp *sliceParser) fieldDone() {
+// sub-state (next field, or next row header). When the last field of a row is
+// consumed it flushes the buffered row to w, so a row is written as one atomic
+// unit (see rowBuf) and a concurrent sibling slice cannot interleave into it.
+func (sp *sliceParser) fieldDone(w io.Writer) error {
 	if sp.fc > 1 {
 		sp.fc--
 		sp.state = rsFieldLen
 		sp.need = 4
-	} else {
-		sp.fc = 0
-		sp.state = rsRowHdr
-		sp.need = 2
+		return nil
 	}
+	sp.fc = 0
+	sp.state = rsRowHdr
+	sp.need = 2
+	return sp.flushRow(w)
 }
 
 // feed consumes p, forwarding the row-region bytes to w. It returns the number
@@ -141,13 +166,13 @@ func (sp *sliceParser) feed(p []byte, w io.Writer) (int, error) {
 				if n > sp.dataLeft {
 					n = sp.dataLeft
 				}
-				if _, err := w.Write(p[off : off+n]); err != nil {
-					return off, err
-				}
+				sp.rowBuf = append(sp.rowBuf, p[off:off+n]...)
 				off += n
 				sp.dataLeft -= n
 				if sp.dataLeft == 0 {
-					sp.fieldDone()
+					if err := sp.fieldDone(w); err != nil {
+						return off, err
+					}
 				}
 				continue
 			}
@@ -170,38 +195,43 @@ func (sp *sliceParser) feed(p []byte, w io.Writer) (int, error) {
 				if v < 0 {
 					return off, fmt.Errorf("segstream: bad fieldCount %d", v)
 				}
-				// Forward the 2-byte row header.
+				// Buffer the 2-byte row header; it is emitted atomically with
+				// the row's fields when the row completes (see rowBuf).
 				var b2 [2]byte
 				binary.BigEndian.PutUint16(b2[:], uint16(v))
-				if _, err := w.Write(b2[:]); err != nil {
-					return off, err
-				}
+				sp.rowBuf = append(sp.rowBuf, b2[:]...)
 				sp.fc = v
 				if sp.fc == 0 {
-					sp.state = rsRowHdr // zero-field row
+					// Zero-field row: complete immediately.
+					sp.state = rsRowHdr
 					sp.need = 2
+					if err := sp.flushRow(w); err != nil {
+						return off, err
+					}
 				} else {
 					sp.state = rsFieldLen
 					sp.need = 4
 				}
 			} else { // rsFieldLen
 				ln := int32(binary.BigEndian.Uint32(sp.acc))
-				// Forward the 4-byte length.
+				// Buffer the 4-byte length.
 				var b4 [4]byte
 				binary.BigEndian.PutUint32(b4[:], uint32(ln))
-				if _, err := w.Write(b4[:]); err != nil {
-					return off, err
-				}
+				sp.rowBuf = append(sp.rowBuf, b4[:]...)
 				sp.acc = sp.acc[:0]
 				if ln < -1 {
 					return off, fmt.Errorf("segstream: bad field length %d", ln)
 				}
 				if ln == -1 { // NULL
-					sp.fieldDone()
+					if err := sp.fieldDone(w); err != nil {
+						return off, err
+					}
 				} else {
 					sp.dataLeft = int(ln)
 					if sp.dataLeft == 0 {
-						sp.fieldDone()
+						if err := sp.fieldDone(w); err != nil {
+							return off, err
+						}
 					} else {
 						sp.state = rsFieldData
 					}
