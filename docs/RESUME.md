@@ -70,6 +70,11 @@ tables), never the default.
 Both modes behave identically — there is only one snapshot, so nothing
 is re-read. The mode only matters when a job is interrupted and resumed.
 
+Every re-read is also observable: the run appends a `unit_reread` event
+(`schema`, `table`, `reason`, `epoch`) to `events.jsonl` (see
+`docs/OPERATOR_GUIDE.md` §8), so an operator can audit exactly which tables
+were re-read and why.
+
 ## 3. Crash recovery: what happens to a half-copied table
 
 This is the part that bites in practice, and it was live-verified (E3):

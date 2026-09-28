@@ -212,6 +212,24 @@ address you pass to `--metrics-addr`. The exposed series include:
 `gpstream report --job <jobid> --report-json run.json` (or `--report-csv` /
 `--report-text`) gives a final report you can archive.
 
+### The diagnostic event log (`events.jsonl`)
+
+Every run appends a per-operation diagnostic stream to
+`<state-dir>/<operation-id>/events.jsonl` (next to `journal.jsonl` and
+`conflicts.jsonl`) — one JSON object per line: `{"ts", "kind", ...fields}`.
+It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
+
+| `kind` | When | Key fields |
+|--------|------|-----------|
+| `rate_limit_shift` | every adaptive rate-limit change (F-14) | `from_gbps`, `to_gbps`, `reason` (cpu %, disk latency, queue) |
+| `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (strict default) or `skip` (`--skip-conflicts`) |
+| `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `error` |
+| `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
+
+It is a diagnostic log, not the durable record (that is the journal), so a
+write failure never fails the copy. With no `--state-dir` journal mirror the
+log is a no-op. Consume it with `jq -c . events.jsonl` or any JSONL tooling.
+
 ---
 
 ## 9. Resuming, cancelling, rolling back

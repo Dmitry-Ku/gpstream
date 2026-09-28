@@ -29,7 +29,8 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-04 — Monitoring & metrics — **PARTIAL**
 - Spec: Prometheus `/metrics`, human-readable `status`, mandatory metric set (throughput, rows, compression, queue depth, active streams, checksum errors, retries, per-pair rate-limit, **ETA**, status counters, auto-recovery events), JSON logs + **`events.jsonl`** for all diagnostic events.
 - Evidence: `internal/monitor` (98.0%) renders metrics + a Prometheus endpoint; `cmdStatus` (`main.go:826+`) prints a per-unit table.
-- Gaps: **`events.jsonl` is missing entirely** (`grep events.jsonl/EventLog` → none) — the required separate diagnostic log for rate-limit shifts, conflicts, retries is not written; **live ETA is not a metric** (only a "prediction (timed out)" dry-run string at `main.go:588`); `status` shows no live throughput/queue depth.
+- **Closed (28.09):** `events.jsonl` is implemented — `monitor.EventLog` (`internal/monitor/events.go`, one JSON object per line `{ts,kind,...}`) + `Journal.EventsPath()`; the Manager emits `rate_limit_shift` (F-14), `conflict` (action=stop/skip), `unit_failed`, `unit_reread` (auto-recovery). No-op when the journal has no file mirror. Tests: `events_test.go` (format, no-op, lazy-open, concurrent) + `manager_events_test.go` (strict/skip conflict, unit failure, rate shift, live paths).
+- Gaps: **live ETA is not a metric** (only a "prediction (timed out)" dry-run string at `main.go:588`); `status` shows no live throughput/queue depth.
 - Test: `internal/monitor` 98.0%.
 
 ### F-05 — Delivery, self-diagnosis, docs — **PARTIAL**
@@ -87,10 +88,10 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: **production data path is the in-memory pipe, so TLS between sender/receiver is not actually exercised** (the TCP/TLS mode exists but is test-only); **`ServerName:""` (`pg.go:176`) means the verify-full hostname check is not enforced** (verify-full is ON as default sslmode, but the Go TLS layer still skips host-name verification); **audit log of actions is missing** (`grep auditlog` → none).
 - **BLOCKED-INFRA**: wireshark encrypted-traffic acceptance.
 
-### F-14 — Rate limiting + adaptive control — **PARTIAL**
+### F-14 — Rate limiting + adaptive control — **DONE (28.09)**
 - Spec: `--max-bw` global ceiling; per-host-pair token bucket; adaptive AIMD (detect receiver CPU/disk/queue bottleneck → step down ~25% floor ~1 Gbps, recover on stabilize); **each shift logged to `events.jsonl`**.
 - Evidence: `ratelimit/limiter.go:1-36` per-host-pair adaptive limiter (step ~25%, floor ~1 Gbps); `ratelimit/pacer.go:9,66` pacer throttles the data path to the current rate; `manager.go:97-117` builds limiter+pacer and shares one pacer across the pool so total flow stays under the ceiling.
-- Gaps: **`events.jsonl` logging of each rate shift (pair, old/new, reason) is missing** (same events.jsonl gap).
+- **Closed (28.09):** every rate shift is now logged to `events.jsonl` as a `rate_limit_shift` event (old/new Gbps + reason) via `Manager.onRateChange` — the F-14 "каждый сдвиг лимита — диагностическое сообщение" requirement. Regression test `TestManagerOnRateChangeEmitsEvent`.
 - Test: ratelimit 92.3%.
 
 ### F-15 — Data redistribution — **PARTIAL**
@@ -141,7 +142,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-01 | DONE | (100TB acceptance infra-blocked) |
 | F-02 | PARTIAL | no per-table fallback flag; (concurrent-write test EXISTS — scale24) |
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
-| F-04 | PARTIAL | events.jsonl missing; no live ETA/queue metrics |
+| F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
 | F-05 | PARTIAL | doctor no extension check; no issue/PR templates; no design.md |
 | F-06 | PARTIAL | --on-unit-failure flag + abort mode missing |
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
@@ -151,7 +152,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-11 | PARTIAL | no post-load sequence setval; no extension check |
 | F-12 | PARTIAL | no small-table auto-disable |
 | F-13 | PARTIAL | data path not TLS-exercised; verify-full ON by default but hostname check off (ServerName:""); no audit log |
-| F-14 | PARTIAL | events.jsonl rate-shift logging missing |
+| F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
 | F-15 | PARTIAL | segment balance max/avg metric missing |
 | F-16 | PARTIAL | no column-level collation compare |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
@@ -160,10 +161,11 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 ## Closable in-env (no external cluster needed) — prioritized by impact (re-ordered 28.09)
 0. **CI-FLAKE fix** — `TestPairMapBruteForceNonGolden` wall-clock limit (120 s)
    is exceeded under `-cover` (231–328 s) → CI red. Raise the limit or move the
-   test to a `heavy` tag. (10 min, do first.)
-1. **F-04/F-14 `events.jsonl`** — add a diagnostic event log (rate shifts with
-   pair/old/new/reason, conflicts, retries, auto-recovery) + F-13 audit log of
-   actions. Closes two features at once.
+   test to a `heavy` tag. (10 min, do first.) [CLOSED 28.09, heavy tag + schedule]
+1. **F-04/F-14 `events.jsonl`** — [CLOSED 28.09] diagnostic event log
+   implemented (`monitor.EventLog` + Manager hooks: rate-shift, conflict,
+   unit-failed, unit-reread). Remaining from this item: F-13 audit log of
+   actions (separate).
 2. **F-06 `--on-unit-failure=continue|abort`** — add the flag + abort mode
    (continue default already works).
 3. **F-02 per-table fallback flag** — explicit fallback mode (the mandatory

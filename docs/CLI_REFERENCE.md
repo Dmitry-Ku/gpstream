@@ -70,9 +70,10 @@ subset of flags (listed per-command below) and ignore the rest.
   Manager (src → stream → dest, no intermediate storage), verifies each unit,
   rebuilds indexes in the background (FR-17), atomically swaps the staging
   table to its final name, journals every transition to
-  `<state-dir>/<operation-id>/journal.jsonl`, serves Prometheus metrics at
-  `--metrics-addr` (FR-04) and honours `--auto-resume N` (FR-07). `run` is
-  the command that used to be called `copy`.
+  `<state-dir>/<operation-id>/journal.jsonl`, appends the diagnostic event
+  stream to `<state-dir>/<operation-id>/events.jsonl` (FR-04/F-14), serves
+  Prometheus metrics at `--metrics-addr` (FR-04) and honours `--auto-resume N`
+  (FR-07). `run` is the command that used to be called `copy`.
 - **`dry-run`** — plans **without executing** (FR-10); full contract. Renders
   the deterministic plan summary (units, volume, conflicts, redistribution,
   plan hash); on `--timeout` prints the collected fragment as a
