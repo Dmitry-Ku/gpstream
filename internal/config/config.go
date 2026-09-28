@@ -14,6 +14,8 @@ import (
 
 	toml "github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
+
+	"github.com/gpstream/gpstream/internal/transfer"
 )
 
 // Compression selects the stream compression mode (FR-12).
@@ -159,6 +161,14 @@ type Config struct {
 	SegListen string   // controller listen address the segreceivers dial (host:port)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
 
+	// Frame-level ACK and RST-resume (DESIGN §4.6, Tier-1, R2-approved).
+	// FrameAck is "on" by default; "off" falls back to the plain pipe.
+	// AckTimeout "adaptive" = 3x median RTT (min 1s), else a fixed duration.
+	FrameAck              string // on (default) | off
+	AckTimeout            string // 15s | 30s | adaptive (default 30s)
+	MaxReconnects         int    // default 20
+	RetransmitBufferMax   int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
+
 	// v2 conflict refinement (§6.3).
 	// OverwriteOnlyConflicts refines Overwrite: only conflicting objects are
 	// re-written, never the whole target (FR-11/§4.9).
@@ -255,7 +265,48 @@ func (c Config) Validate() error {
 	if c.CopyMode == CopyOnSegment && c.SegListen == "" {
 		return fmt.Errorf("--copy-mode on_segment requires --seg-listen (controller listen address the segreceivers dial, e.g. 10.0.0.5:9432)")
 	}
+	// Frame-ack (DESIGN §4.6, R2): validate the knob and normalise the
+	// defaults so the data path always sees a usable config.
+	switch c.FrameAck {
+	case "", "on", "off":
+	default:
+		return fmt.Errorf("unknown --frame-ack %q (want on|off)", c.FrameAck)
+	}
+	switch c.AckTimeout {
+	case "":
+		c.AckTimeout = "30s"
+	case "adaptive":
+	default:
+		if _, err := time.ParseDuration(c.AckTimeout); err != nil {
+			return fmt.Errorf("invalid --ack-timeout %q (want 15s|30s|adaptive)", c.AckTimeout)
+		}
+	}
+	if c.MaxReconnects <= 0 {
+		c.MaxReconnects = 20
+	}
+	if c.RetransmitBufferMax <= 0 {
+		c.RetransmitBufferMax = 64 << 20
+	}
 	return nil
+}
+
+// FrameAckOn reports whether frame-level ACK/RST-resume is in effect
+// (DESIGN §4.6: default on; --frame-ack off falls back to the plain pipe).
+func (c *Config) FrameAckOn() bool { return c.FrameAck != "off" }
+
+// ReliablePipeConfig builds the R2-approved frame-ack transport parameters
+// from the CLI/env values (DESIGN §4.6).
+func (c *Config) ReliablePipeConfig() transfer.ReliablePipeConfig {
+	cfg := transfer.DefaultReliablePipeConfig()
+	cfg.MaxReconnects = c.MaxReconnects
+	cfg.RetransmitBufferMax = c.RetransmitBufferMax
+	if c.AckTimeout == "adaptive" {
+		cfg.AckTimeout = 30 * time.Second // fallback until RTT samples exist
+		cfg.AdaptiveAckTimeout = true
+	} else if d, err := time.ParseDuration(c.AckTimeout); err == nil && d > 0 {
+		cfg.AckTimeout = d
+	}
+	return cfg
 }
 
 // ApplyEnv overlays environment variables (GPSTREAM_*) onto c. It is the
@@ -334,6 +385,45 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("REPORT_TEXT"); ok {
 		c.ReportText = v
 	}
+	// Frame-ack (§4.6).
+	if v, ok := get("FRAME_ACK"); ok {
+		c.FrameAck = v
+	}
+	if v, ok := get("ACK_TIMEOUT"); ok {
+		c.AckTimeout = v
+	}
+	if v, ok := get("MAX_RECONNECTS"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxReconnects = n
+		}
+	}
+	if v, ok := get("RETRANSMIT_BUFFER_MAX"); ok {
+		c.RetransmitBufferMax = parseSizeEnv(v)
+	}
+}
+
+// parseSizeEnv parses a GPSTREAM_* size value ("512M", "1G", "1024").
+func parseSizeEnv(s string) int64 {
+	s = strings.TrimSpace(s)
+	mult := int64(1)
+	if s != "" {
+		switch strings.ToLower(string(s[len(s)-1])) {
+		case "k":
+			mult = 1 << 10
+			s = s[:len(s)-1]
+		case "m":
+			mult = 1 << 20
+			s = s[:len(s)-1]
+		case "g":
+			mult = 1 << 30
+			s = s[:len(s)-1]
+		case "t":
+			mult = 1 << 40
+			s = s[:len(s)-1]
+		}
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return n * mult
 }
 
 // LoadFile reads a config file — YAML or TOML, selected by extension

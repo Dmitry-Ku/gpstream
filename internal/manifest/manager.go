@@ -537,6 +537,11 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	m.Bytes += rows
 	m.statMu.Unlock()
 	m.monitor.Record(uint64(rows), uint64(rows))
+	// Surface the frame-ACK counters (DESIGN §4.6 / FR-04) when in use.
+	if rp := fp.Reliable(); rp != nil {
+		st := rp.Stats()
+		m.monitor.RecordFrameAck(st.Retransmitted, uint64(st.Reconnects), st.AckLag)
+	}
 
 	// 6. Verify the content checksum (FR-02): re-derive it on both sides and
 	//    compare, without re-copying the table. Skipped for --append (the final
@@ -689,8 +694,18 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 	}
 }
 
-// framedPipe builds a framed, compressed transport over a net.Pipe (FR-01).
+// framedPipe builds a framed, compressed transport (FR-01). With
+// --frame-ack (DESIGN §4.6, default on) the transport is a ReliablePipe pair:
+// frames ride a retransmit ring with cumulative ACKs, so a transport reset
+// costs seconds (replay from RAM) and never a table re-read. With
+// --frame-ack off it is the plain net.Pipe.
 func (m *Manager) framedPipe(unitID uint32) *transfer.FramedPipe {
+	if m.cfg.FrameAckOn() {
+		// In-process stand-in for the agent<->agent connection B; the
+		// production TCP variant plugs the same ReliablePipe onto a dialer.
+		s, r := transfer.NewReliablePipePair(m.cfg.ReliablePipeConfig())
+		return transfer.NewFramedPipeOver(s, r, 1, unitID, m.comp, m.dec)
+	}
 	// A net.Pipe is an in-memory, back-pressure-respecting connected pair;
 	// in production this is a net.Conn (optionally TLS, FR-13).
 	w, r := net.Pipe()

@@ -14,6 +14,9 @@ import (
 // logical bytes of a table between the source and destination agents over a
 // net.Pipe (or, in production, a net.Conn, optionally TLS-wrapped, FR-13),
 // with CRC framing so corruption is detected without re-copying the table.
+// With --frame-ack (DESIGN §4.6) the transport is a ReliablePipe pair instead
+// of a raw pipe: frames ride a retransmit ring with cumulative ACKs, so a
+// transport reset costs seconds (replay from RAM) and never a table re-read.
 //
 // It is used by the job manager as the bridge between the source agent's
 // `COPY ... TO STDOUT` (write side) and the destination agent's
@@ -27,6 +30,10 @@ import (
 type FramedPipe struct {
 	write *FramedWriter
 	read  *FramedReader
+	// rpS is the ReliablePipe on the write side (frame-ack on); nil for a
+	// plain net.Pipe transport. Exposed so the manager can surface the
+	// retransmit/reconnect counters (FR-04/§4.6).
+	rpS *ReliablePipe
 }
 
 // NewFramedPipe builds a framed transport over a connected pair of
@@ -34,11 +41,27 @@ type FramedPipe struct {
 // destination agent reads from readConn. comp/dec select the compression mode
 // (FR-12).
 func NewFramedPipe(writeConn, readConn net.Conn, jobID, unitID uint32, comp *compress.Compressor, dec *compress.Decompressor) *FramedPipe {
-	return &FramedPipe{
+	return NewFramedPipeOver(writeConn, readConn, jobID, unitID, comp, dec)
+}
+
+// NewFramedPipeOver builds a framed transport over an arbitrary connected
+// Pipe pair. The write side may be a ReliablePipe sender and the read side
+// its receiver (--frame-ack, §4.6); a ReliablePipe on the write side is
+// detected and exposed via Reliable().
+func NewFramedPipeOver(writeConn, readConn Pipe, jobID, unitID uint32, comp *compress.Compressor, dec *compress.Decompressor) *FramedPipe {
+	fp := &FramedPipe{
 		write: &FramedWriter{conn: writeConn, jobID: jobID, unitID: unitID, comp: comp},
 		read:  &FramedReader{conn: readConn, comp: dec},
 	}
+	if rp, ok := writeConn.(*ReliablePipe); ok {
+		fp.rpS = rp
+	}
+	return fp
 }
+
+// Reliable returns the frame-ack transport on the write side, or nil when the
+// pipe is a plain (non-reliable) transport.
+func (fp *FramedPipe) Reliable() *ReliablePipe { return fp.rpS }
 
 // Read is the destination side (reads framed, compressed bytes from the pipe).
 func (fp *FramedPipe) Read(p []byte) (int, error) { return fp.read.Read(p) }
@@ -48,10 +71,23 @@ func (fp *FramedPipe) Write(p []byte) (int, error) { return fp.write.Write(p) }
 
 // Close flushes the write side's tail (the batched frame buffer), then
 // closes both ends of the transport (signals end-of-copy to the
-// destination, FR-01). Safe to call more than once.
+// destination, FR-01). Safe to call more than once. With frame-ack the write
+// side is a ReliablePipe: its Close sends a clean FIN after the tail frame,
+// so the destination gets a proper io.EOF (and no spurious transport error).
 func (fp *FramedPipe) Close() error {
 	err1 := fp.write.CloseFlush()
-	err2 := fp.read.conn.Close()
+	var err2 error
+	if fp.rpS != nil {
+		// Reliable path: CloseFlush already closed the sender, which sent an
+		// in-order FIN after the tail frame. The receiver ends on its own when
+		// its receiveLoop reads that FIN (all frames are already in the output
+		// buffer by then) — so we must NOT close the receiver from here; doing
+		// so would race the receiveLoop and could drop in-flight frames. The
+		// destination's Read returns io.EOF once the buffer drains.
+		err2 = err1
+	} else {
+		err2 = fp.read.conn.Close()
+	}
 	if err1 != nil {
 		return err1
 	}
@@ -62,14 +98,21 @@ func (fp *FramedPipe) Close() error {
 // side. It is the destination's escape hatch: when the destination copy
 // fails mid-stream (e.g. the staged COPY FROM is rejected), it must stop
 // consuming the pipe; without an Abort the source would block forever
-// writing into the unbuffered net.Pipe (a full pipe with no reader),
-// hanging the whole unit (FR-06: a worker failure must not abort the
-// batch — the unit must fail, not hang). After Abort the source's blocked
-// write returns a "closed pipe" error, so the source goroutine unwinds and
-// the run records the unit as failed (a resume can retry it). Safe to call
-// more than once (net.Pipe Close is idempotent).
+// writing into the pipe (a full pipe with no reader), hanging the whole unit
+// (FR-06: a worker failure must not abort the batch — the unit must fail, not
+// hang). After Abort the source's blocked write returns an error, so the
+// source goroutine unwinds and the run records the unit as failed (a resume
+// can retry it). Safe to call more than once. With frame-ack the destination
+// abort also tells the ReliablePipe sender to stop (no reconnect to a dead
+// destination).
 func (fp *FramedPipe) Abort() error {
-	return fp.read.conn.Close()
+	err := fp.read.conn.Close()
+	if fp.rpS != nil {
+		if err == nil {
+			err = fp.rpS.Abort()
+		}
+	}
+	return err
 }
 
 // frameBufLimit is the source-side accumulator size before a frame is
@@ -83,7 +126,7 @@ const frameBufLimit = 256 * 1024
 
 // FramedWriter compresses and frames the source-side bytes.
 type FramedWriter struct {
-	conn   net.Conn
+	conn   Pipe // net.Conn or a ReliablePipe sender (frame-ack, §4.6)
 	jobID  uint32
 	unitID uint32
 	comp   *compress.Compressor
@@ -142,7 +185,7 @@ func (fw *FramedWriter) CloseFlush() error {
 
 // FramedReader frames-verifies and decompresses the destination-side bytes.
 type FramedReader struct {
-	conn net.Conn
+	conn Pipe // net.Conn or a ReliablePipe receiver (frame-ack, §4.6)
 	comp *compress.Decompressor
 	buf  []byte
 }

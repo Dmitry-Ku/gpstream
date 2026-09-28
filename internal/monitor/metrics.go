@@ -28,6 +28,11 @@ type Metrics struct {
 	CompressMode  string  // none / zlib / zstd
 	IndexQueue    int     // pending background index builds (FR-17/FR-04)
 	IndexDone     int     // finished background index builds (FR-17/FR-04)
+	// Frame-ack observability (DESIGN §4.6 / FR-04): retransmitted frames,
+	// transport reconnects, and the worst observed ACK lag.
+	Retransmitted uint64
+	Reconnects    uint64
+	AckLagMax     time.Duration
 	compressHits  map[string]uint64
 	rateHistory   []sample // for throughput window
 }
@@ -64,6 +69,18 @@ func (m *Metrics) RecordError() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Errors++
+}
+
+// RecordFrameAck accumulates the per-unit frame-ack counters (DESIGN §4.6):
+// retransmitted frames, transport reconnects, and the observed ACK lag.
+func (m *Metrics) RecordFrameAck(retransmitted uint64, reconnects uint64, ackLag time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Retransmitted += retransmitted
+	m.Reconnects += reconnects
+	if ackLag > m.AckLagMax {
+		m.AckLagMax = ackLag
+	}
 }
 
 // RecordFrameError records a CRC/framing error (FR-01/§4.2).
@@ -148,6 +165,9 @@ func (m *Metrics) Prometheus() string {
 		compressLv:   m.CompressLevel,
 		indexQueue:   m.IndexQueue,
 		indexDone:    m.IndexDone,
+		retrans:      m.Retransmitted,
+		reconnects:   m.Reconnects,
+		ackLag:       m.AckLagMax,
 	}
 	m.mu.Unlock()
 	return snap.render(m.Throughput())
@@ -164,6 +184,9 @@ type snapshot struct {
 	compressLv   int
 	indexQueue   int
 	indexDone    int
+	retrans      uint64
+	reconnects   uint64
+	ackLag       time.Duration
 }
 
 func (s snapshot) render(throughput float64) string {
@@ -207,6 +230,18 @@ func (s snapshot) render(throughput float64) string {
 	out = append(out, "# HELP gpstream_index_done_total Background index builds finished (FR-17).")
 	out = append(out, "# TYPE gpstream_index_done_total counter")
 	out = append(out, fmt.Sprintf("gpstream_index_done_total %d", s.indexDone))
+
+	out = append(out, "# HELP gpstream_frames_retransmitted_total Frames retransmitted after loss/corruption (§4.6).")
+	out = append(out, "# TYPE gpstream_frames_retransmitted_total counter")
+	out = append(out, fmt.Sprintf("gpstream_frames_retransmitted_total %d", s.retrans))
+
+	out = append(out, "# HELP gpstream_reconnects_total Data-path transport reconnects (§4.6).")
+	out = append(out, "# TYPE gpstream_reconnects_total counter")
+	out = append(out, fmt.Sprintf("gpstream_reconnects_total %d", s.reconnects))
+
+	out = append(out, "# HELP gpstream_ack_lag_max_seconds Worst observed ACK lag (§4.6).")
+	out = append(out, "# TYPE gpstream_ack_lag_max_seconds gauge")
+	out = append(out, fmt.Sprintf("gpstream_ack_lag_max_seconds %f", s.ackLag.Seconds()))
 
 	return joinLines(out)
 }

@@ -242,6 +242,20 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.ResumeConsistency = args[i]
 
+		// Frame-level ACK / RST-resume (DESIGN §4.6, Tier-1, R2).
+		case "--frame-ack":
+			i++
+			cfg.FrameAck = args[i]
+		case "--ack-timeout":
+			i++
+			cfg.AckTimeout = args[i]
+		case "--max-reconnects":
+			i++
+			cfg.MaxReconnects = atoi(args[i])
+		case "--retransmit-buffer-max":
+			i++
+			cfg.RetransmitBufferMax = parseBytes(args[i])
+
 		// Consistency (FR-02).
 		case "--consistent-db":
 			cfg.ConsistentDB = true
@@ -754,6 +768,32 @@ func confidenceNote(p *plan.Plan) string {
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+// parseBytes parses a size like "512M", "1G", "1024" (suffixes K/M/G/T,
+// case-insensitive, 1024-based). Used by --retransmit-buffer-max (§4.6).
+func parseBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	mult := int64(1)
+	switch strings.ToLower(string(s[len(s)-1])) {
+	case "k":
+		mult = 1 << 10
+		s = s[:len(s)-1]
+	case "m":
+		mult = 1 << 20
+		s = s[:len(s)-1]
+	case "g":
+		mult = 1 << 30
+		s = s[:len(s)-1]
+	case "t":
+		mult = 1 << 40
+		s = s[:len(s)-1]
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return n * mult
 }
 
 // splitKV splits a "src=dst" rename flag value on the first '='.
@@ -1269,6 +1309,10 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --max-bw <Gbps>                  total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
   --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
+  --frame-ack on|off               frame-level ACK + RST-resume (default on, §4.6)
+  --ack-timeout 15s|30s|adaptive   blackhole detector (default 30s; adaptive = 3x median RTT)
+  --max-reconnects N               reconnect budget (default 20; exhausted = unit failed)
+  --retransmit-buffer-max SIZE     in-flight window per stream (default 64M; raise for long-haul WAN)
   --index-parallel N               background index-build workers
   --tls-ca F                       TLS CA bundle
   --operation-id <id>              operation identity (run/status/resume/cleanup)

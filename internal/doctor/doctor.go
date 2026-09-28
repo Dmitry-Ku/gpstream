@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/topology"
@@ -125,7 +126,47 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkPermissions("dest", dst)
 	r.checkCollation(src, dst)
 	r.checkTLS(opts.MinTLS)
+	r.checkStatementTimeouts("source", src)
+	r.checkStatementTimeouts("dest", dst)
 	return r
+}
+
+// checkStatementTimeouts warns when an operator-set statement/idle timeout
+// (DESIGN §4.6 risk table) would kill the long-lived COPY sessions the data
+// path keeps open: gpstream itself never sets these, so a non-zero value is an
+// operator setting on the live server. WARN, never FAIL — the job can still
+// run, but a long COPY on a slow network would be cut off.
+func (r *Report) checkStatementTimeouts(side string, q pg.Querier) {
+	// current_setting returns '' (not NULL) for an unset/0 setting; statement
+	// timeouts are reported as a duration string like "5s", "1min", or "0".
+	stmt := pg.RowStr(context.Background(), q, "SHOW statement_timeout;")
+	idle := pg.RowStr(context.Background(), q, "SHOW idle_in_transaction_session_timeout;")
+	if isNonzeroDuration(stmt) || isNonzeroDuration(idle) {
+		r.Add(Check{
+			Name: "statement-timeout",
+			Side: side,
+			Sev:  Warn,
+			Msg:  fmt.Sprintf("operator timeout set (statement_timeout=%q, idle_in_transaction_session_timeout=%q)", stmt, idle),
+			Rec:  "gpstream holds long-lived COPY sessions; an operator statement/idle timeout can kill a long copy on a slow network. Consider raising it for the copy duration or leaving it 0 (DESIGN §4.6).",
+		})
+		return
+	}
+	r.Add(Check{Name: "statement-timeout", Side: side, Sev: Pass, Msg: "no operator statement/idle timeout"})
+}
+
+// isNonzeroDuration reports whether a SHOW duration value is non-zero.
+// "0", "", "0s" are zero; anything else (e.g. "5s", "1min") is non-zero.
+func isNonzeroDuration(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return false
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d > 0
+	}
+	// Postgres durations like "1min", "00:00:05" that time.ParseDuration
+	// rejects: treat a non-"0" string as set.
+	return s != "0"
 }
 
 // checkRoute is an INFORMATIONAL route-mode summary (M4/T4b) printed before
