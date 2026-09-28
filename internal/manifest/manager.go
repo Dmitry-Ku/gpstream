@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -518,8 +519,27 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	}
 
 	// 5. Stream the data: source --(framed, compressed)--> target (FR-01/§4.2).
-	fp := m.framedPipe(uint32(u.UnitID))
-	rows, err := m.copyStream(ctx, t, u, target, fp)
+	//    --copy-mode direct (R5): rows are routed to the destination segments
+	//    directly (no coordinator write); a table that cannot be routed
+	//    degrades to the coordinator path below (correct, just not direct).
+	//    fp is the framed pipe used by the coordinator path; it is nil for a
+	//    pure-direct unit (direct builds its own per-segment pipes).
+	var (
+		rows int64
+		fp   *transfer.FramedPipe
+	)
+	switch {
+	case m.cfg.CopyMode == config.CopyDirect:
+		rows, err = m.copyStreamDirect(ctx, t, u, target, cols)
+		if isDirectDegraded(err) {
+			// Unroutable table: fall back to the coordinator path.
+			fp = m.framedPipe(uint32(u.UnitID))
+			rows, err = m.copyStream(ctx, t, u, target, fp)
+		}
+	default:
+		fp = m.framedPipe(uint32(u.UnitID))
+		rows, err = m.copyStream(ctx, t, u, target, fp)
+	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
 		// failure is recorded as failed and re-tried by a resume (TRUNCATE is
@@ -537,10 +557,13 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	m.Bytes += rows
 	m.statMu.Unlock()
 	m.monitor.Record(uint64(rows), uint64(rows))
-	// Surface the frame-ACK counters (DESIGN §4.6 / FR-04) when in use.
-	if rp := fp.Reliable(); rp != nil {
-		st := rp.Stats()
-		m.monitor.RecordFrameAck(st.Retransmitted, uint64(st.Reconnects), st.AckLag)
+	// Surface the frame-ACK counters (DESIGN §4.6 / FR-04) when in use. fp is
+	// nil for a pure-direct unit (no coordinator framed pipe).
+	if fp != nil {
+		if rp := fp.Reliable(); rp != nil {
+			st := rp.Stats()
+			m.monitor.RecordFrameAck(st.Retransmitted, uint64(st.Reconnects), st.AckLag)
+		}
 	}
 
 	// 6. Verify the content checksum (FR-02): re-derive it on both sides and
@@ -948,6 +971,297 @@ func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("bad segment count %q: %w", v, err)
 	}
 	return n, nil
+}
+
+// destSegment is one up primary of the destination cluster (content 0..D-1).
+type destSegment struct {
+	Content  int32
+	Hostname string
+	Port     int
+}
+
+// destSegments lists the destination's up primary segments in content order
+// (R5). It requires a Greenplum destination (gp_segment_configuration); on a
+// plain-PostgreSQL destination it errors, which the caller degrades to the
+// coordinator path.
+func (m *Manager) destSegments(ctx context.Context) ([]destSegment, error) {
+	segRows, err := m.dstQ.Query(ctx,
+		`SELECT content, hostname, port FROM gp_segment_configuration
+		  WHERE role = 'p' AND status = 'u' AND content >= 0
+		  ORDER BY content`)
+	if err != nil {
+		return nil, fmt.Errorf("cannot enumerate dest segments (direct mode requires a Greenplum destination): %w", err)
+	}
+	seg := make([]destSegment, 0, len(segRows))
+	for _, r := range segRows {
+		if len(r) < 3 {
+			continue
+		}
+		seg = append(seg, destSegment{
+			Content:  int32(toInt(r[0])),
+			Hostname: fmt.Sprint(r[1]),
+			Port:     int(toInt(r[2])),
+		})
+	}
+	if len(seg) == 0 {
+		return nil, fmt.Errorf("no up primary segments on the destination")
+	}
+	// content must be a dense 0..D-1 (a missing content breaks slice coverage).
+	for i, s := range seg {
+		if s.Content != int32(i) {
+			return nil, fmt.Errorf("dest segment contents are not dense (got %d at position %d) — direct mode requires all primaries up", s.Content, i)
+		}
+	}
+	return seg, nil
+}
+
+// toInt renders a numeric catalog value as an int (driver-agnostic).
+func toInt(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case uint32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	default:
+		s := fmt.Sprint(n)
+		var out int64
+		_, _ = fmt.Sscanf(s, "%d", &out)
+		return out
+	}
+}
+
+// segmentDSN derives a utility-mode connection string for one destination
+// segment from the operator's dest DSN (URL form): the host/port are swapped to
+// the segment's, and gp_session_role=utility is appended (required to connect
+// to a primary segment; verified live on open-gpdb 6.30.1, R5 spike).
+func segmentDSN(destDSN string, seg destSegment) (string, error) {
+	u, err := url.Parse(destDSN)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return "", fmt.Errorf("direct mode requires a URL-form dest DSN (postgres://user@host:port/db), got %q", destDSN)
+	}
+	u.Host = seg.Hostname + ":" + strconv.Itoa(seg.Port)
+	q := u.Query()
+	q.Set("gp_session_role", "utility")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// copyStreamDirect is the fully segment-direct data path (R5 endgame,
+// --copy-mode direct). The source streams through its coordinator (already
+// correct); gpstream computes each row's destination segment —
+// d = JCH(cdbhash(K_dest), D) — and writes each segment's rows directly into
+// that segment's local staging slice via a utility-mode `COPY ... FROM STDIN
+// (FORMAT binary)`. The destination coordinator is out of the write path, so
+// the copy is bounded by the segment hosts' disk/network, not the dest
+// coordinator (the bottleneck the R5 endgame removes).
+//
+// Correctness: rows land on the slice the destination kernel would place them
+// on, because the staging table is created with the destination's distribution
+// policy (key K_dest) and the router reproduces the kernel's cdbhash +
+// jump-consistent-hash exactly (internal/route, validated live). The row bytes
+// are forwarded verbatim, so the FR-02 content digest verifies it unchanged.
+//
+// Graceful degradation: a table that cannot be routed (non-hash distribution,
+// unsupported dist-key type, a key column absent from the source, or a
+// non-Greenplum destination) returns a *directDegradedError; the caller falls
+// back to the coordinator path for that table.
+func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column) (int64, error) {
+	// 1. Destination topology: the up primaries in content order.
+	segs, err := m.destSegments(ctx)
+	if err != nil {
+		return 0, &directDegradedError{reason: err.Error()}
+	}
+	D := int32(len(segs))
+
+	// 2. The routing key: the TARGET table's distribution policy (the placement
+	//    the rows must satisfy). The target exists on the destination after
+	//    runUnit step 3 (staging in overwrite mode, the final table in-place),
+	//    so read its policy from the destination — this is exactly the policy
+	//    the local slices were created with. A table without a hash key cannot
+	//    be routed directly.
+	dstDist := source.New(m.dstQ).Distribution(ctx, u.DstSchema, target)
+	if dstDist.Kind != "hash" || len(dstDist.Keys) == 0 {
+		return 0, &directDegradedError{
+			reason: fmt.Sprintf("target distribution policy %q (no hash key) cannot be routed directly", dstDist.Kind),
+		}
+	}
+	// Map the key column names to (position, type OID) in the source row
+	// stream; a key column absent from the source is unroutable.
+	colBy := map[string]int{}
+	for i, c := range cols {
+		colBy[c.Name] = i
+	}
+	keyIdx := make([]int, 0, len(dstDist.Keys))
+	keyOid := make([]uint32, 0, len(dstDist.Keys))
+	for _, k := range dstDist.Keys {
+		idx, ok := colBy[k]
+		if !ok {
+			return 0, &directDegradedError{
+				reason: fmt.Sprintf("dest dist-key column %q is not in the source table", k),
+			}
+		}
+		keyIdx = append(keyIdx, idx)
+		keyOid = append(keyOid, cols[idx].Oid)
+	}
+
+	// 3. Per-segment pipes + utility-mode COPY sessions. Each segment receives
+	//    its own well-formed binary-COPY stream (header + its rows + trailer)
+	//    from the RowRouter: the router writes to the pipe's write end, the
+	//    segment's utility `COPY FROM STDIN` reads the read end. Results are
+	//    collected on one buffered channel (no shared mutable state).
+	type segRes struct {
+		rows int64
+		err  error
+	}
+	res := make(chan segRes, D)
+	segWriters := make([]io.Writer, D)
+	var pipeW []io.Closer // write ends, closed by the router/main on completion
+	for i, seg := range segs {
+		dsn, err := segmentDSN(m.cfg.Dest, seg)
+		if err != nil {
+			_ = m.closePipes(pipeW)
+			return 0, &directDegradedError{reason: err.Error()}
+		}
+		w, r := net.Pipe()
+		pipeW = append(pipeW, w)
+		segWriters[i] = w
+		go func(i int, dsn string, r io.ReadCloser) {
+			defer r.Close() // unblock the router's write to this segment on exit
+			defer func() {
+				if p := recover(); p != nil {
+					res <- segRes{err: fmt.Errorf("segment %d copy panic: %v", i, p)}
+				}
+			}()
+			c, err := pg.NewConn(ctx, dsn, m.cfg.SSLCert, m.cfg.SSLKey, m.cfg.SSLCA, m.cfg.SSLMinTLS)
+			if err != nil {
+				res <- segRes{err: fmt.Errorf("connect segment %d: %w", i, err)}
+				return
+			}
+			defer c.Close()
+			sql := fmt.Sprintf(`COPY %s.%s FROM STDIN (FORMAT binary)`,
+				quoteIdentDSN(u.DstSchema), quoteIdentDSN(target))
+			n, err := c.WriteCopy(ctx, r, sql)
+			if err != nil && !isEOF(err) {
+				res <- segRes{err: fmt.Errorf("segment %d COPY: %w", i, err)}
+				return
+			}
+			res <- segRes{rows: n}
+		}(i, dsn, r)
+	}
+	// collectSegs drains the D segment results (exactly-once).
+	collectSegs := func() (int64, error) {
+		var (
+			n     int64
+			first error
+		)
+		for i := 0; i < int(D); i++ {
+			r := <-res
+			n += r.rows
+			if r.err != nil && first == nil {
+				first = r.err
+			}
+		}
+		return n, first
+	}
+
+	// 4. Source --> framed pipe --> RowRouter --> per-segment pipes.
+	fp := m.framedPipe(uint32(u.UnitID))
+	rw, err := transfer.NewRowRouter(fp, keyIdx, keyOid, D, segWriters)
+	if err != nil {
+		_ = fp.Abort()
+		_ = m.closePipes(pipeW)
+		_, _ = collectSegs()
+		return 0, &directDegradedError{reason: err.Error()}
+	}
+	routeErr := make(chan error, 1)
+	go func() {
+		_, e := rw.Run()
+		routeErr <- e
+	}()
+	srcErr := make(chan error, 1)
+	go func() {
+		defer func() { _ = fp.Close() }()
+		defer func() {
+			if p := recover(); p != nil {
+				srcErr <- fmt.Errorf("source copy panic: %v", p)
+			}
+		}()
+		_, e := m.src.CopyToStream(ctx, t.Schema, t.Name, m.pacedWriter(fp))
+		if e != nil && !isEOF(e) {
+			srcErr <- e
+		} else {
+			srcErr <- nil
+		}
+	}()
+
+	// 5. Wait: the router finishes when the source stream reaches EOF, then
+	//    close the per-segment pipes so the segment COPYs see end-of-copy.
+	rErr := <-routeErr
+	_ = m.closePipes(pipeW)
+	n, segErr := collectSegs()
+	sErr := <-srcErr
+
+	// The first root-cause error wins. A segment failure is the cause; the
+	// router's subsequent "closed pipe" (the segment closed its read side) and
+	// a source error that followed the abort are its consequences. So report
+	// the segment error first, then the route error, then the source error.
+	if segErr != nil {
+		return 0, fmt.Errorf("direct dest: %w", segErr)
+	}
+	if rErr != nil {
+		return 0, fmt.Errorf("direct route: %w", rErr)
+	}
+	if sErr != nil {
+		return 0, fmt.Errorf("direct source: %w", sErr)
+	}
+	// Cross-check: rows the destination wrote == rows the router saw.
+	if n != rw.Rows() {
+		return 0, fmt.Errorf("direct: dest rows %d != routed rows %d", n, rw.Rows())
+	}
+	return n, nil
+}
+
+func (m *Manager) closePipes(w []io.Closer) error {
+	var first error
+	for _, c := range w {
+		if c != nil {
+			if err := c.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+// directDegradedError marks a table that cannot use the direct path; the
+// caller falls back to the coordinator path (correct, just not segment-direct).
+type directDegradedError struct{ reason string }
+
+func (e *directDegradedError) Error() string { return "direct mode: " + e.reason }
+
+func isDirectDegraded(err error) bool {
+	var d *directDegradedError
+	return errors.As(err, &d)
+}
+
+// quoteIdentDSN quotes a SQL identifier (the dest agent's helper is not
+// exported; keep a local copy for DSN/COPY building in this file).
+func quoteIdentDSN(s string) string {
+	out := make([]byte, 0, len(s)+2)
+	out = append(out, '"')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' {
+			out = append(out, '"', '"')
+		} else {
+			out = append(out, s[i])
+		}
+	}
+	out = append(out, '"') // closing quote
+	return string(out)
 }
 
 // pacedWriter throttles the source-side writes to the limiter's current rate

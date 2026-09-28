@@ -23,3 +23,4 @@ poc/pg9426.tar.bz2
 
 # diagnostic driver build artifact
 /segdump
+r5probe2

@@ -71,6 +71,16 @@ const (
 	// COPY ... TO PROGRAM ... ON SEGMENT; slices stream over direct TCP to
 	// the controller (~2.0x throughput, verified on the lab).
 	CopyOnSegment CopyMode = "on_segment"
+	// CopyDirect is the fully segment-direct path (R5 endgame): the source
+	// streams through the coordinator (already correct), gpstream computes
+	// the destination segment per row (route.JumpConsistentHash over the
+	// dist key, T4b) and writes each segment's rows directly into that
+	// segment's local staging slice via utility-mode `COPY ... FROM STDIN`.
+	// The destination coordinator is out of the write path. Requires a
+	// Greenplum destination with a hash-distributed table and a
+	// distribution-key type R5 can hash (int2/4/8, text, varchar, bytea);
+	// any other table degrades to the coordinator path.
+	CopyDirect CopyMode = "direct"
 )
 
 // Config is the fully resolved runtime configuration. It is the single source
@@ -255,9 +265,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown verify mode %q", c.Verify)
 	}
 	switch c.CopyMode {
-	case "", CopyCoordinator, CopyOnSegment:
+	case "", CopyCoordinator, CopyOnSegment, CopyDirect:
 	default:
-		return fmt.Errorf("unknown copy mode %q (want coordinator|on_segment)", c.CopyMode)
+		return fmt.Errorf("unknown copy mode %q (want coordinator|on_segment|direct)", c.CopyMode)
 	}
 	if c.CopyMode == CopyOnSegment && c.SegBinary == "" {
 		return fmt.Errorf("--copy-mode on_segment requires --seg-binary (gpstream-segreceiver path on the segment hosts)")

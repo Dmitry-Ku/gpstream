@@ -1303,6 +1303,10 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --overwrite, --skip-conflicts    conflict handling
   --compression zstd[:level]       compression (none|zlib|zstd)
   --copy-mode on_segment           segment-direct fast path (Fallback B, T-B)
+  --copy-mode direct               fully segment-direct (R5): route rows to dest
+                                   segments directly, dest coordinator out of the
+                                   write path (degrades to coordinator per table
+                                   when a table can't be routed)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the segment hosts
   --streams N                      parallel stream workers

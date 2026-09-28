@@ -57,10 +57,15 @@ func (b *BinaryCopyStream) WriteRow(row []byte) (int, error) {
 	return b.w.Write(row)
 }
 
-// End writes the end-of-stream marker (int16 -1).
+// End writes the end-of-stream marker (int16 -1). It ensures the header was
+// written first, so a segment that received zero rows still gets a well-formed
+// (empty) binary-COPY stream: header + trailer.
 func (b *BinaryCopyStream) End() error {
 	if b.ended {
 		return nil
+	}
+	if err := b.Begin(); err != nil {
+		return err
 	}
 	m := make([]byte, 2)
 	binary.BigEndian.PutUint16(m, 0xFFFF) // -1
