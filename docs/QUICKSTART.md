@@ -5,9 +5,12 @@ high-speed network, **without any intermediate storage**. This guide is the
 minimal path to a copy: configure the endpoints, choose a scope, dry-run first,
 run, monitor, and recover if needed.
 
-> **Safety default:** the conflict action is **`skip-existing`** by default.
-> gpstream **never overwrites existing data** unless you explicitly pass
-> `--overwrite` (or the more conservative `--overwrite-only-conflicts`).
+> **Safety default:** conflicts **stop the run** (FR-10 §8). By default gpstream
+> **never overwrites and never skips silently** — if a table already exists on
+> the destination, the copy halts with a conflict error and nothing is clobbered.
+> To proceed you must opt in explicitly: `--skip-conflicts` (skip conflicting
+> units), or `--overwrite` / `--truncate` / `--append` (replace / truncate+load /
+> append).
 
 > **Cluster requirement:** `--help`, `dry-run`, and `plan` run against a
 > built-in fake and need no live cluster. **`copy` (and `doctor`) require a
@@ -210,21 +213,30 @@ gpstream rollback --mirror /tmp/gpstream_<hash>.mirror --yes
 
 ---
 
-## 8. Conflict handling (the safe default)
+## 8. Conflict handling (conflicts stop the run)
+
+When a unit's target table **already exists** on the destination, gpstream must
+decide what to do. **By default it refuses and stops the run** (FR-10 §8): the
+copy halts with a conflict error and **nothing is clobbered and nothing is
+silently skipped**. You must opt in to a policy explicitly.
 
 | Flag | Behaviour |
 | --- | --- |
-| *(default)* | **`skip-existing`** — never clobber existing data. |
-| `--overwrite` | Overwrite existing data. |
+| *(default)* | **Strict** — a conflict **stops the run** (skip-existing with `--skip-conflicts` OFF). Nothing is overwritten, nothing is skipped. |
+| `--skip-conflicts` | Skip conflicting units and continue (the old "safe skip" behaviour — now an explicit opt-in). |
+| `--overwrite` | Replace existing data (staging + atomic rename; verified before the swap). |
 | `--overwrite-only-conflicts` | Overwrite **only** the tables that have a conflict (v2 refinement; more conservative than `--overwrite`). |
-| `--truncate` | Truncate then load. |
-| `--append` | Append. |
-| `--skip-conflicts` | Skip conflicting units. |
+| `--truncate` | Truncate the target, then load into it. |
+| `--append` | Append to the existing target. |
 
-The default is **`skip-existing`**: gpstream will **not** overwrite existing data
-unless you explicitly opt in with `--overwrite` (or the more conservative
-`--overwrite-only-conflicts`). The dry-run lists any conflicts and the action that
-would apply, so you can see the impact before running.
+The dry-run lists any conflicts and the **verdict that would apply** (stop /
+skip / overwrite / truncate / append), so you can see the impact — and, for the
+default, exactly which run would stop — before you run.
+
+> **Choosing:** for a first copy of a fresh destination there are no conflicts
+> and the run proceeds. When re-copying into a cluster that already holds data,
+> decide deliberately: `--skip-conflicts` to keep what's there, or
+> `--overwrite`/`--truncate`/`--append` to replace it.
 
 ---
 
@@ -246,9 +258,12 @@ export GPSTREAM_DEST="host=preprod-coordinator  port=5432 user=gpstream dbname=p
 gpstream dry-run --dbs orders
 #   (add --plan-file /tmp/plan.json to persist it)
 
-# 3. Inspect: units, volume, ETA, conflicts (action=skip-existing), redistribution, plan hash
+# 3. Inspect: units, volume, ETA, conflicts (default verdict = stop), redistribution, plan hash
 
-# 4. Run the copy (default conflict action = skip-existing; never overwrites)
+# 4. Run the copy. On a fresh destination there are no conflicts, so the run
+#    proceeds. If a target table already exists, the run STOPS by default —
+#    re-run with --skip-conflicts (keep what's there) or --overwrite
+#    (replace it) to proceed deliberately.
 gpstream run --db orders --metrics-addr http://localhost:9100
 
 # 5. Monitor
@@ -271,7 +286,7 @@ instead of the default `--consistent-db`.
 | --- | --- |
 | Endpoints | `--source`, `--dest` |
 | Scope | `--full`, `--db`, `--schema`, `--table`, `--exclude`, `--metadata-only`, `--data-only` |
-| Conflict | `--skip-existing`, `--overwrite`, `--overwrite-only-conflicts`, `--truncate`, `--append`, `--skip-conflicts` |
+| Conflict | *(default: conflicts stop the run)* — `--skip-conflicts` (alias `--skip-existing`) to skip, or `--overwrite` / `--overwrite-only-conflicts` / `--truncate` / `--append` to proceed |
 | Performance | `--compress none|zlib|zstd[:1-19]`, `--rate-limit <Gbps>`, `--workers-per-pair N`, `--data-port-range a-b` |
 | Resilience | `--auto-resume N`, `--verify full|sample|off` |
 | Consistency | `--consistent-db`, `--consistent-cluster` |

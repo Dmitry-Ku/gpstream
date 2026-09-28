@@ -61,12 +61,13 @@ Selection; combinable.
 .BR \-metadata\-only | \-data\-only
 Copy only metadata, or only data (default: both).
 .TP
-.BR \-skip\-existing | \-overwrite | \-truncate | \-append
-Conflict policy; default
-.BR skip\-existing .
-.TP
-.BR \-skip\-conflicts
-Skip conflicting tables without stopping (default: off, strict).
+.BR \-skip\-conflicts " (alias " \-skip\-existing ")
+Skip conflicting tables and continue.
+.BR \-overwrite | \-truncate | \-append
+Replace / truncate-then-load / append the destination object.
+Default (none of the above): a conflict
+.B "stops the run"
+(nothing overwritten, nothing skipped).
 .TP
 .BR \-rename\-db
 .IR "src=dst"

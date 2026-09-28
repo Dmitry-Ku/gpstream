@@ -397,7 +397,15 @@ func detectConflicts(ctx context.Context, tabs []Table, dst pg.Querier, cfg *con
 			c := Conflict{DB: t.DB, Schema: t.DstSchema, Table: t.DstName}
 			switch cfg.ConflictAction {
 			case config.SkipExisting:
-				c.Action = "skip (default)"
+				// FR-10 §8: the DEFAULT (skip-existing, --skip-conflicts off)
+				// is STRICT — the run STOPS on a conflict, so the dry-run must
+				// say the copy will end in an error (spec §3 verdict). An
+				// explicit --skip-conflicts / --skip-existing skips instead.
+				if cfg.SkipConflicts {
+					c.Action = "skip (--skip-conflicts)"
+				} else {
+					c.Action = "STOP (default: re-run with --skip-conflicts to skip, or --overwrite/--truncate/--append to replace)"
+				}
 			case config.Overwrite:
 				c.Action = "overwrite"
 			case config.Truncate:

@@ -181,10 +181,13 @@ func TestManagerRunHonoursDistribution(t *testing.T) {
 	}
 }
 
-// TestManagerSkipConflict verifies a conflicting unit is skipped under the
-// default skip-existing policy (FR-10/FR-11) and the run still succeeds.
+// TestManagerSkipConflict verifies the EXPLICIT skip policy (FR-10/FR-11):
+// with --skip-conflicts (SkipConflicts=true) a conflicting unit is skipped and
+// the run still succeeds. (The DEFAULT without --skip-conflicts is strict: it
+// stops the run — see TestManagerStrictConflictStops.)
 func TestManagerSkipConflict(t *testing.T) {
-	cfg := config.Default() // ConflictAction = SkipExisting
+	cfg := config.Default()
+	cfg.SkipConflicts = true // --skip-conflicts: explicit opt-in to skipping
 	payload := []byte("data")
 	m, _ := newManager(t, &cfg, payload, payload)
 
@@ -199,6 +202,40 @@ func TestManagerSkipConflict(t *testing.T) {
 	}
 	if m.Units != 0 {
 		t.Errorf("units = %d, want 0 (nothing copied)", m.Units)
+	}
+}
+
+// TestManagerStrictConflictStops verifies the FR-10 §8 DEFAULT: without a
+// conflict policy (--skip-conflicts off) a conflicting unit STOPS the run —
+// the run returns a ConflictError, the unit is journaled failed, and nothing
+// is copied or clobbered.
+func TestManagerStrictConflictStops(t *testing.T) {
+	cfg := config.Default() // skip-existing, SkipConflicts=false -> strict
+	payload := []byte("data")
+	m, _ := newManager(t, &cfg, payload, payload)
+
+	p := oneUnitPlan()
+	p.Units[0].HasConflict = true
+
+	err := m.Run(context.Background(), p)
+	if err == nil {
+		t.Fatal("run should stop on a conflict (strict default)")
+	}
+	var ce *ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("error = %v, want *ConflictError", err)
+	}
+	if ce.Schema != "public" || ce.Table != "orders" {
+		t.Errorf("conflict target = %s.%s, want public.orders", ce.Schema, ce.Table)
+	}
+	if m.Units != 0 {
+		t.Errorf("units = %d, want 0 (nothing copied)", m.Units)
+	}
+	if m.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0 (a strict conflict is not skipped)", m.Skipped)
+	}
+	if m.Failures != 1 {
+		t.Errorf("failures = %d, want 1", m.Failures)
 	}
 }
 

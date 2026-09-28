@@ -91,33 +91,38 @@ follow-up `--data-only` for the rows.
 
 ## 4. Conflict handling (the single most important safety control)
 
-The destination may already contain objects. The default is deliberately
-**safe**:
+The destination may already contain objects. **By default gpstream refuses to
+touch them: a conflict stops the run** (FR-10 §8). Nothing is clobbered and
+nothing is silently skipped — the copy halts with a conflict error so the
+operator decides deliberately.
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `--skip-existing` | **default** | Never clobber an existing object; skip it. |
-| `--overwrite` | — | Replace the destination object. |
+| *(default)* | **strict** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
+| `--skip-conflicts` (alias `--skip-existing`) | — | Skip conflicting objects and continue (the old "safe skip" — now an explicit opt-in). |
+| `--overwrite` | — | Replace the destination object (staging + atomic rename, verified before the swap). |
 | `--truncate` | — | Truncate then reload. |
 | `--append` | — | Append rows to the destination object. |
 | `--conflict-action` | — | Pick one of the above explicitly. |
 
-The **default `ConflictAction` is `SkipExisting`**, so a bare `gpstream run`
-will **never** destroy existing destination data. If you must overwrite, say so
-explicitly.
+The **default `ConflictAction` is `SkipExisting` with `--skip-conflicts` OFF**,
+so a bare `gpstream run` **stops on the first conflict** rather than silently
+skipping or overwriting. To proceed you opt in: `--skip-conflicts` to keep what's
+already there, or `--overwrite`/`--truncate`/`--append` to replace it.
 
 Two further controls protect you from silent clobbering:
 
-- `--skip-conflicts` — **off by default (strict)**. When off, conflicts are
-  **surfaced**, not silently skipped. You see what would collide.
+- `--skip-conflicts` — **off by default (strict)**. When off, conflicts **stop
+  the run**. When on, they are skipped and reported in `conflicts.jsonl`.
 - `--overwrite-only-conflicts` — only overwrite the objects that actually conflict.
 
 Also, `--rename-db src=dst`, `--rename-schema src=dst`, and
 `--rename-table src=dst` (all `KV` form) remap names into the destination so a
 run never lands on a live name it should not touch.
 
-> Rule of thumb: in production, run strict (leave `--skip-conflicts` off), review
-> the surfaced conflicts, and only then decide whether to widen the action.
+> Rule of thumb: in production, run strict (leave `--skip-conflicts` off), let
+> the run stop on the first conflict, review `conflicts.jsonl`, and only then
+> re-run with an explicit policy.
 
 ---
 

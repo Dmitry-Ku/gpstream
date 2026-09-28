@@ -175,7 +175,8 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--data-only":
 			cfg.DataOnly = true
 
-		// Conflict / safety (FR-10/FR-11). Spec §5 uses discrete flags;
+		// Conflict / safety (FR-10/FR-11). The DEFAULT is strict: conflicts
+		// STOP the run (FR-10 §8). The flags below are explicit opt-ins.
 		// --conflict-action is a convenience alias.
 		case "--overwrite":
 			cfg.ConflictAction = config.Overwrite
@@ -184,8 +185,12 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--append":
 			cfg.ConflictAction = config.Append
 		case "--skip-existing":
+			// Explicit opt-in to skipping conflicts (the default already
+			// stops the run; this makes the skip behaviour deliberate).
 			cfg.ConflictAction = config.SkipExisting
+			cfg.SkipConflicts = true
 		case "--skip-conflicts":
+			cfg.ConflictAction = config.SkipExisting
 			cfg.SkipConflicts = true
 		case "--conflict-action":
 			i++

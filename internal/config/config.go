@@ -27,12 +27,23 @@ const (
 	CompZstd Compression = "zstd"
 )
 
-// ConflictAction controls how the planner treats tables that already exist in
-// the destination (FR-10/FR-11).
+// ConflictAction controls how the planner/manager treats tables that already
+// exist in the destination (FR-10/FR-11). Combined with SkipConflicts it
+// yields the runtime conflict policy (FR-10 §8):
+//
+//	SkipExisting + !SkipConflicts (the DEFAULT) -> STRICT: the run STOPS on a
+//	  conflict so the operator decides (re-run with --skip-conflicts /
+//	  --overwrite / a rename). Nothing is clobbered.
+//	SkipExisting + SkipConflicts (--skip-conflicts / --skip-existing) -> the
+//	  conflicting unit is skipped and the run continues.
+//	Overwrite / Truncate / Append -> explicitly rewrite the destination
+//	  (Overwrite additionally skips tables whose checksum already matches).
 type ConflictAction string
 
 const (
-	// SkipExisting is the default: never clobber existing data.
+	// SkipExisting is the default conflict action. On its OWN (SkipConflicts
+	// off) it is STRICT: the run stops on a conflict (FR-10 §8). Paired with
+	// SkipConflicts it skips conflicting units.
 	SkipExisting ConflictAction = "skip-existing"
 	Overwrite    ConflictAction = "overwrite"
 	Truncate     ConflictAction = "truncate"

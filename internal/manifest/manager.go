@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
@@ -260,18 +261,33 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		work     = make(chan *Unit, len(units))
 		errMu    sync.Mutex
 		firstErr error
+		// stopConflict is set once a unit hits a strict conflict (FR-10 §8,
+		// default): the run must STOP so the operator sees the collision.
+		// In-flight units finish (their work is already underway and is safe),
+		// but no new unit starts; the run returns the ConflictError.
+		stopConflict atomic.Bool
 	)
 	dispatch := func() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for u := range work {
+				// A strict conflict stops the batch (FR-10 §8): drain the
+				// channel without processing so the run can return the
+				// conflict error instead of silently copying the rest.
+				if stopConflict.Load() {
+					continue
+				}
 				// A panic while processing a unit is a genuine fault (CR-7):
-				// recover it so the worker does not die. The unit is recorded as
-				// a failure (a resume can retry it, FR-06/FR-07) and the worker
-				// continues with the next unit, so a dead worker's loss of one
-				// unit does not kill the batch (FR-06).
+				// recover it so the worker does not die. The unit is recorded
+				// as a failure (a resume can retry it, FR-06/FR-07) and the
+				// worker continues with the next unit, so a dead worker's loss
+				// of one unit does not kill the batch (FR-06).
 				if err := m.processUnitSafe(ctx, u); err != nil {
+					var ce *ConflictError
+					if errors.As(err, &ce) {
+						stopConflict.Store(true)
+					}
 					errMu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -365,14 +381,35 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		_ = m.journal.SetState(u)
 		reReading = true
 	}
-	// Conflict policy: skip-existing default (FR-10/FR-11). Skip when the
-	// destination already holds the target — either because the planner flagged
-	// a conflict (u.Conflict) or a live existence check confirms it. Re-read
-	// units are exempt: their conflict IS the previous result being replaced.
-	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.SkipExisting && (u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)) {
-		m.addSkipped()
-		m.journal.CreateUnit(u, StatePending)
-		return nil
+	// Conflict policy (FR-10/FR-11, spec F-10 §8). Re-read units are exempt:
+	// their conflict IS the previous result being replaced. A conflict is
+	// present when the planner flagged it (u.Conflict) or a live existence
+	// check confirms the destination already holds the target.
+	//
+	//   strict (default): ConflictAction=skip-existing AND --skip-conflicts is
+	//     OFF. A conflict STOPS the run: the unit is marked failed and the run
+	//     returns an error, so the operator sees the collision and decides
+	//     (re-run with --skip-conflicts / --overwrite / a rename). Nothing is
+	//     clobbered.
+	//   skip: ConflictAction=skip-existing AND --skip-conflicts (or an explicit
+	//     --skip-existing). The conflicting unit is skipped; the run continues.
+	//   proceed: --overwrite / --truncate / --append explicitly opt in to
+	//     rewriting the destination (overwrite additionally skips tables whose
+	//     data already matches, below).
+	if !reReading && u.Table != "" {
+		conflicted := u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)
+		if conflicted && m.cfg.ConflictAction == config.SkipExisting {
+			if m.cfg.SkipConflicts {
+				m.addSkipped()
+				m.journal.CreateUnit(u, StatePending)
+				return nil
+			}
+			// strict default (FR-10 §8): surface the conflict and stop.
+			u.State = StateFailed
+			_ = m.journal.SetState(u)
+			m.addFailure()
+			return &ConflictError{Schema: u.DstSchema, Table: u.DstName}
+		}
 	}
 	// F-10 §8: --overwrite checksum-skip — a conflicting table whose data is
 	// ALREADY identical on the destination (same row-order-independent content
@@ -425,6 +462,21 @@ func (m *Manager) overwriteChecksumMatches(ctx context.Context, u *Unit) bool {
 		return false
 	}
 	return srcSum != "" && srcSum == dstSum
+}
+
+// ConflictError is returned (FR-10 §8, strict default) when a unit collides
+// with an object that already exists on the destination and no conflict
+// policy was given. The run STOPS with this error so the operator sees the
+// collision and decides (re-run with --skip-conflicts, --overwrite,
+// --truncate, --append, or a rename). Nothing is clobbered.
+type ConflictError struct {
+	Schema string
+	Table  string
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("conflict: %s.%s already exists on the destination and no conflict policy was given (re-run with --skip-conflicts to skip it, or --overwrite/--truncate/--append to replace it)",
+		e.Schema, e.Table)
 }
 
 // tableFor maps a run unit back to the plan.Table the source COPY reads
