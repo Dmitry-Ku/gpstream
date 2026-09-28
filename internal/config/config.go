@@ -135,8 +135,13 @@ type Config struct {
 	DataPortRange  string // "a-b"
 
 	// Resilience (FR-06/FR-07).
-	AutoResume int        // N >= 0; 0 = manual only
-	Verify     VerifyMode // default sample
+	AutoResume int // N >= 0; 0 = manual only
+	// OnUnitFailure selects what the run does when a unit fails (spec F-06):
+	// "continue" (default) records the failure, lets the rest of the units
+	// finish, and hands the failed units to `gpstream resume`; "abort" stops
+	// the run at the first failure (in-flight units finish, none new starts).
+	OnUnitFailure string     // continue (default) | abort
+	Verify        VerifyMode // default sample
 	// ResumeConsistency selects the resume re-read semantics (T5, DESIGN
 	// §2.2): "relaxed" (default) keeps a table verified in one snapshot
 	// epoch; "strict" re-reads every table verified under an older snapshot.
@@ -251,6 +256,11 @@ func (c Config) Validate() error {
 	if c.AutoResume < 0 {
 		return fmt.Errorf("auto-resume must be >= 0")
 	}
+	switch c.OnUnitFailure {
+	case "", "continue", "abort":
+	default:
+		return fmt.Errorf("unknown on-unit-failure %q (want continue|abort)", c.OnUnitFailure)
+	}
 	switch c.ResumeConsistency {
 	case "", "relaxed", "strict":
 	default:
@@ -358,6 +368,9 @@ func (c *Config) ApplyEnv() {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.AutoResume = n
 		}
+	}
+	if v, ok := get("ON_UNIT_FAILURE"); ok {
+		c.OnUnitFailure = v
 	}
 	// Secrets: only from env, never argv (FR-08).
 	if v, ok := get("SSL_CERT"); ok {
@@ -520,6 +533,8 @@ func assignConfigString(c *Config, key, v string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.AutoResume = n
 		}
+	case "on_unit_failure":
+		c.OnUnitFailure = v
 	case "resume_consistency":
 		c.ResumeConsistency = v
 	case "verify":

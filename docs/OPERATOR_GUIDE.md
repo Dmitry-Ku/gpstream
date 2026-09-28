@@ -223,7 +223,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 |--------|------|-----------|
 | `rate_limit_shift` | every adaptive rate-limit change (F-14) | `from_gbps`, `to_gbps`, `reason` (cpu %, disk latency, queue) |
 | `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (strict default) or `skip` (`--skip-conflicts`) |
-| `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `error` |
+| `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
 
 It is a diagnostic log, not the durable record (that is the journal), so a
@@ -247,6 +247,14 @@ not in a terminal state; units already in a terminal state are skipped. A worker
 dying **does not abort the whole job** — the manager reassigns the dead
 worker's units to a live one. `--auto-cleanup` removes service files
 automatically on success.
+
+What happens to the REST of the job when a unit fails is `--on-unit-failure`
+(spec F-06): the default `continue` records the failed unit (journal +
+`events.jsonl`) and keeps copying everything else, so the run ends with a full
+summary and `gpstream resume --operation-id <id>` re-queues the failed units.
+`--on-unit-failure=abort` stops the run at the first failure instead (in-flight
+units finish; no new unit starts) — use it when a failed unit usually means
+the environment is broken and copying on would only make it worse.
 
 ---
 

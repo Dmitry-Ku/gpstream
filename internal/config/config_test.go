@@ -42,6 +42,9 @@ func TestDefault(t *testing.T) {
 	if !c.ConsistentDB {
 		t.Errorf("default consistency should be db")
 	}
+	if c.OnUnitFailure != "" {
+		t.Errorf("default on-unit-failure = %q, want empty (continue)", c.OnUnitFailure)
+	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("default config should validate, got %v", err)
 	}
@@ -56,6 +59,7 @@ func TestValidateErrors(t *testing.T) {
 		{"zstd too low", func(c *Config) { c.ZstdLevel = 0 }},
 		{"workers zero", func(c *Config) { c.WorkersPerPair = 0 }},
 		{"negative auto-resume", func(c *Config) { c.AutoResume = -1 }},
+		{"bad on-unit-failure", func(c *Config) { c.OnUnitFailure = "bogus" }},
 		{"both metadata and data", func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }},
 		{"both consistent modes", func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},

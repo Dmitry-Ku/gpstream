@@ -282,6 +282,15 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		// In-flight units finish (their work is already underway and is safe),
 		// but no new unit starts; the run returns the ConflictError.
 		stopConflict atomic.Bool
+		// abortMode (spec F-06, --on-unit-failure=abort): when enabled, the
+		// FIRST unit failure stops the batch. The DEFAULT (continue) is the
+		// opposite: the run keeps going so the operator gets the full failure
+		// summary, then `gpstream resume` re-queues the failed units.
+		abortMode = m.cfg.OnUnitFailure == "abort"
+		// stopOnFailure is set once a unit fails while abortMode is on: no
+		// new unit starts, in-flight units finish, and the run returns the
+		// first failure.
+		stopOnFailure atomic.Bool
 	)
 	dispatch := func() {
 		wg.Add(1)
@@ -291,7 +300,7 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 				// A strict conflict stops the batch (FR-10 §8): drain the
 				// channel without processing so the run can return the
 				// conflict error instead of silently copying the rest.
-				if stopConflict.Load() {
+				if stopConflict.Load() || stopOnFailure.Load() {
 					continue
 				}
 				// A panic while processing a unit is a genuine fault (CR-7):
@@ -303,6 +312,11 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 					var ce *ConflictError
 					if errors.As(err, &ce) {
 						stopConflict.Store(true)
+					} else if abortMode {
+						// spec F-06 --on-unit-failure=abort: the first
+						// genuine unit failure stops the batch (a strict
+						// conflict is a stop of its own, FR-10 §8).
+						stopOnFailure.Store(true)
 					}
 					errMu.Lock()
 					if firstErr == nil {
@@ -458,8 +472,11 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		m.healSnapshot(ctx)
 		// F-04: retry/failure event — a resume (or an explicit re-run)
 		// retries the unit; the operator sees the failure and its cause.
+		// on_unit_failure records the mode the run is applying (spec F-06:
+		// continue = default, keep going; abort = stop at first failure).
 		m.events.Log("unit_failed", "schema", u.Schema, "table", u.Table,
-			"attempts", u.Attempts, "error", err.Error())
+			"attempts", u.Attempts, "on_unit_failure", m.cfg.OnUnitFailure,
+			"error", err.Error())
 		return err
 	}
 	return nil

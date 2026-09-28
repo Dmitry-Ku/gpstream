@@ -185,6 +185,7 @@ is selected.
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
 | `--verify full\|sample\|off` | `Verify` | `sample` |
 | `--resume-consistency relaxed\|strict` | `ResumeConsistency` | `""` → relaxed (T5, DESIGN §2.2) |
+| `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Consistency (FR-02)
 | Flag | Config field | Default |

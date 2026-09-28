@@ -39,10 +39,10 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: **doctor has no extension check** (MADlib/PostGIS/orafce — `grep` → none); **no `.github/ISSUE_TEMPLATE` / `PULL_REQUEST_TEMPLATE`** (`.github/` has only `workflows/`); **`docs/design.md` is absent** (required by F-08 for dependency justification); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
 - **BLOCKED-INFRA**: RPM/DEB build host + clean-host acceptance.
 
-### F-06 — Resilience + `--auto-resume N` — **PARTIAL**
+### F-06 — Resilience + `--auto-resume N` — **DONE** (flag + abort mode closed 28.09)
 - Spec: auto-resume a failed chunk ≤ N times; `--on-unit-failure=continue|abort` (default continue); failed unit re-queued by `resume`; controller re-attach from manifest+state.
-- Evidence: `--auto-resume` (`main.go:232`); `processUnitSafe` (`manager.go:218-230`) recovers panics, marks the unit `failed`, keeps the worker alive; `Run` loop (`manager.go:160-215`) continues past a failing unit (records `firstErr`, keeps going = "continue" default); re-attach via journal `LoadFromMirror` + `resume`.
-- Gaps: **`--on-unit-failure` flag is missing** (`grep` → none) — "abort" mode does not exist; the dead-worker's in-flight unit is marked failed for `resume` rather than re-queued mid-run (acceptable but not the literal re-queue).
+- Evidence: `--auto-resume` (`main.go`); `processUnitSafe` recovers panics, marks the unit `failed`, keeps the worker alive; `Run` loop continues past a failing unit by default (`continue`) or stops at the first failure (`--on-unit-failure=abort`, `stopOnFailure` gate in the worker pool — in-flight units finish, none new starts; `TestManagerOnUnitFailureAbort`/`TestManagerOnUnitFailureContinue`); re-attach via journal `LoadFromMirror` + `resume`. The `unit_failed` event now records `on_unit_failure` (the mode in effect).
+- Gaps: the dead-worker's in-flight unit is marked failed for `resume` rather than re-queued mid-run (acceptable, not the literal re-queue).
 - **BLOCKED-INFRA**: serial 50-fault acceptance test.
 
 ### F-07 — Integrity after failure, minimal rollback — **PARTIAL**
@@ -144,7 +144,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
 | F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
 | F-05 | PARTIAL | doctor no extension check; no issue/PR templates; no design.md |
-| F-06 | PARTIAL | --on-unit-failure flag + abort mode missing |
+| F-06 | DONE | --on-unit-failure continue/abort implemented (28.09); 50-fault serial acceptance infra-blocked |
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
 | F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
@@ -166,8 +166,8 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    implemented (`monitor.EventLog` + Manager hooks: rate-shift, conflict,
    unit-failed, unit-reread). Remaining from this item: F-13 audit log of
    actions (separate).
-2. **F-06 `--on-unit-failure=continue|abort`** — add the flag + abort mode
-   (continue default already works).
+2. **F-06 `--on-unit-failure=continue|abort`** — DONE 28.09 (flag + abort mode
+   + tests; `unit_failed` event carries the mode).
 3. **F-02 per-table fallback flag** — explicit fallback mode (the mandatory
    concurrent-write exclusion test ALREADY EXISTS — scale24).
 4. **F-12 small-table auto-disable** — compression-off threshold for tiny tables.

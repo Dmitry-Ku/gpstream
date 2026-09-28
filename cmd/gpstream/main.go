@@ -246,6 +246,11 @@ func parseConfig(args []string) (config.Config, error) {
 			// fresh snapshot.
 			i++
 			cfg.ResumeConsistency = args[i]
+		case "--on-unit-failure":
+			// spec F-06: continue (default) = a failed unit is recorded and
+			// the run keeps going; abort = stop at the first failure.
+			i++
+			cfg.OnUnitFailure = args[i]
 
 		// Frame-level ACK / RST-resume (DESIGN §4.6, Tier-1, R2).
 		case "--frame-ack":
@@ -1329,6 +1334,7 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --max-bw <Gbps>                  total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
   --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
+  --on-unit-failure MODE           on a failed unit: continue (default) | abort (F-06)
   --frame-ack on|off               frame-level ACK + RST-resume (default on, §4.6)
   --ack-timeout 15s|30s|adaptive   blackhole detector (default 30s; adaptive = 3x median RTT)
   --max-reconnects N               reconnect budget (default 20; exhausted = unit failed)

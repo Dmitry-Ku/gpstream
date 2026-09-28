@@ -69,6 +69,83 @@ func TestManagerPanicRecovery(t *testing.T) {
 	}
 }
 
+// TestManagerOnUnitFailureAbort verifies (spec F-06) that
+// --on-unit-failure=abort stops the run at the first unit failure: the failed
+// unit is journaled, NO unit after it is started (a serial run must not copy
+// the second table), and the run returns the failure. The DEFAULT (continue)
+// is the opposite — TestManagerPanicRecovery above covers it.
+func TestManagerOnUnitFailureAbort(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkersPerPair = 1 // serial: abort must be observable between units
+	cfg.OnUnitFailure = "abort"
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+
+	src := pg.NewFakeConn()
+	src.On("format_type", [][]any{
+		{"id", "integer", true, ""},
+		{"customer", "text", false, `''::text`},
+	})
+	src.OnReadCopy("TO STDOUT", payload)
+	src.SetPanicCopyTimes(1) // unit 1 fails; unit 2 must never start
+
+	dst := pg.NewFakeConn()
+	dst.OnWriteCopy("FROM STDIN")
+	dst.OnReadCopy("TO STDOUT", payload)
+	dst.On("pg_class", [][]any{})
+
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	err := m.Run(context.Background(), twoUnitPlan())
+	if err == nil {
+		t.Fatalf("expected the abort-mode run to return the failure, got nil")
+	}
+	if m.Failures != 1 {
+		t.Errorf("failures = %d, want 1 (the first failed unit)", m.Failures)
+	}
+	if m.Units != 0 {
+		t.Errorf("units = %d, want 0 (abort: no unit may start after the first failure)", m.Units)
+	}
+	if u := j.Get(2); u != nil && u.State != "" {
+		t.Errorf("unit 2 must never be started in abort mode, got state %s", u.State)
+	}
+}
+
+// TestManagerOnUnitFailureContinue verifies (spec F-06) the DEFAULT: with
+// --on-unit-failure=continue (the default) a failed unit does NOT stop the
+// run — the next unit still completes and both outcomes are reported.
+func TestManagerOnUnitFailureContinue(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkersPerPair = 1 // serial
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+
+	src := pg.NewFakeConn()
+	src.On("format_type", [][]any{
+		{"id", "integer", true, ""},
+		{"customer", "text", false, `''::text`},
+	})
+	src.OnReadCopy("TO STDOUT", payload)
+	src.SetPanicCopyTimes(1) // unit 1 fails
+
+	dst := pg.NewFakeConn()
+	dst.OnWriteCopy("FROM STDIN")
+	dst.OnReadCopy("TO STDOUT", payload)
+	dst.On("pg_class", [][]any{})
+
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	if err := m.Run(context.Background(), twoUnitPlan()); err == nil {
+		t.Fatalf("expected the run to return the failed unit's error, got nil")
+	}
+	if m.Failures != 1 {
+		t.Errorf("failures = %d, want 1 (the failed unit is recorded)", m.Failures)
+	}
+	if m.Units != 1 {
+		t.Errorf("units = %d, want 1 (continue: the next unit still completes)", m.Units)
+	}
+}
+
 // TestManagerPanicInCopyStream verifies (FR-06) that a panic inside a copy
 // sub-goroutine (not the worker's own goroutine) is recovered as an error and
 // does not crash the run — the data-path goroutines have their own recovery.
