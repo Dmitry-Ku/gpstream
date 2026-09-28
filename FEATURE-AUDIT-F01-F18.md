@@ -17,7 +17,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-02 — Source-state consistency + fragment cleanup — **PARTIAL**
 - Spec: per-DB `READ ONLY, REPEATABLE READ` snapshot; mandatory concurrent-write-during-copy test; per-table fallback flag; `cleanup --operation-id`/`--all-incomplete`.
 - Evidence: `manager.go:51-55` `snapshotMode`/`snapshotTx` — a real long-running read-only REPEATABLE READ transaction on the source, all unit COPYs read from it. `manager.go:160-215` releases snapshot after all units. Tests: `manifest/manager_snapshot_test.go:38,67,94` (DB/cluster/no-snapshot). `cmd/gpstream/main.go:880+` `cmdCleanup` is real (`--operation-id`, `--all-incomplete`, `--mode drop`, `--yes`).
-- Gaps: (a) **per-table fallback flag is missing** (`grep per-table` → none; only `ConsistentDB`/`ConsistentCluster` in `config.go:133-136`); (b) the **mandatory "concurrent source writes during copy are excluded" test is not present** — only `TestManagerParallelConcurrentStats` (concurrent *stats*, `manager_test.go:234`); (c) 2-DB concurrent-write + kill -9 acceptance needs real clusters.
+- Gaps: (a) **per-table fallback flag is missing** (`grep per-table` → none; only `ConsistentDB`/`ConsistentCluster` in `config.go:133-136`); (b) the **mandatory "concurrent source writes during copy are excluded" test EXISTS** (28.09 re-check): `integration/scale24_test.go TestScale24TablesConsistentSnapshot` — a writer loop hammers all 24 source tables during the copy, the destination must equal exactly the pre-copy rows, and the test asserts the writer DID write (live, M2, GREEN); (c) 2-DB concurrent-write + kill -9 acceptance needs real clusters (kill -9 on live GP6 done in E3).
 - Test: snapshot tests exist; concurrent-write exclusion test absent.
 
 ### F-03 — Performance on small AO partitioned-table tail — **PARTIAL**
@@ -83,8 +83,8 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 
 ### F-13 — Secure connections — **PARTIAL**
 - Spec: TLS 1.2+ (prefer 1.3) sender↔receiver, CA + mTLS, config 0600; PG `sslmode=verify-full`; creds only env/`.pgpass`; **audit log of actions**.
-- Evidence: `transfer/pg/pg.go:66` `buildTLS(cert,key,CA,minTLS)`; pgx reads `.pgpass` (pgpassfile dep); creds via `GPSTREAM_*` env (`config.go:225`); `doctor.go:240` TLS handshake check.
-- Gaps: **production data path is the in-memory pipe, so TLS between sender/receiver is not actually exercised** (the TCP/TLS mode exists but is test-only); **`ServerName:""` (`pg.go:154`) means verify-full host-name verification is not enforced**; **audit log of actions is missing** (`grep auditlog` → none).
+- Evidence: `transfer/pg/pg.go:66` `buildTLS(cert,key,CA,minTLS)`; `pg.go:61 ensureVerifyFull` (28.09 re-check): when the DSN has no explicit `sslmode`, the connection is forced to `sslmode=verify-full` (an explicit value is respected); pgx reads `.pgpass` (pgpassfile dep); creds via `GPSTREAM_*` env (`config.go:225`); `doctor.go:240` TLS handshake check.
+- Gaps: **production data path is the in-memory pipe, so TLS between sender/receiver is not actually exercised** (the TCP/TLS mode exists but is test-only); **`ServerName:""` (`pg.go:176`) means the verify-full hostname check is not enforced** (verify-full is ON as default sslmode, but the Go TLS layer still skips host-name verification); **audit log of actions is missing** (`grep auditlog` → none).
 - **BLOCKED-INFRA**: wireshark encrypted-traffic acceptance.
 
 ### F-14 — Rate limiting + adaptive control — **PARTIAL**
@@ -105,64 +105,84 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: **column-level collation (`attcollation`) comparison is missing** (only DB-level); static build not confirmed.
 - **BLOCKED-INFRA**: two-distro/glibc run + `C`↔`en_US.UTF-8` data-correctness acceptance.
 
-### F-17 — Background index re-creation — **PARTIAL (near-STUB)**
+### F-17 — Background index re-creation — **DONE (core)**
 - Spec: after data copy, a **background pool** building secondary indexes then PK/unique **last**, with `--index-parallel`, progress in status/metrics, retry of failed; GP6 has no `CREATE INDEX CONCURRENTLY` so "background" = async post-load pool.
-- Evidence: `index/indexer.go:41-53` `Rebuild` = a **single synchronous `REINDEX TABLE`** inside `runUnit` (step 7, before the atomic rename). `--index-parallel`/`IndexWorkers` config exists (`config.go:106`, `indexer.go:29-38`) but `Rebuild` does **not** use a pool.
-- Gaps (concrete): **no background pool**, **no "secondary first, PK/unique last" ordering** (single REINDEX does everything at once), **no post-load async phase** (it runs synchronously before swap), **no per-index progress/retry**. This is the weakest "implemented" feature — the config surface exists but the behavior is a one-shot REINDEX.
-- Test: index 88.9% (of the simple path).
+- Evidence (re-verified 28.09, supersedes the earlier "near-STUB" finding): `index.Pool` (`index/indexer.go`) is a real bounded prioritized pool — N workers (`--index-workers`/`--index-parallel`), `--index-priority size|manual`, `onProgress` wired to `monitor.Metrics` (queue depth + done), `requeueIndexes` (`manager.go:796`) re-enqueues units killed after swap (idempotent `createOneIndex`: existing index → REINDEX by name), `IndexDone` journal flag prevents duplicate REINDEX on keep. Ordering **secondary-first, PK/unique last** is implemented in `source.Indexes` (`source.go:184-193`, `indisunique/indisprimary`). Jobs are enqueued after the atomic swap (post-load, read-only window) — the "background" semantics the spec asks for.
+- Remaining gaps: the old synchronous `Builder.Rebuild` (single REINDEX) still exists as a separate path; the "data available read-only during index phase" acceptance is live-verifiable on the testbed but not yet run.
+- Test: index 87.8%, requeue covered by t7.
 
 ### F-18 — Naming — **DONE**
 - Binary, package, module, metrics, docs all use **gpstream** (`go.mod` module `github.com/gpstream/gpstream`, `cmd/gpstream`, `man/gpstream.8`). No gap.
 
-## Coverage snapshot (`go test -cover`, cached)
+## Coverage snapshot (28.09, `go test -cover`, non-race, HEAD 33c174e)
 ```
-config        79.4%   transfer/pg   72.4%   cmd/gpstream  73.7%
-doctor        98.0%   transfer      90.5%   cmd/e2e       0.0%
-index         88.9%   transfer/dest 86.3%   cmd/eptest    0.0%
-manifest      81.2%   source        92.1%   cmd/pgboot    0.0%
-resume        91.7%   ratelimit     92.3%
-monitor       98.0%   compress      80.6%
-plan          88.2%   selftest      88.8%
-topology      98.4%
+config        65.4%   transfer/pg   46.5%   cmd/gpstream  68.3%
+doctor        88.7%   transfer      82.3%   cmd/{e2e,...} 0.0% (test harness)
+index         87.8%   transfer/dest 80.4%
+manifest      58.1%   source        75.0%   route         72.4%
+resume        91.7%   segstream     77.1%
+monitor       98.2%   compress      80.6%
+plan          89.1%   selftest      88.8%
+topology      91.5%   ratelimit     92.3%
 ```
-"Unit coverage ≥ 80%" (F-09) is **not met** for `config` (79.4%), `transfer/pg` (72.4%), `cmd/gpstream` (73.7%). The 0% entries are test-harness helpers (e2e/epg/pgboot), not product code.
+"Unit coverage ≥ 80%" (F-09) is **not met** for: manifest (58.1%), config (65.4%),
+cmd/gpstream (68.3%), route (72.4%), source (75.0%), segstream (77.1%),
+transfer/pg (46.5%). The 0% entries are test-harness helpers, not product code.
+
+**CI-FLAKE FOUND (28.09):** `internal/route TestPairMapBruteForceNonGolden`
+fails under `-cover` (231–328 s > its hard 120 s wall-clock limit; plain run
+36 s OK). `.github/workflows/ci.yml` runs `go test -cover` → CI will be red on
+this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
+`heavy` tag/schedule.
 
 ## Summary status table
 | Feat | Status | One-line gap |
 |------|--------|--------------|
 | F-01 | DONE | (100TB acceptance infra-blocked) |
-| F-02 | PARTIAL | no per-table fallback flag; no concurrent-write-exclusion test |
+| F-02 | PARTIAL | no per-table fallback flag; (concurrent-write test EXISTS — scale24) |
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
 | F-04 | PARTIAL | events.jsonl missing; no live ETA/queue metrics |
 | F-05 | PARTIAL | doctor no extension check; no issue/PR templates; no design.md |
 | F-06 | PARTIAL | --on-unit-failure flag + abort mode missing |
-| F-07 | PARTIAL | mechanism real; kill-mid-chunk acceptance infra-blocked |
+| F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
 | F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
-| F-09 | PARTIAL | 3 packages <80%; integration/fault/scale infra-blocked |
+| F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
 | F-11 | PARTIAL | no post-load sequence setval; no extension check |
 | F-12 | PARTIAL | no small-table auto-disable |
-| F-13 | PARTIAL | data path not TLS-exercised; verify-full hostname off; no audit log |
+| F-13 | PARTIAL | data path not TLS-exercised; verify-full ON by default but hostname check off (ServerName:""); no audit log |
 | F-14 | PARTIAL | events.jsonl rate-shift logging missing |
 | F-15 | PARTIAL | segment balance max/avg metric missing |
 | F-16 | PARTIAL | no column-level collation compare |
-| F-17 | PARTIAL | single synchronous REINDEX, not a background PK-last pool |
+| F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
 | F-18 | DONE | — |
 
-## Closable in-env (no external cluster needed) — prioritized by impact
-1. **F-17 background index pool** — restructure `indexer.Rebuild` into a post-load async pool: secondary indexes first, PK/unique last, honor `IndexWorkers`, per-index progress + retry. Highest-impact real gap.
-2. **F-04/F-14 `events.jsonl`** — add a diagnostic event log (rate shifts with pair/old/new/reason, conflicts, retries, auto-recovery). Closes two features at once.
-3. **F-06 `--on-unit-failure=continue|abort`** — add the flag + abort mode (continue default already works).
-4. **F-10 `conflicts.jsonl`** — persist conflicts to a file (and manifest).
-5. **F-13 verify-full + audit log** — set TLS `ServerName` for host verification; add an audit log of actions.
-6. **F-02** — add the per-table fallback flag and the mandatory concurrent-write-during-copy exclusion test.
-7. **F-15** — add the segment balance max/avg metric to the monitor/report.
-8. **F-11** — add post-load sequence `setval` sync.
-9. **F-05/F-11 doctor extension check** — detect MADlib/PostGIS/orafce presence in the destination.
-10. **F-12** — small-table auto-disable threshold.
-11. **F-16** — column-level (`attcollation`) collation comparison.
-12. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) + `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE`.
-13. **F-09 coverage** — lift `config`/`transfer/pg`/`cmd/gpstream` to ≥80%.
+## Closable in-env (no external cluster needed) — prioritized by impact (re-ordered 28.09)
+0. **CI-FLAKE fix** — `TestPairMapBruteForceNonGolden` wall-clock limit (120 s)
+   is exceeded under `-cover` (231–328 s) → CI red. Raise the limit or move the
+   test to a `heavy` tag. (10 min, do first.)
+1. **F-04/F-14 `events.jsonl`** — add a diagnostic event log (rate shifts with
+   pair/old/new/reason, conflicts, retries, auto-recovery) + F-13 audit log of
+   actions. Closes two features at once.
+2. **F-06 `--on-unit-failure=continue|abort`** — add the flag + abort mode
+   (continue default already works).
+3. **F-02 per-table fallback flag** — explicit fallback mode (the mandatory
+   concurrent-write exclusion test ALREADY EXISTS — scale24).
+4. **F-12 small-table auto-disable** — compression-off threshold for tiny tables.
+5. **F-13 verify-full hostname** — set TLS `ServerName` from the DSN host so
+   verify-full actually validates the name (sslmode default is already
+   verify-full via ensureVerifyFull).
+6. **F-11 post-load sequence `setval`** sync.
+7. **F-05/F-11 doctor extension check** — detect MADlib/PostGIS/orafce presence
+   in the destination.
+8. **F-15** — add the segment balance max/avg metric to the monitor/report.
+9. **F-16** — column-level (`attcollation`) collation comparison.
+10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +
+    `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` + govulncheck in CI.
+11. **F-09 coverage** — lift manifest (58%)/config (65%)/cmd/gpstream (68%)/
+    source (75%)/route (72%)/segstream (77%)/transfer/pg (46%) to ≥80%.
+(Closed since the original list: F-17 background index pool, F-10
+conflicts.jsonl, F-10 strict default, F-09 live iptables/RST fault injection.)
 
 ## Blocked on infra (cannot finish in this environment)
 - F-01: 100+ TB no-disk acceptance (real GP6 clusters).
