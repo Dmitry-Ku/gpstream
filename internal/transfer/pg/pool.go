@@ -270,5 +270,26 @@ var (
 	_ Querier          = (*Pool)(nil)
 )
 
+// AcquireSnapshotConn hands out a DEDICATED pool connection for a per-table
+// snapshot transaction (FR-02 per-table fallback, --consistent-tables): the
+// caller runs BEGIN ... COMMIT on the returned querier so the whole
+// statement sequence of ONE table (the data COPY plus the checksum read)
+// shares one short REPEATABLE READ snapshot. Unlike Pin (one run-wide
+// snapshot connection, mutually exclusive), many snapshot connections may be
+// out at once — each in-flight unit gets its own, so parallel workers each
+// hold their table's snapshot independently. The release func MUST be called
+// after COMMIT/ROLLBACK to return the connection to the pool.
+func (p *Pool) AcquireSnapshotConn(ctx context.Context) (q StreamingQuerier, release func(), err error) {
+	c, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pool: snapshot conn: %w", err)
+	}
+	pinned := &pinnedConn{c: c, pool: p}
+	release = func() {
+		c.Release()
+	}
+	return pinned, release, nil
+}
+
 // reference so the pgx import is used even if pgxpool covers it transitively.
 var _ = pgx.ErrNoRows

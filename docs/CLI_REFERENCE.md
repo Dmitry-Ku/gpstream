@@ -190,8 +190,23 @@ is selected.
 ### Consistency (FR-02)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--consistent-db` | `ConsistentDB` | `true` (db scope; mutually exclusive with `--consistent-cluster`) |
-| `--consistent-cluster` | `ConsistentCluster` | `false` (cluster scope; mutually exclusive with `--consistent-db`) |
+| `--consistent-db` | `ConsistentDB` | `true` (db scope; mutually exclusive with `--consistent-cluster` / `--consistent-tables`) |
+| `--consistent-cluster` | `ConsistentCluster` | `false` (cluster scope; mutually exclusive with `--consistent-db` / `--consistent-tables`) |
+| `--consistent-tables` | `ConsistentTables` | `false` (per-table fallback: each table under its own short snapshot; the per-table discrepancy is documented — see below) |
+
+**Per-table fallback (`--consistent-tables`).** Instead of one long run-wide
+`READ ONLY, REPEATABLE READ` snapshot per database, each table is copied under
+its own **short** snapshot: the table's data COPY and its checksum read run on
+a dedicated connection with one REPEATABLE READ snapshot, which is released
+right after the table completes. **Documented trade-off (spec F-02):** the
+tables are therefore *not mutually consistent* — table N is read at a slightly
+different point in the source history than table N+1 (the discrepancy is
+bounded by the copy time of the tables in between). In exchange, the run does
+not hold a long snapshot, which avoids the vacuum pressure a long
+`--consistent-db` snapshot puts on a busy PROD. Use it only when a per-table
+discrepancy is acceptable (e.g. batch/analytics loads); for a strict
+point-in-time copy keep the default `--consistent-db`. The flag is an explicit
+fallback and is off by default.
 
 ### Transport (T-B, DESIGN §1.3)
 | Flag | Config field | Default |

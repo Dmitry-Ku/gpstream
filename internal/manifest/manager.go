@@ -687,21 +687,27 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    degrades to the coordinator path below (correct, just not direct).
 	//    fp is the framed pipe used by the coordinator path; it is nil for a
 	//    pure-direct unit (direct builds its own per-segment pipes).
+	//    FR-02 per-table fallback (--consistent-tables): the unit's source
+	//    reads run on a dedicated short snapshot (unitSource); endUnitSrc
+	//    closes it (COMMIT/ROLLBACK + pool release) when the unit finishes,
+	//    whatever the outcome.
+	us, endUnitSrc := m.unitSource(ctx)
+	defer endUnitSrc()
 	var (
 		rows int64
 		fp   *transfer.FramedPipe
 	)
 	switch {
 	case m.cfg.CopyMode == config.CopyDirect:
-		rows, err = m.copyStreamDirect(ctx, t, u, target, cols)
+		rows, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
 		if isDirectDegraded(err) {
 			// Unroutable table: fall back to the coordinator path.
 			fp = m.framedPipe(uint32(u.UnitID))
-			rows, err = m.copyStream(ctx, t, u, target, fp)
+			rows, err = m.copyStream(ctx, t, u, target, fp, us)
 		}
 	default:
 		fp = m.framedPipe(uint32(u.UnitID))
-		rows, err = m.copyStream(ctx, t, u, target, fp)
+		rows, err = m.copyStream(ctx, t, u, target, fp, us)
 	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
@@ -732,10 +738,13 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// 6. Verify the content checksum (FR-02): re-derive it on both sides and
 	//    compare, without re-copying the table. Skipped for --append (the final
 	//    holds existing + source rows, so an exact source checksum cannot match).
+	//    The checksum reads on us.agent so it sees the SAME snapshot as the
+	//    data COPY (in the per-table fallback that is the unit's dedicated
+	//    short snapshot; otherwise the run-wide pinned snapshot).
 	if verify {
 		u.State = StateVerifying
 		_ = m.journal.SetState(u)
-		srcSum, err := m.src.Checksum(ctx, t.Schema, t.Name)
+		srcSum, err := us.agent.Checksum(ctx, t.Schema, t.Name)
 		if err != nil {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
@@ -907,13 +916,13 @@ func (m *Manager) framedPipe(unitID uint32) *transfer.FramedPipe {
 // With --copy-mode on_segment (T-B) the source side is the segment-direct
 // transport instead: the kernel streams one framed slice per primary segment
 // to the controller listener, which merges them into the same pipe.
-func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe) (int64, error) {
+func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe, us unitSource) (int64, error) {
 	if m.cfg.CopyMode == config.CopyOnSegment {
 		// The segment-direct path builds its own framed pipe (the merged slice
 		// stream); the coordinator pipe the caller pre-created is unused, so
 		// close it to avoid a leaked net.Pipe.
 		_ = fp.Close()
-		return m.copyStreamSegmentDirect(ctx, t, u, staging)
+		return m.copyStreamSegmentDirect(ctx, t, u, staging, us)
 	}
 	var (
 		dstRows int64
@@ -961,7 +970,7 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 				srcErr = fmt.Errorf("source copy panic: %v", r)
 			}
 		}()
-		_, err := m.src.CopyToStream(ctx, t.Schema, t.Name, srcW)
+		_, err := us.agent.CopyToStream(ctx, t.Schema, t.Name, srcW)
 		if err != nil && !isEOF(err) {
 			srcErr = err
 		}
@@ -993,7 +1002,7 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 // binary-COPY stream and feeds it through the same framed/compressed pipe as
 // the coordinator path, so the destination is unchanged. The kernel waits for
 // all segreceivers to exit (DF_NEED_TWO_PHASE) before the COPY returns.
-func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string) (int64, error) {
+func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string, us unitSource) (int64, error) {
 	n, err := m.primarySegmentCount(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("segment-direct: %w", err)
@@ -1069,9 +1078,10 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	// The kernel runs the segreceiver on each primary and waits for all of
 	// them to exit before the COPY returns (DF_NEED_TWO_PHASE); this blocks
 	// until every slice stream is complete. The ON SEGMENT COPY dispatches
-	// the coordinator's snapshot to the segments (DF_WITH_SNAPSHOT), so it
-	// must run on the snapshot connection in FR-02 mode (m.srcRead()).
-	if _, err := m.srcRead().Exec(ctx, sql); err != nil {
+	// the snapshot to the segments (DF_WITH_SNAPSHOT), so it must run on the
+	// unit's snapshot connection: the pinned run-wide snapshot (FR-02 default
+	// modes) or the unit's dedicated short snapshot (per-table fallback).
+	if _, err := us.q.Exec(ctx, sql); err != nil {
 		_ = fp.Close()
 		<-dstDone
 		return 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
@@ -1232,7 +1242,7 @@ func segmentDSN(destDSN string, seg destSegment) (string, error) {
 // unsupported dist-key type, a key column absent from the source, or a
 // non-Greenplum destination) returns a *directDegradedError; the caller falls
 // back to the coordinator path for that table.
-func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column) (int64, error) {
+func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column, us unitSource) (int64, error) {
 	// 1. Destination topology: the up primaries in content order.
 	segs, err := m.destSegments(ctx)
 	if err != nil {
@@ -1353,7 +1363,7 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 				srcErr <- fmt.Errorf("source copy panic: %v", p)
 			}
 		}()
-		_, e := m.src.CopyToStream(ctx, t.Schema, t.Name, m.pacedWriter(fp))
+		_, e := us.agent.CopyToStream(ctx, t.Schema, t.Name, m.pacedWriter(fp))
 		if e != nil && !isEOF(e) {
 			srcErr <- e
 		} else {
@@ -1553,6 +1563,80 @@ func (m *Manager) unpinSource() {
 	// (or closed), so route source reads back to the base querier. Reading
 	// a stale pinned agent nil-derefs (puddle resource released).
 	m.src = source.New(m.srcQ)
+}
+
+// unitSource is the source read configuration for ONE unit: the agent that
+// runs the data COPY and the checksum read, and the raw querier that dispatches
+// the ON SEGMENT statement (segment-direct path). In the run-wide snapshot
+// modes (default --consistent-db / --consistent-cluster) this is the pinned
+// snapshot connection; in the per-table fallback (--consistent-tables) it is
+// a dedicated short snapshot connection owned by the unit; with no snapshot it
+// is the base source pool. Threading it per unit (instead of a shared field)
+// is what makes the per-table fallback parallel-safe: each in-flight unit
+// holds its own independent snapshot.
+type unitSource struct {
+	agent *source.Agent
+	q     pg.StreamingQuerier
+}
+
+// unitSource returns the source read configuration for the current unit and an
+// end func that MUST be called exactly once (defer it) when the unit finishes:
+// in per-table mode it ends the unit's short snapshot transaction (COMMIT, or
+// ROLLBACK if a statement aborted it) and returns the connection to the pool.
+// Outside per-table mode end is a no-op.
+//
+// FR-02 per-table fallback (spec: «допустимый режим "по таблицам" (каждая
+// таблица — свой короткий снимок, расхождение задокументировано) — только как
+// явный fallback-флаг»): the data COPY and the checksum read of one table run
+// on one dedicated REPEATABLE READ snapshot connection, so they see one
+// consistent point for THAT table. The per-table discrepancy (tables are not
+// mutually consistent) is the documented trade-off, in exchange for not holding
+// a long run-wide snapshot that pressures PROD vacuum.
+func (m *Manager) unitSource(ctx context.Context) (us unitSource, end func()) {
+	q, endPT := m.perTableSnapshotConn(ctx)
+	if q != nil {
+		return unitSource{agent: source.New(q), q: q}, endPT
+	}
+	// Run-wide snapshot or no snapshot: the base source agent already wraps
+	// the pinned connection (snapshot modes) or the pool (no snapshot), and
+	// srcRead() is the matching querier for the ON SEGMENT dispatch.
+	return unitSource{agent: m.src, q: m.srcRead()}, func() {}
+}
+
+// perTableSnapshotConn acquires a dedicated pool connection and opens a short
+// REPEATABLE READ snapshot on it, for the FR-02 per-table fallback. It returns
+// the connection and an end func (COMMIT/ROLLBACK + release), or (nil, no-op)
+// outside per-table mode, for a non-pool source, or on any acquisition failure
+// (non-fatal: the unit proceeds without a pinned snapshot, same policy as the
+// run-wide snapshot).
+func (m *Manager) perTableSnapshotConn(ctx context.Context) (q pg.StreamingQuerier, end func()) {
+	if !m.cfg.ConsistentTables {
+		return nil, func() {}
+	}
+	pool, ok := m.srcQ.(*pg.Pool)
+	if !ok {
+		// A fake / bare-Conn source has no pool to draw a second transaction
+		// connection from; a fake COPY is already consistent. Degrade to base.
+		return nil, func() {}
+	}
+	c, release, err := pool.AcquireSnapshotConn(ctx)
+	if err != nil {
+		return nil, func() {}
+	}
+	if _, err := c.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
+		release()
+		return nil, func() {}
+	}
+	end = func() {
+		// COMMIT ends a healthy snapshot. On an aborted transaction (a failed
+		// statement) COMMIT errors — ROLLBACK clears the 25P02 state before
+		// the connection returns to the pool.
+		if _, cerr := c.Exec(context.Background(), `COMMIT`); cerr != nil {
+			_, _ = c.Exec(context.Background(), `ROLLBACK`)
+		}
+		release()
+	}
+	return c, end
 }
 
 // beginSnapshotTx opens the read-only REPEATABLE READ transaction that pins the

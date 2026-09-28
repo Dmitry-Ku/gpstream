@@ -289,7 +289,7 @@ instead of the default `--consistent-db`.
 | Conflict | *(default: conflicts stop the run)* — `--skip-conflicts` (alias `--skip-existing`) to skip, or `--overwrite` / `--overwrite-only-conflicts` / `--truncate` / `--append` to proceed |
 | Performance | `--compress none|zlib|zstd[:1-19]`, `--rate-limit <Gbps>`, `--workers-per-pair N`, `--data-port-range a-b` |
 | Resilience | `--auto-resume N`, `--verify full|sample|off` |
-| Consistency | `--consistent-db`, `--consistent-cluster` |
+| Consistency | `--consistent-db`, `--consistent-cluster`, `--consistent-tables` |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size|manual`, `--background-indexes` |
 | Redistribution | `--no-redistribute`, `--skew-threshold X`, `--redistribution-plan`, `--distribution-check` |
 | TLS | `--ssl-cert`, `--ssl-key`, `--ssl-ca`, `--ssl-min-tls` (secrets from env/file, never argv) |

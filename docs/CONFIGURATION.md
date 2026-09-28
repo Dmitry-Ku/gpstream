@@ -111,8 +111,9 @@ it.
 ### 1.14 Consistency (FR-02)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `ConsistentDB` | bool | **`true`** | `--consistent-db` (mutually exclusive with `ConsistentCluster`) |
-| `ConsistentCluster` | bool | `false` | `--consistent-cluster` (mutually exclusive with `ConsistentDB`) |
+| `ConsistentDB` | bool | **`true`** | `--consistent-db` (mutually exclusive with `ConsistentCluster` / `ConsistentTables`) |
+| `ConsistentCluster` | bool | `false` | `--consistent-cluster` (mutually exclusive with `ConsistentDB` / `ConsistentTables`) |
+| `ConsistentTables` | bool | `false` | `--consistent-tables` — per-table fallback: each table under its own short snapshot (per-table discrepancy, off by default) |
 
 ### 1.15 v2 conflict refinement (§6.3)
 | Field | Type | Default | Source |
@@ -287,7 +288,7 @@ failed validation aborts the command.
 | workers-per-pair | `WorkersPerPair` must be **≥ 1** | `workers-per-pair must be >= 1, got N` |
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
-| consistency scope | `--consistent-db` and `--consistent-cluster` are **mutually exclusive** | `--consistent-db and --consistent-cluster are mutually exclusive` |
+| consistency scope | `--consistent-db`, `--consistent-cluster` and `--consistent-tables` are **mutually exclusive** (pairwise) | `--consistent-db and --consistent-cluster are mutually exclusive` / `--consistent-tables and --consistent-db are mutually exclusive` |
 | conflict action | must be `skip-existing`/`overwrite`/`truncate`/`append` | `unknown conflict action "…"` |
 | verify mode | must be `full`/`sample`/`off` | `unknown verify mode "…"` |
 

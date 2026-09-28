@@ -62,6 +62,8 @@ func TestValidateErrors(t *testing.T) {
 		{"bad on-unit-failure", func(c *Config) { c.OnUnitFailure = "bogus" }},
 		{"both metadata and data", func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }},
 		{"both consistent modes", func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }},
+		{"consistent-tables and db", func(c *Config) { c.ConsistentDB, c.ConsistentTables = true, true }},
+		{"consistent-tables and cluster", func(c *Config) { c.ConsistentCluster, c.ConsistentTables = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},
 		{"bad verify", func(c *Config) { c.Verify = "bogus" }},
 	}
@@ -115,5 +117,14 @@ func TestApplyEnv(t *testing.T) {
 	}
 	if c.LogLevel != LogDebug {
 		t.Errorf("log level = %v, want debug", c.LogLevel)
+	}
+}
+
+func TestApplyEnvConsistentTables(t *testing.T) {
+	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "true")
+	c := Default()
+	c.ApplyEnv()
+	if !c.ConsistentTables {
+		t.Errorf("consistent-tables = false, want true from env")
 	}
 }

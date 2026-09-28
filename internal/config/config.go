@@ -177,9 +177,15 @@ type Config struct {
 	Quiet      bool
 	Debug      bool
 
-	// Consistency (FR-02).
+	// Consistency (FR-02). The three consistency scopes are mutually
+	// exclusive: ConsistentDB (default) pins one long-running
+	// REPEATABLE READ snapshot per database; ConsistentCluster adds a
+	// cluster-wide freeze; ConsistentTables is the explicit per-table
+	// fallback (each table under its own short snapshot — the documented
+	// discrepancy between tables is the trade-off, spec F-02).
 	ConsistentDB      bool // default
 	ConsistentCluster bool
+	ConsistentTables  bool // explicit fallback flag (spec F-02)
 
 	// Transport (T-B, DESIGN §1.3). CopyMode selects the source data path;
 	// the on_segment fields configure the segment-direct fast path.
@@ -271,6 +277,12 @@ func (c Config) Validate() error {
 	}
 	if c.ConsistentDB && c.ConsistentCluster {
 		return fmt.Errorf("--consistent-db and --consistent-cluster are mutually exclusive")
+	}
+	if c.ConsistentTables && c.ConsistentCluster {
+		return fmt.Errorf("--consistent-tables and --consistent-cluster are mutually exclusive")
+	}
+	if c.ConsistentTables && c.ConsistentDB {
+		return fmt.Errorf("--consistent-tables and --consistent-db are mutually exclusive")
 	}
 	if c.NoRedistribute && c.SkewThreshold < 0 {
 		return nil // fine
@@ -371,6 +383,9 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("ON_UNIT_FAILURE"); ok {
 		c.OnUnitFailure = v
+	}
+	if v, ok := get("CONSISTENT_TABLES"); ok {
+		c.ConsistentTables = v == "true" || v == "1"
 	}
 	// Secrets: only from env, never argv (FR-08).
 	if v, ok := get("SSL_CERT"); ok {
@@ -535,6 +550,8 @@ func assignConfigString(c *Config, key, v string) {
 		}
 	case "on_unit_failure":
 		c.OnUnitFailure = v
+	case "consistent_tables":
+		c.ConsistentTables = v == "true" || v == "1"
 	case "resume_consistency":
 		c.ResumeConsistency = v
 	case "verify":

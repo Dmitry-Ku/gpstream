@@ -17,8 +17,8 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-02 — Source-state consistency + fragment cleanup — **PARTIAL**
 - Spec: per-DB `READ ONLY, REPEATABLE READ` snapshot; mandatory concurrent-write-during-copy test; per-table fallback flag; `cleanup --operation-id`/`--all-incomplete`.
 - Evidence: `manager.go:51-55` `snapshotMode`/`snapshotTx` — a real long-running read-only REPEATABLE READ transaction on the source, all unit COPYs read from it. `manager.go:160-215` releases snapshot after all units. Tests: `manifest/manager_snapshot_test.go:38,67,94` (DB/cluster/no-snapshot). `cmd/gpstream/main.go:880+` `cmdCleanup` is real (`--operation-id`, `--all-incomplete`, `--mode drop`, `--yes`).
-- Gaps: (a) **per-table fallback flag is missing** (`grep per-table` → none; only `ConsistentDB`/`ConsistentCluster` in `config.go:133-136`); (b) the **mandatory "concurrent source writes during copy are excluded" test EXISTS** (28.09 re-check): `integration/scale24_test.go TestScale24TablesConsistentSnapshot` — a writer loop hammers all 24 source tables during the copy, the destination must equal exactly the pre-copy rows, and the test asserts the writer DID write (live, M2, GREEN); (c) 2-DB concurrent-write + kill -9 acceptance needs real clusters (kill -9 on live GP6 done in E3).
-- Test: snapshot tests exist; concurrent-write exclusion test absent.
+- Gaps: (a) **per-table fallback flag — DONE 28.09** (`--consistent-tables`, `Config.ConsistentTables`, mutually exclusive with the run-wide modes; per-table short snapshot via `pg.Pool.AcquireSnapshotConn` + `Manager.unitSource`/`perTableSnapshotConn`; the data COPY and the checksum read of one table share the unit's short REPEATABLE READ snapshot; the per-table discrepancy is documented in CLI_REFERENCE/CONFIGURATION/OPERATOR_GUIDE; live test `integration/f02_per_table_test.go` asserts t_a excludes post-snapshot writer rows while t_b includes pre-snapshot writer rows); (b) the **mandatory "concurrent source writes during copy are excluded" test EXISTS** (28.09 re-check): `integration/scale24_test.go TestScale24TablesConsistentSnapshot` — a writer loop hammers all 24 source tables during the copy, the destination must equal exactly the pre-copy rows, and the test asserts the writer DID write (live, M2, GREEN); (c) 2-DB concurrent-write + kill -9 acceptance needs real clusters (kill -9 on live GP6 done in E3).
+- Test: snapshot tests exist; concurrent-write exclusion test exists (scale24); per-table fallback live test exists (f02_per_table).
 
 ### F-03 — Performance on small AO partitioned-table tail — **PARTIAL**
 - Spec: pipeline (read N+1 while writing N), batching of housekeeping, leaf-partition parallelism with a cap, ANALYZE/VACUUM post-job only.
@@ -140,7 +140,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | Feat | Status | One-line gap |
 |------|--------|--------------|
 | F-01 | DONE | (100TB acceptance infra-blocked) |
-| F-02 | PARTIAL | no per-table fallback flag; (concurrent-write test EXISTS — scale24) |
+| F-02 | PARTIAL | per-table fallback flag DONE 28.09 (`--consistent-tables`); (concurrent-write test EXISTS — scale24; per-table live test f02_per_table); 2-DB concurrent-write + kill -9 acceptance needs real clusters |
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
 | F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
 | F-05 | PARTIAL | doctor no extension check; no issue/PR templates; no design.md |
@@ -168,8 +168,8 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    actions (separate).
 2. **F-06 `--on-unit-failure=continue|abort`** — DONE 28.09 (flag + abort mode
    + tests; `unit_failed` event carries the mode).
-3. **F-02 per-table fallback flag** — explicit fallback mode (the mandatory
-   concurrent-write exclusion test ALREADY EXISTS — scale24).
+3. **F-02 per-table fallback flag** — DONE 28.09 (`--consistent-tables`; per-table
+   short snapshot + documented discrepancy + live test f02_per_table).
 4. **F-12 small-table auto-disable** — compression-off threshold for tiny tables.
 5. **F-13 verify-full hostname** — set TLS `ServerName` from the DSN host so
    verify-full actually validates the name (sslmode default is already

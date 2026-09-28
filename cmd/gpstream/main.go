@@ -271,6 +271,8 @@ func parseConfig(args []string) (config.Config, error) {
 			cfg.ConsistentDB = true
 		case "--consistent-cluster":
 			cfg.ConsistentCluster = true
+		case "--consistent-tables":
+			cfg.ConsistentTables = true
 
 		// Transport (T-B, DESIGN §1.3). --copy-mode selects the source data
 		// path; on_segment needs the segreceiver binary path (on the segment
@@ -1334,6 +1336,9 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --max-bw <Gbps>                  total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
   --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
+  --consistent-tables              FR-02 fallback: each table under its own short
+                                   snapshot (per-table discrepancy documented);
+                                   off by default (--consistent-db is the default)
   --on-unit-failure MODE           on a failed unit: continue (default) | abort (F-06)
   --frame-ack on|off               frame-level ACK + RST-resume (default on, §4.6)
   --ack-timeout 15s|30s|adaptive   blackhole detector (default 30s; adaptive = 3x median RTT)

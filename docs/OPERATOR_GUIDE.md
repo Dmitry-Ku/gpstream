@@ -146,6 +146,7 @@ Consistency options let you copy an object atomically:
 |------|---------|
 | `--consistent-db` | Keep each DB consistent during the copy. |
 | `--consistent-cluster` | Keep the whole cluster consistent during the copy. |
+| `--consistent-tables` | Per-table fallback: each table under its own short snapshot (per-table discrepancy, see CLI_REFERENCE). |
 
 ---
 
