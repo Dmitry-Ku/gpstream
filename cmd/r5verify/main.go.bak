@@ -1,0 +1,5 @@
+package main
+import ("fmt";"os";"bufio";"strings";"strconv";"github.com/gpstream/gpstream/internal/route")
+func beInt32(v int64) []byte {b:=make([]byte,4);b[0]=byte(v>>24);b[1]=byte(v>>16);b[2]=byte(v>>8);b[3]=byte(v);return b}
+func segInt4(v int64) int32 {hk,_:=route.HashKeyDatum(route.OidInt4,beInt32(v));h:=route.Combine(0,hk,false);return route.JumpConsistentHash(uint64(h),4)}
+func main(){f,_:=os.Open(" /tmp/gs-work/vms/t1map2.tsv");sc:=bufio.NewScanner(f);sc.Buffer(make([]byte,1<<20),1<<20);c,bad:=0,0;for sc.Scan(){l:=sc.Text();c++;p:=strings.SplitN(l,"\x5ct",2);if len(p)!=2{continue};v,_:=strconv.ParseInt(p[0],10,64);w,_:=strconv.ParseInt(p[1],10,32);if segInt4(v)!=int32(w){bad++;if bad<5{fmt.Printf("MISMATCH key=%s want=%d got=%d\n",p[0],w,segInt4(v))}}}fmt.Printf("checked=%d mismatches=%d\n",c,bad)}
