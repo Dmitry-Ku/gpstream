@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # Heavy tests (TASK-SPEC F-09: "тяжёлые/scale-тесты — по тегам и
+  # расписанию"): full-domain pair-map brute force (2^32 sweep) runs here,
+  # not in the default pass, so CI's `go test -cover` stays fast and green.
+  schedule:
+    - cron: '30 3 * * 1' # Mondays 03:30 UTC
 
 jobs:
   build-test:
@@ -59,3 +65,20 @@ jobs:
         run: ./bin/gpstream selftest
       - name: doctor (no cluster, healthy baseline)
         run: ./bin/gpstream doctor
+
+  # Heavy/scale tests behind the `heavy` build tag (TASK-SPEC F-09: "тяжёлые/
+  # scale-тесты — по тегам и расписанию"). Runs on the schedule above (and on
+  # manual dispatch) so the default CI pass stays fast; -cover is NOT used
+  # here because the full-domain pair-map sweep is already slow under it
+  # (231–328 s observed vs ~36 s plain — see pairmap_heavy_test.go).
+  heavy:
+    if: github.event.schedule != '' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: heavy tests (-tags heavy)
+        run: go test -tags heavy -count=1 -timeout 50m ./internal/route/

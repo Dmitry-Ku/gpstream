@@ -12,7 +12,6 @@ package route
 
 import (
 	"testing"
-	"time"
 )
 
 // JCH не монотонен по h — фиксируем факт (опровергает интервальный метод).
@@ -136,34 +135,9 @@ func TestPairMapSparsity(t *testing.T) {
 	}
 }
 
-// Brute force для НЕ-встроенной пары (3, 5) работает и согласован
-// с consistency; время фиксируем мягко (план M3 «~секунды» — опровергнут,
-// факт: ~10-20 с на 8 ядрах).
-func TestPairMapBruteForceNonGolden(t *testing.T) {
-	t0 := time.Now()
-	m := PairMap(3, 5)
-	dur := time.Since(t0)
-	t.Logf("PairMap(3,5) brute force: %v", dur.Round(time.Millisecond))
-	if dur > 120*time.Second {
-		t.Fatalf("brute force too slow: %v", dur)
-	}
-	for s, ds := range m {
-		if s < 0 || s >= 3 {
-			t.Fatalf("bad s=%d", s)
-		}
-		for _, d := range ds {
-			if d < s {
-				t.Fatalf("consistency violated: (%d,%d)", s, d)
-			}
-		}
-	}
-	// хотя бы по одной паре на s
-	for s := int32(0); s < 3; s++ {
-		if len(m[s]) == 0 {
-			t.Fatalf("s=%d has no pairs", s)
-		}
-	}
-}
+// (Full-domain brute force for a non-golden pair moved to
+// pairmap_heavy_test.go under the `heavy` tag: it sweeps 2^32 and is run on
+// schedule in CI, not in the default pass — see ci.yml.)
 
 func TestPairMapEmpty(t *testing.T) {
 	if m := PairMap(0, 4); len(m) != 0 {
