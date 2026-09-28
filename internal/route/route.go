@@ -100,12 +100,18 @@ func HashInt8(v int64) uint32 {
 
 // JumpConsistentHash — jump consistent hash (arXiv:1406.2294), как в
 // GPDB cdbhash.c. numSegments = число primary (policy->numsegments).
+//
+// NOTE: the C source computes `j = (b+1) * ((double)(1<<31) / (double)((key>>33)+1))`
+// with the multiplication done in DOUBLE and the truncation to int64 applied
+// AFTER the product. Truncating the ratio first (integer multiply) diverges
+// from C at higher segment counts (D>=4) — verified against live gp_segment_id
+// on a 4-segment GP6 cluster.
 func JumpConsistentHash(key uint64, numSegments int32) int32 {
 	var b, j int64 = -1, 0
 	for j < int64(numSegments) {
 		b = j
 		key = key*2862933555777941757 + 1
-		j = (b + 1) * int64((float64(1<<31))/float64(uint64(key>>33)+1))
+		j = int64(float64(b+1) * (float64(1<<31) / float64(uint64(key>>33)+1)))
 	}
 	return int32(b)
 }
