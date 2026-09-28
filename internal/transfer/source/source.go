@@ -39,6 +39,7 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 	rows, err := a.q.Query(ctx,
 		`SELECT a.attname,
 		        format_type(a.atttypid, a.atttypmod),
+		        a.atttypid,
 		        NOT a.attnotnull,
 		        pg_get_expr(d.adbin, d.adrelid)
 		 FROM pg_attribute a
@@ -54,14 +55,15 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 	}
 	out := make([]pg.Column, 0, len(rows))
 	for _, r := range rows {
-		if len(r) < 4 {
+		if len(r) < 5 {
 			continue
 		}
 		out = append(out, pg.Column{
 			Name:     toStr(r[0]),
 			Type:     toStr(r[1]),
-			Nullable: toBool(r[2]),
-			Default:  toStr(r[3]),
+			Oid:      toUint32(r[2]),
+			Nullable: toBool(r[3]),
+			Default:  toStr(r[4]),
 		})
 	}
 	return out, nil
@@ -140,6 +142,23 @@ func toBool(v any) bool {
 		return b
 	default:
 		return false
+	}
+}
+
+// toUint32 renders a value as a uint32 (0 otherwise). pgx decodes an OID as a
+// uint32; a defensive numeric fallback keeps it driver-agnostic.
+func toUint32(v any) uint32 {
+	switch n := v.(type) {
+	case uint32:
+		return n
+	case int32:
+		return uint32(n)
+	case int64:
+		return uint32(n)
+	case uint64:
+		return uint32(n)
+	default:
+		return 0
 	}
 }
 

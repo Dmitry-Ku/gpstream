@@ -60,8 +60,8 @@ func TestDistribution(t *testing.T) {
 func TestColumns(t *testing.T) {
 	f := pg.NewFakeConn()
 	f.On("format_type", [][]any{
-		{"id", "integer", true, ""},
-		{"customer", "text", false, `''::text`},
+		{"id", "integer", uint32(23), true, ""},
+		{"customer", "text", uint32(25), false, `''::text`},
 	})
 	a := New(f)
 	cols, err := a.Columns(context.Background(), "public", "orders")
@@ -71,10 +71,10 @@ func TestColumns(t *testing.T) {
 	if len(cols) != 2 {
 		t.Fatalf("got %d cols, want 2: %+v", len(cols), cols)
 	}
-	if cols[0].Name != "id" || cols[0].Type != "integer" || !cols[0].Nullable {
+	if cols[0].Name != "id" || cols[0].Type != "integer" || !cols[0].Nullable || cols[0].Oid != 23 {
 		t.Fatalf("col0 = %+v", cols[0])
 	}
-	if cols[1].Name != "customer" || cols[1].Type != "text" || cols[1].Nullable {
+	if cols[1].Name != "customer" || cols[1].Type != "text" || cols[1].Nullable || cols[1].Oid != 25 {
 		t.Fatalf("col1 = %+v (customer should be NOT NULL)", cols[1])
 	}
 	if cols[1].Default != `''::text` {

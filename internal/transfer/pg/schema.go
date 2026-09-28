@@ -12,6 +12,9 @@ type Column struct {
 	// Type is a SQL type expression (from format_type), e.g. "integer",
 	// "text", "numeric(10,2)", "timestamp with time zone".
 	Type string
+	// Oid is the column's type OID (pg_attribute.atttypid), used by the R5
+	// direct path to dispatch the distribution-key hash function by type.
+	Oid uint32
 	// Nullable reports whether the column allows NULL.
 	Nullable bool
 	// Default is the column default expression (without the "DEFAULT"
