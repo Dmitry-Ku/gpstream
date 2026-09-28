@@ -142,10 +142,10 @@ func tableDistMap(ctx context.Context, q pg.Querier) map[string]routeLayout {
 		return m // plain-PG / каталог нет
 	}
 	rows, err := q.Query(ctx,
-		`SELECT n.nspname, c.relname, dp.policytype,
-		        (SELECT string_agg(a.attname, ',' ORDER BY a.attnum)
-		         FROM pg_attribute a
-		         WHERE a.attrelid = dp.localoid AND a.attnum = ANY(dp.distkey)) AS keys
+		`SELECT n.nspname, c.relname, dp.policytype::text,
+		        (SELECT string_agg(a.attname, ',' ORDER BY k.pos)
+		         FROM unnest(dp.distkey::int2[]) WITH ORDINALITY AS k(attnum, pos)
+		         JOIN pg_attribute a ON a.attrelid = dp.localoid AND a.attnum = k.attnum) AS keys
 		 FROM gp_distribution_policy dp
 		 JOIN pg_class c ON c.oid = dp.localoid
 		 JOIN pg_namespace n ON n.oid = c.relnamespace

@@ -367,7 +367,14 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
 	}
-	dist := m.src.Distribution(ctx, schema, name)
+	// The distribution policy is stable catalog data (not snapshot state), so
+	// it is read on the base source querier, NOT the pinned FR-02 snapshot
+	// connection: a query fault there must not abort the REPEATABLE READ
+	// snapshot that every data COPY shares. On a pool source m.srcQ hands out
+	// a pool connection per query, so a bad statement is contained. (GP6
+	// live e2e, 27.09: the first version read it on the pinned conn and the
+	// resulting error aborted the whole snapshot transaction.)
+	dist := source.New(m.srcQ).Distribution(ctx, schema, name)
 	if err := m.dst.EnsureSchema(ctx, ds); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
