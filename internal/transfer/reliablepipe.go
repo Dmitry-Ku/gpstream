@@ -123,15 +123,15 @@ const (
 // Stats is the observable state of a ReliablePipe end (FR-04 metrics:
 // frames_retransmitted, reconnects_total, ack_lag).
 type Stats struct {
-	Retransmitted  uint64
-	Reconnects     int
-	AckLag         time.Duration
-	RingBytes      int64
-	LastConsumed   uint64 // receiver
-	LastSent       uint64 // sender
-	LastAck        uint64 // sender
-	OutBufBytes    int64  // receiver
-	OutFrames      int    // receiver
+	Retransmitted uint64
+	Reconnects    int
+	AckLag        time.Duration
+	RingBytes     int64
+	LastConsumed  uint64 // receiver
+	LastSent      uint64 // sender
+	LastAck       uint64 // sender
+	OutBufBytes   int64  // receiver
+	OutFrames     int    // receiver
 }
 
 // ReliablePipe is one end of a frame-ACK'd transport. It exposes the same
@@ -145,7 +145,7 @@ type ReliablePipe struct {
 
 	connMu  sync.Mutex
 	conn    dupConn
-	connGen int // bumped on every swapConn
+	connGen int        // bumped on every swapConn
 	wmu     sync.Mutex // serializes all transport writes
 
 	dialer rpDialer // sender-only (reconnect initiator)
@@ -193,10 +193,10 @@ type ReliablePipe struct {
 	// been delivered in order, so Read may return io.EOF once the output
 	// buffer drains. Distinct from dead (abort/error), which must NOT yield a
 	// clean EOF (that would drop in-flight frames).
-	finished      atomic.Bool
-	done          chan struct{}
-	doneOnce      sync.Once
-	wg            sync.WaitGroup
+	finished atomic.Bool
+	done     chan struct{}
+	doneOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 type rpDialer func() (dupConn, error)

@@ -158,9 +158,9 @@ func TestRowRouterRouting(t *testing.T) {
 	const D = 2
 	// ground-truth routing for single int4 key, D=2
 	rows := []struct {
-		id   int32
-		val  string
-		seg  int32
+		id  int32
+		val string
+		seg int32
 	}{
 		{1, "a", 1},
 		{2, "bb", 0},

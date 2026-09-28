@@ -196,7 +196,7 @@ func decodeV1(b []byte) (*Frame, error) {
 		UnitID: binary.LittleEndian.Uint32(b[12:16]),
 		Seq:    binary.LittleEndian.Uint64(b[16:24]),
 		Ver:    frameVer1,
-		Data:   b[fixedHdrV1 : bodyEnd],
+		Data:   b[fixedHdrV1:bodyEnd],
 	}, nil
 }
 
@@ -216,7 +216,7 @@ func decodeV2(b []byte) (*Frame, error) {
 		ContentID: int16(binary.LittleEndian.Uint16(b[10:12])),
 		Flags:     b[9],
 		Ver:       frameVer2,
-		Data:      b[fixedHdrV2 : bodyEnd],
+		Data:      b[fixedHdrV2:bodyEnd],
 	}, nil
 }
 

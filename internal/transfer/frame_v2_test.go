@@ -243,6 +243,6 @@ func (s *slicePipe) Read(p []byte) (int, error) {
 	return n, nil
 }
 func (s *slicePipe) Write(p []byte) (int, error) { return len(p), nil }
-func (s *slicePipe) Close() error                 { return nil }
+func (s *slicePipe) Close() error                { return nil }
 
 var _ = errors.Is

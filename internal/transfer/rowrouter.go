@@ -37,7 +37,7 @@ func (b *BinaryCopyStream) Begin() error {
 		return nil
 	}
 	hdr := make([]byte, 19)
-	copy(hdr, copySignature) // 11B
+	copy(hdr, copySignature)                  // 11B
 	binary.BigEndian.PutUint32(hdr[11:15], 0) // extraHdrSize = 0 (no extension block)
 	binary.BigEndian.PutUint32(hdr[15:19], 0) // flags = 0
 	if _, err := b.w.Write(hdr); err != nil {
@@ -97,8 +97,8 @@ func (b *BinaryCopyStream) End() error {
 // `COPY FROM STDIN` on that segment).
 type RowRouter struct {
 	split  *RowSplitter
-	keyIdx []int     // distribution-key column positions, in distkey order
-	keyOid []uint32  // the key columns' type OIDs (same order as keyIdx)
+	keyIdx []int               // distribution-key column positions, in distkey order
+	keyOid []uint32            // the key columns' type OIDs (same order as keyIdx)
 	segW   []*BinaryCopyStream // one per destination segment (content 0..D-1)
 	numSeg int32
 

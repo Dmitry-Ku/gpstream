@@ -24,7 +24,7 @@ func patternSlice(nRows int) []byte {
 		binary.BigEndian.PutUint32(idb[:], uint32(i))
 		text := make([]byte, 300)
 		for k := range text {
-			text[k] = byte(i>>16 ^ i^k)
+			text[k] = byte(i>>16 ^ i ^ k)
 		}
 		b = bcopyRow(b, idb[:], text)
 	}

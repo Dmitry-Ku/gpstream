@@ -19,9 +19,9 @@ package route
 // HashPGAny — PostgreSQL hash_any (src/backend/access/hash/hashfunc.c),
 // little-endian. a=b=c=0x9e3779b9+len+3923095, word-мешание, final-mix.
 func HashPGAny(k []byte) uint32 {
-	var a, b, c, l = uint32(0x9e3779b9)+uint32(len(k))+3923095,
-		uint32(0x9e3779b9)+uint32(len(k))+3923095,
-		uint32(0x9e3779b9)+uint32(len(k))+3923095,
+	var a, b, c, l = uint32(0x9e3779b9) + uint32(len(k)) + 3923095,
+		uint32(0x9e3779b9) + uint32(len(k)) + 3923095,
+		uint32(0x9e3779b9) + uint32(len(k)) + 3923095,
 		uint32(len(k))
 	ka := k
 	for l >= 12 {
@@ -128,20 +128,39 @@ func le32(b []byte) uint32 {
 func rot(x, s uint32) uint32 { return (x << s) | (x >> (32 - s)) }
 
 func mix(a, b, c *uint32) {
-	*a -= *c; *a ^= rot(*c, 4);  *c += *b
-	*b -= *a; *b ^= rot(*a, 6);  *a += *c
-	*c -= *b; *c ^= rot(*b, 8);  *b += *a
-	*a -= *c; *a ^= rot(*c, 16); *c += *b
-	*b -= *a; *b ^= rot(*a, 19); *a += *c
-	*c -= *b; *c ^= rot(*b, 4);  *b += *a
+	*a -= *c
+	*a ^= rot(*c, 4)
+	*c += *b
+	*b -= *a
+	*b ^= rot(*a, 6)
+	*a += *c
+	*c -= *b
+	*c ^= rot(*b, 8)
+	*b += *a
+	*a -= *c
+	*a ^= rot(*c, 16)
+	*c += *b
+	*b -= *a
+	*b ^= rot(*a, 19)
+	*a += *c
+	*c -= *b
+	*c ^= rot(*b, 4)
+	*b += *a
 }
 
 func final(a, b, c *uint32) {
-	*c ^= *b; *c -= rot(*b, 14)
-	*a ^= *c; *a -= rot(*c, 11)
-	*b ^= *a; *b -= rot(*a, 25)
-	*c ^= *b; *c -= rot(*b, 16)
-	*a ^= *c; *a -= rot(*c, 4)
-	*b ^= *a; *b -= rot(*a, 14)
-	*c ^= *b; *c -= rot(*b, 24)
+	*c ^= *b
+	*c -= rot(*b, 14)
+	*a ^= *c
+	*a -= rot(*c, 11)
+	*b ^= *a
+	*b -= rot(*a, 25)
+	*c ^= *b
+	*c -= rot(*b, 16)
+	*a ^= *c
+	*a -= rot(*c, 4)
+	*b ^= *a
+	*b -= rot(*a, 14)
+	*c ^= *b
+	*c -= rot(*b, 24)
 }

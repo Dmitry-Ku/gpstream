@@ -51,7 +51,7 @@ func measureThroughput(t *testing.T) float64 {
 	defer c1.Close()
 	defer c2.Close()
 	go func() {
-		defer c2.Close() // never leak: a failed send must unblock the receiver
+		defer c2.Close()       // never leak: a failed send must unblock the receiver
 		s := NewSession(c2, 0) // 0 = no rate limit
 		buf := make([]byte, payload)
 		for i := uint64(0); i < frames; i++ {

@@ -199,4 +199,3 @@ func rowCountOf(s []byte) int {
 	rows, _ := rowExtract(s)
 	return len(rows)
 }
-

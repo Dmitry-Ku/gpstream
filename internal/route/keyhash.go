@@ -33,12 +33,12 @@ var ErrShortKeyDatum = fmt.Errorf("route: key datum has unexpected length for it
 
 // KeyOIDs (PostgreSQL pg_type oid).
 const (
-	OidInt2     = 21
-	OidInt4     = 23
-	OidInt8     = 20
-	OidText     = 25
-	OidVarchar  = 1043
-	OidBytea    = 17
+	OidInt2    = 21
+	OidInt4    = 23
+	OidInt8    = 20
+	OidText    = 25
+	OidVarchar = 1043
+	OidBytea   = 17
 )
 
 // hashUint16 == hash_uint32(uint32(v)) (PG hashfunc.c).

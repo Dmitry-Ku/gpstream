@@ -86,9 +86,9 @@ func TestRowCounterBasic(t *testing.T) {
 	var b []byte
 	b = append(b, copyHeader()...)
 	b = appendRow(b, int32be(1), []byte("hi"), int32be(10))
-	b = appendRow(b, nil, int32be(20))           // NULL first field
-	b = appendRow(b, []byte{})                    // empty field
-	b = appendRow(b)                              // zero-field row
+	b = appendRow(b, nil, int32be(20)) // NULL first field
+	b = appendRow(b, []byte{})         // empty field
+	b = appendRow(b)                   // zero-field row
 	big := bytes.Repeat([]byte{0xAB}, 70000)
 	b = appendRow(b, big)
 	b = appendRow(b, int32be(3), []byte("x"), nil, int32be(4))

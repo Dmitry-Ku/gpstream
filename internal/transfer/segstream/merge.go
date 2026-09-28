@@ -37,9 +37,9 @@ const (
 
 // row sub-states.
 const (
-	rsRowHdr = iota // reading the int16 (fieldCount, or the -1 EOF)
-	rsFieldLen      // reading the int32 field length
-	rsFieldData     // reading the field's data bytes
+	rsRowHdr    = iota // reading the int16 (fieldCount, or the -1 EOF)
+	rsFieldLen         // reading the int32 field length
+	rsFieldData        // reading the field's data bytes
 )
 
 // sliceParser strips one slice's header and EOF, forwarding only the row bytes.

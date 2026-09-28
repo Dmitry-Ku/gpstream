@@ -185,10 +185,10 @@ type Config struct {
 	// Frame-level ACK and RST-resume (DESIGN §4.6, Tier-1, R2-approved).
 	// FrameAck is "on" by default; "off" falls back to the plain pipe.
 	// AckTimeout "adaptive" = 3x median RTT (min 1s), else a fixed duration.
-	FrameAck              string // on (default) | off
-	AckTimeout            string // 15s | 30s | adaptive (default 30s)
-	MaxReconnects         int    // default 20
-	RetransmitBufferMax   int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
+	FrameAck            string // on (default) | off
+	AckTimeout          string // 15s | 30s | adaptive (default 30s)
+	MaxReconnects       int    // default 20
+	RetransmitBufferMax int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
 
 	// v2 conflict refinement (§6.3).
 	// OverwriteOnlyConflicts refines Overwrite: only conflicting objects are

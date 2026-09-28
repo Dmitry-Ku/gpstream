@@ -27,7 +27,7 @@ func benchTransport(b *testing.B, reliable bool, totalMB int) {
 	const chunk = 256 * 1024
 	payload := make([]byte, chunk)
 	for i := range payload {
-		payload[i] = byte(i * 7 + 13)
+		payload[i] = byte(i*7 + 13)
 	}
 	total := totalMB * 1024 * 1024
 
@@ -48,5 +48,5 @@ func benchTransport(b *testing.B, reliable bool, totalMB int) {
 	}
 }
 
-func BenchmarkTransportNetPipe(b *testing.B)     { benchTransport(b, false, 300) }
+func BenchmarkTransportNetPipe(b *testing.B)      { benchTransport(b, false, 300) }
 func BenchmarkTransportReliablePipe(b *testing.B) { benchTransport(b, true, 300) }

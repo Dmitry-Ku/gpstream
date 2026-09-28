@@ -2,9 +2,9 @@ package segstream
 
 import (
 	"bytes"
-	"fmt"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"net"
 	"testing"
@@ -228,4 +228,3 @@ func checkRowMultiset(t *testing.T, merged, s0, s1 []byte) error {
 	}
 	return nil
 }
-

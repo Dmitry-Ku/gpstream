@@ -38,13 +38,13 @@ func TestResolveModeTable(t *testing.T) {
 			wantMode: RouterFull, wantPairs: 8, wantG: 2,
 		},
 		{
-			name: "router_full: DISPROVEN fan-in (10->5) — no fast-path",
-			in:   ModeInput{10, 5, "hash", "hash", hash1, hash1, true},
+			name:     "router_full: DISPROVEN fan-in (10->5) — no fast-path",
+			in:       ModeInput{10, 5, "hash", "hash", hash1, hash1, true},
 			wantMode: RouterFull, wantPairs: 50, wantG: 5,
 		},
 		{
-			name: "router_full: DISPROVEN congruence (4->6, g=2) — no fast-path",
-			in:   ModeInput{4, 6, "hash", "hash", hash1, hash1, true},
+			name:     "router_full: DISPROVEN congruence (4->6, g=2) — no fast-path",
+			in:       ModeInput{4, 6, "hash", "hash", hash1, hash1, true},
 			wantMode: RouterFull, wantPairs: 24, wantG: 2,
 		},
 		{
