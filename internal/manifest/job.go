@@ -103,6 +103,16 @@ func (j *Journal) ConflictsPath() string {
 	return filepath.Join(filepath.Dir(j.mirror), "conflicts.jsonl")
 }
 
+// EventsPath is the F-04/F-14 diagnostic event stream: alongside the
+// journal mirror, named events.jsonl. Empty when no mirror path is set
+// (the Manager then keeps a no-op event log).
+func (j *Journal) EventsPath() string {
+	if j.mirror == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(j.mirror), "events.jsonl")
+}
+
 // WriteConflicts persists the plan's conflict diagnosis to conflicts.jsonl
 // (F-10 §8: «все конфликты логируются (conflicts.jsonl + manifest)») so an
 // operator can audit what would collide — and with which action — without

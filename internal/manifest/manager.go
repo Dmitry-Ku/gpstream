@@ -84,6 +84,10 @@ type Manager struct {
 	// reRead holds the logical-table keys that a resume must re-copy under
 	// the fresh snapshot (T5, DESIGN §2.2); empty on a fresh run.
 	reRead map[string]bool
+	// events is the F-04/F-14 diagnostic event stream (events.jsonl): rate
+	// shifts, conflicts, unit failures and re-reads. No-op when the journal
+	// has no file mirror.
+	events *monitor.EventLog
 	// Stats accumulates the observed result of the run.
 	Stats
 }
@@ -121,6 +125,7 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		idxPool: index.NewPool(cfg.IndexWorkers, cfg.NoIndexes, cfg.IndexPriority == "size"),
 		idxSeen: map[uint32]bool{},
 		monitor: monitor.New(),
+		events:  monitor.NewEventLog(j.EventsPath()),
 		comp:    compress.New(mode, level),
 		dec:     compress.NewDec(mode),
 	}
@@ -136,14 +141,22 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 			Baseline: cfg.RateLimit,
 			Provider: ratelimit.NewProcProvider(),
 		})
-		lim.SetOnChange(func(from, to ratelimit.Gbps, reason string) {
-			m.monitor.SetRateLimit(to)
-		})
+		lim.SetOnChange(m.onRateChange)
 		m.lim = lim
 		m.pacer = ratelimit.NewPacer(lim)
 		m.monitor.SetRateLimit(cfg.RateLimit)
 	}
 	return m
+}
+
+// onRateChange is the limiter's diagnostic callback (FR-14). A rate shift is
+// observable two ways: as a metric (FR-04) and as an event in events.jsonl
+// (F-14: «каждый сдвиг лимита — диагностическое сообщение в events.jsonl
+// (пара, старое/новое, причина: cpu %, disk latency, очередь)»).
+func (m *Manager) onRateChange(from, to ratelimit.Gbps, reason string) {
+	m.monitor.SetRateLimit(to)
+	m.events.Log("rate_limit_shift",
+		"from_gbps", float64(from), "to_gbps", float64(to), "reason", reason)
 }
 
 // Run executes the copy for the plan (FR-01/FR-02). Units are processed through
@@ -168,6 +181,9 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	if err := m.journal.LoadFromMirror(); err != nil {
 		return fmt.Errorf("load journal mirror: %w", err)
 	}
+	// F-04/F-14: the diagnostic event stream is open for the whole run;
+	// close it (and flush the file) when the run ends, whatever the outcome.
+	defer m.events.Close()
 	m.jobID = jobID(p)
 
 	// T5 (DESIGN §2.2): determine this run's snapshot epoch. A fresh
@@ -347,6 +363,9 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 			_ = m.journal.SetState(u)
 			m.addFailure()
 			m.healSnapshot(ctx)
+			// F-04: a panicking unit is a failure event like any other.
+			m.events.Log("unit_failed", "schema", u.Schema, "table", u.Table,
+				"attempts", u.Attempts, "error", fmt.Sprintf("panic: %v", r))
 			retErr = fmt.Errorf("unit %s.%s panic: %v", u.Schema, u.Table, r)
 		}
 	}()
@@ -379,6 +398,10 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		u.RowCount = 0
 		u.Conflict = true
 		_ = m.journal.SetState(u)
+		// F-04: auto-recovery event — the resume re-reads this table under
+		// the fresh snapshot (T5, DESIGN §2.2).
+		m.events.Log("unit_reread", "schema", u.Schema, "table", u.Table,
+			"reason", "resume re-read", "epoch", m.epoch)
 		reReading = true
 	}
 	// Conflict policy (FR-10/FR-11, spec F-10 §8). Re-read units are exempt:
@@ -402,12 +425,18 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 			if m.cfg.SkipConflicts {
 				m.addSkipped()
 				m.journal.CreateUnit(u, StatePending)
+				// F-04: conflict event (skipped) — the operator audit trail.
+				m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
+					"action", "skip")
 				return nil
 			}
 			// strict default (FR-10 §8): surface the conflict and stop.
 			u.State = StateFailed
 			_ = m.journal.SetState(u)
 			m.addFailure()
+			// F-04: conflict event (stop) — the run halts on this collision.
+			m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
+				"action", "stop")
 			return &ConflictError{Schema: u.DstSchema, Table: u.DstName}
 		}
 	}
@@ -427,6 +456,10 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		m.addFailure()
 		m.journal.SetState(u)
 		m.healSnapshot(ctx)
+		// F-04: retry/failure event — a resume (or an explicit re-run)
+		// retries the unit; the operator sees the failure and its cause.
+		m.events.Log("unit_failed", "schema", u.Schema, "table", u.Table,
+			"attempts", u.Attempts, "error", err.Error())
 		return err
 	}
 	return nil
