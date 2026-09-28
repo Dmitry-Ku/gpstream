@@ -67,6 +67,10 @@ type Manager struct {
 	snapshotTx   bool
 	pinnedSrc    pg.StreamingQuerier
 	pinRelease   func()
+	// healMu serialises snapshot healing (FR-06): a failed unit's SQL error
+	// aborts the shared REPEATABLE READ transaction, and only one worker may
+	// ROLLBACK/re-BEGIN it.
+	healMu sync.Mutex
 	// statMu guards Stats, which multiple workers mutate under the FR-03 pool.
 	statMu sync.Mutex
 	// jobID is the operation identity this Manager run journals under
@@ -326,6 +330,7 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 			u.State = StateFailed
 			_ = m.journal.SetState(u)
 			m.addFailure()
+			m.healSnapshot(ctx)
 			retErr = fmt.Errorf("unit %s.%s panic: %v", u.Schema, u.Table, r)
 		}
 	}()
@@ -372,6 +377,7 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	if err := m.runUnit(ctx, u); err != nil {
 		m.addFailure()
 		m.journal.SetState(u)
+		m.healSnapshot(ctx)
 		return err
 	}
 	return nil
@@ -460,9 +466,35 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    Greenplum source (F-11 metadata: «типы, распределение»).
 	t := m.tableFor(u)
 	schema, name := u.Schema, u.Table
-	cols, err := m.src.Columns(ctx, schema, name)
+	// The column list is stable catalog data (not snapshot state), so it is
+	// read on the base source querier, NOT the pinned FR-02 snapshot
+	// connection: a query fault there (e.g. the table was dropped, or the
+	// source is unreachable) must not abort the REPEATABLE READ snapshot that
+	// every data COPY shares. On a pool source m.srcQ hands out a pool
+	// connection per query, so a bad statement is contained. (M2 20+ table
+	// scale test, 28.09: reading Columns on the pinned conn aborted the whole
+	// snapshot transaction on one failed unit, cascading 25P02 to every
+	// sibling unit. Same failure class the Distribution read below already
+	// avoids.)
+	cols, err := source.New(m.srcQ).Columns(ctx, schema, name)
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
+	}
+	if len(cols) == 0 {
+		// A missing source table yields ZERO columns (the pg_class subquery
+		// returns NULL), not an error. Detect it here, BEFORE the data COPY:
+		// a `COPY ... TO STDOUT` for a vanished table would fail on the
+		// pinned FR-02 snapshot connection, and any SQL error aborts the
+		// whole REPEATABLE READ transaction — cascading 25P02 to every
+		// remaining unit (F-06: one failed unit must not take down the
+		// operation). The existence check runs on a pool connection, so the
+		// error is contained and the snapshot survives.
+		if rows, qerr := m.srcQ.Query(ctx,
+			`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			    WHERE c.relname = $1 AND n.nspname = $2`, name, schema); qerr == nil && len(rows) == 0 {
+			u.State = StateFailed // mark failed so a resume retries it (FR-06/FR-07)
+			return fmt.Errorf("source table %s.%s does not exist (dropped during the run?)", schema, name)
+		}
 	}
 	// The distribution policy is stable catalog data (not snapshot state), so
 	// it is read on the base source querier, NOT the pinned FR-02 snapshot
@@ -1385,6 +1417,11 @@ func (m *Manager) unpinSource() {
 		m.pinRelease = nil
 		m.pinnedSrc = nil
 	}
+	// m.src was pointed at the pinned connection by establishSnapshot; once
+	// the pin is released it references a connection handed back to the pool
+	// (or closed), so route source reads back to the base querier. Reading
+	// a stale pinned agent nil-derefs (puddle resource released).
+	m.src = source.New(m.srcQ)
 }
 
 // beginSnapshotTx opens the read-only REPEATABLE READ transaction that pins the
@@ -1415,6 +1452,59 @@ func (m *Manager) releaseSnapshot(ctx context.Context) {
 	_, _ = m.srcRead().Exec(ctx, `COMMIT`)
 	m.snapshotTx = false
 	m.unpinSource()
+}
+
+// healSnapshot re-establishes the FR-02 source snapshot after a unit failure.
+// In snapshot mode every data COPY runs on the ONE pinned REPEATABLE READ
+// connection, and a failed unit's SQL error (e.g. `COPY ... TO STDOUT` for a
+// table dropped mid-run) aborts the whole current transaction. Left unhealed,
+// every remaining unit's COPY then fails with 25P02 "current transaction is
+// aborted" — a single failed unit would take down the whole operation,
+// violating F-06 ("operation continues with the remaining objects").
+//
+// The heal is: probe the pinned connection; if the transaction is aborted,
+// ROLLBACK and begin a FRESH REPEATABLE READ snapshot on the same connection.
+// The fresh snapshot is the best available consistency for the surviving
+// units (the original snapshot is destroyed by the abort and cannot be
+// restored); units already swapped keep their verified data. healMu
+// serialises it so concurrent workers don't race the ROLLBACK/BEGIN.
+func (m *Manager) healSnapshot(ctx context.Context) {
+	if !m.snapshotTx {
+		return
+	}
+	// The run is being cancelled (operator stop / crash): the snapshot dies
+	// with the session anyway — healing would only race the teardown.
+	if ctx.Err() != nil {
+		return
+	}
+	m.healMu.Lock()
+	defer m.healMu.Unlock()
+	if !m.snapshotTx {
+		return // another worker already healed
+	}
+	q := m.srcRead()
+	// Probe: a trivial statement. If it fails, the transaction is aborted
+	// (25P02) — a heal is needed.
+	if _, perr := q.Exec(ctx, `SELECT 1`); perr == nil {
+		return // snapshot still healthy
+	}
+	// ROLLBACK clears the aborted transaction. If the connection itself is
+	// dead (not just the transaction), the ROLLBACK fails and a re-BEGIN
+	// cannot succeed either: degrade to best-effort (no live snapshot)
+	// rather than cascade 25P02 to the remaining units.
+	if _, rerr := q.Exec(ctx, `ROLLBACK`); rerr != nil {
+		m.snapshotMode = ""
+		m.unpinSource()
+		return
+	}
+	if err := m.beginSnapshotTx(ctx, m.snapshotMode); err != nil {
+		// Heal failed: proceed without a live snapshot (FR-02 degrades to
+		// best-effort) rather than cascading 25P02 to the remaining units.
+		m.snapshotMode = ""
+		m.unpinSource()
+		return
+	}
+	// snapshotTx stays true; the run continues under the fresh snapshot.
 }
 
 // jobID derives a stable job identifier from the plan hash (FR-10). It is used
