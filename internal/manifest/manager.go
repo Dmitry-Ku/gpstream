@@ -736,6 +736,10 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 		rows, err := m.dst.CopyIntoStream(ctx, u.DstSchema, staging, fp)
 		if err != nil && !isEOF(err) {
 			dstErr = err
+			// Abort the pipe so the source (still streaming into a full
+			// unbuffered net.Pipe with no reader) unblocks and the unit
+			// fails instead of hanging (FR-06; T7 retry scenario).
+			_ = fp.Abort()
 		}
 		dstRows = rows
 	}()
@@ -763,11 +767,15 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 	}()
 
 	wg.Wait()
-	if srcErr != nil {
-		return 0, fmt.Errorf("source copy: %w", srcErr)
-	}
+	// Report the destination error first: when the destination dies
+	// mid-copy it aborts the pipe, and the source's blocked write then
+	// fails with a secondary "closed pipe" error. The destination error is
+	// the root cause; the source error is its consequence.
 	if dstErr != nil {
 		return 0, fmt.Errorf("dest copy: %w", dstErr)
+	}
+	if srcErr != nil {
+		return 0, fmt.Errorf("source copy: %w", srcErr)
 	}
 	// The destination is authoritative for the row count (it wrote the table).
 	return dstRows, nil
@@ -831,6 +839,10 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 		rows, err := m.dst.CopyIntoStream(ctx, u.DstSchema, staging, fp)
 		if err != nil && !isEOF(err) {
 			dstErr = err
+			// Abort the pipe so the source (still streaming into a full
+			// unbuffered net.Pipe with no reader) unblocks and the unit
+			// fails instead of hanging (FR-06; T7 retry scenario).
+			_ = fp.Abort()
 		}
 		dstRows = rows
 	}()

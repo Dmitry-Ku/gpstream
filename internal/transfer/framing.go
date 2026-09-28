@@ -58,6 +58,20 @@ func (fp *FramedPipe) Close() error {
 	return err2
 }
 
+// Abort closes the READ end of the transport without flushing the write
+// side. It is the destination's escape hatch: when the destination copy
+// fails mid-stream (e.g. the staged COPY FROM is rejected), it must stop
+// consuming the pipe; without an Abort the source would block forever
+// writing into the unbuffered net.Pipe (a full pipe with no reader),
+// hanging the whole unit (FR-06: a worker failure must not abort the
+// batch — the unit must fail, not hang). After Abort the source's blocked
+// write returns a "closed pipe" error, so the source goroutine unwinds and
+// the run records the unit as failed (a resume can retry it). Safe to call
+// more than once (net.Pipe Close is idempotent).
+func (fp *FramedPipe) Abort() error {
+	return fp.read.conn.Close()
+}
+
 // frameBufLimit is the source-side accumulator size before a frame is
 // encoded and written. One frame per ~256 KiB keeps per-frame overhead
 // (compress init, header, CRC) at ~0.1% and gives the in-memory net.Pipe
