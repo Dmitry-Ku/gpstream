@@ -46,16 +46,30 @@ type Unit struct {
 	Table  string `json:"table"`  // SOURCE table  (read from the source cluster)
 	// DstSchema/DstName are the destination names after rename (FR-11/§4.10);
 	// they equal Schema/Table when no rename applies. The copy writes to these.
-	DstSchema string    `json:"dst_schema,omitempty"`
-	DstName   string    `json:"dst_name,omitempty"`
-	Part      string    `json:"part,omitempty"`
-	Kind      string    `json:"kind"` // table|partition|index|view|...
-	State     State     `json:"state"`
-	Checksum  string    `json:"checksum,omitempty"`
-	RowCount  int64     `json:"row_count"`
-	Bytes     int64     `json:"bytes"`
-	Conflict  bool      `json:"conflict,omitempty"` // planner-flagged conflict (FR-10/FR-11)
-	Attempts  int       `json:"attempts"`
+	DstSchema string `json:"dst_schema,omitempty"`
+	DstName   string `json:"dst_name,omitempty"`
+	Part      string `json:"part,omitempty"`
+	Kind      string `json:"kind"` // table|partition|index|view|...
+	State     State  `json:"state"`
+	Checksum  string `json:"checksum,omitempty"`
+	RowCount  int64  `json:"row_count"`
+	Bytes     int64  `json:"bytes"`
+	Conflict  bool   `json:"conflict,omitempty"` // planner-flagged conflict (FR-10/FR-11)
+	Attempts  int    `json:"attempts"`
+	// Epoch is the snapshot generation (T5, DESIGN §2.2) under which the
+	// unit's data was verified: the run's epoch is stamped when the unit
+	// reaches StateCompleted. A resume re-reads a table whose completed
+	// units span more than one epoch (relaxed) or were verified in an
+	// older epoch than the fresh one (strict).
+	Epoch int64 `json:"epoch,omitempty"`
+	// IndexDone marks the unit's background index build (FR-17) as finished
+	// in a previous run: a T5 resume that keeps a swapped unit must NOT
+	// re-enqueue its (already built) indexes, or an idempotent re-run would
+	// REINDEX every table on the destination. Set after the index pool
+	// drains cleanly; a unit killed between the swap and the index build
+	// stays IndexDone=false and is re-enqueued on the next resume (the
+	// idempotent createOneIndex makes that duplicate-safe).
+	IndexDone bool      `json:"index_done,omitempty"`
 	Updated   time.Time `json:"updated"`
 }
 
@@ -100,6 +114,7 @@ func (j *Journal) Init(ctx context.Context) error {
 		    row_count   bigint,
 		    byte_count  bigint,
 		    attempts    int,
+		    epoch       bigint,
 		    updated     timestamptz,
 		    PRIMARY KEY (job_id, unit_id)
 		)`)
@@ -126,12 +141,12 @@ func (j *Journal) SetState(u *Unit) error {
 	// fallback when the dest DB is unreachable, FR-07).
 	if j.q != nil {
 		_, _ = j.q.Exec(context.Background(),
-			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, updated)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, updated)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 			ON CONFLICT (job_id, unit_id) DO UPDATE SET
 			    state=EXCLUDED.state, checksum=EXCLUDED.checksum, row_count=EXCLUDED.row_count,
-			    byte_count=EXCLUDED.byte_count, attempts=EXCLUDED.attempts, updated=EXCLUDED.updated`,
-			u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Updated)
+			    byte_count=EXCLUDED.byte_count, attempts=EXCLUDED.attempts, epoch=EXCLUDED.epoch, updated=EXCLUDED.updated`,
+			u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated)
 	}
 	// File mirror (durable): append the single changed record.
 	return j.mirrorAppend(&c)

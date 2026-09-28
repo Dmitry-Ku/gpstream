@@ -68,6 +68,16 @@ type Manager struct {
 	pinRelease   func()
 	// statMu guards Stats, which multiple workers mutate under the FR-03 pool.
 	statMu sync.Mutex
+	// jobID is the operation identity this Manager run journals under
+	// (T5: the gpstream_jobs metadata key; set by Run before the units are
+	// processed).
+	jobID string
+	// epoch is this run's snapshot generation (T5, DESIGN §2.2): stamped on
+	// every unit the run verifies (runUnit step 8).
+	epoch int64
+	// reRead holds the logical-table keys that a resume must re-copy under
+	// the fresh snapshot (T5, DESIGN §2.2); empty on a fresh run.
+	reRead map[string]bool
 	// Stats accumulates the observed result of the run.
 	Stats
 }
@@ -143,6 +153,44 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		// Non-fatal: the file mirror still makes the job resumable.
 	}
 
+	// T5 (DESIGN §2.2): a run may CONTINUE an earlier run of the same
+	// operation — the operator re-invokes `gpstream run` with the same
+	// --operation-id after a crash. Load the durable journal mirror first so
+	// the run sees the states (and the snapshot epochs) the earlier run
+	// recorded; without this the in-memory journal is empty and the run would
+	// blindly re-copy verified data.
+	if err := m.journal.LoadFromMirror(); err != nil {
+		return fmt.Errorf("load journal mirror: %w", err)
+	}
+	m.jobID = jobID(p)
+
+	// T5 (DESIGN §2.2): determine this run's snapshot epoch. A fresh
+	// operation starts at epoch 1; a resume (journal records or metadata
+	// already exist) continues at lastEpoch+1 — the snapshot cannot survive
+	// the death of its session, so every resume reads under a FRESH snapshot
+	// and the epoch records the generation. The metadata is persisted before
+	// any unit is processed, so the epoch the run's snapshot actually was is
+	// recorded no matter where the run dies.
+	epoch, isResume, err := m.establishEpoch()
+	if err != nil {
+		return err
+	}
+	m.epoch = epoch
+
+	// T5 (DESIGN §2.2): the resume re-read decision. Only tables whose
+	// completed units span more than one snapshot epoch (relaxed) — or were
+	// verified in an older epoch (strict) — are re-copied under the fresh
+	// snapshot; a table completed in a single epoch is kept (its data is
+	// verified under one consistent snapshot). Fresh runs decide nothing.
+	m.reRead = map[string]bool{}
+	if isResume {
+		mode := m.cfg.ResumeConsistency
+		if mode == "" {
+			mode = "relaxed"
+		}
+		m.reRead = reReadTables(mode, epoch, m.journal.Units())
+	}
+
 	// FR-02 consistency: establish the source read snapshot BEFORE any unit is
 	// copied so every COPY of the database reads from the same point-in-time
 	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
@@ -179,6 +227,19 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		}
 		if unit.DstName == "" {
 			unit.DstName = unit.Table
+		}
+		// T5 (DESIGN §2.2): inherit the state the earlier run of this
+		// operation recorded in the journal mirror (loaded at Run start),
+		// so processUnit can apply the keep / re-read decision. A fresh
+		// operation has no record for the unit; an earlier run's state is
+		// what the epoch rules reason about (completed in one epoch ->
+		// keep; mixed epochs or strict -> re-read).
+		if prev := m.journal.Get(unit.UnitID); prev != nil {
+			unit.State = prev.State
+			unit.Epoch = prev.Epoch
+			unit.Checksum = prev.Checksum
+			unit.RowCount = prev.RowCount
+			unit.Attempts = prev.Attempts
 		}
 		units = append(units, unit)
 	}
@@ -234,6 +295,17 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	if err := m.idxPool.Err(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	// T5/FR-17: once the pool drained cleanly, mark the swapped units'
+	// index build done in the journal, so a later T5 resume that KEEPS
+	// them (DESIGN §2.2) does not re-enqueue (and REINDEX) their indexes.
+	if m.idxPool.Err() == nil {
+		for _, u := range m.journal.Units() {
+			if u.State == StateSwapped && !u.IndexDone {
+				u.IndexDone = true
+				_ = m.journal.SetState(u)
+			}
+		}
+	}
 
 	// Release the source snapshot (FR-02) once every unit has been copied.
 	m.releaseSnapshot(ctx)
@@ -264,10 +336,34 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 // multiple workers (FR-03): stats are guarded by statMu and the journal by its
 // own mutex.
 func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
+	// T5 (DESIGN §2.2): a unit verified in a previous run (state completed
+	// or swapped, recorded in the journal mirror) is not re-copied — its
+	// data is verified under one snapshot (the keep rule). The exception is
+	// a resume that must re-read the unit's table (mixed epochs, or strict
+	// mode): the unit is reset to pending and re-copied under the fresh
+	// snapshot; runUnit starts from a clean staging table (a56be8b), so the
+	// re-read replaces rather than appends. A re-read unit is marked
+	// conflicting: the destination holds the PREVIOUS result and the swap
+	// must overwrite it (step 9), which is why it bypasses the skip-existing
+	// gate below.
+	reReading := false
+	if u.State == StateCompleted || u.State == StateSwapped {
+		if !m.reRead[tableKey(u)] {
+			m.addSkipped()
+			return nil
+		}
+		u.State = StatePending
+		u.Checksum = ""
+		u.RowCount = 0
+		u.Conflict = true
+		_ = m.journal.SetState(u)
+		reReading = true
+	}
 	// Conflict policy: skip-existing default (FR-10/FR-11). Skip when the
 	// destination already holds the target — either because the planner flagged
-	// a conflict (u.Conflict) or a live existence check confirms it.
-	if u.Table != "" && m.cfg.ConflictAction == config.SkipExisting && (u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)) {
+	// a conflict (u.Conflict) or a live existence check confirms it. Re-read
+	// units are exempt: their conflict IS the previous result being replaced.
+	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.SkipExisting && (u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)) {
 		m.addSkipped()
 		m.journal.CreateUnit(u, StatePending)
 		return nil
@@ -485,7 +581,11 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    enqueued to the background pool after the swap (step 10), where it
 	//    runs over the final table without blocking the data path.
 
-	// 8. Record completed (data + checksum, ADR-001 §4.4).
+	// 8. Record completed (data + checksum, ADR-001 §4.4). The unit is
+	//    stamped with the run's snapshot epoch (T5, DESIGN §2.2): a later
+	//    resume reads the epoch to decide which tables' verified data came
+	//    from one snapshot (keep) and which span several (re-read).
+	u.Epoch = m.epoch
 	u.State = StateCompleted
 	if err := m.journal.SetState(u); err != nil {
 		return fmt.Errorf("journal completed: %w", err)
@@ -497,7 +597,11 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// 9. Atomically swap the staging table to its final name (FR-02). Only the
 	//    staging path swaps; the in-place path already wrote the final table.
 	if !inPlace {
-		if err := m.dst.Swap(ctx, ds, dn, target, m.cfg.ConflictAction == config.Overwrite); err != nil {
+		// A re-read unit (u.Conflict, T5) replaces the previous result: the
+		// final name already exists on the destination and the verified
+		// staging must be swapped over it.
+		overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
+		if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
 			// A swap failure after a verified copy is still safe (the staging
 			// table holds the verified data); leave it and report so a resume
 			// can retry the swap.
@@ -551,6 +655,12 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 func (m *Manager) requeueIndexes(ctx context.Context) {
 	for _, u := range m.journal.Units() {
 		if u.State != StateSwapped {
+			continue
+		}
+		// T5: a kept (swapped in an earlier run) unit whose indexes were
+		// already built (IndexDone) is not re-enqueued — an idempotent
+		// re-run must not REINDEX every table (FR-17 + DESIGN §2.2 keep).
+		if u.IndexDone {
 			continue
 		}
 		m.idxMu.Lock()

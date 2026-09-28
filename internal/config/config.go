@@ -114,6 +114,10 @@ type Config struct {
 	// Resilience (FR-06/FR-07).
 	AutoResume int        // N >= 0; 0 = manual only
 	Verify     VerifyMode // default sample
+	// ResumeConsistency selects the resume re-read semantics (T5, DESIGN
+	// §2.2): "relaxed" (default) keeps a table verified in one snapshot
+	// epoch; "strict" re-reads every table verified under an older snapshot.
+	ResumeConsistency string // relaxed|strict, default relaxed
 
 	// Indexes (FR-17).
 	IndexWorkers  int
@@ -215,6 +219,11 @@ func (c Config) Validate() error {
 	}
 	if c.AutoResume < 0 {
 		return fmt.Errorf("auto-resume must be >= 0")
+	}
+	switch c.ResumeConsistency {
+	case "", "relaxed", "strict":
+	default:
+		return fmt.Errorf("unknown resume consistency %q (relaxed|strict)", c.ResumeConsistency)
 	}
 	if c.MetadataOnly && c.DataOnly {
 		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
@@ -400,6 +409,8 @@ func assignConfigString(c *Config, key, v string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.AutoResume = n
 		}
+	case "resume_consistency":
+		c.ResumeConsistency = v
 	case "verify":
 		c.Verify = VerifyMode(v)
 	case "log_level":

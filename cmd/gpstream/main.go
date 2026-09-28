@@ -235,6 +235,12 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--verify":
 			i++
 			cfg.Verify = config.VerifyMode(args[i])
+		case "--resume-consistency":
+			// T5 (DESIGN §2.2): relaxed (default) keeps a table verified in
+			// one snapshot epoch; strict re-reads everything under the
+			// fresh snapshot.
+			i++
+			cfg.ResumeConsistency = args[i]
 
 		// Consistency (FR-02).
 		case "--consistent-db":
@@ -881,6 +887,21 @@ func cmdStatus(args []string) error {
 	fmt.Println("================")
 	fmt.Printf("operation-id: %s\n", opID)
 	fmt.Printf("journal:      %s\n", journalPath)
+	// T5 (DESIGN §2.2): the snapshot epoch metadata (gpstream_jobs / the
+	// jobmeta.json mirror) — which generation of the source snapshot the job
+	// is on, the transport, and the resume re-read mode.
+	if meta, err := j.LoadMeta(opID); err == nil && meta != nil {
+		mode := meta.ResumeCons
+		if mode == "" {
+			mode = "relaxed"
+		}
+		cm := meta.CopyMode
+		if cm == "" {
+			cm = "coordinator"
+		}
+		fmt.Printf("snap-epoch:   %d (resume-consistency=%s, copy-mode=%s)\n",
+			meta.SnapEpoch, mode, cm)
+	}
 	if len(units) == 0 {
 		fmt.Println("units:        none recorded")
 		return nil
@@ -890,8 +911,8 @@ func cmdStatus(args []string) error {
 		if u.State == manifest.StateCompleted || u.State == manifest.StateSwapped || u.State == manifest.StateFailed {
 			terminal++
 		}
-		fmt.Printf("  unit %4d  %-8s  %-10s  %s.%s.%s  %s\n",
-			u.UnitID, u.State, u.Kind, u.DB, u.Schema, u.Table, humanBytes(u.Bytes))
+		fmt.Printf("  unit %4d  %-8s  %-10s  %s.%s.%s  %s  epoch=%d\n",
+			u.UnitID, u.State, u.Kind, u.DB, u.Schema, u.Table, humanBytes(u.Bytes), u.Epoch)
 	}
 	fmt.Printf("%d/%d units terminal\n", terminal, len(units))
 	return nil
@@ -1247,6 +1268,7 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --streams N                      parallel stream workers
   --max-bw <Gbps>                  total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
+  --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
   --index-parallel N               background index-build workers
   --tls-ca F                       TLS CA bundle
   --operation-id <id>              operation identity (run/status/resume/cleanup)
