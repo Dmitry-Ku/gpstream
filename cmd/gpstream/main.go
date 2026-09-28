@@ -1198,6 +1198,17 @@ func cmdRun(args []string) error {
 	fmt.Printf("state:          %s\n", mirrorPath)
 
 	j := manifest.NewJournal(dstQ, mirrorPath)
+
+	// F-10 §8: persist the conflict diagnosis to conflicts.jsonl (alongside
+	// the journal) so the operator can audit what would collide — and with
+	// which action — without parsing stdout. Written before the copy starts;
+	// the in-memory plan still carries the list for the run itself.
+	if err := j.WriteConflicts(p.Conflicts); err != nil {
+		fmt.Printf("warn: write conflicts.jsonl: %v\n", err)
+	} else if cp := j.ConflictsPath(); cp != "" {
+		fmt.Printf("conflicts log:  %s (%d)\n", cp, len(p.Conflicts))
+	}
+
 	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
 
 	// F-04: expose the metrics over HTTP so throughput, error rate and the

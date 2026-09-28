@@ -41,6 +41,19 @@ type Cluster struct {
 // the named database. It returns once the server accepts connections
 // (bounded to ~60s by pg_ctl -w).
 func Start(port uint32, db string) (*Cluster, error) {
+	return startCluster(port, db, "", "")
+}
+
+// StartWithLocale is like Start but creates the database with an explicit
+// LC_COLLATE / LC_CTYPE (both must be locales the cluster's initdb locale
+// supports; on a --no-locale C cluster, "C.utf8" is available). An empty
+// locale falls back to the cluster default. Used by the F-10 dry-run
+// acceptance test to seed a genuine source/dest collation difference.
+func StartWithLocale(port uint32, db, lcCollate, lcCtype string) (*Cluster, error) {
+	return startCluster(port, db, lcCollate, lcCtype)
+}
+
+func startCluster(port uint32, db, lcCollate, lcCtype string) (*Cluster, error) {
 	bin := BinDir()
 	initdb := filepath.Join(bin, "initdb")
 	pgctl := filepath.Join(bin, "pg_ctl")
@@ -82,11 +95,18 @@ func Start(port uint32, db string) (*Cluster, error) {
 
 	// Create the database on the initial "postgres" db (user gp, trust
 	// auth) using psql from the same toolchain. This package stays
-	// driver-free: callers connect with their own driver.
+	// driver-free: callers connect with their own driver. An explicit locale
+	// uses TEMPLATE template0 (so it does not require the template to be
+	// idle) and carries LC_COLLATE/LC_CTYPE (FR-10/FR-16).
 	psql := filepath.Join(bin, "psql")
+	create := fmt.Sprintf(`CREATE DATABASE %q`, db)
+	if lcCollate != "" {
+		create = fmt.Sprintf(`CREATE DATABASE %q TEMPLATE template0 LC_COLLATE='%s' LC_CTYPE='%s'`,
+			db, lcCollate, lcCtype)
+	}
 	createOut, err := exec.Command(psql,
 		"-h", "127.0.0.1", "-p", fmt.Sprint(port), "-U", "gp", "-d", "postgres",
-		"-c", fmt.Sprintf(`CREATE DATABASE %q`, db),
+		"-c", create,
 	).CombinedOutput()
 	if err != nil {
 		c.Stop()

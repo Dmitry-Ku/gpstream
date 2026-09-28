@@ -135,6 +135,24 @@ func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum st
 	return true, rows, nil
 }
 
+// Checksum re-derives the content checksum of a final destination table
+// (FR-10 §8: --overwrite checksum-skip). It mirrors source.Checksum — the same
+// binary COPY payload digest (transfer.ContentDigest), which is
+// row-order-independent, so a table whose data is already identical on the
+// destination produces the same digest as the source. An empty table is
+// "0" (matching source.Checksum) so two empty tables compare equal.
+func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
+	var buf writeCloserBuf
+	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, table))
+	if err != nil {
+		return "", err
+	}
+	if rows == 0 {
+		return "0", nil
+	}
+	return transfer.ContentDigest(buf.data)
+}
+
 // Swap atomically renames the staging table to its final name in the same
 // schema (FR-02). Because the staging and final tables share a schema, the
 // rename is a single statement and therefore atomic. If the final table

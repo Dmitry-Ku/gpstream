@@ -121,3 +121,35 @@ func hasQuery(q []string, substr string) bool {
 	}
 	return false
 }
+
+// TestManagerOverwriteChecksumSkip verifies F-10 §8: under --overwrite a
+// conflicting table whose data is ALREADY identical on the destination
+// (same content digest) is skipped, not rewritten. (The mismatch case — a
+// differing destination is re-copied via staging+swap — is covered by
+// TestManagerOverwriteSwap.)
+func TestManagerOverwriteChecksumSkip(t *testing.T) {
+	cfg := config.Default()
+	cfg.ConflictAction = config.Overwrite
+	// Identical payload on both sides -> digests match -> skip.
+	m, dst := conflictManager(t, &cfg, []byte("SAME-BINARY-PAYLOAD"), true)
+
+	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if m.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1 (identical --overwrite target)", m.Skipped)
+	}
+	if m.Units != 0 {
+		t.Errorf("units = %d, want 0 (a checksum-matching overwrite is skipped, not copied)", m.Units)
+	}
+	if m.Failures != 0 {
+		t.Errorf("failures = %d, want 0", m.Failures)
+	}
+	q := dst.Queried()
+	if hasQuery(q, "FROM STDIN") {
+		t.Errorf("a checksum-matching --overwrite must not COPY into the destination, got %v", q)
+	}
+	if hasQuery(q, "RENAME TO") {
+		t.Errorf("a skipped unit must not swap, got %v", q)
+	}
+}

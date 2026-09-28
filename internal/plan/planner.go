@@ -420,18 +420,72 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier) []
 	// datcollate is the LC_COLLATE locale name (text); compare it directly.
 	// (pg_encoding_to_char takes an encoding id, not a locale — the old query
 	// always errored on real Postgres and was silently swallowed.)
-	s, _ := src.Query(ctx, `SELECT datname, datcollate FROM pg_database`)
-	d, _ := dst.Query(ctx, `SELECT datname, datcollate FROM pg_database`)
-	// A difference between source and dest LC_COLLATE is flagged (FR-10/FR-16).
-	// Guard row widths so a short (fake) row cannot panic.
-	if len(s) > 0 && len(d) > 0 && len(s[0]) > 1 && len(d[0]) > 1 {
-		if asString(s[0][1]) != asString(d[0][1]) {
+	s, _ := src.Query(ctx, `SELECT datname, datcollate, datctype FROM pg_database`)
+	d, _ := dst.Query(ctx, `SELECT datname, datcollate, datctype FROM pg_database`)
+	srcLoc, dstLoc := localeMap(s), localeMap(d)
+
+	// Compare each source DB against the destination DB the plan actually
+	// writes to (after rename). We do NOT just compare the first pg_database
+	// row: on a real cluster that is the `postgres` service DB, so a first-row
+	// comparison both mis-reports the DB and misses a real diff on the copied
+	// DB (the single-row test fakes masked this). (FR-10/FR-16)
+	type pair struct{ s, d string }
+	seen := map[pair]bool{}
+	var pairs []pair
+	if len(tabs) == 0 {
+		// Whole-cluster copy: every source DB maps to its same-named dest DB.
+		for db := range srcLoc {
+			if p := (pair{db, db}); !seen[p] {
+				seen[p] = true
+				pairs = append(pairs, p)
+			}
+		}
+	} else {
+		for _, t := range tabs {
+			dstDB := t.DstDB
+			if dstDB == "" {
+				dstDB = t.DB
+			}
+			if p := (pair{t.DB, dstDB}); !seen[p] {
+				seen[p] = true
+				pairs = append(pairs, p)
+			}
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].s != pairs[j].s {
+			return pairs[i].s < pairs[j].s
+		}
+		return pairs[i].d < pairs[j].d
+	})
+	for _, p := range pairs {
+		sv, okS := srcLoc[p.s]
+		dv, okD := dstLoc[p.d]
+		if !okS || !okD {
+			continue
+		}
+		if sv[0] != dv[0] || sv[1] != dv[1] {
 			out = append(out, CollationDiff{
-				LCCollate: asString(s[0][1]) + " -> " + asString(d[0][1]),
+				DB:        p.s,
+				LCCollate: sv[0] + " -> " + dv[0],
+				LCType:    sv[1] + " -> " + dv[1],
 			})
 		}
 	}
 	return out
+}
+
+// localeMap indexes pg_database rows (datname, datcollate, datctype) by DB name.
+// Short rows (test fakes that only carry datcollate) are skipped so a canned row
+// cannot panic the planner.
+func localeMap(rows [][]any) map[string][2]string {
+	m := map[string][2]string{}
+	for _, r := range rows {
+		if len(r) >= 3 {
+			m[asString(r[0])] = [2]string{asString(r[1]), asString(r[2])}
+		}
+	}
+	return m
 }
 
 // detectRedistribution computes the FR-15 redistribution accounting (CR-5): the

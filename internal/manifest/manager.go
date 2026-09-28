@@ -374,6 +374,18 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		m.journal.CreateUnit(u, StatePending)
 		return nil
 	}
+	// F-10 §8: --overwrite checksum-skip — a conflicting table whose data is
+	// ALREADY identical on the destination (same row-order-independent content
+	// digest) is skipped, not rewritten. Only --overwrite qualifies: the other
+	// policies (truncate/append) deliberately change the destination, and
+	// skip-existing is handled above. Re-read units are exempt (their target
+	// holds the PREVIOUS result, which must be replaced).
+	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.Overwrite &&
+		m.dst.Exists(ctx, u.DstSchema, u.DstName) && m.overwriteChecksumMatches(ctx, u) {
+		m.addSkipped()
+		m.journal.CreateUnit(u, StatePending)
+		return nil
+	}
 	if err := m.runUnit(ctx, u); err != nil {
 		m.addFailure()
 		m.journal.SetState(u)
@@ -396,6 +408,23 @@ func (m *Manager) addFailure() {
 	m.statMu.Lock()
 	m.Failures++
 	m.statMu.Unlock()
+}
+
+// overwriteChecksumMatches reports whether the source table and the existing
+// destination table hold identical data (F-10 §8 --overwrite checksum-skip).
+// It compares the row-order-independent content digests of the two sides. Any
+// error (table gone, copy fault) returns false: when in doubt the table is
+// re-copied, which is always safe.
+func (m *Manager) overwriteChecksumMatches(ctx context.Context, u *Unit) bool {
+	srcSum, err := m.src.Checksum(ctx, u.Schema, u.Table)
+	if err != nil {
+		return false
+	}
+	dstSum, err := m.dst.Checksum(ctx, u.DstSchema, u.DstName)
+	if err != nil {
+		return false
+	}
+	return srcSum != "" && srcSum == dstSum
 }
 
 // tableFor maps a run unit back to the plan.Table the source COPY reads

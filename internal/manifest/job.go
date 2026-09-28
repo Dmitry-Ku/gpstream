@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -90,6 +92,43 @@ func NewJournal(q pg.Querier, mirrorPath string) *Journal {
 		mirror: mirrorPath,
 		units:  map[int64]*Unit{},
 	}
+}
+
+// ConflictsPath is the F-10 §8 conflicts log: alongside the journal mirror,
+// named conflicts.jsonl. Empty when no mirror path is set.
+func (j *Journal) ConflictsPath() string {
+	if j.mirror == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(j.mirror), "conflicts.jsonl")
+}
+
+// WriteConflicts persists the plan's conflict diagnosis to conflicts.jsonl
+// (F-10 §8: «все конфликты логируются (conflicts.jsonl + manifest)») so an
+// operator can audit what would collide — and with which action — without
+// parsing stdout. A nil/empty conflict set still writes the file (an empty
+// array): the file's presence proves the preflight ran.
+func (j *Journal) WriteConflicts(cs []plan.Conflict) error {
+	if p := j.ConflictsPath(); p != "" {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		f, err := os.Create(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		enc := json.NewEncoder(f)
+		for _, c := range cs {
+			if err := enc.Encode(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// No mirror path: the in-memory plan still carries the conflicts (they
+	// are journaled via Unit.Conflict), so this is a no-op, not an error.
+	return nil
 }
 
 // Init creates the primary journal table on the destination service DB

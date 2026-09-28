@@ -85,12 +85,12 @@ func TestPlanVolumeAndConflict(t *testing.T) {
 }
 
 // collationFakes returns a source and destination fake whose pg_database rows
-// carry the given LC_COLLATE locale in column 2.
+// carry the given LC_COLLATE / LC_CTYPE locales in columns 2/3 for DB "orders".
 func collationFakes(srcCollate, dstCollate string) (*pg.FakeConn, *pg.FakeConn) {
 	src := pg.NewFakeConn()
-	src.On("pg_database", [][]any{{"orders", srcCollate}})
+	src.On("pg_database", [][]any{{"orders", srcCollate, srcCollate}})
 	dst := pg.NewFakeConn()
-	dst.On("pg_database", [][]any{{"orders", dstCollate}})
+	dst.On("pg_database", [][]any{{"orders", dstCollate, dstCollate}})
 	return src, dst
 }
 
@@ -144,6 +144,61 @@ func containsQuery(fc *pg.FakeConn, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestDetectCollationsTargetsCopiedDB is a regression guard for the first-row
+// bug: detectCollations used to compare only the FIRST pg_database row on each
+// side, which on a real cluster is the `postgres` service DB — so it mis-reported
+// the DB and missed a real diff on the DB being copied. The planner must compare
+// the collation of the DB the plan actually copies, not an arbitrary first row.
+func TestDetectCollationsTargetsCopiedDB(t *testing.T) {
+	// Source: `postgres` is C, the copied DB `appdb` is en_US.UTF-8.
+	src := pg.NewFakeConn()
+	src.On("pg_database", [][]any{
+		{"postgres", "C", "C"},
+		{"appdb", "en_US.UTF-8", "en_US.UTF-8"},
+	})
+	// Destination: `postgres` is en_US.UTF-8 (differs from source postgres!),
+	// the copied DB `appdb` is C (differs from source appdb).
+	dst := pg.NewFakeConn()
+	dst.On("pg_database", [][]any{
+		{"postgres", "en_US.UTF-8", "en_US.UTF-8"},
+		{"appdb", "C", "C"},
+	})
+	tabs := []Table{{DB: "appdb", Schema: "s", Name: "orders", Bytes: 100}}
+	out := detectCollations(context.Background(), tabs, src, dst)
+	if len(out) != 1 {
+		t.Fatalf("diffs = %d, want 1 (only the copied DB)", len(out))
+	}
+	if out[0].DB != "appdb" {
+		t.Errorf("diff db = %q, want appdb (not the postgres service DB)", out[0].DB)
+	}
+	if out[0].LCCollate != "en_US.UTF-8 -> C" {
+		t.Errorf("lc_collate = %q, want %q", out[0].LCCollate, "en_US.UTF-8 -> C")
+	}
+}
+
+// TestDetectCollationsWholeClusterCoversAllDBs verifies that with no explicit
+// table selection the planner compares every source DB (whole-cluster copy).
+func TestDetectCollationsWholeClusterCoversAllDBs(t *testing.T) {
+	src := pg.NewFakeConn()
+	src.On("pg_database", [][]any{
+		{"dbA", "C", "C"},
+		{"dbB", "C", "C"},
+	})
+	dst := pg.NewFakeConn()
+	dst.On("pg_database", [][]any{
+		{"dbA", "C", "C"},
+		{"dbB", "en_US.UTF-8", "en_US.UTF-8"},
+	})
+	// tabs empty -> whole-cluster: both source DBs must be compared.
+	out := detectCollations(context.Background(), nil, src, dst)
+	if len(out) != 1 {
+		t.Fatalf("diffs = %d, want 1 (dbB)", len(out))
+	}
+	if out[0].DB != "dbB" {
+		t.Errorf("diff db = %q, want dbB", out[0].DB)
+	}
 }
 
 // mkRedistribFake returns a fake that answers the pg_class listing and the
