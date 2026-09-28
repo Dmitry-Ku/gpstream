@@ -400,7 +400,17 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		}
 	} else {
 		target = dest.StagingName(u.JobID, u.UnitID)
-		if err := m.dst.CreateStaging(ctx, ds, cols, target, dist); err != nil {
+		// The staging table is scratch for this unit's in-flight copy. A
+		// surviving one (a crashed/failed run that copied but never swapped)
+		// holds unswapped partial data; it MUST be empty before the copy,
+		// otherwise a resume appends to the partial data and doubles the rows
+		// (F-06/F-07: "resume доводит до конца без дублей"). A fresh run has
+		// no staging table, so it is created from the source layout.
+		if m.dst.Exists(ctx, ds, target) {
+			if err := m.dst.Truncate(ctx, ds, target); err != nil {
+				return fmt.Errorf("truncate staging: %w", err)
+			}
+		} else if err := m.dst.CreateStaging(ctx, ds, cols, target, dist); err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
 	}
