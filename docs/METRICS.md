@@ -3,7 +3,7 @@
 This document covers gpstream's observability: the Prometheus `/metrics`
 endpoint, how to check health, the exact counters exposed, and the `logs`
 command. Everything below is grounded in the v2 implementation
-(`internal/metrics/metrics.go`, `internal/limiter`, `cmd/gpstream/main.go`).
+(`internal/monitor/metrics.go`, `internal/limiter`, `cmd/gpstream/main.go`).
 
 ## The `/metrics` endpoint
 
@@ -57,7 +57,7 @@ into the metrics server.
 
 `m.Handler()` sets `Content-Type: text/plain; version=0.0.4` and renders
 the following series (exact `# HELP` / `# TYPE` lines from
-`internal/metrics/metrics.go`):
+`internal/monitor/metrics.go`):
 
 ```
 # HELP gpstream_bytes_total Bytes transferred (compressed on the wire).
@@ -91,6 +91,14 @@ gpstream_compression_level <lvl>
 # HELP gpstream_compression_mode Current compression mode (FR-12).
 # TYPE gpstream_compression_mode gauge
 gpstream_compression_mode{mode="zstd"} 1
+
+# HELP gpstream_index_queue Background index builds pending (FR-17).
+# TYPE gpstream_index_queue gauge
+gpstream_index_queue <n>
+
+# HELP gpstream_index_done_total Background index builds finished (FR-17).
+# TYPE gpstream_index_done_total counter
+gpstream_index_done_total <n>
 ```
 
 Summary of the series:
@@ -105,6 +113,8 @@ Summary of the series:
 | `gpstream_throughput_bytes` | gauge | current throughput in bytes/sec |
 | `gpstream_compression_level` | gauge | current zstd level (FR-12) |
 | `gpstream_compression_mode` | gauge | current mode, labelled `{mode="..."}` |
+| `gpstream_index_queue` | gauge | background index builds pending (FR-17) |
+| `gpstream_index_done_total` | counter | background index builds finished (FR-17) |
 
 ### How the gauges are computed
 
