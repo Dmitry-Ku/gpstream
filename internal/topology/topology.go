@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -33,8 +34,6 @@ type Segment struct {
 	Address string `json:"address"`
 	// Port is the segment's port.
 	Port int `json:"port"`
-	// DBName is the segment's database name (usually the same as the cluster).
-	DBName string `json:"db_name"`
 }
 
 // Description returns a stable one-line description, e.g. "content=1 primary synced 10.0.0.3:6000".
@@ -98,17 +97,49 @@ func (t *Topology) IsGreenplum() bool {
 const ProbeSQL = `SELECT COALESCE(to_regclass('gp_toolkit.gp_segment_configuration'), to_regclass('gp_segment_configuration'))`
 
 // catalogSQL reads the rows we need for planning and doctor.
-const catalogSQL = `SELECT content, role, preferred_role, mode, status, hostname, port, datname
+//
+// NOTE 1: this open-gpdb 6.x build's gp_segment_configuration has NO
+// `datname` column (verified live: address, content, datadir, dbid, hostname,
+// mode, port, preferred_role, role, status). Selecting it makes the whole
+// query error, which doctor reports as "could not enumerate segments".
+//
+// NOTE 2: role/preferred_role/mode/status are "char" (pg_char, OID 18); pgx
+// decodes them as int32 ASCII codes (112='p'), so cast ::text in SQL to keep
+// the comparison driver-type-agnostic (same convention as source.go).
+const catalogSQL = `SELECT content, role::text, preferred_role::text, mode::text, status::text, hostname, port
 FROM gp_segment_configuration
 ORDER BY content, role`
 
 // IsGreenplum probes whether the connection is to a Greenplum cluster.
+//
+// to_regclass returns NULL when the catalog is absent (plain PostgreSQL) and a
+// non-NULL regclass otherwise. pgx decodes a bare regclass as its TEXT form
+// (the type name, e.g. "gp_segment_configuration") in the text protocol — NOT
+// a numeric OID — so this must NOT numeric-coerce the value (toInt("gp_segment_
+// configuration") == 0 would mis-detect a real cluster as plain-PG and make
+// Read return (nil, nil), which doctor reports as "could not enumerate
+// segments"). The correct test is "non-nil / non-empty", consistent with the
+// other to_regclass call sites (source.go, plan/route.go, planner.go).
 func IsGreenplum(ctx context.Context, q pg.Querier) bool {
 	oid, err := pg.Row(ctx, q, ProbeSQL)
 	if err != nil {
 		return false
 	}
-	return toInt(oid) > 0
+	return !isEmptyOID(oid)
+}
+
+// isEmptyOID reports whether a to_regclass result means "catalog absent"
+// (NULL). It tolerates the driver returning either a nil interface (NULL) or,
+// on some paths, an empty/whitespace string, without numeric coercion.
+func isEmptyOID(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(x) == ""
+	default:
+		return false
+	}
 }
 
 // Read loads the full topology from q. It returns an error when the catalog
@@ -124,7 +155,7 @@ func Read(ctx context.Context, q pg.Querier) (*Topology, error) {
 	}
 	t := &Topology{}
 	for _, r := range rows {
-		if len(r) < 8 {
+		if len(r) < 7 {
 			continue
 		}
 		seg := Segment{
@@ -135,7 +166,6 @@ func Read(ctx context.Context, q pg.Querier) (*Topology, error) {
 			Status:        toStr(r[4]),
 			Address:       toStr(r[5]),
 			Port:          toInt(r[6]),
-			DBName:        toStr(r[7]),
 		}
 		if seg.Content < 0 {
 			t.Coordinator = &seg
@@ -157,9 +187,19 @@ func toInt(v any) int {
 	switch x := v.(type) {
 	case int:
 		return x
+	case int8:
+		return int(x)
+	case int16: // gp_segment_configuration.content is smallint (pgx -> int16)
+		return int(x)
 	case int32:
 		return int(x)
 	case int64:
+		return int(x)
+	case uint16:
+		return int(x)
+	case uint32:
+		return int(x)
+	case uint64:
 		return int(x)
 	case float64:
 		return int(x)

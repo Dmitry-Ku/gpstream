@@ -2,20 +2,22 @@ package topology
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // fullCatalog is a 3-content cluster with mirrors plus a coordinator row.
-// Columns: content, role, preferred_role, mode, status, hostname, port, datname.
+// Columns: content, role, preferred_role, mode, status, hostname, port —
+// matching the open-gpdb 6.x gp_segment_configuration (no datname column).
 var fullCatalog = [][]any{
-	{-1, "p", "p", "s", "u", "coordinator.local", int64(5432), "gpstream"},
-	{0, "p", "p", "s", "u", "seg0.local", int64(6000), "gpstream"},
-	{0, "m", "m", "s", "u", "seg0m.local", int64(7000), "gpstream"},
-	{1, "p", "p", "s", "u", "seg1.local", int64(6000), "gpstream"},
-	{1, "m", "m", "n", "u", "seg1m.local", int64(7000), "gpstream"},
-	{2, "p", "p", "s", "u", "seg2.local", int64(6000), "gpstream"},
+	{-1, "p", "p", "s", "u", "coordinator.local", int64(5432)},
+	{0, "p", "p", "s", "u", "seg0.local", int64(6000)},
+	{0, "m", "m", "s", "u", "seg0m.local", int64(7000)},
+	{1, "p", "p", "s", "u", "seg1.local", int64(6000)},
+	{1, "m", "m", "n", "u", "seg1m.local", int64(7000)},
+	{2, "p", "p", "s", "u", "seg2.local", int64(6000)},
 }
 
 // gpConn wires a FakeConn that answers both the probe and the catalog read.
@@ -96,6 +98,81 @@ func TestReadCatalogError(t *testing.T) {
 	tt, err := Read(context.Background(), q)
 	if err == nil {
 		t.Fatalf("Read with failing catalog query: want error, got %+v", tt)
+	}
+}
+
+// TestReadProbeReturnsRegclassString — regression for the live GP6 doctor
+// "could not enumerate segments" FAIL. pgx decodes a bare to_regclass as its
+// TEXT form (the type name) in the text protocol, NOT a numeric OID. The old
+// IsGreenplum did toInt(oid) > 0, so toInt("gp_segment_configuration") == 0
+// mis-detected a real cluster as plain-PG and Read returned (nil, nil).
+func TestReadProbeReturnsRegclassString(t *testing.T) {
+	q := pg.NewFakeConn()
+	// Real pgx text-protocol decode: the regclass comes back as its name.
+	q.On("to_regclass('gp_toolkit.gp_segment_configuration')",
+		[][]any{{"gp_segment_configuration"}})
+	q.On("gp_segment_configuration", fullCatalog)
+
+	if !IsGreenplum(context.Background(), q) {
+		t.Fatal("IsGreenplum = false, want true (probe decoded as a regclass string)")
+	}
+	tt, err := Read(context.Background(), q)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if tt == nil || !tt.IsGreenplum() {
+		t.Fatalf("Read = %+v, want a Greenplum topology", tt)
+	}
+	if got := tt.SegmentCount(); got != 3 {
+		t.Errorf("SegmentCount = %d, want 3", got)
+	}
+}
+
+// TestCatalogSQLColumnsExistOnTargetKernel — regression guard: every column
+// in catalogSQL must exist in the open-gpdb 6.x gp_segment_configuration.
+// A stray column (the historical `datname`, absent on this build) makes the
+// whole query error and doctor reports "could not enumerate segments".
+func TestCatalogSQLColumnsExistOnTargetKernel(t *testing.T) {
+	// Columns present on open-gpdb 6.x gp_segment_configuration (verified
+	// live): address, content, datadir, dbid, hostname, mode, port,
+	// preferred_role, role, status. datname is NOT among them.
+	present := map[string]bool{
+		"address": true, "content": true, "datadir": true, "dbid": true,
+		"hostname": true, "mode": true, "port": true,
+		"preferred_role": true, "role": true, "status": true,
+	}
+	// Pull the column list out of catalogSQL (the SELECT ... FROM part).
+	head := catalogSQL[:strings.Index(catalogSQL, "FROM")]
+	for _, col := range strings.FieldsFunc(head,
+		func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+		c := strings.ToLower(strings.TrimSuffix(col, "::text"))
+		if c == "select" || c == "" {
+			continue
+		}
+		if !present[c] {
+			t.Errorf("catalogSQL references %q, which is not a gp_segment_configuration column on the target kernel", c)
+		}
+	}
+}
+
+// TestIsEmptyOID pins the NULL-vs-present decision: NULL (nil) and blank
+// strings are "absent"; a non-empty name or a numeric OID are "present".
+func TestIsEmptyOID(t *testing.T) {
+	cases := []struct {
+		v    any
+		want bool
+	}{
+		{nil, true},
+		{"", true},
+		{"   ", true},
+		{"gp_segment_configuration", false},
+		{int32(16384), false},
+		{uint32(5036), false},
+	}
+	for i, c := range cases {
+		if got := isEmptyOID(c.v); got != c.want {
+			t.Errorf("case %d: isEmptyOID(%v) = %v, want %v", i, c.v, got, c.want)
+		}
 	}
 }
 
