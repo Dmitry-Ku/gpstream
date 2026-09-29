@@ -81,3 +81,51 @@ func TestManagerPartitionSpecInStagingDDL(t *testing.T) {
 		t.Fatalf("staging DDL missing the partition spec, got %v", dst.Queried())
 	}
 }
+
+// TestManagerPartitionedUnitReadsParent pins the data-path contract that the
+// segment-direct transports (on_segment / direct) depend on (lab e2e,
+// 29.09): a partitioned unit's SOURCE data read targets the PARENT name —
+// `COPY <schema>.<parent> TO STDOUT` — whose single stream carries every
+// leaf's rows. It must NOT read a leaf partition directly (a leaf relfilenode
+// holds only that leaf's rows; reading leaves separately would drop the others
+// and, under a differing glibc, route by the wrong collation). The planner
+// already guarantees the unit's Name is the parent (TestPlannerLeafExclusionOnGP);
+// this pins that the read honours that Name.
+func TestManagerPartitionedUnitReadsParent(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	j := NewJournal(pg.NewFakeConn(), dir+"/journal.jsonl")
+	m := NewManager(configDefault(), src, dst, j)
+
+	spec := pg.ParsePartitionSpec(
+		`PARTITION BY RANGE (day) (PARTITION a START ('01') INCLUSIVE END ('02') EXCLUSIVE, DEFAULT PARTITION z )`)
+	p := &plan.Plan{Units: []plan.Table{{
+		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
+		Bytes: 100,
+		Partition: spec, // a partitioned parent (2 leaves a/z)
+	}}}
+	if err := m.Run(context.Background(), p); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The source data read must target the parent (events), via COPY ... TO STDOUT.
+	parentRead, leafRead := false, false
+	for _, q := range src.Queried() {
+		if strings.Contains(q, "TO STDOUT") {
+			if strings.Contains(q, `COPY "public"."events" TO STDOUT`) {
+				parentRead = true
+			}
+			// A leaf partition is named <parent>_<N>_prt_<leaf> on GP6; a read
+			// targeting it would be the degradation this test guards against.
+			if strings.Contains(q, `COPY "public"."events_`) {
+				leafRead = true
+			}
+		}
+	}
+	if !parentRead {
+		t.Fatalf("partitioned unit must READ the parent via COPY, source reads were: %v", src.Queried())
+	}
+	if leafRead {
+		t.Fatalf("partitioned unit must NOT read a leaf partition directly, source reads were: %v", src.Queried())
+	}
+}

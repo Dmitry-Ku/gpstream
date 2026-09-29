@@ -198,3 +198,67 @@ func TestPlannerPlainPGNoPartitionedFlag(t *testing.T) {
 		t.Fatal("plain-PG parent must not be flagged Partitioned")
 	}
 }
+
+// collectTablesQuery returns the planner's table-collection query among the
+// recorded fake queries. It is the only query that calls current_database()
+// (a leaf partition's relfilenode carries the parent's rows, so the collection
+// must enumerate parents, not leaves).
+func collectTablesQuery(t *testing.T, src *pg.FakeConn) string {
+	t.Helper()
+	for _, q := range src.Queried() {
+		if strings.Contains(q, "current_database()") {
+			return q
+		}
+	}
+	t.Fatalf("no collectTables query recorded (marker current_database()), got: %v", src.Queried())
+	return ""
+}
+
+// TestPlannerLeafExclusionOnGP pins the Fix-1 mechanism that makes a
+// partitioned unit parent-only: on a Greenplum source the planner's
+// table-collection query must carry the leaf-exclusion filter, so a parent's
+// leaf partitions are NOT planned as separate units (their rows ride the
+// parent's single COPY; planning them separately would duplicate data and,
+// under a differing glibc, route rows by the wrong collation). lab e2e
+// (29.09): 7 leaves excluded, 3 parents = 3 units.
+func TestPlannerLeafExclusionOnGP(t *testing.T) {
+	cfg := config.Default()
+	cfg.Source = "host=src"
+	cfg.Dest = "host=dst"
+	src := partitionedSourceFake(partSpecWithDefault, "text")
+	dst := pg.NewFakeConn()
+	dst.On("array_agg(x ORDER BY x)", [][]any{{`{1,"1",2}`}})
+
+	if _, err := Build(context.Background(), &cfg, src, dst); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	q := collectTablesQuery(t, src)
+	if !strings.Contains(q, "NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)") {
+		t.Fatalf("GP-source collectTables must exclude leaf partitions (NOT EXISTS pg_inherits), got:\n%s", q)
+	}
+}
+
+// TestPlannerNoLeafExclusionOnPlainPG pins the Greenplum-CONDITIONAL nature of
+// the exclusion: on a plain-PostgreSQL source pg_inherits is user inheritance,
+// not partitioning, so the leaves are NOT a separate concern and must stay in
+// the plan (their rows are not in the parent's COPY). A blanket exclusion
+// would silently drop user-inheritance children on plain PG.
+func TestPlannerNoLeafExclusionOnPlainPG(t *testing.T) {
+	cfg := config.Default()
+	cfg.Source = "host=src"
+	cfg.Dest = "host=dst"
+	src := pg.NewFakeConn()
+	// No gs-gp-probe entry -> the probe errors -> gpSource = false.
+	src.On("pg_class", [][]any{
+		{"s", "events", "r", int64(458752), int64(2), int64(0), "srcdb"},
+	})
+	dst := pg.NewFakeConn()
+
+	if _, err := Build(context.Background(), &cfg, src, dst); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	q := collectTablesQuery(t, src)
+	if strings.Contains(q, "NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)") {
+		t.Fatalf("plain-PG collectTables must NOT exclude pg_inherits children (user inheritance), got:\n%s", q)
+	}
+}
