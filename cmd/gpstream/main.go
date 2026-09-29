@@ -685,10 +685,14 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	if len(p.Collations) > 0 {
 		fmt.Printf("collation:     %d difference(s) (FR-10/FR-16)\n", len(p.Collations))
 		for _, cd := range p.Collations {
-			if cd.IsColumn() {
+			switch {
+			case cd.IsColumn():
 				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) (column, FR-16)\n",
 					cd.Table, cd.Column, cd.SrcCollation, cd.DstCollation)
-			} else {
+			case cd.IsEncoding():
+				fmt.Printf("  - %s: encoding %s (DATA DESTRUCTIVE if you proceed — strings will be reinterpreted)\n",
+					cd.DB, cd.Encoding)
+			default:
 				fmt.Printf("  - %s\n", cd.LCCollate)
 			}
 		}
@@ -1327,10 +1331,13 @@ func cmdRun(args []string) error {
 	if len(p.Collations) > 0 {
 		fmt.Printf("collation:    %d difference(s) detected (FR-10/FR-16) — review before relying on string sort/index semantics:\n", len(p.Collations))
 		for _, cd := range p.Collations {
-			if cd.IsColumn() {
+			switch {
+			case cd.IsColumn():
 				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) [column]\n",
 					cd.Table, cd.Column, cd.SrcCollation, cd.DstCollation)
-			} else {
+			case cd.IsEncoding():
+				fmt.Printf("  - db %s: encoding %s [DATA DESTRUCTIVE]\n", cd.DB, cd.Encoding)
+			default:
 				fmt.Printf("  - db %s: %s (LC_COLLATE), LC_CTYPE %s\n", cd.DB, cd.LCCollate, cd.LCType)
 			}
 		}

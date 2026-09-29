@@ -236,11 +236,15 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// other operator-facing diagnostic (the warning is also printed in the
 	// final report, main.go).
 	for _, cd := range p.Collations {
-		if cd.IsColumn() {
+		switch {
+		case cd.IsColumn():
 			m.events.Log("collation_diff", "level", "column",
 				"table", cd.Table, "column", cd.Column,
 				"source", cd.SrcCollation, "destination", cd.DstCollation)
-		} else {
+		case cd.IsEncoding():
+			m.events.Log("encoding_diff", "level", "db",
+				"db", cd.DB, "encoding", cd.Encoding)
+		default:
 			m.events.Log("collation_diff", "level", "db",
 				"db", cd.DB, "lc_collate", cd.LCCollate, "lc_ctype", cd.LCType)
 		}

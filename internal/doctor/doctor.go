@@ -125,6 +125,7 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkPermissions("source", src)
 	r.checkPermissions("dest", dst)
 	r.checkCollation(src, dst)
+	r.checkEncoding(src, dst)
 	r.checkExtensions(src, dst)
 	r.checkTLS(opts.MinTLS)
 	r.checkStatementTimeouts("source", src)
@@ -390,6 +391,29 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Sev:  Warn,
 			Msg:  fmt.Sprintf("explicit column collation(s) %v on the source are not installed in the destination database", missing),
 			Rec:  "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ (FR-16)",
+		})
+	}
+}
+
+// checkEncoding (F-16) compares the source and destination databases'
+// character encoding. An encoding mismatch (e.g. SQL_ASCII -> UTF8) is
+// DATA-DESTRUCTIVE — string bytes are reinterpreted on the destination — so
+// it is reported with a recommendation to align the destination database
+// before the load. A query fault degrades to no finding (doctor is a
+// pre-flight, never a hard gate).
+func (r *Report) checkEncoding(src, dst pg.Querier) {
+	srcEnc := pg.RowStr(context.Background(), src, `SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()`)
+	dstEnc := pg.RowStr(context.Background(), dst, `SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()`)
+	if srcEnc == "" || dstEnc == "" {
+		return
+	}
+	if srcEnc != dstEnc {
+		r.Add(Check{
+			Name: "encoding",
+			Side: "network",
+			Sev:  Warn,
+			Msg:  fmt.Sprintf("database encoding differs: source=%s dest=%s", srcEnc, dstEnc),
+			Rec:  "an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE) — create the destination database with the source's encoding before the load (F-16)",
 		})
 	}
 }

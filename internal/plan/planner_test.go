@@ -120,17 +120,20 @@ func TestDetectCollationsSame(t *testing.T) {
 }
 
 // TestDetectCollationsQuery is a regression guard for the pg_encoding_to_char
-// bug: the collation check MUST read datcollate directly (a locale string),
-// not pg_encoding_to_char (which takes an encoding id and errored on every
-// real cluster). The fake answers any substring match, so without this guard
-// the broken query would have silently passed.
+// bug: the LC_COLLATE/LC_CTYPE comparison MUST read datcollate/datctype
+// directly (locale strings), not derive them via pg_encoding_to_char (which
+// takes an encoding id and errored on every real cluster). The F-16 encoding
+// check DOES use pg_encoding_to_char — but only on datencoding, never on
+// datcollate/datctype. The fake answers any substring match, so without this
+// guard the broken query would have silently passed.
 func TestDetectCollationsQuery(t *testing.T) {
 	src, dst := collationFakes("en_US.UTF-8", "C.UTF-8")
 	detectCollations(context.Background(), nil, src, dst, "")
 	for _, fc := range []*pg.FakeConn{src, dst} {
 		for _, q := range fc.Queried() {
-			if strings.Contains(q, "pg_encoding_to_char") {
-				t.Errorf("query uses pg_encoding_to_char (broken): %q", q)
+			if strings.Contains(q, "pg_encoding_to_char(datcollate)") ||
+				strings.Contains(q, "pg_encoding_to_char(datctype)") {
+				t.Errorf("collation derived via pg_encoding_to_char (broken): %q", q)
 			}
 		}
 		if !containsQuery(fc, "datcollate") {

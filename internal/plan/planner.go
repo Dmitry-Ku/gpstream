@@ -98,10 +98,11 @@ type Plan struct {
 	Partial bool `json:"partial,omitempty"`
 }
 
-// CollationDiff is a detected collation difference (FR-10/FR-16). A DB-level
-// entry carries the LC_COLLATE/LC_CTYPE pair ("src -> dst") and no Table; a
-// column-level entry (F-16) carries Table + Column + SrcCollation/DstCollation
-// and an empty LCCollate/LCType.
+// CollationDiff is a detected collation/encoding difference (FR-10/FR-16). A
+// DB-level entry carries the LC_COLLATE/LC_CTYPE pair ("src -> dst") and no
+// Table; a column-level entry (F-16) carries Table + Column +
+// SrcCollation/DstCollation and an empty LCCollate/LCType; an encoding-level
+// entry (F-16) carries DB + Encoding ("src -> dst") and empty LCCollate.
 type CollationDiff struct {
 	DB           string
 	LCCollate    string
@@ -110,11 +111,16 @@ type CollationDiff struct {
 	Column       string
 	SrcCollation string
 	DstCollation string
+	Encoding     string // "src -> dst" char name; non-empty only for encoding diffs
 }
 
 // IsColumn reports whether this diff is a column-level (attcollation)
 // difference rather than a DB-level LC_COLLATE/LC_CTYPE one (F-16).
 func (d CollationDiff) IsColumn() bool { return d.Table != "" }
+
+// IsEncoding reports whether this diff is a database-encoding difference
+// (F-16) rather than a collation one.
+func (d CollationDiff) IsEncoding() bool { return d.Table == "" && d.Encoding != "" }
 
 // Conflict is a detected target-table conflict (FR-10/FR-11).
 type Conflict struct {
@@ -613,12 +619,15 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, de
 	if src == nil || dst == nil {
 		return out
 	}
-	// datcollate is the LC_COLLATE locale name (text); compare it directly.
-	// (pg_encoding_to_char takes an encoding id, not a locale — the old query
-	// always errored on real Postgres and was silently swallowed.)
-	s, _ := src.Query(ctx, `SELECT datname, datcollate, datctype FROM pg_database`)
-	d, _ := dst.Query(ctx, `SELECT datname, datcollate, datctype FROM pg_database`)
+	// datcollate/datctype are locale names (text); datencoding is the
+	// database encoding OID (F-16). Compare them directly.
+	// (The collation must NOT be derived via pg_encoding_to_char — that
+	// function takes an encoding id, not a locale, and the old query always
+	// errored on real Postgres and was silently swallowed.)
+	s, _ := src.Query(ctx, `SELECT datname, datcollate, datctype, encoding FROM pg_database`)
+	d, _ := dst.Query(ctx, `SELECT datname, datcollate, datctype, encoding FROM pg_database`)
 	srcLoc, dstLoc := localeMap(s), localeMap(d)
+	srcEncOID, dstEncOID := encodingOIDMap(s), encodingOIDMap(d)
 
 	// The runtime copies every table through the single destination pool, so
 	// the data lands in the database named in the --dest connection string —
@@ -683,25 +692,38 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, de
 	for _, p := range pairs {
 		sv, okS := srcLoc[p.s]
 		dv, okD := dstLoc[p.d]
-		if !okS || !okD {
-			continue
+		if okS && okD {
+			nameDiff := sv[0] != dv[0] || sv[1] != dv[1]
+			if nameDiff || behavioralDiff {
+				lc := sv[0] + " -> " + dv[0]
+				switch {
+				case nameDiff && behavioralDiff:
+					lc += " (and different glibc sort behavior — behavioral probe)"
+				case !nameDiff:
+					lc += " (same locale name, DIFFERENT glibc sort behavior — behavioral probe; string sort/index semantics will differ)"
+				}
+				out = append(out, CollationDiff{
+					DB:        p.s,
+					LCCollate: lc,
+					LCType:    sv[1] + " -> " + dv[1],
+				})
+			}
 		}
-		nameDiff := sv[0] != dv[0] || sv[1] != dv[1]
-		if !nameDiff && !behavioralDiff {
-			continue
+		// F-16: database encoding. Compare the raw datencoding OIDs; a
+		// mismatch (e.g. SQL_ASCII -> UTF8) is data-destructive — string
+		// bytes are reinterpreted on the destination. The names are resolved
+		// with pg_encoding_to_char($1), the correct usage (it takes an
+		// encoding id); a resolution fault degrades to the raw OID. This is
+		// independent of the locale comparison above (an encoding diff is
+		// reported even when the locales match, and vice versa).
+		if so, okSE := srcEncOID[p.s]; okSE {
+			if do, okDE := dstEncOID[p.d]; okDE && so != do {
+				out = append(out, CollationDiff{
+					DB:       p.s,
+					Encoding: encodingName(ctx, src, so) + " -> " + encodingName(ctx, dst, do),
+				})
+			}
 		}
-		lc := sv[0] + " -> " + dv[0]
-		switch {
-		case nameDiff && behavioralDiff:
-			lc += " (and different glibc sort behavior — behavioral probe)"
-		case !nameDiff:
-			lc += " (same locale name, DIFFERENT glibc sort behavior — behavioral probe; string sort/index semantics will differ)"
-		}
-		out = append(out, CollationDiff{
-			DB:        p.s,
-			LCCollate: lc,
-			LCType:    sv[1] + " -> " + dv[1],
-		})
 	}
 	// F-16: column-level (attcollation) comparison. Per copied table, compare
 	// the source column's explicit collation with the destination's (queried
@@ -791,6 +813,31 @@ func localeMap(rows [][]any) map[string][2]string {
 	for _, r := range rows {
 		if len(r) >= 3 {
 			m[asString(r[0])] = [2]string{asString(r[1]), asString(r[2])}
+		}
+	}
+	return m
+}
+
+// encodingName resolves an encoding OID to its char name
+// (pg_encoding_to_char takes an encoding id — the correct usage here). On a
+// query fault it degrades to the raw OID as a string so the finding is still
+// reported (a missing name is a display detail, not a missed diff).
+func encodingName(ctx context.Context, q pg.Querier, oid int64) string {
+	if n := pg.RowStr(ctx, q, `SELECT pg_encoding_to_char($1)`, oid); n != "" {
+		return n
+	}
+	return fmt.Sprintf("%d", oid)
+}
+
+// encodingOIDMap indexes pg_database rows (datname, datencoding OID) by DB
+// name. Rows without a 4th column (the older 3-column test fakes) are
+// skipped, so an encoding finding requires both sides to report an OID. Note
+// OID 0 (SQL_ASCII) is a valid encoding and is kept.
+func encodingOIDMap(rows [][]any) map[string]int64 {
+	m := map[string]int64{}
+	for _, r := range rows {
+		if len(r) >= 4 {
+			m[asString(r[0])] = toInt64(r[3])
 		}
 	}
 	return m
