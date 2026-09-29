@@ -71,12 +71,23 @@ type Plan struct {
 	Partial bool `json:"partial,omitempty"`
 }
 
-// CollationDiff is a detected LC_COLLATE/LC_CTYPE difference (FR-10/FR-16).
+// CollationDiff is a detected collation difference (FR-10/FR-16). A DB-level
+// entry carries the LC_COLLATE/LC_CTYPE pair ("src -> dst") and no Table; a
+// column-level entry (F-16) carries Table + Column + SrcCollation/DstCollation
+// and an empty LCCollate/LCType.
 type CollationDiff struct {
-	DB        string
-	LCCollate string
-	LCType    string
+	DB           string
+	LCCollate    string
+	LCType       string
+	Table        string
+	Column       string
+	SrcCollation string
+	DstCollation string
 }
+
+// IsColumn reports whether this diff is a column-level (attcollation)
+// difference rather than a DB-level LC_COLLATE/LC_CTYPE one (F-16).
+func (d CollationDiff) IsColumn() bool { return d.Table != "" }
 
 // Conflict is a detected target-table conflict (FR-10/FR-11).
 type Conflict struct {
@@ -480,7 +491,84 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier) []
 			})
 		}
 	}
+	// F-16: column-level (attcollation) comparison. Per copied table, compare
+	// the source column's explicit collation with the destination's (queried
+	// against the DESTINATION schema+name, so a rename is honoured). Only
+	// explicitly COLLATEd columns carry a name (the database default is "" on
+	// both sides and is never a column-level diff — DB-level differences are
+	// the pg_database entries above). A query fault degrades to no column
+	// diffs (never fails the plan) — the same convention as the conflict
+	// check. The marker comment keeps this query distinguishable from the
+	// pg_class-based checks for test fakes (longest-substring matching).
+	for _, t := range tabs {
+		srcCols := columnCollations(ctx, src, t.Schema, t.Name)
+		if srcCols == nil {
+			continue
+		}
+		dstCols := columnCollations(ctx, dst, t.DstSchema, t.DstName)
+		// nil = query fault (degrade to no column diffs, never fail the plan).
+		// An existing table always has >=1 column, so an EMPTY map means the
+		// destination table is absent — gpstream will CREATE it from the
+		// source's column layout (which now reproduces the COLLATE clause),
+		// so there is no column-level diff to report.
+		if dstCols == nil || len(dstCols) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(srcCols))
+		for name, sc := range srcCols {
+			if sc != "" {
+				names = append(names, name)
+			}
+		}
+		// Deterministic order (CР-4): the plan JSON must be byte-identical
+		// across dry-runs, so the column diffs are emitted in sorted
+		// column-name order (map iteration is random).
+		sort.Strings(names)
+		for _, name := range names {
+			sc := srcCols[name]
+			dc, ok := dstCols[name]
+			if !ok || dc != sc {
+				out = append(out, CollationDiff{
+					DB:           t.DB,
+					Table:        t.Schema + "." + t.Name,
+					Column:       name,
+					SrcCollation: sc,
+					DstCollation: dstCols[name],
+				})
+			}
+		}
+	}
 	return out
+}
+
+// columnCollations returns the explicit collation name of each column of
+// schema.table ("" for the database default), or nil when the table cannot
+// be read: a query fault, or the table is absent on that side. The caller
+// degrades both to "no column diffs" — never a plan failure (F-16). The
+// table is resolved with a (quote_ident'd) ::regclass cast, NOT a
+// pg_class substring scan: the test fakes register "pg_class" for the
+// collectTables listing, and a pg_class-containing query here would match
+// that canned result (longest-substring fake matching).
+func columnCollations(ctx context.Context, q pg.Querier, schema, table string) map[string]string {
+	rows, err := q.Query(ctx,
+		`SELECT a.attname,
+		        CASE WHEN co.collname IS NULL OR co.collname = 'default'
+		             THEN '' ELSE co.collname END
+		 FROM pg_attribute a
+		 LEFT JOIN pg_collation co ON co.oid = a.attcollation
+		 WHERE a.attrelid = (quote_ident($2) || '.' || quote_ident($1))::regclass
+		   AND a.attnum > 0 AND NOT a.attisdropped /* gs-collation-cols */`,
+		table, schema)
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, r := range rows {
+		if len(r) >= 2 {
+			m[asString(r[0])] = asString(r[1])
+		}
+	}
+	return m
 }
 
 // localeMap indexes pg_database rows (datname, datcollate, datctype) by DB name.

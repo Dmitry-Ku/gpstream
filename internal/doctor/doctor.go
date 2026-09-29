@@ -353,9 +353,68 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Msg:  fmt.Sprintf("LC_COLLATE differs: source=%q dest=%q", srcColl, dstColl),
 			Rec:  "differences affect partition routing; review before start (FR-10)",
 		})
-		return
+	} else {
+		r.Add(Check{Name: "collation", Side: "network", Sev: Pass, Msg: "collation matches or unknown"})
 	}
-	r.Add(Check{Name: "collation", Side: "network", Sev: Pass, Msg: "collation matches or unknown"})
+	// F-16: column-level (attcollation) spot check. A doctor run has no
+	// table selection, so it reports the DISTINCT explicit collation names
+	// of the source's public-schema tables that the destination lacks — the
+	// cheap pre-flight signal that an explicit COLLATE would be lost. Per
+	// table×column detail lives in the dry-run plan (plan.Collations). It
+	// carries its own check name ("column-collation") so it is distinct from
+	// the DB-level "collation" finding above.
+	missing := missingCollations(context.Background(), src, dst)
+	if len(missing) > 0 {
+		r.Add(Check{
+			Name: "column-collation",
+			Side: "network",
+			Sev:  Warn,
+			Msg:  fmt.Sprintf("explicit column collation(s) %v on the source are not installed in the destination database", missing),
+			Rec:  "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ (FR-16)",
+		})
+	}
+}
+
+// missingCollations returns the distinct explicit collation names used by
+// columns of the source's public-schema tables that are NOT installed in the
+// destination database (F-16 doctor pre-flight). Both sides degrade to no
+// finding on a query fault (doctor is a pre-flight, never a hard gate on
+// collation — the dry-run plan carries the per-table detail).
+func missingCollations(ctx context.Context, src, dst pg.Querier) []string {
+	srcRows, err := src.Query(ctx,
+		`SELECT DISTINCT co.collname
+		 FROM pg_attribute a
+		 JOIN pg_class c ON c.oid = a.attrelid
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 JOIN pg_collation co ON co.oid = a.attcollation
+		 WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
+		   AND a.attnum > 0 AND NOT a.attisdropped
+		   AND co.collname IS DISTINCT FROM 'default' /* gs-collation-doctor */`)
+	if err != nil || len(srcRows) == 0 {
+		return nil
+	}
+	dstRows, err := dst.Query(ctx,
+		`SELECT collname FROM pg_collation WHERE collnamespace = 11 /* gs-collation-doctor-dst */`)
+	if err != nil {
+		return nil
+	}
+	installed := map[string]bool{}
+	for _, rr := range dstRows {
+		if len(rr) >= 1 && rr[0] != nil {
+			installed[fmt.Sprint(rr[0])] = true
+		}
+	}
+	var missing []string
+	for _, sr := range srcRows {
+		if len(sr) >= 1 && sr[0] != nil {
+			name := fmt.Sprint(sr[0])
+			if name != "" && !installed[name] {
+				missing = append(missing, name)
+			}
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 func (r *Report) checkTLS(minTLS string) {

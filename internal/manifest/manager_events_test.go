@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -154,4 +155,50 @@ func newManagerAt(t *testing.T, cfg *config.Config, srcPayload, dstPayload []byt
 	dir := t.TempDir()
 	j := NewJournal(pg.NewFakeConn(), filepath.Join(dir, "journal.jsonl"))
 	return NewManager(cfg, src, dst, j), dir
+}
+
+// TestManagerCollationDiffEmitsEvent verifies (F-04/F-16) that the collation
+// differences detected by the plan are recorded in events.jsonl as
+// collation_diff events (one per diff), so the operator's diagnostic stream
+// carries the DB-level and column-level warnings the spec requires in
+// doctor/dry-run/final-report.
+func TestManagerCollationDiffEmitsEvent(t *testing.T) {
+	cfg := config.Default()
+	m, dir := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+
+	p := oneUnitPlan()
+	p.Collations = []plan.CollationDiff{
+		{DB: "db", LCCollate: "C -> C.utf8", LCType: "C -> C.utf8"},
+		{DB: "db", Table: "public.orders", Column: "name", SrcCollation: "C", DstCollation: "C.utf8"},
+	}
+
+	if err := m.Run(context.Background(), p); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	evs := eventsOf(t, dir)
+	diffs := findEvent(t, evs, "collation_diff")
+	if len(diffs) != 2 {
+		t.Fatalf("got %d collation_diff events, want 2: %v", len(diffs), evs)
+	}
+	var sawDB, sawCol bool
+	for _, d := range diffs {
+		switch d["level"] {
+		case "db":
+			sawDB = true
+			if d["db"] != "db" || d["lc_collate"] != "C -> C.utf8" {
+				t.Errorf("db event = %v", d)
+			}
+		case "column":
+			sawCol = true
+			if d["table"] != "public.orders" || d["column"] != "name" ||
+				d["source"] != "C" || d["destination"] != "C.utf8" {
+				t.Errorf("column event = %v", d)
+			}
+		default:
+			t.Errorf("unexpected collation_diff level %v: %v", d["level"], d)
+		}
+	}
+	if !sawDB || !sawCol {
+		t.Fatalf("expected one db + one column collation_diff event; got %v", evs)
+	}
 }

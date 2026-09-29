@@ -41,9 +41,12 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 		        format_type(a.atttypid, a.atttypmod),
 		        a.atttypid,
 		        NOT a.attnotnull,
-		        pg_get_expr(d.adbin, d.adrelid)
+		        pg_get_expr(d.adbin, d.adrelid),
+		        CASE WHEN co.collname IS NULL OR co.collname = 'default'
+		             THEN '' ELSE co.collname END
 		 FROM pg_attribute a
 		 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+		 LEFT JOIN pg_collation co ON co.oid = a.attcollation
 		 WHERE a.attrelid = (SELECT c.oid FROM pg_class c
 		                     JOIN pg_namespace n ON n.oid = c.relnamespace
 		                     WHERE c.relname = $1 AND n.nspname = $2)
@@ -58,13 +61,22 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 		if len(r) < 5 {
 			continue
 		}
-		out = append(out, pg.Column{
+		c := pg.Column{
 			Name:     toStr(r[0]),
 			Type:     toStr(r[1]),
 			Oid:      toUint32(r[2]),
 			Nullable: toBool(r[3]),
 			Default:  toStr(r[4]),
-		})
+		}
+		// F-16: the column's explicit collation NAME (pg_collation.collname),
+		// or "" for the database-default collation (collname 'default' / no
+		// collation at all) — DB-level differences are reported separately
+		// from pg_database (FR-10/FR-16). Live-verified on 9.4.26: int → '',
+		// text → '', text COLLATE "C" → 'C', text COLLATE "C.utf8" → 'C.utf8'.
+		if len(r) >= 6 {
+			c.Collation = toStr(r[5])
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }

@@ -20,6 +20,14 @@ type Column struct {
 	// Default is the column default expression (without the "DEFAULT"
 	// keyword), or "" if none.
 	Default string
+	// Collation is the column's explicit COLLATE name (F-16: mandatory
+	// column-level collation comparison). It is the collation NAME
+	// (pg_collation.collcollate), or "" for the database-default
+	// collation — only explicitly collated columns carry it. The
+	// destination DDL must reproduce it, and the planner compares
+	// source vs destination per table (doctor/dry-run/final-report
+	// warnings when they differ).
+	Collation string
 }
 
 // Distribution is a source table's Greenplum distribution policy, read from

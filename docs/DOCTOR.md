@@ -26,10 +26,24 @@ Grounded in `internal/doctor/doctor.go` and
 | 8 | `collation` | network | `datcollate` source vs dest | — | `LC_COLLATE` differs — affects routing; review before start (FR-10) |
 | 9 | `tls` | network | configured minimum TLS version | — | Always informational in v0.1 — provide `--tls-ca` / `--ssl-cert` for mTLS (FR-13) |
 | 10 | `extensions` | network | `pg_extension` set: source vs dest | — | A source extension is missing in the destination (MADlib/PostGIS/orafce or any other) — install it in the receiver before the data load (FR-05/FR-11) |
+| 11 | `column-collation` | network | distinct explicit `COLLATE` names (public schema) source vs `pg_collation` dest | — | An explicit column collation on the source is not installed in the destination — `CREATE COLLATION` in the receiver (or accept the DB default) before the data load (FR-16) |
 
 Overall health: the doctor is **healthy iff there is no FAIL**. WARNs do
 not block a run — they degrade an *option* (segment-direct, collation
 review) and say so in the recommendation.
+
+### The `column-collation` check (FR-16, column level)
+
+The `collation` check (row 8) compares the **database-level** `LC_COLLATE`
+/`LC_CTYPE`. `column-collation` covers the **column level**: it lists the
+distinct explicit `COLLATE` names used by the source's public-schema tables
+and warns for any name the destination database does not have installed in
+`pg_collation`. This is the cheap pre-flight signal that an explicit
+`COLLATE` would be lost; the per table×column detail lives in the dry-run
+plan (`plan.Collations`, `collation_diffs`) and in the run's final report
+and `events.jsonl` (`collation_diff` events). Columns on the database
+default collation are never reported — a DB-level difference is a `collation`
+finding, not a column one.
 
 ### The `route` check (informational, M4)
 

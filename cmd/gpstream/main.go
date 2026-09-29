@@ -668,7 +668,12 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	if len(p.Collations) > 0 {
 		fmt.Printf("collation:     %d difference(s) (FR-10/FR-16)\n", len(p.Collations))
 		for _, cd := range p.Collations {
-			fmt.Printf("  - %s\n", cd.LCCollate)
+			if cd.IsColumn() {
+				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) (column, FR-16)\n",
+					cd.Table, cd.Column, cd.SrcCollation, cd.DstCollation)
+			} else {
+				fmt.Printf("  - %s\n", cd.LCCollate)
+			}
 		}
 	}
 	// v2 §26: the dry-run must also surface locale, rate-limit/CPU/disk,
@@ -1297,6 +1302,22 @@ func cmdRun(args []string) error {
 
 	fmt.Printf("\nrun: %d unit(s) completed, %d rows transferred, %d skipped, %d failed\n",
 		mgr.Units, mgr.Rows, mgr.Skipped, mgr.Failures)
+	// F-16: the detected collation differences (DB-level LC_COLLATE/LC_CTYPE
+	// and column-level attcollation) are re-surfaced in the FINAL report —
+	// the spec requires the warning in doctor/dry-run AND the final report.
+	// An admin reviews and accepts the risk (string sort/index semantics may
+	// differ) rather than gpstream silently deciding.
+	if len(p.Collations) > 0 {
+		fmt.Printf("collation:    %d difference(s) detected (FR-10/FR-16) — review before relying on string sort/index semantics:\n", len(p.Collations))
+		for _, cd := range p.Collations {
+			if cd.IsColumn() {
+				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) [column]\n",
+					cd.Table, cd.Column, cd.SrcCollation, cd.DstCollation)
+			} else {
+				fmt.Printf("  - db %s: %s (LC_COLLATE), LC_CTYPE %s\n", cd.DB, cd.LCCollate, cd.LCType)
+			}
+		}
+	}
 	// F-15: the live segment-fill balance of the copied tables (max/avg over
 	// the destination's gp_segment_id) with the warnings for any table that
 	// exceeded --segment-balance-threshold. Empty on a non-Greenplum

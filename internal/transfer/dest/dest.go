@@ -56,6 +56,14 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 			sql += ", "
 		}
 		sql += quoteIdent(c.Name) + " " + c.Type
+		// F-16: reproduce the source column's explicit COLLATE clause so the
+		// destination column keeps the source's collation semantics (sorting
+		// / indexes over string columns). An empty collation (database
+		// default) emits nothing — the destination DB default applies, and a
+		// DB-level difference is reported separately (FR-10/FR-16).
+		if c.Collation != "" {
+			sql += " COLLATE " + quoteIdent(c.Collation)
+		}
 		if c.Default != "" {
 			sql += " DEFAULT " + c.Default
 		}

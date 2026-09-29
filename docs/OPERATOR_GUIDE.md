@@ -249,6 +249,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
 | `sequence_sync_failed` | a sequence recreation/resync step failed (non-fatal; the data is in place) | `table`, `sequence`, `reason`, `error` |
 | `segment_balance` | the live segment-fill balance of a copied table was measured on a Greenplum destination (F-15, after the swap) | `table`, `segments`, `max`, `avg`, `max_avg`, `threshold` (`--segment-balance-threshold`), `warning` (true when `max_avg` exceeds the threshold) |
+| `collation_diff` | a collation difference was detected in the plan (F-16, at run start) | `level` = `db` (`db`, `lc_collate`, `lc_ctype`) or `column` (`table`, `column`, `source`, `destination`) |
 
 It is a diagnostic log, not the durable record (that is the journal), so a
 write failure never fails the copy. With no `--state-dir` journal mirror the

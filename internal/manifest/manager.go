@@ -230,6 +230,22 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	defer m.events.Close()
 	m.jobID = jobID(p)
 
+	// F-04/F-16: the detected collation differences (DB-level and
+	// column-level) are diagnostic events — they change string sort/index
+	// semantics on the destination, so they belong in events.jsonl like any
+	// other operator-facing diagnostic (the warning is also printed in the
+	// final report, main.go).
+	for _, cd := range p.Collations {
+		if cd.IsColumn() {
+			m.events.Log("collation_diff", "level", "column",
+				"table", cd.Table, "column", cd.Column,
+				"source", cd.SrcCollation, "destination", cd.DstCollation)
+		} else {
+			m.events.Log("collation_diff", "level", "db",
+				"db", cd.DB, "lc_collate", cd.LCCollate, "lc_ctype", cd.LCType)
+		}
+	}
+
 	// T5 (DESIGN §2.2): determine this run's snapshot epoch. A fresh
 	// operation starts at epoch 1; a resume (journal records or metadata
 	// already exist) continues at lastEpoch+1 — the snapshot cannot survive

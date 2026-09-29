@@ -115,11 +115,12 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); index rebuild deferred to the background pool AFTER the swap (FR-17). **Live segment balance (29.09):** `dest.BalanceTable`/`BalanceMaxAvg` (internal/transfer/dest/balance.go) measure the per-segment fill of each copied table (`gp_segment_id, count(*) GROUP BY`) after the swap; `manager.measureBalance` (step 9c) records it in `Stats.Balances` + a `segment_balance` events.jsonl event; the final report prints max/avg per table and a `WARNING` when `max/avg > --segment-balance-threshold` (default 1.5, negative = metric only). Non-fatal + Greenplum-only (plain PG degrades silently).
 - Gaps: none in-env. **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo + gp_segment_id distribution check on real clusters (the live metric now feeds that acceptance).
 
-### F-16 — Cross-OS compatibility — **PARTIAL**
+### F-16 — Cross-OS compatibility — **DONE (29.09)**
 - Spec: static binary; byte-for-byte data; **mandatory LC_COLLATE (DB and column) + encoding comparison** with warnings in doctor/dry-run/final report.
-- Evidence: byte-for-byte COPY; `doctor.go:224-237` `checkCollation` compares `datcollate` (DB level); `planner.go:406,556` encoding comparison (`pg_encoding_to_char`) + `CollationDiff`.
-- Gaps: **column-level collation (`attcollation`) comparison is missing** (only DB-level); static build not confirmed.
-- **BLOCKED-INFRA**: two-distro/glibc run + `C`↔`en_US.UTF-8` data-correctness acceptance.
+- Evidence: byte-for-byte COPY; `doctor.go` `checkCollation` compares `datcollate` (DB level) + **new `missingCollations` helper** (column-level: distinct explicit `COLLATE` names source public schema vs `pg_collation` dest, own `column-collation` check, WARN); `planner.go` `detectCollations` now also compares **column-level `attcollation`** per copied table (source vs destination schema+name, rename-aware; `CollationDiff` extended with Table/Column/SrcCollation/DstCollation, `IsColumn()`); the destination DDL **reproduces the explicit COLLATE clause** (`dest.go` CreateStaging/CreateTable) so collation semantics survive the transfer; warnings surface in dry-run (`printPlanSummary`), the run **final report** (`main.go`), doctor, and `events.jsonl` (`collation_diff` events, `level`=db/column).
+- Query notes (live-verified on 9.4.26): `pg_get_expr(oid, integer)` and `to_regclass(name)` do NOT exist on this kernel — the column collation is read via `LEFT JOIN pg_collation` (`collname`, 'default' → ""); the planner's per-table probe uses `(quote_ident(schema)||'.'||quote_ident(table))::regclass` (avoids the `pg_class` substring that collides with test fakes).
+- Test: unit (plan collation_column_test 4, source collation_test, dest collation_test 2, doctor collation_column_test 3, manager events) + live integration `f16_collation_test.go` TestColumnCollationLive (C.utf8 column reproduced in dst DDL, overwrite re-creates with the source collation, plan detects exactly the one column diff + the DB diff, events carry both levels) — PASS.
+- **BLOCKED-INFRA**: two-distro/glibc run + `C`↔`en_US.UTF-8` data-correctness acceptance (needs the real GP6 hardware run).
 
 ### F-17 — Background index re-creation — **DONE (core)**
 - Spec: after data copy, a **background pool** building secondary indexes then PK/unique **last**, with `--index-parallel`, progress in status/metrics, retry of failed; GP6 has no `CREATE INDEX CONCURRENTLY` so "background" = async post-load pool.
@@ -169,7 +170,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
 | F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above --segment-balance-threshold (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
-| F-16 | PARTIAL | no column-level collation compare |
+| F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; (two-distro/glibc + C↔en_US.UTF-8 acceptance infra-blocked) |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
 | F-18 | DONE | — |
 
@@ -206,7 +207,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    section + `segment_balance` event + `--segment-balance-threshold`
    (default 1.5, warning gate). Tests: balance_test.go (dest) +
    manager_balance_test.go (manifest, GP fake / plain-PG degrade).
-9. **F-16** — column-level (`attcollation`) collation comparison.
+9. **F-16** — column-level (`attcollation`) collation comparison. [CLOSED 29.09: planner per-table + doctor `column-collation` pre-flight + DDL reproduces COLLATE + dry-run/final-report/events.jsonl; live test f16_collation]
 10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +
     `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` + govulncheck in CI.
 11. **F-09 coverage** — lift manifest (58%)/config (65%)/cmd/gpstream (68%)/
