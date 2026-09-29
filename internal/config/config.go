@@ -157,6 +157,12 @@ type Config struct {
 	NoIndexes     bool
 	IndexPriority string // "size" | "manual"
 
+	// NoConstraints disables the F-11 constraint-restore pass (foreign keys
+	// and user CHECK constraints) on the destination. Off by default: the
+	// pass is non-fatal and idempotent, so keeping metadata complete is the
+	// safer default.
+	NoConstraints bool
+
 	// Redistribution (FR-15).
 	NoRedistribute bool
 	SkewThreshold  float64

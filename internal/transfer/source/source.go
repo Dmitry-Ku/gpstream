@@ -291,7 +291,7 @@ func (a *Agent) Indexes(ctx context.Context, schema, table string) ([]IndexDef, 
 		   FROM pg_index i
 		   JOIN pg_class c ON c.oid = i.indexrelid
 		   JOIN pg_namespace n ON n.oid = c.relnamespace
-		  WHERE n.nspname = $1 AND i.indrelid = (
+		  WHERE n.nspname = $2 AND i.indrelid = (
 				SELECT c2.oid FROM pg_class c2
 				JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
 				WHERE n2.nspname = $2 AND c2.relname = $1)
@@ -314,6 +314,97 @@ func (a *Agent) Indexes(ctx context.Context, schema, table string) ([]IndexDef, 
 	}
 	return out, nil
 }
+
+// Constraints returns the table-level foreign-key and user-check constraints
+// of schema.table on the source, for restoration on the destination (F-11).
+// It reads the base source querier (not a pinned snapshot connection), so a
+// catalog fault here must not abort the REPEATABLE READ data transaction
+// (the F-06 fix, Columns/Distribution reads). Partition bound-CHECKs and
+// constraints inherited into a partition leaf are excluded (see
+// pg.ConstraintDef).
+func (a *Agent) Constraints(ctx context.Context, schema, table string) ([]pg.ConstraintDef, error) {
+	rows, err := a.q.Query(ctx,
+		`SELECT con.conname, con.contype::text, pg_get_constraintdef(con.oid),
+		        COALESCE((SELECT string_agg(a.attname, E'\001' ORDER BY k.ord)
+		                   FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
+		                   JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum), ''),
+		        COALESCE((SELECT string_agg(a.attname, E'\001' ORDER BY k.ord)
+		                   FROM unnest(con.confkey) WITH ORDINALITY k(attnum, ord)
+		                   JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum), ''),
+		        COALESCE(rn.nspname, ''), COALESCE(rc.relname, ''),
+		        COALESCE(con.confdeltype::text, ''), COALESCE(con.confupdtype::text, '')
+		   FROM pg_constraint con
+		   JOIN pg_class c ON c.oid = con.conrelid
+		   JOIN pg_namespace n ON n.oid = con.connamespace
+		   LEFT JOIN pg_class rc ON rc.oid = con.confrelid
+		   LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+		  WHERE n.nspname = $1 AND c.relname = $2
+		    AND con.contype IN ('f','c')
+		    AND con.coninhcount = 0
+		    AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = con.conrelid)
+		  ORDER BY con.contype, con.conname`,
+		schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("query constraints: %w", err)
+	}
+	out := make([]pg.ConstraintDef, 0, len(rows))
+	for _, r := range rows {
+		if len(r) < 9 {
+			continue
+		}
+		cd := pg.ConstraintDef{
+			Name:      toStr(r[0]),
+			Kind:      toStr(r[1]),
+			Def:       toStr(r[2]),
+			RefSchema: toStr(r[5]),
+			RefTable:  toStr(r[6]),
+		}
+		if cd.Kind == "f" {
+			cd.LocalColumns = quoteList(toStr(r[3]))
+			cd.RefColumns = quoteList(toStr(r[4]))
+			cd.DelAction = fkAction(toStr(r[7]))
+			cd.UpdAction = fkAction(toStr(r[8]))
+		}
+		out = append(out, cd)
+	}
+	return out, nil
+}
+
+// quoteList turns a SOH-delimited () list of bare column names into a
+// comma-joined list of quoted identifiers ("a","b"). An empty input yields "".
+func quoteList(s string) string {
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, "")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = pg.QuoteIdent(p)
+	}
+	return strings.Join(out, ",")
+}
+
+// fkAction maps the pg_constraint confdeltype/confupdtype character to its SQL
+// ON DELETE / ON UPDATE key-action keyword. 'a' (NO ACTION, the default) maps
+// to "NO ACTION"; unknown characters map to "" (the clause is then omitted,
+// letting the destination apply its own default).
+func fkAction(c string) string {
+	switch c {
+	case "a":
+		return "NO ACTION"
+	case "r":
+		return "RESTRICT"
+	case "c":
+		return "CASCADE"
+	case "n":
+		return "SET NULL"
+	case "d":
+		return "SET DEFAULT"
+	default:
+		return ""
+	}
+}
+
 
 // Checksum returns a row-order-independent content digest of the binary COPY
 // payload of schema.table (FR-02). Comparing the source and destination

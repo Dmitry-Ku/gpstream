@@ -39,6 +39,15 @@ type Table struct {
 	Bytes       int64    // estimated size
 	RowEst      int64    // estimated rows
 	Indexes     int      // number of indexes
+	// Partitioned reports whether the table is a partitioned parent (GP6
+	// inheritance partitioning: relkind 'r' with children in pg_inherits). A
+	// partitioned parent is planned as ONE unit: its leaves are excluded from
+	// the plan (the parent's COPY carries all inherited rows) and the
+	// PARTITION BY spec is reproduced on the destination so the destination
+	// re-routes the rows by ITS OWN collation (Fix 1 / Broadcom EL7->EL8:
+	// copying leaf partitions as separate units both duplicates the data and
+	// can misplace rows under a differing glibc).
+	Partitioned bool
 	HasConflict bool     // exists in dest and not overwritten (FR-10)
 	// RouteMode (M4/T4b): how this table's data lands on the destination —
 	// route.Direct1to1 (S==D, keys equal, same major; 0 CPU on hash),

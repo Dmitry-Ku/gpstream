@@ -82,6 +82,97 @@ type IndexDef struct {
 	Def string
 }
 
+// ConstraintDef is one table-level constraint captured from the source and
+// ConstraintDef is one table-level constraint captured from the source and
+// restored on the destination (F-11 metadata phase: «по опции —
+// ограничения»). Only foreign keys (Kind "f") and user CHECK constraints
+// (Kind "c") are captured. Primary-key / unique constraints are NOT modeled
+// here: F-17 already restores them as unique indexes (this fork does not
+// support ALTER TABLE ... ADD CONSTRAINT ... USING INDEX). Partition
+// bound-CHECKs and constraints inherited into a partition leaf are excluded
+// at capture time (coninhcount = 0 and the table is not a partition leaf), so
+// a partitioned parent's user CHECK is captured once and the destination's
+// PARTITION BY clause recreates the bound constraints.
+//
+// A foreign key is captured STRUCTURALLY (LocalColumns/RefColumns/RefSchema/
+// RefTable/DelAction/UpdAction) rather than as the verbatim
+// pg_get_constraintdef string, because that string qualifies the referenced
+// table by the CAPTURE session's search_path (verified on GP6: "REFERENCES
+// parents(id)" when the referenced table is in search_path, "REFERENCES
+// schema.parents(id)" otherwise) — a string rewrite would be search_path-
+// dependent and could miss the rename. The structural fields are rewritten to
+// the destination by the manager and re-rendered with schema-qualified names,
+// which is deterministic. A CHECK carries its verbatim expression in Def (it
+// references no other table, so no rewrite is needed).
+type ConstraintDef struct {
+	// Name is the constraint name (pg_constraint.conname).
+	Name string
+	// Kind is the constraint type: "f" (foreign key) or "c" (check).
+	Kind string
+	// Def is the verbatim check expression for Kind "c" (pg_get_constraintdef,
+	// e.g. "CHECK ((id > 0))"). Empty for an FK (reconstructed from the
+	// structural fields).
+	Def string
+	// LocalColumns are the FK's columns on the owning table, in conkey order
+	// (comma-joined, quoted identifiers). Empty for a CHECK.
+	LocalColumns string
+	// RefSchema/RefTable are the SOURCE schema and table the FK references
+	// (pg_constraint.confrelid). The manager rewrites them to the
+	// destination via the plan's rename map. Empty for a CHECK.
+	RefSchema string
+	RefTable  string
+	// RefColumns are the referenced columns, in confkey order (comma-joined,
+	// quoted identifiers). Empty for a CHECK.
+	RefColumns string
+	// DelAction/UpdAction are the ON DELETE / ON UPDATE key actions as the
+	// SQL keyword (CASCADE / SET NULL / SET DEFAULT / RESTRICT / NO ACTION);
+	// "NO ACTION" when the source had the default (confdeltype 'n' /
+	// confupdtype 'n'). Empty for a CHECK.
+	DelAction string
+	UpdAction string
+}
+
+// BuildDef renders the constraint's DDL body for "ALTER TABLE t ADD CONSTRAINT
+// <name> <body>". For a CHECK it returns Def verbatim. For an FK it returns
+// "FOREIGN KEY (locals) REFERENCES <refschema>.<reftable>(refcols) [ON DELETE
+// ...] [ON UPDATE ...]" with the referenced table schema-qualified (deterministic,
+// independent of any session search_path). The caller has already rewritten
+// RefSchema/RefTable to the destination.
+func (d ConstraintDef) BuildDef() string {
+	if d.Kind != "f" {
+		return d.Def
+	}
+	ref := ""
+	if d.RefSchema != "" {
+		ref = quoteIdent(d.RefSchema) + "." + quoteIdent(d.RefTable)
+	} else {
+		ref = quoteIdent(d.RefTable)
+	}
+	var b strings.Builder
+	b.WriteString("FOREIGN KEY (")
+	b.WriteString(d.LocalColumns)
+	b.WriteString(") REFERENCES ")
+	b.WriteString(ref)
+	b.WriteString("(")
+	b.WriteString(d.RefColumns)
+	b.WriteString(")")
+	if d.DelAction != "" && d.DelAction != "NO ACTION" {
+		b.WriteString(" ON DELETE ")
+		b.WriteString(d.DelAction)
+	}
+	if d.UpdAction != "" && d.UpdAction != "NO ACTION" {
+		b.WriteString(" ON UPDATE ")
+		b.WriteString(d.UpdAction)
+	}
+	return b.String()
+}
+
+// QuoteIdent is the exported form of quoteIdent, so other packages (the
+// source agent) can render SQL identifiers for DDL reconstruction.
+func QuoteIdent(s string) string {
+	return quoteIdent(s)
+}
+
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes
 // (shared by DDL builders in this package).
 func quoteIdent(s string) string {

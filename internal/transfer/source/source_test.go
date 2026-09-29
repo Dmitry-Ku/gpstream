@@ -233,3 +233,91 @@ func TestSequenceLastValue(t *testing.T) {
 		t.Fatalf("last_value = %d, want 0", v2)
 	}
 }
+
+// TestConstraintsFKCheck captures a foreign key and a user CHECK constraint
+// structurally (F-11): the FK's local/referenced columns are resolved from
+// conkey/confkey and its referenced table from confrelid; the CHECK carries its
+// verbatim expression. The SOH (\x01) delimiter separates multi-column keys.
+func TestConstraintsFKCheck(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("pg_get_constraintdef", [][]any{
+		// name, contype, def, localcols, refcols, refschemaname, reftablename, deltype, uptype
+		{"ch_pos", "c", "CHECK ((id > 0))", "id", "", "", "", "", ""},
+		{"fk_child_parent", "f", "FOREIGN KEY (p) REFERENCES parents(id)",
+			"parent_id\x01code2", "id\x01code", "public", "parents", "c", "r"},
+	})
+	a := New(f)
+	defs, err := a.Constraints(context.Background(), "public", "children")
+	if err != nil {
+		t.Fatalf("constraints: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d constraints, want 2", len(defs))
+	}
+
+	chk := defs[0]
+	if chk.Kind != "c" || chk.Name != "ch_pos" || chk.Def != "CHECK ((id > 0))" {
+		t.Fatalf("check = %+v, want name ch_pos kind c def CHECK ((id > 0))", chk)
+	}
+	if chk.LocalColumns != "" || chk.RefColumns != "" || chk.RefTable != "" {
+		t.Fatalf("check must not carry FK structural fields: %+v", chk)
+	}
+
+	fk := defs[1]
+	if fk.Kind != "f" || fk.Name != "fk_child_parent" {
+		t.Fatalf("fk = %+v, want kind f name fk_child_parent", fk)
+	}
+	if fk.LocalColumns != `"parent_id","code2"` {
+		t.Fatalf("fk local columns = %q, want \"parent_id\",\"code2\"", fk.LocalColumns)
+	}
+	if fk.RefColumns != `"id","code"` {
+		t.Fatalf("fk ref columns = %q, want \"id\",\"code\"", fk.RefColumns)
+	}
+	if fk.RefSchema != "public" || fk.RefTable != "parents" {
+		t.Fatalf("fk ref = %s.%s, want public.parents", fk.RefSchema, fk.RefTable)
+	}
+	if fk.DelAction != "CASCADE" || fk.UpdAction != "RESTRICT" {
+		t.Fatalf("fk actions = %s/%s, want CASCADE/RESTRICT", fk.DelAction, fk.UpdAction)
+	}
+}
+
+// TestConstraintsNone verifies an empty catalog yields no constraints.
+func TestConstraintsNone(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("pg_get_constraintdef", [][]any{})
+	a := New(f)
+	defs, err := a.Constraints(context.Background(), "public", "orders")
+	if err != nil {
+		t.Fatalf("constraints (none): %v", err)
+	}
+	if len(defs) != 0 {
+		t.Fatalf("got %d constraints, want 0", len(defs))
+	}
+}
+
+// TestConstraintsActionMapping locks the confdeltype/confupdtype character ->
+// SQL key-action keyword mapping (and that an unknown/empty character yields
+// "" so the clause is omitted).
+func TestConstraintsActionMapping(t *testing.T) {
+	cases := []struct {
+		c    string
+		want string
+	}{
+		{"a", "NO ACTION"}, {"r", "RESTRICT"}, {"c", "CASCADE"},
+		{"n", "SET NULL"}, {"d", "SET DEFAULT"}, {"", ""}, {"?", ""},
+	}
+	for _, tc := range cases {
+		if got := fkAction(tc.c); got != tc.want {
+			t.Errorf("fkAction(%q) = %q, want %q", tc.c, got, tc.want)
+		}
+	}
+}
+
+// TestConstraintsError propagates a catalog query fault.
+func TestConstraintsError(t *testing.T) {
+	f := pg.NewFakeConn() // no canned result -> Query returns an error
+	a := New(f)
+	if _, err := a.Constraints(context.Background(), "public", "orders"); err == nil {
+		t.Fatalf("expected an error for an uncanned constraint query, got nil")
+	}
+}

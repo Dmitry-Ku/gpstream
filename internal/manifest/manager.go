@@ -418,9 +418,105 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		}
 	}
 
+	// F-11 (metadata phase, «ограничения»): restore the source table-level
+	// constraints (foreign keys and user CHECK constraints) on the destination
+	// tables. This runs AFTER the data path and AFTER the FR-17 index pool
+	// drains: a foreign key must reference a destination table whose unique
+	// index is in place (GP6 accepts an FK over a plain unique index — no PK
+	// constraint required, verified live), and a restored constraint creates a
+	// pg_depend entry that would otherwise block a later re-swap (DROP) of the
+	// referenced table. Only StateSwapped units qualify: the in-place
+	// --truncate/--append paths kept the existing destination table (same OID),
+	// whose constraints are already present. Non-fatal by design (like the
+	// index build): a fault is logged to events.jsonl (F-04) and the run
+	// returns it as the first error only when no data-path error occurred; a
+	// resume re-runs the pass and the idempotent constraintExists guard skips
+	// what is already restored.
+	if !m.cfg.NoConstraints {
+		if err := m.restoreConstraints(ctx, units); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	// Release the source snapshot (FR-02) once every unit has been copied.
 	m.releaseSnapshot(ctx)
 	return firstErr
+}
+
+// restoreConstraints applies the source table-level constraints (FK + user
+// CHECK) to the destination tables of the swapped units (F-11). The source
+// definitions reference SOURCE table names; a foreign key's referenced table
+// is rewritten to its destination name via the plan's rename map (a table
+// outside the migration set keeps its source name — if it does not exist on
+// the destination the ALTER fails, is logged as a warning event, and the pass
+// continues with the remaining constraints, exactly like the collation
+// warnings: the operator decides).
+func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
+	// Rename map: source schema+table -> destination schema+table.
+	rm := make(map[string]string, len(units))
+	for _, u := range units {
+		rm[u.Schema+"."+u.Table] = u.DstSchema + "." + u.DstName
+	}
+	srcAgent := source.New(m.srcQ)
+	for _, u := range units {
+		if u.State != StateSwapped {
+			continue // in-place paths kept the existing table (constraints intact)
+		}
+		defs, err := srcAgent.Constraints(ctx, u.Schema, u.Table)
+		if err != nil {
+			// A catalog fault must not sink the run: the data is in place and
+			// verified; log and continue (F-04), a resume retries.
+			m.events.Log("constraint_restore_skipped",
+				"table", u.Schema+"."+u.Table, "reason", err.Error())
+			continue
+		}
+		for i := range defs {
+			d := &defs[i]
+			if d.Kind == "f" && d.RefSchema != "" && d.RefTable != "" {
+				// Rewrite the referenced source table to its destination name via
+				// the plan's rename map. The FK is captured structurally (not as a
+				// pg_get_constraintdef string, whose referenced-table qualification
+				// depends on the capture session's search_path), so this is a
+				// deterministic field rewrite; BuildDef re-renders it with
+				// schema-qualified names on the destination.
+				if dstRef, ok := rm[d.RefSchema+"."+d.RefTable]; ok {
+					d.RefSchema, d.RefTable = splitDot(dstRef)
+				} else {
+					// Referenced table is outside the migration set: it keeps its
+					// source name (if it does not exist on the destination the ALTER
+					// below fails, is logged, and the pass continues — like the
+					// collation warnings, the operator decides).
+					m.events.Log("constraint_external_ref",
+						"table", u.DstSchema+"."+u.DstName,
+						"constraint", d.Name,
+						"references", d.RefSchema+"."+d.RefTable)
+				}
+			}
+		}
+		if len(defs) == 0 {
+			continue
+		}
+		if err := m.dst.Constraints(ctx, u.DstSchema, u.DstName, defs); err != nil {
+			// Non-fatal: the data is in place; log the cause (F-04) and keep
+			// going with the other tables. A resume retries the whole pass; the
+			// idempotency guard skips what already applied.
+			m.events.Log("constraint_restore_failed",
+				"table", u.DstSchema+"."+u.DstName, "error", err.Error())
+			if m.cfg.OnUnitFailure == "abort" {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// splitDot splits a "schema.table" pair (no embedded dots are possible here:
+// the planner builds it from catalog identifiers).
+func splitDot(s string) (string, string) {
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return "", s
 }
 
 // processUnitSafe wraps processUnit with a panic recovery so a genuine fault in

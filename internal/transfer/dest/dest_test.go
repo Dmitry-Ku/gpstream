@@ -382,3 +382,58 @@ type stringsError string
 func (e stringsError) Error() string { return string(e) }
 
 var _ = io.EOF
+
+// TestConstraintsApplied verifies the F-11 constraint-restore pass: each source
+// constraint becomes an idempotent "ALTER TABLE ... ADD CONSTRAINT ..." on the
+// destination, with the FK DDL reconstructed (BuildDef) and schema-qualified.
+func TestConstraintsApplied(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("pg_constraint", [][]any{}) // constraintExists -> false (not yet restored)
+	a := mkAgent(f)
+	defs := []pg.ConstraintDef{
+		{Name: "ch_pos", Kind: "c", Def: "CHECK ((id > 0))"},
+		{Name: "fk_child_parent", Kind: "f",
+			LocalColumns: `"parent_id"`, RefSchema: "s_new", RefTable: "parents_v2",
+			RefColumns: `"id"`, DelAction: "CASCADE", UpdAction: "NO ACTION"},
+	}
+	if err := a.Constraints(context.Background(), "s_new", "children_v2", defs); err != nil {
+		t.Fatalf("constraints: %v", err)
+	}
+	q := f.Queried()
+	if !hasDestQuery(q, `ADD CONSTRAINT "ch_pos" CHECK ((id > 0))`) {
+		t.Fatalf("expected the CHECK constraint statement, got %v", q)
+	}
+	if !hasDestQuery(q, `ADD CONSTRAINT "fk_child_parent" FOREIGN KEY ("parent_id") REFERENCES "s_new"."parents_v2"("id") ON DELETE CASCADE`) {
+		t.Fatalf("expected the reconstructed FK statement, got %v", q)
+	}
+}
+
+// TestConstraintsIdempotent verifies a resume re-run does not re-issue an
+// already-restored constraint: constraintExists short-circuits the ALTER.
+func TestConstraintsIdempotent(t *testing.T) {
+	f := pg.NewFakeConn()
+	// The constraint already exists on the destination (a previous run applied
+	// it): the existence probe returns a row, so no ALTER is issued.
+	f.On("pg_constraint", [][]any{{int64(1)}})
+	a := mkAgent(f)
+	defs := []pg.ConstraintDef{
+		{Name: "fk_done", Kind: "f",
+			LocalColumns: `"p"`, RefSchema: "public", RefTable: "parents",
+			RefColumns: `"id"`, DelAction: "NO ACTION", UpdAction: "NO ACTION"},
+	}
+	if err := a.Constraints(context.Background(), "public", "children", defs); err != nil {
+		t.Fatalf("constraints (idempotent): %v", err)
+	}
+	if hasDestQuery(f.Queried(), "ADD CONSTRAINT") {
+		t.Fatalf("an already-restored constraint must not be re-applied, got %v", f.Queried())
+	}
+}
+
+func hasDestQuery(q []string, substr string) bool {
+	for _, s := range q {
+		if strings.Contains(s, substr) {
+			return true
+		}
+	}
+	return false
+}

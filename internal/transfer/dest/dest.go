@@ -342,6 +342,50 @@ func (a *Agent) indexExists(ctx context.Context, schema, name string) bool {
 	return true
 }
 
+// Constraints restores table-level constraints (foreign keys and user CHECK
+// constraints, F-11) on the destination table. The caller (the manager's
+// post-swap restore pass) invokes it AFTER the data swap and after the FR-17
+// index build drains, with definitions whose referenced table names are
+// already rewritten to the destination — a foreign key must reference a
+// destination table whose unique index is in place, and a restored constraint
+// creates a pg_depend entry that would otherwise block a later re-swap (DROP)
+// of the referenced table.
+//
+// Each definition is applied idempotently: a constraint with the same name
+// already on the table (a resume re-run) is skipped, so the pass is safe to
+// repeat. A fault is returned to the caller, which logs it as a non-fatal
+// event (F-04): the data is already in place and verified, and a resume
+// retries the pass.
+func (a *Agent) Constraints(ctx context.Context, schema, table string, defs []pg.ConstraintDef) error {
+	for _, d := range defs {
+		if a.constraintExists(ctx, schema, table, d.Name) {
+			continue // already restored (resume)
+		}
+		body := d.BuildDef()
+		_, err := a.q.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s.%s ADD CONSTRAINT %s %s`,
+			quoteIdent(schema), quoteIdent(table), quoteIdent(d.Name), body))
+		if err != nil {
+			return fmt.Errorf("add constraint %s on %s.%s: %w", d.Name, schema, table, err)
+		}
+	}
+	return nil
+}
+
+// constraintExists reports whether schema.table already carries a constraint
+// named name (the idempotency guard for a resume re-run).
+func (a *Agent) constraintExists(ctx context.Context, schema, table, name string) bool {
+	rows, err := a.q.Query(ctx,
+		`SELECT 1 FROM pg_constraint con
+		  JOIN pg_class c ON c.oid = con.conrelid
+		  JOIN pg_namespace n ON n.oid = con.connamespace
+		 WHERE n.nspname=$1 AND c.relname=$2 AND con.conname=$3`,
+		schema, table, name)
+	if err != nil || len(rows) == 0 {
+		return false
+	}
+	return true
+}
+
 // copySQL returns a binary-format COPY that streams the table to STDOUT
 // (FR-01), used by Verify to re-derive the content checksum.
 func copySQL(schema, table string) string {

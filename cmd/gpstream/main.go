@@ -297,6 +297,8 @@ func parseConfig(args []string) (config.Config, error) {
 			cfg.IndexWorkers = atoi(args[i])
 		case "--no-indexes":
 			cfg.NoIndexes = true
+		case "--no-constraints":
+			cfg.NoConstraints = true
 		case "--index-priority":
 			i++
 			cfg.IndexPriority = args[i]
