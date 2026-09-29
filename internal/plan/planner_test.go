@@ -101,7 +101,7 @@ func collationFakes(srcCollate, dstCollate string) (*pg.FakeConn, *pg.FakeConn) 
 // source and destination is reported.
 func TestDetectCollationsDiff(t *testing.T) {
 	src, dst := collationFakes("en_US.UTF-8", "C.UTF-8")
-	out := detectCollations(context.Background(), nil, src, dst)
+	out := detectCollations(context.Background(), nil, src, dst, "")
 	if len(out) != 1 {
 		t.Fatalf("diffs = %d, want 1", len(out))
 	}
@@ -113,7 +113,7 @@ func TestDetectCollationsDiff(t *testing.T) {
 // TestDetectCollationsSame verifies that matching collations produce no diff.
 func TestDetectCollationsSame(t *testing.T) {
 	src, dst := collationFakes("en_US.UTF-8", "en_US.UTF-8")
-	out := detectCollations(context.Background(), nil, src, dst)
+	out := detectCollations(context.Background(), nil, src, dst, "")
 	if len(out) != 0 {
 		t.Errorf("diffs = %d, want 0", len(out))
 	}
@@ -126,7 +126,7 @@ func TestDetectCollationsSame(t *testing.T) {
 // the broken query would have silently passed.
 func TestDetectCollationsQuery(t *testing.T) {
 	src, dst := collationFakes("en_US.UTF-8", "C.UTF-8")
-	detectCollations(context.Background(), nil, src, dst)
+	detectCollations(context.Background(), nil, src, dst, "")
 	for _, fc := range []*pg.FakeConn{src, dst} {
 		for _, q := range fc.Queried() {
 			if strings.Contains(q, "pg_encoding_to_char") {
@@ -169,7 +169,7 @@ func TestDetectCollationsTargetsCopiedDB(t *testing.T) {
 		{"appdb", "C", "C"},
 	})
 	tabs := []Table{{DB: "appdb", Schema: "s", Name: "orders", Bytes: 100}}
-	out := detectCollations(context.Background(), tabs, src, dst)
+	out := detectCollations(context.Background(), tabs, src, dst, "")
 	if len(out) != 1 {
 		t.Fatalf("diffs = %d, want 1 (only the copied DB)", len(out))
 	}
@@ -195,7 +195,7 @@ func TestDetectCollationsWholeClusterCoversAllDBs(t *testing.T) {
 		{"dbB", "en_US.UTF-8", "en_US.UTF-8"},
 	})
 	// tabs empty -> whole-cluster: both source DBs must be compared.
-	out := detectCollations(context.Background(), nil, src, dst)
+	out := detectCollations(context.Background(), nil, src, dst, "")
 	if len(out) != 1 {
 		t.Fatalf("diffs = %d, want 1 (dbB)", len(out))
 	}

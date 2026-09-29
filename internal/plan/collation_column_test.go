@@ -30,7 +30,7 @@ func TestDetectColumnCollationsDiff(t *testing.T) {
 		[][]any{{"id", ""}, {"name", "C.utf8"}, {"other", "C.utf8"}},
 	)
 	tabs := []Table{{DB: "srcdb", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
-	out := detectCollations(context.Background(), tabs, src, dst)
+	out := detectCollations(context.Background(), tabs, src, dst, "")
 	if len(out) != 1 {
 		t.Fatalf("got %d diffs, want 1: %+v", len(out), out)
 	}
@@ -54,7 +54,7 @@ func TestDetectColumnCollationsSame(t *testing.T) {
 		[][]any{{"id", ""}, {"name", "C"}, {"other", "C.utf8"}},
 	)
 	tabs := []Table{{DB: "srcdb", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
-	out := detectCollations(context.Background(), tabs, src, dst)
+	out := detectCollations(context.Background(), tabs, src, dst, "")
 	if len(out) != 0 {
 		t.Fatalf("got %d diffs, want 0: %+v", len(out), out)
 	}
@@ -71,7 +71,7 @@ func TestDetectColumnCollationsAbsentDest(t *testing.T) {
 		[][]any{}, // destination table absent
 	)
 	tabs := []Table{{DB: "srcdb", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
-	out := detectCollations(context.Background(), tabs, src, dst)
+	out := detectCollations(context.Background(), tabs, src, dst, "")
 	if len(out) != 0 {
 		t.Fatalf("got %d diffs, want 0 (absent dest table): %+v", len(out), out)
 	}
@@ -88,8 +88,53 @@ func TestDetectColumnCollationsFault(t *testing.T) {
 	dst.On("pg_database", [][]any{{"srcdb", "C", "C"}})
 	// no gs-collation-cols on dst -> Query errors -> columnCollations nil
 	tabs := []Table{{DB: "srcdb", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
-	out := detectCollations(context.Background(), tabs, src, dst)
+	out := detectCollations(context.Background(), tabs, src, dst, "")
 	if len(out) != 0 {
 		t.Fatalf("got %d diffs, want 0 (query fault degrades): %+v", len(out), out)
+	}
+}
+
+// TestDetectCollationsDestDBFromConnString verifies (F-16) that when the
+// source DB and the destination database differ in name (the common case:
+// --dest connstring points at a differently-named database), the DB-level
+// collation comparison is made against the --dest database — and a diff is
+// reported when the two databases differ in LC_COLLATE. Without the fix the
+// pair was {t.DB, t.DstDB} = {t_coll_src, t_coll_src}; t_coll_src does not
+// exist on the destination, so the diff was silently dropped.
+func TestDetectCollationsDestDBFromConnString(t *testing.T) {
+	src := pg.NewFakeConn()
+	src.On("pg_database", [][]any{{"t_coll_src", "C", "C"}})
+	dst := pg.NewFakeConn()
+	dst.On("pg_database", [][]any{{"t_coll_dst", "en_US.utf8", "en_US.utf8"}})
+	tabs := []Table{{DB: "t_coll_src", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
+	out := detectCollations(context.Background(), tabs, src, dst,
+		"postgres://gpadmin@127.0.0.1:7432/t_coll_dst?sslmode=disable")
+	if len(out) != 1 {
+		t.Fatalf("got %d diffs, want 1: %+v", len(out), out)
+	}
+	if out[0].Table != "" || out[0].IsColumn() {
+		t.Fatalf("expected a DB-level diff, got %+v", out[0])
+	}
+	if out[0].DB != "t_coll_src" {
+		t.Fatalf("diff.DB = %q, want t_coll_src", out[0].DB)
+	}
+	if out[0].LCCollate != "C -> en_US.utf8" {
+		t.Fatalf("LCCollate = %q, want C -> en_US.utf8", out[0].LCCollate)
+	}
+}
+
+// TestDetectCollationsDestDBSameName verifies (F-16) that when the --dest
+// database has the same collation as the source database, no DB-level diff
+// is reported (same-name or different-name dest DB alike).
+func TestDetectCollationsDestDBSameName(t *testing.T) {
+	src := pg.NewFakeConn()
+	src.On("pg_database", [][]any{{"db1", "en_US.utf8", "en_US.utf8"}})
+	dst := pg.NewFakeConn()
+	dst.On("pg_database", [][]any{{"db2", "en_US.utf8", "en_US.utf8"}})
+	tabs := []Table{{DB: "db1", Schema: "public", Name: "t1", DstSchema: "public", DstName: "t1"}}
+	out := detectCollations(context.Background(), tabs, src, dst,
+		"postgres://gpadmin@127.0.0.1:7432/db2?sslmode=disable")
+	if len(out) != 0 {
+		t.Fatalf("got %d diffs, want 0: %+v", len(out), out)
 	}
 }

@@ -145,7 +145,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	p.Conflicts = detectConflicts(ctx, tabs, dst, cfg)
 
 	// 4. Collation differences (FR-10/FR-16).
-	p.Collations = detectCollations(ctx, tabs, src, dst)
+	p.Collations = detectCollations(ctx, tabs, src, dst, cfg.Dest)
 
 	// 4b. Redistribution accounting (FR-15/CR-5): compute, from the clusters'
 	// own distribution keys and segment counts, the measured segment skew of
@@ -431,7 +431,7 @@ func detectConflicts(ctx context.Context, tabs []Table, dst pg.Querier, cfg *con
 	return out
 }
 
-func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier) []CollationDiff {
+func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, destConn string) []CollationDiff {
 	var out []CollationDiff
 	if src == nil || dst == nil {
 		return out
@@ -443,6 +443,12 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier) []
 	d, _ := dst.Query(ctx, `SELECT datname, datcollate, datctype FROM pg_database`)
 	srcLoc, dstLoc := localeMap(s), localeMap(d)
 
+	// The runtime copies every table through the single destination pool, so
+	// the data lands in the database named in the --dest connection string —
+	// not in a per-table "DstDB" label (which defaults to the source DB name).
+	// Compare against that database; on a parse miss fall back to the label.
+	destDB, _ := pg.DatabaseName(destConn)
+
 	// Compare each source DB against the destination DB the plan actually
 	// writes to (after rename). We do NOT just compare the first pg_database
 	// row: on a real cluster that is the `postgres` service DB, so a first-row
@@ -452,20 +458,28 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier) []
 	seen := map[pair]bool{}
 	var pairs []pair
 	if len(tabs) == 0 {
-		// Whole-cluster copy: every source DB maps to its same-named dest DB.
+		// Whole-cluster copy: every source DB is written into the single
+		// destination database from the --dest connection string.
 		for db := range srcLoc {
-			if p := (pair{db, db}); !seen[p] {
+			dst := destDB
+			if dst == "" {
+				dst = db // fallback: no parseable --dest DB
+			}
+			if p := (pair{db, dst}); !seen[p] {
 				seen[p] = true
 				pairs = append(pairs, p)
 			}
 		}
 	} else {
 		for _, t := range tabs {
-			dstDB := t.DstDB
-			if dstDB == "" {
-				dstDB = t.DB
+			dst := destDB
+			if dst == "" {
+				dst = t.DstDB // fallback: rename label / source name
+				if dst == "" {
+					dst = t.DB
+				}
 			}
-			if p := (pair{t.DB, dstDB}); !seen[p] {
+			if p := (pair{t.DB, dst}); !seen[p] {
 				seen[p] = true
 				pairs = append(pairs, p)
 			}

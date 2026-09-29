@@ -262,3 +262,21 @@ func minVersion(s string) (uint16, error) {
 // DefaultTimeout bounds a single query so a hung segment cannot stall the
 // planner (FR-10 --timeout).
 const DefaultTimeout = 60 * time.Second
+
+// DatabaseName returns the database encoded in a libpq-style connection
+// string — i.e. the database a pool on that string connects to. The bool is
+// false when the string does not parse or carries no database. The planner
+// uses it to compare collations against the database the runtime actually
+// writes to: every table is copied through the single destination pool, so
+// the data lands in the --dest connection's database, not in a per-table
+// "DstDB" label (FR-16).
+func DatabaseName(connStr string) (string, bool) {
+	cfg, err := pgx.ParseConfig(connStr)
+	if err != nil || cfg == nil {
+		return "", false
+	}
+	if cfg.Database == "" {
+		return "", false
+	}
+	return cfg.Database, true
+}
