@@ -27,6 +27,7 @@ func healthy() *pg.FakeConn {
 	})
 	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
+	f.On("pg_extension", extRow("plpgsql"))
 	f.On("SELECT 1", [][]any{{int64(1)}})
 	return f
 }
@@ -48,6 +49,7 @@ func plainPG() *pg.FakeConn {
 	f.On("gp_segment_configuration", [][]any{{}}) // probe -> NULL (catalog absent)
 	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
+	f.On("pg_extension", extRow("plpgsql"))
 	f.On("SELECT 1", [][]any{{int64(1)}})
 	return f
 }

@@ -25,6 +25,7 @@ Grounded in `internal/doctor/doctor.go` and
 | 7 | `permissions` | source, dest | `has_database_privilege(current_database(), 'CREATE')` / `'CONNECT'` | — | Role lacks CREATE/CONNECT — `GRANT CREATE, CONNECT ON DATABASE` |
 | 8 | `collation` | network | `datcollate` source vs dest | — | `LC_COLLATE` differs — affects routing; review before start (FR-10) |
 | 9 | `tls` | network | configured minimum TLS version | — | Always informational in v0.1 — provide `--tls-ca` / `--ssl-cert` for mTLS (FR-13) |
+| 10 | `extensions` | network | `pg_extension` set: source vs dest | — | A source extension is missing in the destination (MADlib/PostGIS/orafce or any other) — install it in the receiver before the data load (FR-05/FR-11) |
 
 Overall health: the doctor is **healthy iff there is no FAIL**. WARNs do
 not block a run — they degrade an *option* (segment-direct, collation
@@ -120,6 +121,12 @@ $ gpstream doctor --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
   makes the coordinator path's redistribution trivial (none).
 - **`collation` WARN** → do not ignore on a data migration: differing
   `LC_COLLATE` changes sort/routing semantics (FR-10).
+- **`extensions` WARN** → the destination is missing an extension the source
+  database has. As with a backup restore, dependent extensions (MADlib,
+  PostGIS, orafce, ...) must be installed in the receiver BEFORE the data
+  load, or extension-typed columns cannot be restored (FR-05/FR-11). The
+  finding names the exact extension(s): `CREATE EXTENSION <name>` in the
+  destination database.
 
 ## 4. Honest notes
 

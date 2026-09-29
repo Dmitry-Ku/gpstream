@@ -125,6 +125,7 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkPermissions("source", src)
 	r.checkPermissions("dest", dst)
 	r.checkCollation(src, dst)
+	r.checkExtensions(src, dst)
 	r.checkTLS(opts.MinTLS)
 	r.checkStatementTimeouts("source", src)
 	r.checkStatementTimeouts("dest", dst)
@@ -363,6 +364,67 @@ func (r *Report) checkTLS(minTLS string) {
 	r.Add(Check{Name: "tls", Side: "network", Sev: Warn,
 		Msg: fmt.Sprintf("min TLS %s required (full cert validation in M2)", minTLS),
 		Rec: "provide --ssl-ca / --ssl-cert for mTLS"})
+}
+
+// checkExtensions (FR-05/FR-11) reports external extensions installed in the
+// SOURCE database that are MISSING from the destination. Backup/restore
+// semantics: an extension the source data depends on (MADlib, PostGIS,
+// orafce, ...) must be installed in the receiver BEFORE the data load, or
+// the restore of extension-typed columns fails. The check is a diff over the
+// full installed set (not just the three named examples), so any dependent
+// extension is caught. WARN, never FAIL: the doctor is a pre-flight, and the
+// copy of plain-table data can still succeed — the recommendation names the
+// exact missing extensions. A query fault is reported as WARN with the error
+// (unreachable sides already fail reachability).
+func (r *Report) checkExtensions(src, dst pg.Querier) {
+	q := "SELECT extname FROM pg_extension ORDER BY extname"
+	srcExt, srcErr := installedExtensions(context.Background(), src, q)
+	dstExt, dstErr := installedExtensions(context.Background(), dst, q)
+	if srcErr != nil {
+		r.Add(Check{Name: "extensions", Side: "network", Sev: Warn,
+			Msg: fmt.Sprintf("source extension query failed: %v", srcErr),
+			Rec: "the extension diff is unavailable; verify pg_extension is readable by the query role"})
+		return
+	}
+	if dstErr != nil {
+		r.Add(Check{Name: "extensions", Side: "network", Sev: Warn,
+			Msg: fmt.Sprintf("dest extension query failed: %v", dstErr),
+			Rec: "the extension diff is unavailable; verify pg_extension is readable by the query role"})
+		return
+	}
+	missing := make([]string, 0, 1)
+	for name := range srcExt {
+		if !dstExt[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		r.Add(Check{Name: "extensions", Side: "network", Sev: Pass,
+			Msg: "all source extensions are installed in the destination"})
+		return
+	}
+	sort.Strings(missing)
+	r.Add(Check{Name: "extensions", Side: "network", Sev: Warn,
+		Msg: fmt.Sprintf("%d source extension(s) missing in the destination: %s",
+			len(missing), strings.Join(missing, ", ")),
+		Rec: "install the missing extension(s) in the destination BEFORE the data load (as with a backup restore, dependent extensions must pre-exist in the receiver): CREATE EXTENSION <name>"})
+}
+
+// installedExtensions returns the set of extension names installed in the
+// database the querier is connected to.
+func installedExtensions(ctx context.Context, q pg.Querier, sql string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if len(row) == 0 || row[0] == nil {
+			continue
+		}
+		set[fmt.Sprint(row[0])] = true
+	}
+	return set, nil
 }
 
 // firstAsInt coerces the first cell of the first row to an int. Live

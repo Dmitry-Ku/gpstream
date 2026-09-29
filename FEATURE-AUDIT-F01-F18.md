@@ -35,8 +35,9 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 
 ### F-05 — Delivery, self-diagnosis, docs — **PARTIAL**
 - Spec: tar.gz+RPM+DEB, `/etc/gpstream/gpstream.toml`, `doctor` (all segments, versions, encoding match, collation, **extensions MADlib/PostGIS/orafce**, disk, TLS, ports, CPU), man pages, README/docs/LICENSE/CHANGELOG/SECURITY/CONTRIBUTING + **issue/PR templates**.
-- Evidence: `packaging/{rpm,deb,examples,systemd,logrotate.conf}`; `man/gpstream.8`; `config.go` TOML+YAML; `doctor.go:122-247` checks reachability/version/segments/disk/permissions/collation/TLS; `docs/` has QUICKSTART, INSTALL, OPERATOR_GUIDE, TROUBLESHOOTING, PERFORMANCE, SECURITY, CLI_REFERENCE, CONFIGURATION, ADMIN_GUIDE, FAILOVER, METRICS, adr; `LICENSE/CHANGELOG.md/SECURITY.md/CONTRIBUTING.md` present.
-- Gaps: **doctor has no extension check** (MADlib/PostGIS/orafce — `grep` → none); **no `.github/ISSUE_TEMPLATE` / `PULL_REQUEST_TEMPLATE`** (`.github/` has only `workflows/`); **`docs/design.md` is absent** (required by F-08 for dependency justification); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
+- Evidence: `packaging/{rpm,deb,examples,systemd,logrotate.conf}`; `man/gpstream.8`; `config.go` TOML+YAML; `doctor.go:122-247` checks reachability/version/segments/disk/permissions/collation/**extensions**/TLS; `docs/` has QUICKSTART, INSTALL, OPERATOR_GUIDE, TROUBLESHOOTING, PERFORMANCE, SECURITY, CLI_REFERENCE, CONFIGURATION, ADMIN_GUIDE, FAILOVER, METRICS, adr; `LICENSE/CHANGELOG.md/SECURITY.md/CONTRIBUTING.md` present.
+- **Extension check DONE (29.09):** doctor diffs `pg_extension` source vs dest (WARN naming the missing extensions; never FAILs; query fault = WARN) — `checkExtensions` in `doctor.go`, tests `doctor_extensions_test.go` (missing/all-present/query-fault).
+- Gaps: **no `.github/ISSUE_TEMPLATE` / `PULL_REQUEST_TEMPLATE`** (`.github/` has only `workflows/`); **`docs/design.md` is absent** (required by F-08 for dependency justification); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
 - **BLOCKED-INFRA**: RPM/DEB build host + clean-host acceptance.
 
 ### F-06 — Resilience + `--auto-resume N` — **DONE** (flag + abort mode closed 28.09)
@@ -87,7 +88,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
   `integration/f11_sequence_test.go` (TestSequencePostLoadSync: seq created,
   last_value == source 105, next nextval == 106, events recorded;
   TestSequenceSyncResumeIdempotent: re-run idempotent, no duplicates).
-- Gaps: **extension presence check missing** (same gap as F-05).
+- **Extension presence check DONE (29.09)** — doctor `extensions` check (diff of `pg_extension` source vs dest; same implementation as F-05, see there).
 - **BLOCKED-INFRA**: "3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.
 
 ### F-12 — Stream compression — **DONE (28.09)**
@@ -158,13 +159,13 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-02 | PARTIAL | per-table fallback flag DONE 28.09 (`--consistent-tables`); (concurrent-write test EXISTS — scale24; per-table live test f02_per_table); 2-DB concurrent-write + kill -9 acceptance needs real clusters |
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
 | F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
-| F-05 | PARTIAL | doctor no extension check; no issue/PR templates; no design.md |
+| F-05 | PARTIAL | doctor extension check DONE (29.09); no issue/PR templates; no design.md |
 | F-06 | DONE | --on-unit-failure continue/abort implemented (28.09); 50-fault serial acceptance infra-blocked |
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
 | F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
-| F-11 | PARTIAL | sequences synced post-load (29.09); no extension check |
+| F-11 | PARTIAL | sequences synced post-load (29.09); extension check DONE (29.09) |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
@@ -198,8 +199,9 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    pg_get_serial_sequence; CREATE SEQUENCE before table DDL + setval after
    swap; 42P01/42P07 isAlreadyExists fix; events.jsonl sequence_synced /
    sequence_sync_failed; live acceptance f11_sequence_test.go).
-7. **F-05/F-11 doctor extension check** — detect MADlib/PostGIS/orafce presence
-   in the destination. (next)
+7. **F-05/F-11 doctor extension check** — DONE 29.09 (doctor `extensions`
+   check: `pg_extension` diff source vs dest, WARN naming missing
+   extensions; tests doctor_extensions_test.go). (next)
 8. **F-15** — add the segment balance max/avg metric to the monitor/report.
 9. **F-16** — column-level (`attcollation`) collation comparison.
 10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +

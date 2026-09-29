@@ -125,5 +125,6 @@ func seedHealthy(f *pg.FakeConn) {
 	})
 	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
 	f.On("pg_database", [][]any{{"C"}})
+	f.On("pg_extension", extRow("plpgsql"))
 	f.On("SELECT 1", [][]any{{int64(1)}})
 }
