@@ -71,7 +71,9 @@ subset of flags (listed per-command below) and ignore the rest.
   rebuilds indexes in the background (FR-17), atomically swaps the staging
   table to its final name, journals every transition to
   `<state-dir>/<operation-id>/journal.jsonl`, appends the diagnostic event
-  stream to `<state-dir>/<operation-id>/events.jsonl` (FR-04/F-14), serves
+  stream to `<state-dir>/<operation-id>/events.jsonl` (FR-04/F-14), records
+  the action to `<state-dir>/<operation-id>/audit.log` (F-13 audit log of
+  actions: `run` + `run-finished`), serves
   Prometheus metrics at `--metrics-addr` (FR-04) and honours `--auto-resume N`
   (FR-07). `run` is the command that used to be called `copy`.
 - **`dry-run`** — plans **without executing** (FR-10); full contract. Renders
@@ -91,14 +93,16 @@ subset of flags (listed per-command below) and ignore the rest.
   or legacy `--mirror <path>`), `--state-dir <dir>`.
 - **`resume`** — resumes an interrupted operation (FR-06/07). Reopens the
   durable operation journal (file mirror, which survived the crash) and
-  re-queues every non-terminal unit under the next snapshot epoch. **Flags:**
+  re-queues every non-terminal unit under the next snapshot epoch; the action
+  is recorded to `audit.log` (F-13). **Flags:**
   `--operation-id <id>` (required, or legacy `--mirror <path>`),
   `--state-dir <dir>`, `--auto-resume <N>` (cap on resume attempts).
 - **`cleanup`** — removes an operation's journal directory and state (v4 §8
   "State"). **Destructive — requires `--yes`.** `--all-incomplete` removes
   every operation directory that still has non-terminal units (no
   `--operation-id` needed); `--mode drop` additionally notes the dest-side
-  staging objects recorded in the journal. **Flags:** `--operation-id <id>`
+  staging objects recorded in the journal. The destructive action is recorded
+  to `audit.log` **before** the state dir is removed (F-13). **Flags:** `--operation-id <id>`
   (or `--all-incomplete` / legacy `--mirror <path>`), `--state-dir <dir>`,
   `--mode drop`, `--yes` (required).
 - **`selftest`** — internal sanity checks; no flags, no cluster connection.

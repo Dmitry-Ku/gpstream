@@ -113,6 +113,88 @@ func (j *Journal) EventsPath() string {
 	return filepath.Join(filepath.Dir(j.mirror), "events.jsonl")
 }
 
+// AuditPath is the F-13 audit log of actions: alongside the journal mirror,
+// named audit.log (0600). It records the operator's actions on the
+// operation (run, resume, cleanup) — separate from events.jsonl, which is
+// the in-run diagnostic stream (F-04/F-14). Empty when no mirror path is
+// set (the caller then keeps a no-op log).
+func (j *Journal) AuditPath() string {
+	if j.mirror == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(j.mirror), "audit.log")
+}
+
+// AuditLog is the F-13 action audit trail: one JSON line per operator
+// action ({ts, action, fields...}), appended to audit.log. Like EventLog
+// it is best-effort (a write failure never fails the action) and a nil
+// path is a no-op, so commands that have no state dir stay side-effect free.
+type AuditLog struct {
+	mu   sync.Mutex
+	f    *os.File
+	path string
+}
+
+// NewAuditLog wraps the audit file path (empty = no-op). The file is
+// created on first write, so a command that logs nothing leaves no file.
+func NewAuditLog(path string) *AuditLog {
+	return &AuditLog{path: path}
+}
+
+// Log appends one action record. fields must be alternating key, value
+// pairs; an odd tail is dropped. It never fails.
+func (l *AuditLog) Log(action string, fields ...any) {
+	if l.path == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec := map[string]any{"ts": time.Now().UTC().Format(time.RFC3339Nano), "action": action}
+	for i := 0; i+1 < len(fields); i += 2 {
+		if k, ok := fields[i].(string); ok {
+			rec[k] = fields[i+1]
+		}
+	}
+	f, err := l.openLocked()
+	if err != nil {
+		return
+	}
+	line, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	line = append(line, '\n')
+	if _, err := f.Write(line); err != nil {
+		if l.f == f {
+			l.f = nil
+		}
+	}
+}
+
+// openLocked lazily opens the audit file in append mode. Callers hold l.mu.
+func (l *AuditLog) openLocked() (*os.File, error) {
+	if l.f != nil {
+		return l.f, nil
+	}
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	l.f = f
+	return f, nil
+}
+
+// Close flushes and closes the audit file. Safe to call on a no-op log
+// and more than once.
+func (l *AuditLog) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil {
+		_ = l.f.Close()
+		l.f = nil
+	}
+}
+
 // WriteConflicts persists the plan's conflict diagnosis to conflicts.jsonl
 // (F-10 §8: «все конфликты логируются (conflicts.jsonl + manifest)») so an
 // operator can audit what would collide — and with which action — without

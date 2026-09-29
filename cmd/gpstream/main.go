@@ -1032,6 +1032,14 @@ func cmdCleanup(args []string) error {
 		if err := j.LoadFromMirror(); err != nil {
 			return fmt.Errorf("cleanup %s: load journal: %w", t.id, err)
 		}
+		// F-13: audit the destructive cleanup BEFORE the state dir is
+		// removed (the audit.log lives in it) — log first, then delete.
+		audit := manifest.NewAuditLog(j.AuditPath())
+		mode := "state"
+		if drop {
+			mode = "drop"
+		}
+		audit.Log("cleanup", "operation-id", t.id, "mode", mode, "units", len(j.Units()))
 		if drop {
 			// Staging objects: units whose destination name differs from the
 			// source name (renamed pre-swap) or already swapped to a final
@@ -1050,6 +1058,7 @@ func cmdCleanup(args []string) error {
 		if err := os.RemoveAll(filepath.Dir(t.path)); err != nil {
 			return fmt.Errorf("cleanup %s: %w", t.id, err)
 		}
+		audit.Close()
 		fmt.Printf("cleanup: removed operation state %s\n", t.id)
 	}
 	if len(targets) == 0 {
@@ -1231,6 +1240,24 @@ func cmdRun(args []string) error {
 		fmt.Printf("conflicts log:  %s (%d)\n", cp, len(p.Conflicts))
 	}
 
+	// F-13: audit log of actions — record the run and its policy in
+	// <state>/audit.log (0600, alongside the journal).
+	audit := manifest.NewAuditLog(j.AuditPath())
+	defer audit.Close()
+	copyMode := string(cfg.CopyMode)
+	if copyMode == "" {
+		copyMode = string(config.CopyCoordinator) // the implicit default
+	}
+	onFailure := cfg.OnUnitFailure
+	if onFailure == "" {
+		onFailure = "continue" // the implicit default (spec F-06)
+	}
+	audit.Log("run", "operation-id", cfg.OperationID, "units", len(p.Units),
+		"copy-mode", copyMode, "on-unit-failure", onFailure,
+		"compression", string(cfg.Compression), "consistent-db", cfg.ConsistentDB,
+		"consistent-cluster", cfg.ConsistentCluster,
+		"consistent-tables", cfg.ConsistentTables)
+
 	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
 
 	// F-04: expose the metrics over HTTP so throughput, error rate and the
@@ -1240,13 +1267,11 @@ func cmdRun(args []string) error {
 		defer stopMetrics()
 	}
 
-	if err := mgr.Run(ctx, p); err != nil {
-		return err
-	}
+	runErr := mgr.Run(ctx, p)
 
 	// --auto-resume N (F-07): if any unit did not reach a terminal state,
 	// resume up to N times so the job can complete.
-	if cfg.AutoResume > 0 {
+	if cfg.AutoResume > 0 && runErr == nil {
 		rm := resume.NewManager(j, cfg.AutoResume)
 		for {
 			n, err := rm.Resume(ctx)
@@ -1257,6 +1282,13 @@ func cmdRun(args []string) error {
 				break
 			}
 		}
+	}
+	// F-13: audit the run's outcome (stats + error, if any).
+	audit.Log("run-finished", "operation-id", cfg.OperationID, "units", mgr.Units,
+		"rows", mgr.Rows, "skipped", mgr.Skipped, "failed", mgr.Failures,
+		"error", runErr)
+	if runErr != nil {
+		return runErr
 	}
 
 	fmt.Printf("\nrun: %d unit(s) completed, %d rows transferred, %d skipped, %d failed\n",
@@ -1291,15 +1323,21 @@ func cmdResume(args []string) error {
 	if err := j.LoadFromMirror(); err != nil {
 		return fmt.Errorf("resume: load journal %s: %w", journalPath, err)
 	}
+	// F-13: audit the resume action (the operator restarted an operation).
+	audit := manifest.NewAuditLog(j.AuditPath())
+	defer audit.Close()
 	rm := resume.NewManager(j, maxResume)
 	n, err := rm.Resume(context.Background())
 	if err != nil {
+		audit.Log("resume", "operation-id", opID, "error", err.Error())
 		return fmt.Errorf("resume: %w", err)
 	}
 	if n == 0 {
+		audit.Log("resume", "operation-id", opID, "requeued", 0)
 		fmt.Println("resume: all units terminal — nothing to resume")
 		return nil
 	}
+	audit.Log("resume", "operation-id", opID, "requeued", n, "attempt", rm.Attempts())
 	fmt.Printf("resume: operation %s: re-queued %d unit(s) (attempt %d, max %d)\n", opID, n, rm.Attempts(), maxResume)
 	return nil
 }

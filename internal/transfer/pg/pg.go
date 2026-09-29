@@ -10,12 +10,15 @@ package pg
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
+	"os"
 	"strings"
 	"time"
-
-	"crypto/tls"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -75,17 +78,43 @@ func ensureVerifyFull(connStr string) string {
 	return connStr + "sslmode=verify-full"
 }
 
+// hostOf extracts the connection host from a DSN (URL or keyword/value
+// form) for TLS hostname verification (FR-13): the host must be known
+// before the TLS config is built, so it cannot come from pgx.ParseConfig.
+func hostOf(connStr string) (string, error) {
+	if strings.HasPrefix(connStr, "postgres://") || strings.HasPrefix(connStr, "postgresql://") {
+		u, err := url.Parse(connStr)
+		if err != nil {
+			return "", fmt.Errorf("conn: %w", err)
+		}
+		return u.Hostname(), nil
+	}
+	for _, kv := range strings.Fields(connStr) {
+		if i := strings.IndexByte(kv, '='); i > 0 && kv[:i] == "host" {
+			return kv[i+1:], nil
+		}
+	}
+	return "", nil
+}
+
 // NewConn opens a connection from a connection string, honouring the TLS
 // flags from FR-13. The secret material (cert/key/ca paths) is resolved here,
 // never passed via argv.
 func NewConn(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string) (*Conn, error) {
 	connStr = ensureVerifyFull(connStr)
+	host, err := hostOf(connStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse conn: %w", err)
+	}
 	cfg, err := pgx.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse conn: %w", err)
 	}
 	if sslCA != "" || sslCert != "" {
-		cfg.TLSConfig = buildTLS(sslCert, sslKey, sslCA, minTLS)
+		cfg.TLSConfig, err = buildTLS(host, sslCert, sslKey, sslCA, minTLS)
+		if err != nil {
+			return nil, err
+		}
 	}
 	c, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
@@ -167,25 +196,51 @@ func RowStr(ctx context.Context, q Querier, sql string, args ...any) string {
 	return fmt.Sprint(v)
 }
 
-// buildTLS returns a *tls.Config for PG connections (FR-13). It performs
-// certificate chain validation when a CA is supplied, honours the minimum
-// TLS version, and presents a client certificate for mTLS (FR-13).
-func buildTLS(cert, key, ca, minTLS string) *tls.Config {
+// buildTLS returns a *tls.Config for PG connections (FR-13). With
+// sslmode=verify-full (the enforced default, ensureVerifyFull) the
+// connection MUST validate the server's hostname: host (the DSN host) is
+// set as the TLS ServerName so crypto/tls checks the certificate's
+// SAN/CN against it — a wrong certificate is a hard, diagnosed failure
+// (F-13 acceptance: «при неверном сертификате — отказ с диагностикой»).
+// An IP-literal host cannot carry a verifiable name, so ServerName stays
+// empty there (verify-full degrades to verify-ca; the hostname check
+// applies to named hosts). A supplied CA bundle is loaded into RootCAs
+// for chain validation. Errors (unreadable CA, malformed client keypair)
+// are returned instead of swallowed: a silently-downgraded TLS config
+// would defeat the guarantee.
+func buildTLS(host, cert, key, ca, minTLS string) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		ServerName: "",
+	}
+	if host != "" && net.ParseIP(host) == nil {
+		// F-13: verify-full hostname check. pgx sets the same field for
+		// sslmode=verify-full, but this config REPLACES pgx's, so it must
+		// carry the name itself.
+		tlsCfg.ServerName = host
+	}
+	if ca != "" {
+		pem, err := os.ReadFile(ca)
+		if err != nil {
+			return nil, fmt.Errorf("ssl-ca %s: %w", ca, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ssl-ca %s: no valid certificates found", ca)
+		}
+		tlsCfg.RootCAs = pool
 	}
 	if cert != "" && key != "" {
 		// mTLS: client presents a certificate to the server (FR-13).
 		peer, err := tls.LoadX509KeyPair(cert, key)
-		if err == nil {
-			tlsCfg.Certificates = []tls.Certificate{peer}
+		if err != nil {
+			return nil, fmt.Errorf("ssl-cert/ssl-key: %w", err)
 		}
+		tlsCfg.Certificates = []tls.Certificate{peer}
 	}
 	if v, err := minVersion(minTLS); err == nil {
 		tlsCfg.MinVersion = v
 	}
-	return tlsCfg
+	return tlsCfg, nil
 }
 
 // minVersion maps a version string like "1.2" to a tls.Version.

@@ -232,6 +232,22 @@ It is a diagnostic log, not the durable record (that is the journal), so a
 write failure never fails the copy. With no `--state-dir` journal mirror the
 log is a no-op. Consume it with `jq -c . events.jsonl` or any JSONL tooling.
 
+### The action audit log (`audit.log`, F-13)
+
+In parallel, every operator action on the operation is appended to
+`<state-dir>/<operation-id>/audit.log` (0600) — one JSON object per line:
+`{"ts", "action", ...fields}` (spec F-13 «аудит-лог действий»):
+
+| `action` | When | Key fields |
+|----------|------|-----------|
+| `run` | `gpstream run` starts (before any copy) | `operation-id`, `units`, `copy-mode`, `on-unit-failure`, `compression`, `consistent-db`/`consistent-cluster`/`consistent-tables` |
+| `run-finished` | `gpstream run` ends | `operation-id`, `units`, `rows`, `skipped`, `failed`, `error` (if any) |
+| `resume` | `gpstream resume` | `operation-id`, `requeued`, `attempt` (or `error`) |
+| `cleanup` | `gpstream cleanup` — logged **before** the state dir is removed | `operation-id`, `mode` (`state`/`drop`), `units` |
+
+`events.jsonl` is what the run did; `audit.log` is what the operator did.
+Both are best-effort (a write failure never fails the action).
+
 ---
 
 ## 9. Resuming, cancelling, rolling back

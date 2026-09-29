@@ -22,6 +22,7 @@ not a file on disk. The security concerns are therefore:
 | Corrupted / truncated copy | Checksum + verify (§5) |
 | Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
 | Wrong cluster / wrong target | `security-check` + `doctor` (§7) |
+| Undocumented operator action | **Audit log** (`audit.log`, §10) |
 
 ---
 
@@ -64,6 +65,21 @@ command line; the env and file layers keep it off argv.
 
 A copy over an unencrypted link is refused. There is no
 `InsecureSkipVerify` path in the shipped configuration.
+
+### Server identity: `verify-full` (hostname check)
+
+PostgreSQL connections are made with `sslmode=verify-full` unless the DSN
+explicitly sets another mode (`ensureVerifyFull`). With `verify-full`, the
+server's certificate is validated **and** its hostname is checked against the
+connection host: `buildTLS` sets the TLS `ServerName` from the DSN host, so a
+certificate that does not cover the host is a hard, diagnosed failure
+(`x509: certificate is valid for X, not <host>`) — the F-13 acceptance
+«при неверном сертификате — отказ с диагностикой». An IP-literal host has no
+verifiable name and degrades to chain verification (verify-ca). A
+`--ssl-ca` bundle is loaded into the root store for chain validation; a
+missing or certificate-less bundle (or a malformed client keypair) is a
+**hard error at connect time** — gpstream never silently downgrades its TLS
+guarantee.
 
 ---
 
@@ -161,18 +177,41 @@ material.
 
 - [ ] Secrets via env / EnvironmentFile, **not** argv (FR-08).
 - [ ] TLS enforced; `--ssl-min-tls >= 1.2`.
+- [ ] Server certificate covers the DSN host (`verify-full` hostname check).
 - [ ] `security-check` returns **PASS** against the real clusters.
 - [ ] `ConflictAction = SkipExisting` (non-destructive) unless a specific
       copy intentionally opts into overwrite.
 - [ ] `--verify` is `sample` or `full` for critical copies.
 - [ ] `--checksum-algorithm` set (`sha256` or `blake3`).
 - [ ] Destructive commands invoked only with `--yes`, deliberately.
+- [ ] `audit.log` retained / reviewed per the operation's retention policy.
 - [ ] Metrics endpoint on a private interface.
 - [ ] Logs redacted of connection strings / cert material.
 
 ---
 
-## 10. Read more
+## 10. Audit log of actions (`audit.log`)
+
+Every operator action on an operation is recorded in
+`<state-dir>/<operation-id>/audit.log` (mode **0600**, alongside
+`journal.jsonl` / `events.jsonl` / `conflicts.jsonl`) — one JSON object per
+line: `{"ts", "action", ...fields}` (F-13 «аудит-лог действий»).
+
+| action | When | Fields |
+|--------|------|--------|
+| `run` | `gpstream run` starts (before any copy) | operation-id, units, copy-mode, on-unit-failure, compression, consistency mode |
+| `run-finished` | `gpstream run` ends | units, rows, skipped, failed, error (if any) |
+| `resume` | `gpstream resume` | operation-id, requeued, attempt (or error) |
+| `cleanup` | `gpstream cleanup` (logged **before** the state dir is removed) | operation-id, mode, units |
+
+`audit.log` records the operator's actions; `events.jsonl` records what the
+run itself did (rate shifts, conflicts, failures — see OPERATOR_GUIDE §8).
+Consume with `jq -c . audit.log`. The file is best-effort: a write failure
+never fails the action.
+
+---
+
+## 11. Read more
 
 - `CONFIGURATION.md` — config fields, defaults, precedence, validation.
 - `ADMIN_GUIDE.md` — deployment, systemd, logrotate, upgrade.

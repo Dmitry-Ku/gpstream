@@ -40,12 +40,19 @@ type Pool struct {
 // journal, so concurrent COPYs never block on acquisition.
 func NewPool(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string, maxConns int) (*Pool, error) {
 	connStr = ensureVerifyFull(connStr)
+	host, err := hostOf(connStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse conn: %w", err)
+	}
 	cfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse conn: %w", err)
 	}
 	if sslCA != "" || sslCert != "" {
-		cfg.ConnConfig.TLSConfig = buildTLS(sslCert, sslKey, sslCA, minTLS)
+		cfg.ConnConfig.TLSConfig, err = buildTLS(host, sslCert, sslKey, sslCA, minTLS)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if maxConns > 0 {
 		cfg.MaxConns = int32(maxConns)

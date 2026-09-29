@@ -82,11 +82,12 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Closed: `compression_off` event + live acceptance `integration/f12_small_table_test.go` (one run: tiny table below threshold = compression off, big table above = zstd on; both byte-correct under `--verify full`; exactly one `compression_off` event, for the tiny table only).
 - Test: compress 80.6%; manifest F-12 unit tests (decision table, pair swap, event emit/absence) + live integration PASS.
 
-### F-13 — Secure connections — **PARTIAL**
+### F-13 — Secure connections — **DONE (29.09)**
 - Spec: TLS 1.2+ (prefer 1.3) sender↔receiver, CA + mTLS, config 0600; PG `sslmode=verify-full`; creds only env/`.pgpass`; **audit log of actions**.
-- Evidence: `transfer/pg/pg.go:66` `buildTLS(cert,key,CA,minTLS)`; `pg.go:61 ensureVerifyFull` (28.09 re-check): when the DSN has no explicit `sslmode`, the connection is forced to `sslmode=verify-full` (an explicit value is respected); pgx reads `.pgpass` (pgpassfile dep); creds via `GPSTREAM_*` env (`config.go:225`); `doctor.go:240` TLS handshake check.
-- Gaps: **production data path is the in-memory pipe, so TLS between sender/receiver is not actually exercised** (the TCP/TLS mode exists but is test-only); **`ServerName:""` (`pg.go:176`) means the verify-full hostname check is not enforced** (verify-full is ON as default sslmode, but the Go TLS layer still skips host-name verification); **audit log of actions is missing** (`grep auditlog` → none).
-- **BLOCKED-INFRA**: wireshark encrypted-traffic acceptance.
+- Evidence: `transfer/pg/pg.go` `buildTLS(host,cert,key,CA,minTLS)` (29.09): when a CA/client-cert is supplied the TLS config now sets **ServerName = the DSN host**, so `sslmode=verify-full` (the enforced default, `ensureVerifyFull`) actually validates the server's hostname — a wrong certificate is a hard, diagnosed failure (`x509.HostnameError`, F-13 acceptance «при неверном сертификате — отказ с диагностикой»); an IP-literal host degrades to verify-ca (no verifiable name). A `--ssl-ca` bundle is loaded into RootCAs for chain validation; an unreadable/CA-less bundle or a bad client keypair is a **hard error at connect** (no silent downgrade — the old code swallowed both). mTLS client cert, `--ssl-min-tls` (1.2 default) unchanged. pgx reads `.pgpass` (pgpassfile dep); creds via `GPSTREAM_*` env (`config.go:225`), never argv/config.
+- **Audit log of actions (29.09):** `manifest.AuditLog` (job.go) + `Journal.AuditPath()` = `<state-dir>/<operation-id>/audit.log` (0600, alongside journal/events/conflicts). Recorded: `run` (operation-id, units, copy-mode, on-unit-failure, compression, consistency mode), `run-finished` (units/rows/skipped/failed + error), `resume` (requeued, attempt) and `cleanup` (mode, units) — logged BEFORE the state dir is removed.
+- Test: `TestBuildTLSVerifyFullHostname` (ServerName set / IP exempt), `TestBuildTLSLoadsCA` (RootCAs; missing/CA-less file → error), `TestHostOf` (both DSN forms), `TestBuildTLSRejectsWrongHostname` (REAL handshake against a local TLS server: wrong DSN host → `certificate is valid for wrong.example.com, not right.example.com`; matching host → success; no CA → rejected), `TestAuditLogWritesJSONLines` (format + 0600), `TestJournalAuditPath`.
+- **BLOCKED-INFRA**: wireshark encrypted-traffic acceptance (real network).
 
 ### F-14 — Rate limiting + adaptive control — **DONE (28.09)**
 - Spec: `--max-bw` global ceiling; per-host-pair token bucket; adaptive AIMD (detect receiver CPU/disk/queue bottleneck → step down ~25% floor ~1 Gbps, recover on stabilize); **each shift logged to `events.jsonl`**.
@@ -151,7 +152,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
 | F-11 | PARTIAL | no post-load sequence setval; no extension check |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
-| F-13 | PARTIAL | data path not TLS-exercised; verify-full ON by default but hostname check off (ServerName:""); no audit log |
+| F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
 | F-15 | PARTIAL | segment balance max/avg metric missing |
 | F-16 | PARTIAL | no column-level collation compare |
@@ -174,9 +175,11 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    default 1 MiB; per-unit decision in the Manager; `compression_off` event;
    live acceptance f12_small_table: small table off + big table zstd in one
    run, both byte-correct).
-5. **F-13 verify-full hostname** — set TLS `ServerName` from the DSN host so
-   verify-full actually validates the name (sslmode default is already
-   verify-full via ensureVerifyFull).
+5. **F-13 verify-full hostname + audit log** — DONE 29.09 (buildTLS sets
+   ServerName=DSN host → verify-full validates the name; wrong certificate
+   = diagnosed handshake refusal (real-handshake regression test); CA
+   bundle loaded into RootCAs, bad CA/keypair = hard error; audit.log of
+   actions: run/run-finished/resume/cleanup at <state>/audit.log 0600).
 6. **F-11 post-load sequence `setval`** sync.
 7. **F-05/F-11 doctor extension check** — detect MADlib/PostGIS/orafce presence
    in the destination.
