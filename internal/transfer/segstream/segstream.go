@@ -214,6 +214,39 @@ func readStream(ctx context.Context, conn net.Conn, res *SliceResult, writer fun
 	}
 }
 
+// HandshakeFilter wraps a listener whose Accept can fail on a rejected
+// handshake (a *tls.Listener) and keeps accepting: a refused/noisy
+// connection (a probe, a port scan, a monitor, a client that fails
+// certificate verification) is closed and simply does not count toward the
+// n expected segment streams. Without it, a single failed handshake on the
+// port would abort the whole in-flight copy (tls.Listener.Accept surfaces
+// handshake errors as Accept errors). A genuine listener-closed error
+// (net.ErrClosed) is still returned so Receive's ctx/done logic is intact.
+// The n-way wait is bounded by the caller's ctx either way.
+func HandshakeFilter(l net.Listener) net.Listener { return &handshakeFilter{l: l} }
+
+type handshakeFilter struct{ l net.Listener }
+
+func (h *handshakeFilter) Accept() (net.Conn, error) {
+	for {
+		c, err := h.l.Accept()
+		if err == nil {
+			return c, nil
+		}
+		if errors.Is(err, net.ErrClosed) {
+			return nil, err
+		}
+		// Handshake/auth failure on a stray connection: drop it and keep
+		// waiting for the legitimate segment streams.
+		if c != nil {
+			c.Close()
+		}
+	}
+}
+
+func (h *handshakeFilter) Addr() net.Addr  { return h.l.Addr() }
+func (h *handshakeFilter) Close() error    { return h.l.Close() }
+
 // validListen accepts "host:port" with a 0<port<65536 (the only external
 // value embedded in the program string — see ProgramCommand).
 func validListen(listen string) bool {
@@ -250,13 +283,40 @@ func UnitListen(base string, unitID uint32) (string, error) {
 // embedded (listen address, job/unit ids) — no user input — so there is no
 // injection surface (ANSWER-T01-APPROACH-AB §2.4.5).
 func ProgramCommand(binPath, listen string, jobID, unitID uint32) (string, error) {
+	return ProgramCommandTLS(binPath, listen, jobID, unitID, "", "", "")
+}
+
+// ProgramCommandTLS is ProgramCommand with the optional data-plane TLS
+// options (F-13). When cert and key are both set, the segreceiver is told to
+// speak TLS to the controller (it validates the controller certificate via
+// ca and presents cert/key as its client certificate — mTLS when the
+// controller requires one). The cert/key/ca PATHS land in the shell one-liner
+// just like the binary path, so they are rejected on any shell metacharacter
+// (defense in depth against command injection).
+func ProgramCommandTLS(binPath, listen string, jobID, unitID uint32, cert, key, ca string) (string, error) {
 	if binPath == "" || listenBinChars(binPath) {
 		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
 	}
 	if !validListen(listen) {
 		return "", fmt.Errorf("segstream: bad listen address %q (want host:port)", listen)
 	}
-	return fmt.Sprintf("%s --listen %s --job %d --unit %d --content <SEGID>", binPath, listen, jobID, unitID), nil
+	cmd := fmt.Sprintf("%s --listen %s --job %d --unit %d --content <SEGID>", binPath, listen, jobID, unitID)
+	// Enable the data-plane TLS flags on the SAME rule the controller uses
+	// to serve TLS (a serving keypair = both cert and key). A lone cert or
+	// key is a misconfiguration — fail loud rather than half-enable.
+	switch {
+	case cert != "" && key != "":
+		if listenBinChars(cert) || listenBinChars(key) || (ca != "" && listenBinChars(ca)) {
+			return "", fmt.Errorf("segstream: unsafe TLS path set (cert=%q key=%q ca=%q)", cert, key, ca)
+		}
+		cmd += fmt.Sprintf(" --ssl-cert %s --ssl-key %s", cert, key)
+		if ca != "" {
+			cmd += fmt.Sprintf(" --ssl-ca %s", ca)
+		}
+	case cert != "" || key != "":
+		return "", fmt.Errorf("segstream: TLS enabled with only one of --ssl-cert/--ssl-key (cert=%q key=%q); provide both or neither", cert, key)
+	}
+	return cmd, nil
 }
 
 // listenBinChars rejects anything with shell/quote metacharacters in the

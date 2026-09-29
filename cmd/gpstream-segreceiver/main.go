@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -35,6 +37,11 @@ func main() {
 	unit := flag.String("unit", "0", "unit id (decimal)")
 	content := flag.String("content", "", "segment content id (decimal; the kernel substitutes <SEGID>)")
 	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe; no stream)")
+	// F-13 data-plane TLS (embedded by the controller in the COPY TO PROGRAM
+	// string when the operator enabled it). All three empty = plain TCP.
+	sslCert := flag.String("ssl-cert", "", "client certificate PEM (data-plane TLS)")
+	sslKey := flag.String("ssl-key", "", "client key PEM (data-plane TLS)")
+	sslCA := flag.String("ssl-ca", "", "trusted CA bundle PEM for the controller cert")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -73,13 +80,43 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
-	conn, err := net.DialTimeout("tcp", *listen, 10*time.Second)
+	raw, err := net.DialTimeout("tcp", *listen, 10*time.Second)
 	if err != nil {
 		fail("connect %s: %v", *listen, err)
+	}
+	// F-13: data-plane TLS. The controller embedded the cert/key/ca paths in
+	// our command line; all three empty = plain TCP (the pre-F-13 behavior).
+	// The handshake runs under ctx so a wedged controller cannot hang the
+	// segment past the COPY lifetime.
+	var conn net.Conn = raw
+	if transfer.TLSEnabled(*sslCert, *sslKey, *sslCA) {
+		host, herr := hostOf(*listen)
+		if herr != nil {
+			fail("tls: bad --listen %q: %v", *listen, herr)
+		}
+		ccfg, cerr := transfer.ClientTLSConfig(host, *sslCert, *sslKey, *sslCA, "")
+		if cerr != nil {
+			fail("tls: %v", cerr)
+		}
+		tc := tls.Client(raw, ccfg)
+		if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+			fail("tls handshake with controller: %v", hsErr)
+		}
+		conn = tc
 	}
 	rows, err := segstream.Send(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
 	if err != nil {
 		fail("stream: %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: content=%d rows=%d ok\n", contentID, rows)
+}
+
+// hostOf returns the host part of a host:port listen address (the value the
+// TLS client uses as its expected controller name, if it is a name).
+func hostOf(listen string) (string, error) {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", err
+	}
+	return host, nil
 }

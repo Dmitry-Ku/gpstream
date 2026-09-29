@@ -122,9 +122,11 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--source":
 			i++
 			cfg.Source = args[i]
+			cfg.SourceFromFile = false // the CLI wins: no file provenance
 		case "--dest":
 			i++
 			cfg.Dest = args[i]
+			cfg.DestFromFile = false // the CLI wins: no file provenance
 
 		// Selection (v4 §8): --dbs / --schemas / --tables, comma-separated.
 		case "--dbs":
@@ -287,6 +289,18 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--seg-binary":
 			i++
 			cfg.SegBinary = args[i]
+		// Data-plane TLS for the on_segment hop (F-13). Separate from
+		// --ssl-* (which configures the PG connections): the segment stream
+		// can be encrypted even when the PG connections are not.
+		case "--seg-tls-cert":
+			i++
+			cfg.SegTLSCert = args[i]
+		case "--seg-tls-key":
+			i++
+			cfg.SegTLSKey = args[i]
+		case "--seg-tls-ca":
+			i++
+			cfg.SegTLSCA = args[i]
 
 		// Indexes (FR-17).
 		case "--index-workers":
@@ -338,8 +352,11 @@ func parseConfig(args []string) (config.Config, error) {
 		// TLS (FR-13).
 		case "--tls":
 			// v2 §26: --tls is the shorthand for "require an encrypted
-			// connection". TLS is always enforced (buildTLS pins MinVersion);
-			// --tls asserts it explicitly so a plaintext path is rejected.
+			// connection". The PG connections are ALWAYS sslmode=verify-full
+			// (enforced, no opt-out); the segment-direct data plane is TLS
+			// when the --seg-tls-cert + --seg-tls-key serving keypair is
+			// configured. --tls asserts the intent explicitly so the
+			// operator's "encrypted run" is recorded.
 			cfg.SSL = true
 		case "--ssl-cert":
 			i++
@@ -437,6 +454,12 @@ func parseConfig(args []string) (config.Config, error) {
 	// worker pool the job manager actually sizes (--workers-per-pair).
 	if cfg.Streams > 0 {
 		cfg.WorkersPerPair = cfg.Streams
+	}
+
+	// F-13/F-08: surface config-file security notes (password in a plaintext
+	// DSN, config file wider than 0600) before any data moves. Advisory only.
+	for _, w := range cfg.SecurityWarnings() {
+		fmt.Fprintf(os.Stderr, "gpstream: [config] %s\n", w)
 	}
 	return cfg, nil
 }

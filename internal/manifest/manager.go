@@ -15,6 +15,7 @@ package manifest
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -1377,8 +1378,25 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	}
 	defer l.Close()
 
+	// F-13: when the data-plane TLS option set is active, the controller
+	// serves the segment streams over TLS (mTLS when a CA is set) — the
+	// only inter-host data path not already covered by the two PG
+	// connections of the coordinator path. The seg-tls-* options are
+	// separate from the PG ssl-* options: the segment stream can be
+	// encrypted even when the PG connections are not.
+	if transfer.TLSEnabled(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA) {
+		scfg, serr := transfer.ServerTLSConfig(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA, m.cfg.SSLMinTLS)
+		if serr != nil {
+			return 0, fmt.Errorf("segment-direct TLS: %w", serr)
+		}
+		// HandshakeFilter: a rejected/noisy connection on the port (a probe,
+		// a monitor, a bad client) must not abort the in-flight copy.
+		l = segstream.HandshakeFilter(tls.NewListener(l, scfg))
+	}
+
 	jobID, unitID := uint32(1), uint32(u.UnitID)
-	prog, err := segstream.ProgramCommand(m.cfg.SegBinary, listen, jobID, unitID)
+	prog, err := segstream.ProgramCommandTLS(m.cfg.SegBinary, listen, jobID, unitID,
+		m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA)
 	if err != nil {
 		return 0, fmt.Errorf("segment-direct: %w", err)
 	}

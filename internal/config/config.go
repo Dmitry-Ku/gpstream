@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -179,6 +180,14 @@ type Config struct {
 	SSLCA     string
 	SSLMinTLS string // e.g. "1.2"
 
+	// F-13 credential provenance (advisory): SourceFromFile/DestFromFile are
+	// set when the DSN was loaded from the config FILE (LoadFile) and cleared
+	// when the CLI overrides it. A DSN carrying a password that came from the
+	// file triggers a SecurityWarnings() note (F-13: credentials belong in
+	// env/.pgpass, not in a plaintext config).
+	SourceFromFile bool `toml:"-"`
+	DestFromFile   bool `toml:"-"`
+
 	// Dry-run / planning (FR-10).
 	DryRun   bool
 	Timeout  time.Duration // plan formation, default 60s
@@ -208,6 +217,19 @@ type Config struct {
 	CopyMode  CopyMode // default coordinator
 	SegListen string   // controller listen address the segreceivers dial (host:port)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
+
+	// Data-plane TLS for the segment-direct (on_segment) hop (F-13 «TLS
+	// between sender/receiver»). Deliberately SEPARATE from the SSL*
+	// (PG-connection) fields: a cluster can have no TLS on its PG connections
+	// (this testbed: sslmode=disable) while the inter-host segment stream is
+	// still encrypted. Opt-in: empty = plaintext (the pre-F-13 behavior).
+	// SegTLSCert+SegTLSKey are the controller's serving keypair; SegTLSCA
+	// additionally makes the controller require a client certificate (mTLS)
+	// and is the trusted CA bundle the segreceivers validate the controller
+	// against.
+	SegTLSCert string
+	SegTLSKey  string
+	SegTLSCA   string
 
 	// Frame-level ACK and RST-resume (DESIGN §4.6, Tier-1, R2-approved).
 	// FrameAck is "on" by default; "off" falls back to the plain pipe.
@@ -435,6 +457,18 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("SSL_CA"); ok {
 		c.SSLCA = v
 	}
+	// Data-plane TLS for the on_segment hop (F-13), separate from the PG
+	// SSL_* vars: the segment stream can be encrypted even when the PG
+	// connections are not.
+	if v, ok := get("SEG_TLS_CERT"); ok {
+		c.SegTLSCert = v
+	}
+	if v, ok := get("SEG_TLS_KEY"); ok {
+		c.SegTLSKey = v
+	}
+	if v, ok := get("SEG_TLS_CA"); ok {
+		c.SegTLSCA = v
+	}
 	// v2 flags (§6.3/§6.4/§6.6/§6.7/§6.9/§6.10/§6.11).
 	if v, ok := get("OVERWRITE_ONLY_CONFLICTS"); ok {
 		c.OverwriteOnlyConflicts = v == "true" || v == "1"
@@ -538,9 +572,66 @@ func (c *Config) LoadFile(path string) error {
 		if !ok {
 			continue // only scalar leaves are honoured here
 		}
-		assignConfigString(c, strings.ToLower(strings.TrimSpace(k)), s)
+		key := strings.ToLower(strings.TrimSpace(k))
+		assignConfigString(c, key, s)
+		// F-13 provenance: a DSN that arrived from the file is tracked so a
+		// password in it can be flagged (the CLI can clear it below).
+		switch key {
+		case "source":
+			c.SourceFromFile = true
+		case "dest":
+			c.DestFromFile = true
+		}
 	}
 	return nil
+}
+
+// dsnHasPassword reports whether a libpq/URL connection string carries an
+// embedded password ("password=...", "user:pass@host", ?password=). It is a
+// best-effort heuristic for the F-13 advisory (not a credential parser).
+func dsnHasPassword(dsn string) bool {
+	if dsn == "" {
+		return false
+	}
+	if strings.Contains(dsn, "password=") || strings.Contains(dsn, "password%3D") {
+		return true
+	}
+	// URL form: postgres://user:password@host — a colon inside the userinfo
+	// segment (before the next '/') means a password is present.
+	if u, err := url.Parse(dsn); err == nil && u.User != nil {
+		if _, has := u.User.Password(); has {
+			return true
+		}
+	}
+	return false
+}
+
+// SecurityWarnings returns F-13/F-08 advisory notes about the effective
+// configuration (never errors). Called by the CLI once config is final, so
+// the operator sees them on the console before any data moves:
+//
+//   - a DSN carrying a password that came from the config FILE (credentials
+//     belong in env/.pgpass, not plaintext config) — F-13,
+//   - the config file is world/group-readable (wider than 0600) — F-13
+//     «конфиг ... права 0600».
+func (c Config) SecurityWarnings() []string {
+	var out []string
+	if c.ConfigFile != "" {
+		if st, err := os.Stat(c.ConfigFile); err == nil {
+			if mode := st.Mode().Perm() & 0o077; mode != 0 {
+				out = append(out, fmt.Sprintf(
+					"config file %s is mode %03o (group/other readable); F-13 wants 0600 (chmod 600)",
+					c.ConfigFile, st.Mode().Perm()))
+			}
+		}
+	}
+	if c.SourceFromFile && dsnHasPassword(c.Source) {
+		out = append(out, "source DSN carries a password from the config file; F-13 prefers env/.pgpass over plaintext config")
+	}
+	if c.DestFromFile && dsnHasPassword(c.Dest) {
+		out = append(out, "dest DSN carries a password from the config file; F-13 prefers env/.pgpass over plaintext config")
+	}
+	return out
 }
 
 // leafString renders a scalar config leaf (string/number/bool) into string
@@ -608,6 +699,14 @@ func assignConfigString(c *Config, key, v string) {
 		c.SSLCA = v
 	case "ssl_min_tls":
 		c.SSLMinTLS = v
+	// Data-plane TLS for the on_segment hop (F-13), separate from the
+	// PG-connection ssl_* keys.
+	case "seg_tls_cert":
+		c.SegTLSCert = v
+	case "seg_tls_key":
+		c.SegTLSKey = v
+	case "seg_tls_ca":
+		c.SegTLSCA = v
 	case "data_port_range":
 		c.DataPortRange = v
 	case "skew_threshold":
