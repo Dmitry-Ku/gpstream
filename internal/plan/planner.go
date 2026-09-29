@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -30,15 +31,15 @@ type Table struct {
 	// §4.10); they equal DB/Schema/Name when no rename applies. Conflicts are
 	// detected against the destination schema+name, so a rename avoids a
 	// would-be overwrite.
-	DstDB       string
-	DstSchema   string
-	DstName     string
-	LeafPart    []string // leaf partition names, for explicit routing (FR-03)
-	IsAO        bool     // Append-Optimized
-	IsCO        bool     // Column-Oriented
-	Bytes       int64    // estimated size
-	RowEst      int64    // estimated rows
-	Indexes     int      // number of indexes
+	DstDB     string
+	DstSchema string
+	DstName   string
+	LeafPart  []string // leaf partition names, for explicit routing (FR-03)
+	IsAO      bool     // Append-Optimized
+	IsCO      bool     // Column-Oriented
+	Bytes     int64    // estimated size
+	RowEst    int64    // estimated rows
+	Indexes   int      // number of indexes
 	// Partitioned reports whether the table is a partitioned parent (GP6
 	// inheritance partitioning: relkind 'r' with children in pg_inherits). A
 	// partitioned parent is planned as ONE unit: its leaves are excluded from
@@ -66,7 +67,7 @@ type Table struct {
 	// PARTITION BY table cannot be created there, so the unit fails early
 	// with a diagnostic instead of a mid-run DDL error.
 	PartitionedUnsupported bool
-	HasConflict bool     // exists in dest and not overwritten (FR-10)
+	HasConflict            bool // exists in dest and not overwritten (FR-10)
 	// RouteMode (M4/T4b): how this table's data lands on the destination —
 	// route.Direct1to1 (S==D, keys equal, same major; 0 CPU on hash),
 	// route.RouterFull (per-row hash by K_dest), or "" when not resolvable
@@ -96,6 +97,29 @@ type Plan struct {
 	// unknown parts are predictions. A partial plan carries no hash (it is not
 	// a complete, deterministic plan) and cmdDryRun prints it as a forecast.
 	Partial bool `json:"partial,omitempty"`
+	// OtherObjects is the F-11 metadata-phase detection of non-table objects
+	// in scope (views, materialized views, functions): reported in dry-run so
+	// the operator knows what the data copy does NOT carry by itself (F-11:
+	// «по опции — views/functions»; views are recreated when opted in, below).
+	OtherObjects OtherObjects `json:"other_objects"`
+	// MissingExtensions is the F-11 metadata-phase check of dependent
+	// extensions (MADlib/PostGIS/orafce, ...): extension types used by the
+	// selected tables' columns that are NOT installed on the destination.
+	// Non-empty means the DDL of those columns will fail at run time — the
+	// operator must CREATE EXTENSION in the receiver first (the doctor does
+	// the same diff over the full installed set as a pre-flight; this is the
+	// column-level, run-path signal).
+	MissingExtensions []string `json:"missing_extensions,omitempty"`
+}
+
+// OtherObjects is the F-11 detection of non-table objects within the selected
+// schemas (metadata phase: «по опции — views/functions»). Names are
+// schema-qualified. Functions are counted (not enumerated) because a database
+// can hold thousands and the operator only needs the signal that some exist.
+type OtherObjects struct {
+	Views     []string `json:"views,omitempty"`
+	MatViews  []string `json:"matviews,omitempty"`
+	Functions int      `json:"functions,omitempty"`
 }
 
 // CollationDiff is a detected collation/encoding difference (FR-10/FR-16). A
@@ -172,6 +196,17 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// 2c. Rename (FR-11): map source names to destination names. Conflicts are
 	// detected against the destination name, so a rename avoids an overwrite.
 	applyRename(cfg, tabs)
+
+	// 2c2. F-11 metadata phase: detect non-table objects (views, matviews,
+	// functions) within the selected schemas. Reported in dry-run — the data
+	// copy does not carry them, so the operator decides (F-11:
+	// «по опции — views/functions»).
+	p.OtherObjects = detectOtherObjects(ctx, src, tabs)
+	// 2c3. F-11 metadata phase: dependent-extension check (MADlib/PostGIS/
+	// orafce, ...) — extension types used by the selected tables' columns that
+	// are missing on the destination. Non-empty = the column DDL will fail at
+	// run time until the extension is created in the receiver.
+	p.MissingExtensions = detectMissingExtensions(ctx, src, dst, tabs)
 
 	// 2d. Partitioned parents (Fix 1): capture each parent's PARTITION BY
 	// spec (reproduced on the destination) and evaluate the guard — a
@@ -322,6 +357,131 @@ func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]T
 	return out, nil
 }
 
+// detectOtherObjects reads the F-11 non-table objects (views, materialized
+// views, functions) from the selected schemas of the source (metadata phase:
+// «по опции — views/functions»). It is a detection-only pass: the data copy
+// does not carry these objects, so the plan reports them and the operator
+// decides. A catalog fault yields an empty result (detection must never fail
+// the plan, like the other advisory passes).
+func detectOtherObjects(ctx context.Context, src pg.Querier, tabs []Table) OtherObjects {
+	// The selected schemas (the object graph is schema-keyed).
+	schemas := map[string]bool{}
+	for _, t := range tabs {
+		if t.Schema != "" {
+			schemas[t.Schema] = true
+		}
+	}
+	if len(schemas) == 0 {
+		return OtherObjects{}
+	}
+	list := make([]string, 0, len(schemas))
+	for s := range schemas {
+		list = append(list, "'"+strings.ReplaceAll(s, "'", "''")+"'")
+	}
+	cond := "n.nspname IN (" + strings.Join(list, ",") + ")"
+	var out OtherObjects
+	if rows, err := src.Query(ctx,
+		`SELECT n.nspname || '.' || c.relname
+		 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relkind = 'v' AND `+cond+`
+		 ORDER BY 1`); err == nil {
+		for _, r := range rows {
+			if len(r) > 0 && r[0] != nil {
+				out.Views = append(out.Views, asString(r[0]))
+			}
+		}
+	}
+	if rows, err := src.Query(ctx,
+		`SELECT n.nspname || '.' || c.relname
+		 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relkind = 'm' AND `+cond+`
+		 ORDER BY 1`); err == nil {
+		for _, r := range rows {
+			if len(r) > 0 && r[0] != nil {
+				out.MatViews = append(out.MatViews, asString(r[0]))
+			}
+		}
+	}
+	if rows, err := src.Query(ctx,
+		`SELECT count(*)
+		 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+		 WHERE n.nspname IN (`+strings.Join(list, ",")+`)
+		   AND n.nspname NOT IN ('pg_catalog','information_schema','gp_toolkit')`); err == nil &&
+		len(rows) > 0 && len(rows[0]) > 0 {
+		out.Functions = int(toInt64(rows[0][0]))
+	}
+	return out
+}
+
+// detectMissingExtensions is the F-11 metadata-phase dependent-extension check
+// (MADlib/PostGIS/orafce, ...). It finds the extension types actually used by
+// the selected tables' columns (a column whose type is owned by an extension)
+// and reports the extensions that are NOT installed on the destination. A
+// non-empty result means the DDL of those columns will fail at run time until
+// the operator CREATE EXTENSIONs the missing one in the receiver — the
+// column-level, run-path counterpart of the doctor's whole-set diff. A catalog
+// fault yields an empty result (detection must never fail the plan).
+func detectMissingExtensions(ctx context.Context, src, dst pg.Querier, tabs []Table) []string {
+	schemas := map[string]bool{}
+	for _, t := range tabs {
+		if t.Schema != "" {
+			schemas[t.Schema] = true
+		}
+	}
+	if len(schemas) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(schemas))
+	for s := range schemas {
+		list = append(list, "'"+strings.ReplaceAll(s, "'", "''")+"'")
+	}
+	in := strings.Join(list, ",")
+	// Extension names owning a type used by a selected table's column.
+	rows, err := src.Query(ctx,
+		`SELECT DISTINCT e.extname
+		 FROM pg_attribute a
+		 JOIN pg_class c     ON c.oid = a.attrelid
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 JOIN pg_type t      ON t.oid = a.atttypid
+		 JOIN pg_depend d    ON d.objid = t.oid AND d.deptype = 'e'
+		 JOIN pg_extension e ON e.oid = d.refobjid
+		 WHERE a.attnum > 0 AND NOT a.attisdropped
+		   AND c.relkind IN ('r','p')
+		   AND n.nspname IN (`+in+`)
+		 ORDER BY e.extname`)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	needed := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if len(r) > 0 && r[0] != nil {
+			needed[asString(r[0])] = true
+		}
+	}
+	if len(needed) == 0 {
+		return nil
+	}
+	// The destination's installed extensions.
+	dstRows, err := dst.Query(ctx, `SELECT extname FROM pg_extension`)
+	if err != nil {
+		return nil // destination extensions unreadable; the doctor pre-flight covers it
+	}
+	installed := make(map[string]bool, len(dstRows))
+	for _, r := range dstRows {
+		if len(r) > 0 && r[0] != nil {
+			installed[asString(r[0])] = true
+		}
+	}
+	var missing []string
+	for name := range needed {
+		if !installed[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 // selectUnits narrows the object graph to the requested selection (FR-11):
 // database / schema / table inclusion, exclude-*, and metadata/data-only modes.
 // With no selection set the full graph is returned (the default whole-cluster
@@ -373,17 +533,22 @@ func selected(cfg *config.Config, t Table) bool {
 // matchSchema matches a "db.schema" or bare "schema" selection against a unit's
 // schema. The schema is the final dot-separated segment of the selection (the
 // object graph in this build keys by schema, so the db prefix is advisory).
+// F-11 selection templates: the segment is a glob (* and ? wildcards), so
+// "--schemas public" matches only public, but "--schemas audit_*" matches
+// audit_2024, audit_2025, ...
 func matchSchema(sel string, schema string) bool {
 	sel = strings.TrimSpace(sel)
 	if i := strings.LastIndex(sel, "."); i >= 0 {
 		sel = sel[i+1:]
 	}
-	return sel == schema
+	return globSeg(sel, schema)
 }
 
 // matchTable matches a table selection against a unit. It accepts either a
 // 3-segment "db.schema.table" form or a 2-segment "schema.name" form (this
 // build's object graph keys by schema+name, so DB is advisory and often unset).
+// Each segment is a F-11 selection template (glob, * / ? wildcards; a segment
+// without wildcards must match exactly, and * never crosses a dot).
 func matchTable(sel string, db, schema, name string) bool {
 	parts := strings.SplitN(sel, ".", 3)
 	if len(parts) < 2 {
@@ -391,19 +556,49 @@ func matchTable(sel string, db, schema, name string) bool {
 	}
 	// 3-segment form: db.schema.table
 	if len(parts) == 3 {
-		if parts[0] != "" && db != "" && parts[0] != db {
+		if parts[0] != "" && db != "" && !globSeg(parts[0], db) {
 			return false
 		}
-		return parts[1] == schema && parts[2] == name
+		return globSeg(parts[1], schema) && globSeg(parts[2], name)
 	}
 	// 2-segment form: schema.name
-	return parts[0] == schema && parts[1] == name
+	return globSeg(parts[0], schema) && globSeg(parts[1], name)
 }
 
 // matchAny reports whether a selection string matches any of the given names.
+// Single segments and the dotted compounds are F-11 selection templates (glob,
+// * never crossing a dot).
 func matchAny(sel string, db, schema, name string) bool {
-	return sel == db || sel == schema || sel == name ||
-		(sel == db+"."+schema) || (sel == db+"."+schema+"."+name)
+	return globSeg(sel, db) || globSeg(sel, schema) || globSeg(sel, name) ||
+		globDotted(sel, db+"."+schema) || globDotted(sel, db+"."+schema+"."+name)
+}
+
+// globSeg reports whether pattern matches s using * and ? wildcards
+// (path.Match semantics). A pattern without wildcards must match exactly, so
+// existing literal selections keep their current behavior.
+func globSeg(pattern, s string) bool {
+	if !strings.ContainsAny(pattern, "*?") {
+		return pattern == s
+	}
+	ok, err := path.Match(pattern, s)
+	return err == nil && ok
+}
+
+// globDotted matches a dot-separated pattern against a dot-separated value,
+// segment by segment, so * never crosses a dot ("db.*" matches "db.public"
+// but not "db.public.t").
+func globDotted(pattern, s string) bool {
+	parts := strings.Split(pattern, ".")
+	vals := strings.Split(s, ".")
+	if len(parts) != len(vals) {
+		return false
+	}
+	for i := range parts {
+		if !globSeg(parts[i], vals[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // applyRename maps source names to destination names (FR-11/§4.10). Each map

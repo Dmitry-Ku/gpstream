@@ -720,6 +720,28 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 			}
 		}
 	}
+	// F-11 metadata phase: non-table objects (views, materialized views,
+	// functions) in scope are reported — the data copy does not carry them by
+	// itself, so the operator sees what is detected (F-11 «по опции —
+	// views/functions»).
+	if oo := p.OtherObjects; len(oo.Views) > 0 || len(oo.MatViews) > 0 || oo.Functions > 0 {
+		fmt.Printf("other objects: %d view(s), %d materialized view(s), %d function(s) detected (F-11 metadata) — not carried by the data copy\n",
+			len(oo.Views), len(oo.MatViews), oo.Functions)
+		for _, v := range oo.Views {
+			fmt.Printf("  - view %s\n", v)
+		}
+		for _, v := range oo.MatViews {
+			fmt.Printf("  - matview %s\n", v)
+		}
+	}
+	// F-11 metadata phase: dependent extensions (MADlib/PostGIS/orafce, ...)
+	// used by the selected tables' columns but missing on the destination —
+	// their column DDL will FAIL at run time until installed in the receiver.
+	if len(p.MissingExtensions) > 0 {
+		fmt.Printf("extensions:    %d source extension(s) used by copied columns are MISSING in the destination: %s\n",
+			len(p.MissingExtensions), strings.Join(p.MissingExtensions, ", "))
+		fmt.Printf("  ! install BEFORE running: CREATE EXTENSION <name> (F-11 metadata phase)\n")
+	}
 	// v2 §26: the dry-run must also surface locale, rate-limit/CPU/disk,
 	// TLS/compression overhead, background index jobs, an aggregate warning
 	// line, expected errors, and a confidence. These are predictions (the plan
@@ -962,6 +984,48 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
+// humanBytesU is humanBytes for unsigned sizes (the runstats counters).
+func humanBytesU(n uint64) string {
+	return humanBytes(int64(n))
+}
+
+// orDash renders an empty string as "-" for the status output.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// humanDurationSec renders a second count as a compact human duration.
+func humanDurationSec(sec int) string {
+	if sec <= 0 {
+		return "-"
+	}
+	d := time.Duration(sec) * time.Second
+	return fmt.Sprintf("%dd %dh %dm", int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60)
+}
+
+// loadRunStats reads the operation's runstats.json (FR-04 live table), sitting
+// next to the journal mirror. It returns nil (no error) when the file is
+// absent — a finished operation with no final snapshot, or an operation that
+// predates runstats.json.
+func loadRunStats(journalPath string) (*monitor.RunStats, error) {
+	dir := filepath.Dir(journalPath)
+	b, err := os.ReadFile(filepath.Join(dir, "runstats.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var rs monitor.RunStats
+	if err := json.Unmarshal(b, &rs); err != nil {
+		return nil, err
+	}
+	return &rs, nil
+}
+
 // humanDuration renders a duration in seconds as a human-readable string.
 func humanDuration(sec int) string {
 	if sec <= 0 {
@@ -1028,6 +1092,33 @@ func cmdStatus(args []string) error {
 		}
 		fmt.Printf("  unit %4d  %-8s  %-10s  %s.%s.%s  %s  epoch=%d\n",
 			u.UnitID, u.State, u.Kind, u.DB, u.Schema, u.Table, humanBytes(u.Bytes), u.Epoch)
+	}
+	// F-04: live table (throughput, ETA, active flows, per-table rows/bytes)
+	// from the run's runstats.json, present while the copy is running (and on
+	// the final snapshot after it stops).
+	if rs, err := loadRunStats(journalPath); err == nil && rs != nil {
+		fmt.Println("live:           (runstats.json)")
+		fmt.Printf("  pair:         %s\n", orDash(rs.Pair))
+		fmt.Printf("  progress:     %s / %s  (%d rows)\n",
+			humanBytesU(rs.Decoded), humanBytesU(rs.Bytes), rs.Rows)
+		fmt.Printf("  throughput:   %s/s  eta: %s  active-flows: %d\n",
+			humanBytesU(uint64(rs.Throughput)), humanDurationSec(rs.ETASeconds), rs.ActiveFlows)
+		if len(rs.ByStatus) > 0 {
+			parts := make([]string, 0, len(rs.ByStatus))
+			for _, st := range []string{"pending", "copying", "verifying", "completed", "swapped", "failed"} {
+				if n, ok := rs.ByStatus[st]; ok {
+					parts = append(parts, fmt.Sprintf("%s=%d", st, n))
+				}
+			}
+			fmt.Printf("  tables:       %s\n", strings.Join(parts, " "))
+		}
+		if len(rs.PerTable) > 0 {
+			fmt.Println("  per-table:    rows        wire      logical  state")
+			for _, r := range rs.PerTable {
+				fmt.Printf("    %-24s %10d  %9s  %9s  %s\n",
+					r.Table, r.Rows, humanBytesU(r.Wire), humanBytesU(r.Logical), orDash(r.State))
+			}
+		}
 	}
 	fmt.Printf("%d/%d units terminal\n", terminal, len(units))
 	return nil

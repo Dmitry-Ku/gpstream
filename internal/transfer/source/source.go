@@ -131,7 +131,55 @@ func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distr
 			d.Kind = "randomly"
 		}
 	}
+	// F-11 metadata «AO-параметры»: the table's storage options (appendonly,
+	// orientation, blocksize, compress, fillfactor, ...) from pg_class. Read
+	// as a separate contained query (a catalog fault must not fail the
+	// distribution read, which already succeeded).
+	if ropts, err := a.q.Query(ctx,
+		`SELECT reloptions FROM pg_class c
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relname = $1 AND n.nspname = $2`, table, schema); err == nil &&
+		len(ropts) > 0 && len(ropts[0]) > 0 {
+		d.Reopts = reoptionsList(ropts[0][0])
+	}
 	return d
+}
+
+// reoptionsList normalises a pg_class.reloptions value (text[]) into its
+// "key=value" elements. The driver may hand it back as a Go []string, a
+// []byte, or a "{a,b}"-styled string; all are handled. nil yields nil.
+func reoptionsList(v any) []string {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []string:
+		return x
+	case []byte:
+		return splitReopts(string(x))
+	case string:
+		return splitReopts(x)
+	default:
+		return splitReopts(fmt.Sprint(x))
+	}
+}
+
+// splitReopts parses a pg_class.reloptions array ("{a,b,c}" or "a,b,c") into
+// its "key=value" elements (F-11 AO-parameters). Empty/nil input yields nil.
+func splitReopts(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+		s = s[1 : len(s)-1]
+	}
+	var out []string
+	for _, e := range strings.Split(s, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // SequenceDef describes one sequence owned by a source table's serial
@@ -404,7 +452,6 @@ func fkAction(c string) string {
 		return ""
 	}
 }
-
 
 // Checksum returns a row-order-independent content digest of the binary COPY
 // payload of schema.table (FR-02). Comparing the source and destination

@@ -76,6 +76,12 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 		}
 	}
 	sql += ")" + dist.SQLClause()
+	// F-11 metadata «AO-параметры»: reproduce the source table's storage
+	// options (appendonly, orientation, blocksize, compress, fillfactor, ...)
+	// so an AO table stays AO on the destination (a plain heap otherwise).
+	if clause := pg.StorageOptionsSQL(dist.Reopts); clause != "" {
+		sql += " " + clause
+	}
 	if part.Spec != "" {
 		sql += " " + part.Spec
 	}

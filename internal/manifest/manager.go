@@ -16,11 +16,13 @@ package manifest
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +85,9 @@ type Manager struct {
 	healMu sync.Mutex
 	// statMu guards Stats, which multiple workers mutate under the FR-03 pool.
 	statMu sync.Mutex
+	// mu_runstats guards the runstats.json refresh (FR-04): the heartbeat
+	// goroutine and the stop hook both call write().
+	mu_runstats sync.Mutex
 	// jobID is the operation identity this Manager run journals under
 	// (T5: the gpstream_jobs metadata key; set by Run before the units are
 	// processed).
@@ -250,6 +255,17 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 				"db", cd.DB, "lc_collate", cd.LCCollate, "lc_ctype", cd.LCType)
 		}
 	}
+	// F-11 metadata phase: dependent extensions used by the copied columns but
+	// missing on the destination (MADlib/PostGIS/orafce, ...). Their column
+	// DDL will fail at run time until installed in the receiver; log the
+	// finding up front (F-04 diagnostic stream) so the operator sees it before
+	// the first unit fails.
+	if len(p.MissingExtensions) > 0 {
+		m.events.Log("extension_missing",
+			"level", "db",
+			"extensions", strings.Join(p.MissingExtensions, ","),
+			"reason", "source column types depend on extensions not installed in the destination (F-11 metadata phase); CREATE EXTENSION in the receiver before the DDL of those columns")
+	}
 
 	// T5 (DESIGN §2.2): determine this run's snapshot epoch. A fresh
 	// operation starts at epoch 1; a resume (journal records or metadata
@@ -333,6 +349,25 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			unit.Attempts = prev.Attempts
 		}
 		units = append(units, unit)
+	}
+
+	// FR-04: seed the metrics with the planned volume (for the ETA), the host
+	// pair label, and the initial state of every unit (so the per-status gauge
+	// and active-flows gauge start complete rather than from zero).
+	m.monitor.SetTotalBytes(p.TotalBytes)
+	if pair := hostPairLabel(m.cfg.Source, m.cfg.Dest); pair != "" {
+		m.monitor.SetPair(pair)
+	}
+	for _, u := range units {
+		m.monitor.SetUnitState(unitTableKey(u), string(u.State))
+	}
+
+	// FR-04: refresh runstats.json so `gpstream status` can show a live table
+	// (throughput/ETA/per-table) for a running operation. No-op without a
+	// journal file mirror.
+	stopStats := m.startRunStatsWriter(ctx)
+	if stopStats != nil {
+		defer stopStats()
 	}
 
 	// Bounded worker pool (FR-03). WorkersPerPair is validated >= 1.
@@ -538,8 +573,7 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 		if r := recover(); r != nil {
 			// Record the failed unit so a resume can retry it (FR-06/FR-07),
 			// then surface the panic as a failure for the run.
-			u.State = StateFailed
-			_ = m.journal.SetState(u)
+			_ = m.setUnitState(u, StateFailed)
 			m.addFailure()
 			m.healSnapshot(ctx)
 			// F-04: a panicking unit is a failure event like any other.
@@ -576,11 +610,13 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		u.Checksum = ""
 		u.RowCount = 0
 		u.Conflict = true
-		_ = m.journal.SetState(u)
+		_ = m.setUnitState(u, StatePending)
 		// F-04: auto-recovery event — the resume re-reads this table under
 		// the fresh snapshot (T5, DESIGN §2.2).
 		m.events.Log("unit_reread", "schema", u.Schema, "table", u.Table,
 			"reason", "resume re-read", "epoch", m.epoch)
+		// FR-04 «события авто-восстановления».
+		m.monitor.RecordAutoRecovery()
 		reReading = true
 	}
 	// Conflict policy (FR-10/FR-11, spec F-10 §8). Re-read units are exempt:
@@ -610,8 +646,7 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 				return nil
 			}
 			// strict default (FR-10 §8): surface the conflict and stop.
-			u.State = StateFailed
-			_ = m.journal.SetState(u)
+			_ = m.setUnitState(u, StateFailed)
 			m.addFailure()
 			// F-04: conflict event (stop) — the run halts on this collision.
 			m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
@@ -694,6 +729,68 @@ func (e *ConflictError) Error() string {
 		e.Schema, e.Table)
 }
 
+// unitTableKey is the per-table metrics key (FR-04 «по таблице»): the
+// destination-qualified name the operator sees. A DB prefix is included only
+// when the unit carries one (single-DB runs key by schema.name).
+func unitTableKey(u *Unit) string {
+	if u.DB != "" {
+		return u.DB + "." + u.DstSchema + "." + u.DstName
+	}
+	return u.DstSchema + "." + u.DstName
+}
+
+// hostPairLabel renders the FR-04 host-pair metric label ("src -> dst") from
+// the two connection DSNs (host:port only, no credentials). Empty when either
+// DSN cannot be parsed.
+func hostPairLabel(srcDSN, dstDSN string) string {
+	s, d := dsnHostPort(srcDSN), dsnHostPort(dstDSN)
+	if s == "" || d == "" {
+		return ""
+	}
+	return s + " -> " + d
+}
+
+// dsnHostPort extracts "host:port" from a Postgres DSN (URL or key/value form),
+// without exposing credentials.
+func dsnHostPort(dsn string) string {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return ""
+	}
+	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
+		return u.Host
+	}
+	host, port := "", "5432"
+	for _, kv := range strings.Fields(dsn) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "host":
+			host = v
+		case "port":
+			port = v
+		}
+	}
+	if host == "" {
+		return ""
+	}
+	return host + ":" + port
+}
+
+// setUnitState transitions a unit to a new state: it updates the in-memory
+// unit, journals it (the durable record), and moves the FR-04 per-status /
+// active-flow gauges. It returns the journal error (callers that already
+// ignored it keep doing so). The metrics move is always applied so the gauge
+// tracks the unit even when the journal write is a best-effort no-op.
+func (m *Manager) setUnitState(u *Unit, s State) error {
+	u.State = s
+	err := m.journal.SetState(u)
+	m.monitor.SetUnitState(unitTableKey(u), string(s))
+	return err
+}
+
 // tableFor maps a run unit back to the plan.Table the source COPY reads
 // from (FR-03). A single Manager run processes exactly one plan, and the unit
 // carries its source schema/name (u.Schema/u.Table) and destination
@@ -754,6 +851,9 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	if _, err := m.journal.CreateUnit(u, StatePending); err != nil {
 		return fmt.Errorf("journal pending: %w", err)
 	}
+	// FR-04: move the per-status gauge (a fresh unit was "" at seed time; a
+	// re-read unit was already pending, which is a no-op move).
+	m.monitor.SetUnitState(unitTableKey(u), string(StatePending))
 
 	// 2. Read the schema off the SOURCE, then create the DESTINATION schema
 	//    (and the copy target) from it (FR-02). The target is built from the
@@ -787,8 +887,8 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// error is contained and the snapshot survives.
 		if rows, qerr := m.srcQ.Query(ctx,
 			`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-			    WHERE c.relname = $1 AND n.nspname = $2`, name, schema); qerr == nil && len(rows) == 0 {
-			u.State = StateFailed // mark failed so a resume retries it (FR-06/FR-07)
+		    WHERE c.relname = $1 AND n.nspname = $2`, name, schema); qerr == nil && len(rows) == 0 {
+			m.setUnitState(u, StateFailed) // mark failed so a resume retries it (FR-06/FR-07)
 			return fmt.Errorf("source table %s.%s does not exist (dropped during the run?)", schema, name)
 		}
 	}
@@ -810,7 +910,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//     A re-routing to a different leaf (with a default, or a matching
 	//     bound) is the intended Fix-1 behavior and is NOT guarded.
 	if u.PartitionGuard != "" {
-		u.State = StateFailed
+		m.setUnitState(u, StateFailed)
 		m.events.Log("partition_guard", "table", schema+"."+name, "reason", u.PartitionGuard)
 		return fmt.Errorf("partition guard: %s", u.PartitionGuard)
 	}
@@ -862,8 +962,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	}
 
 	// 4. Mark copying (FR-06/FR-07 journal).
-	u.State = StateCopying
-	if err := m.journal.SetState(u); err != nil {
+	if err := m.setUnitState(u, StateCopying); err != nil {
 		return fmt.Errorf("journal copying: %w", err)
 	}
 
@@ -880,8 +979,9 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	us, endUnitSrc := m.unitSource(ctx)
 	defer endUnitSrc()
 	var (
-		rows int64
-		fp   *transfer.FramedPipe
+		rows          int64
+		wire, logical uint64
+		fp            *transfer.FramedPipe
 	)
 	// F-12: a small table (below --small-table-threshold) rides the transport
 	// with compression OFF; record the decision in events.jsonl (F-04) so the
@@ -895,7 +995,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	}
 	switch {
 	case m.cfg.CopyMode == config.CopyDirect:
-		rows, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
+		rows, wire, logical, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
 		if isDirectDegraded(err) {
 			// Unroutable table: fall back to the coordinator path.
 			m.events.Log("direct_degraded",
@@ -903,12 +1003,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 				"reason", err.Error())
 			uc, ud := m.unitCompressors(t)
 			fp = m.framedPipe(uint32(u.UnitID), uc, ud)
-			rows, err = m.copyStream(ctx, t, u, target, fp, us)
+			rows, wire, logical, err = m.copyStream(ctx, t, u, target, fp, us)
 		}
 	default:
 		uc, ud := m.unitCompressors(t)
 		fp = m.framedPipe(uint32(u.UnitID), uc, ud)
-		rows, err = m.copyStream(ctx, t, u, target, fp, us)
+		rows, wire, logical, err = m.copyStream(ctx, t, u, target, fp, us)
 	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
@@ -919,6 +1019,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		}
 		u.State = StateFailed
 		_ = m.journal.SetState(u)
+		m.monitor.SetUnitState(unitTableKey(u), string(StateFailed))
 		return fmt.Errorf("stream: %w", err)
 	}
 	u.RowCount = rows
@@ -926,7 +1027,11 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	m.Rows += rows
 	m.Bytes += rows
 	m.statMu.Unlock()
-	m.monitor.Record(uint64(rows), uint64(rows))
+	// FR-04: rows and REAL byte volume (wire/logical from the copy path —
+	// not row counts, which the old code mis-recorded as bytes).
+	tkey := unitTableKey(u)
+	m.monitor.RecordRows(tkey, rows)
+	m.monitor.RecordBytes(tkey, wire, logical)
 	// Surface the frame-ACK counters (DESIGN §4.6 / FR-04) when in use. fp is
 	// nil for a pure-direct unit (no coordinator framed pipe).
 	if fp != nil {
@@ -943,15 +1048,13 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    data COPY (in the per-table fallback that is the unit's dedicated
 	//    short snapshot; otherwise the run-wide pinned snapshot).
 	if verify {
-		u.State = StateVerifying
-		_ = m.journal.SetState(u)
+		_ = m.setUnitState(u, StateVerifying)
 		srcSum, err := us.agent.Checksum(ctx, t.Schema, t.Name)
 		if err != nil {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
 			}
-			u.State = StateFailed
-			_ = m.journal.SetState(u)
+			_ = m.setUnitState(u, StateFailed)
 			return fmt.Errorf("source checksum: %w", err)
 		}
 		ok, vrows, err := m.dst.Verify(ctx, ds, target, srcSum)
@@ -959,16 +1062,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
 			}
-			u.State = StateFailed
-			_ = m.journal.SetState(u)
+			_ = m.setUnitState(u, StateFailed)
 			return fmt.Errorf("verify: %w", err)
 		}
 		if !ok {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
 			}
-			u.State = StateFailed
-			_ = m.journal.SetState(u)
+			_ = m.setUnitState(u, StateFailed)
+			// FR-04 «ошибки чексумм»: a content mismatch in the verify phase.
+			m.monitor.RecordChecksumError()
 			return fmt.Errorf("verify: checksum mismatch (rows=%d)", vrows)
 		}
 		u.Checksum = srcSum
@@ -987,8 +1090,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    resume reads the epoch to decide which tables' verified data came
 	//    from one snapshot (keep) and which span several (re-read).
 	u.Epoch = m.epoch
-	u.State = StateCompleted
-	if err := m.journal.SetState(u); err != nil {
+	if err := m.setUnitState(u, StateCompleted); err != nil {
 		return fmt.Errorf("journal completed: %w", err)
 	}
 	m.statMu.Lock()
@@ -1009,8 +1111,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			return fmt.Errorf("swap: %w", err)
 		}
 	}
-	u.State = StateSwapped
-	if err := m.journal.SetState(u); err != nil {
+	if err := m.setUnitState(u, StateSwapped); err != nil {
 		return fmt.Errorf("journal swapped: %w", err)
 	}
 
@@ -1272,7 +1373,7 @@ func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *comp
 // With --copy-mode on_segment (T-B) the source side is the segment-direct
 // transport instead: the kernel streams one framed slice per primary segment
 // to the controller listener, which merges them into the same pipe.
-func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe, us unitSource) (int64, error) {
+func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe, us unitSource) (int64, uint64, uint64, error) {
 	if m.cfg.CopyMode == config.CopyOnSegment {
 		// The segment-direct path builds its own framed pipe (the merged slice
 		// stream); the coordinator pipe the caller pre-created is unused, so
@@ -1338,13 +1439,14 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 	// fails with a secondary "closed pipe" error. The destination error is
 	// the root cause; the source error is its consequence.
 	if dstErr != nil {
-		return 0, fmt.Errorf("dest copy: %w", dstErr)
+		return 0, 0, 0, fmt.Errorf("dest copy: %w", dstErr)
 	}
 	if srcErr != nil {
-		return 0, fmt.Errorf("source copy: %w", srcErr)
+		return 0, 0, 0, fmt.Errorf("source copy: %w", srcErr)
 	}
 	// The destination is authoritative for the row count (it wrote the table).
-	return dstRows, nil
+	wire, logical := fp.Stats()
+	return dstRows, wire, logical, nil
 }
 
 // copyStreamSegmentDirect is the segment-direct data path (T-B, Fallback B).
@@ -1358,23 +1460,23 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 // binary-COPY stream and feeds it through the same framed/compressed pipe as
 // the coordinator path, so the destination is unchanged. The kernel waits for
 // all segreceivers to exit (DF_NEED_TWO_PHASE) before the COPY returns.
-func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string, us unitSource) (int64, error) {
+func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string, us unitSource) (int64, uint64, uint64, error) {
 	n, err := m.primarySegmentCount(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("segment-direct: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
 	}
 	if n < 1 {
-		return 0, fmt.Errorf("segment-direct: no up primary segments")
+		return 0, 0, 0, fmt.Errorf("segment-direct: no up primary segments")
 	}
 	// Each parallel unit runs its own controller listener, so derive a
 	// per-unit port from the operator's base address (port + unitID).
 	listen, err := segstream.UnitListen(m.cfg.SegListen, uint32(u.UnitID))
 	if err != nil {
-		return 0, fmt.Errorf("segment-direct: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
 	}
 	l, err := net.Listen("tcp", listen)
 	if err != nil {
-		return 0, fmt.Errorf("segment-direct: listen %s: %w", listen, err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: listen %s: %w", listen, err)
 	}
 	defer l.Close()
 
@@ -1387,7 +1489,7 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	if transfer.TLSEnabled(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA) {
 		scfg, serr := transfer.ServerTLSConfig(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA, m.cfg.SSLMinTLS)
 		if serr != nil {
-			return 0, fmt.Errorf("segment-direct TLS: %w", serr)
+			return 0, 0, 0, fmt.Errorf("segment-direct TLS: %w", serr)
 		}
 		// HandshakeFilter: a rejected/noisy connection on the port (a probe,
 		// a monitor, a bad client) must not abort the in-flight copy.
@@ -1398,7 +1500,7 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	prog, err := segstream.ProgramCommandTLS(m.cfg.SegBinary, listen, jobID, unitID,
 		m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA)
 	if err != nil {
-		return 0, fmt.Errorf("segment-direct: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
 	}
 	sql := segstream.CopyOnSegmentSQL(t.Schema, t.Name, prog)
 
@@ -1436,7 +1538,7 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	if err := mux.Begin(); err != nil {
 		_ = fp.Close()
 		<-dstDone
-		return 0, fmt.Errorf("segment-direct: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
 	}
 
 	type recvOut struct {
@@ -1458,14 +1560,14 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 	if _, err := us.q.Exec(ctx, sql); err != nil {
 		_ = fp.Close()
 		<-dstDone
-		return 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
 	}
 
 	out := <-recvCh
 	if out.err != nil {
 		_ = fp.Close()
 		<-dstDone
-		return 0, fmt.Errorf("segment-direct receive: %w", out.err)
+		return 0, 0, 0, fmt.Errorf("segment-direct receive: %w", out.err)
 	}
 	// Cross-check: the sum of the per-slice trailer row counts must equal the
 	// rows the destination actually wrote (a merge bug would break this).
@@ -1474,26 +1576,27 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 		if r.Err != nil {
 			_ = fp.Close()
 			<-dstDone
-			return 0, fmt.Errorf("segment-direct slice content=%d: %w", r.ContentID, r.Err)
+			return 0, 0, 0, fmt.Errorf("segment-direct slice content=%d: %w", r.ContentID, r.Err)
 		}
 		trailerRows += r.Rows
 	}
 	if err := mux.End(); err != nil {
 		_ = fp.Close()
 		<-dstDone
-		return 0, fmt.Errorf("segment-direct: %w", err)
+		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
 	}
 	// Close the write side so the destination sees end-of-copy.
 	_ = fp.Close()
 	<-dstDone
 
 	if dstErr != nil {
-		return 0, fmt.Errorf("dest copy: %w", dstErr)
+		return 0, 0, 0, fmt.Errorf("dest copy: %w", dstErr)
 	}
 	if trailerRows != dstRows {
-		return 0, fmt.Errorf("segment-direct: trailer rows %d != dest rows %d", trailerRows, dstRows)
+		return 0, 0, 0, fmt.Errorf("segment-direct: trailer rows %d != dest rows %d", trailerRows, dstRows)
 	}
-	return dstRows, nil
+	wire, logical := fp.Stats()
+	return dstRows, wire, logical, nil
 }
 
 // primarySegmentCount returns the number of up primary CONTENTS on the
@@ -1616,7 +1719,7 @@ func segmentDSN(destDSN string, seg destSegment) (string, error) {
 // unsupported dist-key type, a key column absent from the source, or a
 // non-Greenplum destination) returns a *directDegradedError; the caller falls
 // back to the coordinator path for that table.
-func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column, us unitSource) (int64, error) {
+func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column, us unitSource) (int64, uint64, uint64, error) {
 	// A partitioned parent cannot be written per-segment: the kernel rejects
 	// utility-mode COPY FROM on the root of an inheritance/partition
 	// hierarchy (SQLSTATE 0A000, lab 29.09). Pre-routing each row to a
@@ -1628,14 +1731,14 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 	// coordinator path, whose single parent-COPY carries every leaf's rows
 	// and lets the destination place them.
 	if u.Partition.Spec != "" {
-		return 0, &directDegradedError{
+		return 0, 0, 0, &directDegradedError{
 			reason: "partitioned parent: utility-mode COPY FROM is not supported on partition-hierarchy roots; using the coordinator path (parent-COPY)",
 		}
 	}
 	// 1. Destination topology: the up primaries in content order.
 	segs, err := m.destSegments(ctx)
 	if err != nil {
-		return 0, &directDegradedError{reason: err.Error()}
+		return 0, 0, 0, &directDegradedError{reason: err.Error()}
 	}
 	D := int32(len(segs))
 
@@ -1647,7 +1750,7 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 	//    be routed directly.
 	dstDist := source.New(m.dstQ).Distribution(ctx, u.DstSchema, target)
 	if dstDist.Kind != "hash" || len(dstDist.Keys) == 0 {
-		return 0, &directDegradedError{
+		return 0, 0, 0, &directDegradedError{
 			reason: fmt.Sprintf("target distribution policy %q (no hash key) cannot be routed directly", dstDist.Kind),
 		}
 	}
@@ -1662,7 +1765,7 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 	for _, k := range dstDist.Keys {
 		idx, ok := colBy[k]
 		if !ok {
-			return 0, &directDegradedError{
+			return 0, 0, 0, &directDegradedError{
 				reason: fmt.Sprintf("dest dist-key column %q is not in the source table", k),
 			}
 		}
@@ -1686,7 +1789,7 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 		dsn, err := segmentDSN(m.cfg.Dest, seg)
 		if err != nil {
 			_ = m.closePipes(pipeW)
-			return 0, &directDegradedError{reason: err.Error()}
+			return 0, 0, 0, &directDegradedError{reason: err.Error()}
 		}
 		w, r := net.Pipe()
 		pipeW = append(pipeW, w)
@@ -1738,7 +1841,7 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 		_ = fp.Abort()
 		_ = m.closePipes(pipeW)
 		_, _ = collectSegs()
-		return 0, &directDegradedError{reason: err.Error()}
+		return 0, 0, 0, &directDegradedError{reason: err.Error()}
 	}
 	routeErr := make(chan error, 1)
 	go func() {
@@ -1773,19 +1876,20 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 	// a source error that followed the abort are its consequences. So report
 	// the segment error first, then the route error, then the source error.
 	if segErr != nil {
-		return 0, fmt.Errorf("direct dest: %w", segErr)
+		return 0, 0, 0, fmt.Errorf("direct dest: %w", segErr)
 	}
 	if rErr != nil {
-		return 0, fmt.Errorf("direct route: %w", rErr)
+		return 0, 0, 0, fmt.Errorf("direct route: %w", rErr)
 	}
 	if sErr != nil {
-		return 0, fmt.Errorf("direct source: %w", sErr)
+		return 0, 0, 0, fmt.Errorf("direct source: %w", sErr)
 	}
 	// Cross-check: rows the destination wrote == rows the router saw.
 	if n != rw.Rows() {
-		return 0, fmt.Errorf("direct: dest rows %d != routed rows %d", n, rw.Rows())
+		return 0, 0, 0, fmt.Errorf("direct: dest rows %d != routed rows %d", n, rw.Rows())
 	}
-	return n, nil
+	wire, logical := fp.Stats()
+	return n, wire, logical, nil
 }
 
 func (m *Manager) closePipes(w []io.Closer) error {
@@ -1848,6 +1952,57 @@ func (w *pacedWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return w.fp.Write(p)
+}
+
+// startRunStatsWriter periodically refreshes runstats.json (FR-04) so
+// `gpstream status` can render a live table (throughput, ETA, per-table
+// rows/bytes, unit states) for a running operation. It is a no-op (returns
+// nil) when the journal has no file mirror. The final write happens on stop.
+func (m *Manager) startRunStatsWriter(ctx context.Context) func() {
+	path := m.journal.RunStatsPath()
+	if path == "" {
+		return nil
+	}
+	write := func() {
+		m.mu_runstats.Lock()
+		defer m.mu_runstats.Unlock()
+		st := monitor.RunStats{
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+			StartedAt:   m.monitor.StartedAt().UTC().Format(time.RFC3339),
+			ElapsedSec:  int(m.monitor.Latency().Seconds()),
+			Pair:        m.monitor.PairLabel(),
+			Bytes:       m.monitor.Bytes,
+			Decoded:     m.monitor.BytesDecoded,
+			Rows:        m.monitor.RowsTotal(),
+			Throughput:  m.monitor.Throughput(),
+			ETASeconds:  m.monitor.ETASeconds(),
+			ActiveFlows: m.monitor.ActiveFlowsCount(),
+			ByStatus:    m.monitor.TablesByStatus(),
+			PerTable:    m.monitor.PerTable(),
+		}
+		b, err := json.MarshalIndent(st, "", "  ")
+		if err != nil {
+			return
+		}
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o644); err == nil {
+			_ = os.Rename(tmp, path)
+		}
+	}
+	write()
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				write()
+			}
+		}
+	}()
+	return func() { write() }
 }
 
 // startLimiterSampler periodically samples host load so the limiter adapts the

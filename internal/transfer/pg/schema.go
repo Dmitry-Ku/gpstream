@@ -1,6 +1,9 @@
 package pg
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Column is a faithful column definition fetched from the source cluster and
 // used to (re)create a table on the destination (FR-02/FR-03). The Type is the
@@ -42,6 +45,12 @@ type Distribution struct {
 	Kind string
 	// Keys: distribution column names for Kind == "hash", in distkey order.
 	Keys []string
+	// Reopts: the source table's storage options (F-11 metadata «AO-параметры»):
+	// appendonly, orientation, blocksize, compress, fillfactor, ... read from
+	// pg_class.reloptions. Empty for a plain heap table or a non-Greenplum
+	// source. Without them the destination would recreate an AO (append-only)
+	// table as a heap, degrading its IO/write characteristics (pilot: 100TB+).
+	Reopts []string
 }
 
 // SQLClause renders the Greenplum distribution clause for a CREATE TABLE
@@ -64,6 +73,93 @@ func (d Distribution) SQLClause() string {
 	default:
 		return ""
 	}
+}
+
+// storageOptionKeys is the whitelist of pg_class.reloptions keys that are safe
+// to reproduce in a CREATE TABLE (F-11 metadata «AO-параметры»). Anything else
+// (autovacuum tuning, user-defined keys, ...) is dropped: a storage option the
+// destination does not know would fail the CREATE and sink the unit.
+var storageOptionKeys = map[string]bool{
+	"appendonly":              true, // AO/CO vs heap (the critical one)
+	"orientation":             true, // row | column
+	"blocksize":               true,
+	"compress":                true, // zstd|zlib|quicklz|on|off and levels
+	"fillfactor":              true,
+	"compresstype":            true,
+	"checkpoint_segment_size": true,
+}
+
+// StorageOptionsSQL renders the source table's storage options as a
+// "WITH (k = v, ...)" clause for a CREATE TABLE (F-11 metadata «AO-параметры»).
+// Only whitelisted keys with safe values are emitted; an empty/unparseable
+// input yields "" (the destination applies its own default). The options are
+// catalog data from the source, so they are re-validated here instead of
+// being spliced verbatim into the DDL.
+func StorageOptionsSQL(reopts []string) string {
+	var out []string
+	for _, opt := range reopts {
+		opt = strings.TrimSpace(opt)
+		if opt == "" {
+			continue
+		}
+		var key, val string
+		if k, v, ok := strings.Cut(opt, "="); ok {
+			key, val = strings.TrimSpace(k), strings.TrimSpace(v)
+		} else {
+			// A bare key (the catalog renders AO tables as "appendonly"
+			// without a value) means the option is on.
+			key, val = opt, ""
+		}
+		if !storageOptionKeys[key] {
+			continue
+		}
+		if !storageOptionValueSafe(key, val) {
+			continue
+		}
+		if val == "" {
+			out = append(out, key+" = true") // e.g. "appendonly" (no value)
+		} else {
+			out = append(out, fmt.Sprintf("%s = %s", key, val))
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "WITH (" + strings.Join(out, ", ") + ")"
+}
+
+// storageOptionValueSafe reports whether a storage-option value is safe to
+// splice into DDL: numeric, or a short [a-z0-9_-]+ token. This rejects
+// anything that could inject SQL (spaces, quotes, parentheses).
+func storageOptionValueSafe(key, val string) bool {
+	if val == "" {
+		return true
+	}
+	if key == "fillfactor" || key == "blocksize" || key == "checkpoint_segment_size" {
+		return isDigits(val)
+	}
+	for _, r := range val {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // IndexDef is one index of a source table, shared by the source agent (which

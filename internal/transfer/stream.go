@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -343,6 +344,18 @@ func ReadFrame(ctx context.Context, r Pipe) (*Frame, error) {
 func WriteFrame(w Pipe, f *Frame) error {
 	b := f.Encode()
 	_, err := w.Write(b)
+	return err
+}
+
+// WriteFrameCounted writes a frame to a Pipe (v2) and, when counter is
+// non-nil, atomically adds the encoded frame's length to it (FR-04 wire-byte
+// accounting; the FramedWriter uses it for its volume metric).
+func WriteFrameCounted(w Pipe, f *Frame, counter *uint64) error {
+	b := f.Encode()
+	_, err := w.Write(b)
+	if err == nil && counter != nil {
+		atomic.AddUint64(counter, uint64(len(b)))
+	}
 	return err
 }
 

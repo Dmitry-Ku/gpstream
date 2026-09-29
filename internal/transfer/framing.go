@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 )
@@ -62,6 +63,16 @@ func NewFramedPipeOver(writeConn, readConn Pipe, jobID, unitID uint32, comp *com
 // Reliable returns the frame-ack transport on the write side, or nil when the
 // pipe is a plain (non-reliable) transport.
 func (fp *FramedPipe) Reliable() *ReliablePipe { return fp.rpS }
+
+// Stats returns the pipe's byte counters (FR-04 volume/speed metrics):
+// wire bytes the write side actually pushed onto the transport (compressed,
+// framed) and logical bytes the read side served after decompression. The
+// manager aggregates them per unit so the /metrics endpoint reports real
+// transferred volume and compression in/out — not row counts (F-04:
+// «объём и скорость», «сжатие (вход/выход)»).
+func (fp *FramedPipe) Stats() (wire, logical uint64) {
+	return atomic.LoadUint64(&fp.write.wire), atomic.LoadUint64(&fp.read.logical)
+}
 
 // Read is the destination side (reads framed, compressed bytes from the pipe).
 func (fp *FramedPipe) Read(p []byte) (int, error) { return fp.read.Read(p) }
@@ -133,6 +144,10 @@ type FramedWriter struct {
 	seq    uint64
 	buf    []byte
 	closed bool
+	// wire is the compressed, framed byte count pushed onto the transport
+	// (FR-04 volume). Atomic: the manager reads it via Stats() while the
+	// source goroutine is still writing.
+	wire uint64
 }
 
 // Write buffers p and flushes a compressed, CRC-framed frame once the
@@ -164,7 +179,7 @@ func (fw *FramedWriter) Flush() error {
 	data := fw.comp.Encode(fw.buf)
 	f := &Frame{JobID: fw.jobID, UnitID: fw.unitID, Seq: fw.seq, Data: data}
 	fw.seq++
-	err := WriteFrame(fw.conn, f)
+	err := WriteFrameCounted(fw.conn, f, &fw.wire)
 	fw.buf = fw.buf[:0]
 	return err
 }
@@ -188,6 +203,10 @@ type FramedReader struct {
 	conn Pipe // net.Conn or a ReliablePipe receiver (frame-ack, §4.6)
 	comp *compress.Decompressor
 	buf  []byte
+	// logical is the decompressed byte count served to the destination
+	// (FR-04: compression in/out). Atomic: the manager reads it via Stats()
+	// while the destination goroutine is still reading.
+	logical uint64
 }
 
 // Read pulls one frame at a time, verifies its CRC (ErrCorrupt on mismatch,
@@ -207,5 +226,8 @@ func (fr *FramedReader) Read(p []byte) (int, error) {
 	}
 	n := copy(p, fr.buf)
 	fr.buf = fr.buf[n:]
+	if n > 0 {
+		atomic.AddUint64(&fr.logical, uint64(n))
+	}
 	return n, nil
 }

@@ -71,7 +71,7 @@ type Unit struct {
 	// drains cleanly; a unit killed between the swap and the index build
 	// stays IndexDone=false and is re-enqueued on the next resume (the
 	// idempotent createOneIndex makes that duplicate-safe).
-	IndexDone bool      `json:"index_done,omitempty"`
+	IndexDone bool `json:"index_done,omitempty"`
 	// Partition is the source table's partition spec (Fix 1); "" for a plain
 	// table. It is reproduced in the destination DDL so the destination
 	// re-creates the same leaf layout. Carried on the unit (not just the plan
@@ -81,8 +81,8 @@ type Unit struct {
 	// non-empty value means the unit must fail early at run time: a
 	// string-keyed parent without a DEFAULT partition on a collation-
 	// different destination would abort the whole COPY mid-stream.
-	PartitionGuard string `json:"partition_guard,omitempty"`
-	Updated      time.Time `json:"updated"`
+	PartitionGuard string    `json:"partition_guard,omitempty"`
+	Updated        time.Time `json:"updated"`
 }
 
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier
@@ -111,6 +111,18 @@ func (j *Journal) ConflictsPath() string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(j.mirror), "conflicts.jsonl")
+}
+
+// RunStatsPath is the F-04 live-run stats file: alongside the journal mirror,
+// named runstats.json. The manager refreshes it (throughput, ETA, per-table
+// rows/bytes, states) so `gpstream status` can show a live table for a running
+// operation without connecting to the controller's /metrics endpoint. Empty
+// when no mirror path is set.
+func (j *Journal) RunStatsPath() string {
+	if j.mirror == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(j.mirror), "runstats.json")
 }
 
 // EventsPath is the F-04/F-14 diagnostic event stream: alongside the
