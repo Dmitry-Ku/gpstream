@@ -668,19 +668,40 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, de
 		}
 		return pairs[i].d < pairs[j].d
 	})
+	// Fix 2 (F-16): the LC_COLLATE *name* comparison above is a false negative
+	// for two clusters with the SAME locale name but different glibc — e.g.
+	// EL7 vs EL8, both "en_US.utf8", whose sort order differs. The behavioral
+	// probe (CollationProbeSQL) is collation-sensitive, so it catches the glibc
+	// difference the name comparison cannot. It is measured once per cluster
+	// (the connected database is representative: every DB on a cluster shares
+	// that cluster's glibc). A probe fault degrades to no behavioral finding
+	// (never fails the plan) — the same convention as the conflict check.
+	srcSig, srcSigErr := pg.CollationSignature(src, ctx)
+	dstSig, dstSigErr := pg.CollationSignature(dst, ctx)
+	behavioralDiff := srcSigErr == nil && dstSigErr == nil &&
+		srcSig != "" && dstSig != "" && srcSig != dstSig
 	for _, p := range pairs {
 		sv, okS := srcLoc[p.s]
 		dv, okD := dstLoc[p.d]
 		if !okS || !okD {
 			continue
 		}
-		if sv[0] != dv[0] || sv[1] != dv[1] {
-			out = append(out, CollationDiff{
-				DB:        p.s,
-				LCCollate: sv[0] + " -> " + dv[0],
-				LCType:    sv[1] + " -> " + dv[1],
-			})
+		nameDiff := sv[0] != dv[0] || sv[1] != dv[1]
+		if !nameDiff && !behavioralDiff {
+			continue
 		}
+		lc := sv[0] + " -> " + dv[0]
+		switch {
+		case nameDiff && behavioralDiff:
+			lc += " (and different glibc sort behavior — behavioral probe)"
+		case !nameDiff:
+			lc += " (same locale name, DIFFERENT glibc sort behavior — behavioral probe; string sort/index semantics will differ)"
+		}
+		out = append(out, CollationDiff{
+			DB:        p.s,
+			LCCollate: lc,
+			LCType:    sv[1] + " -> " + dv[1],
+		})
 	}
 	// F-16: column-level (attcollation) comparison. Per copied table, compare
 	// the source column's explicit collation with the destination's (queried

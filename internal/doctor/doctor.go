@@ -345,7 +345,8 @@ func (r *Report) checkPermissions(side string, q pg.Querier) {
 func (r *Report) checkCollation(src, dst pg.Querier) {
 	srcColl := pg.RowStr(context.Background(), src, "SELECT datcollate FROM pg_database WHERE datname = current_database()")
 	dstColl := pg.RowStr(context.Background(), dst, "SELECT datcollate FROM pg_database WHERE datname = current_database()")
-	if srcColl != "" && dstColl != "" && srcColl != dstColl {
+	nameDiff := srcColl != "" && dstColl != "" && srcColl != dstColl
+	if nameDiff {
 		r.Add(Check{
 			Name: "collation",
 			Side: "network",
@@ -355,6 +356,24 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 		})
 	} else {
 		r.Add(Check{Name: "collation", Side: "network", Sev: Pass, Msg: "collation matches or unknown"})
+	}
+	// Fix 2 (F-16): the LC_COLLATE *name* comparison above is a false negative
+	// for two clusters with the SAME locale name but different glibc (e.g. EL7
+	// vs EL8, both "en_US.utf8", different sort order). The behavioral probe
+	// (CollationProbeSQL) is collation-sensitive and catches the glibc
+	// difference the name cannot. Measured once per connected cluster; a probe
+	// fault degrades to no finding (never blocks the doctor).
+	srcSig, srcErr := pg.CollationSignature(src, context.Background())
+	dstSig, dstErr := pg.CollationSignature(dst, context.Background())
+	if srcErr == nil && dstErr == nil && srcSig != "" && dstSig != "" && srcSig != dstSig {
+		r.Add(Check{
+			Name: "collation-behavior",
+			Side: "network",
+			Sev:  Warn,
+			Msg: fmt.Sprintf("same locale name (%s) but DIFFERENT glibc sort behavior (behavioral probe): source=%v dest=%v",
+				orUnknown(srcColl), srcSig, dstSig),
+			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision (F-16)",
+		})
 	}
 	// F-16: column-level (attcollation) spot check. A doctor run has no
 	// table selection, so it reports the DISTINCT explicit collation names
@@ -373,6 +392,15 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Rec:  "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ (FR-16)",
 		})
 	}
+}
+
+// orUnknown renders an empty locale name as a placeholder for operator-facing
+// messages (the behavioral finding is reported even when datcollate is blank).
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 // missingCollations returns the distinct explicit collation names used by
