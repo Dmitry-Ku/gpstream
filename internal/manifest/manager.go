@@ -893,6 +893,9 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		rows, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
 		if isDirectDegraded(err) {
 			// Unroutable table: fall back to the coordinator path.
+			m.events.Log("direct_degraded",
+				"table", t.Schema+"."+t.Name,
+				"reason", err.Error())
 			uc, ud := m.unitCompressors(t)
 			fp = m.framedPipe(uint32(u.UnitID), uc, ud)
 			rows, err = m.copyStream(ctx, t, u, target, fp, us)
@@ -1592,6 +1595,21 @@ func segmentDSN(destDSN string, seg destSegment) (string, error) {
 // non-Greenplum destination) returns a *directDegradedError; the caller falls
 // back to the coordinator path for that table.
 func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column, us unitSource) (int64, error) {
+	// A partitioned parent cannot be written per-segment: the kernel rejects
+	// utility-mode COPY FROM on the root of an inheritance/partition
+	// hierarchy (SQLSTATE 0A000, lab 29.09). Pre-routing each row to a
+	// leaf slice is not an alternative: choosing the leaf requires
+	// collation-aware evaluation of the destination's bounds, which the Go
+	// row router cannot do (it reproduces only the hash distribution), and
+	// guessing by the source's placement would defeat Fix 1 (the destination
+	// must re-route the rows by its own collation). Degrade to the
+	// coordinator path, whose single parent-COPY carries every leaf's rows
+	// and lets the destination place them.
+	if u.Partition.Spec != "" {
+		return 0, &directDegradedError{
+			reason: "partitioned parent: utility-mode COPY FROM is not supported on partition-hierarchy roots; using the coordinator path (parent-COPY)",
+		}
+	}
 	// 1. Destination topology: the up primaries in content order.
 	segs, err := m.destSegments(ctx)
 	if err != nil {

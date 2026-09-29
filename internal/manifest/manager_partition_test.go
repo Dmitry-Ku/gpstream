@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -127,5 +128,54 @@ func TestManagerPartitionedUnitReadsParent(t *testing.T) {
 	}
 	if leafRead {
 		t.Fatalf("partitioned unit must NOT read a leaf partition directly, source reads were: %v", src.Queried())
+	}
+}
+
+// TestManagerDirectModeDegradesPartitionedToCoordinator pins the GP6 kernel
+// limitation found live (29.09): utility-mode COPY FROM is not supported on
+// partition-hierarchy roots (SQLSTATE 0A000), so --copy-mode direct must
+// degrade a partitioned unit to the coordinator path (parent-COPY) and SUCCEED
+// — not fail the unit. The operator sees the decision in events.jsonl
+// (direct_degraded).
+func TestManagerDirectModeDegradesPartitionedToCoordinator(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	j := NewJournal(pg.NewFakeConn(), dir+"/journal.jsonl")
+	cfg := configDefault()
+	cfg.CopyMode = config.CopyDirect
+	m := NewManager(cfg, src, dst, j)
+
+	spec := pg.ParsePartitionSpec(
+		`PARTITION BY RANGE (day) (PARTITION a START ('01') INCLUSIVE END ('02') EXCLUSIVE, DEFAULT PARTITION z )`)
+	p := &plan.Plan{Units: []plan.Table{{
+		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
+		Bytes: 100,
+		Partition: spec,
+	}}}
+	if err := m.Run(context.Background(), p); err != nil {
+		t.Fatalf("direct mode must degrade a partitioned unit to the coordinator path and succeed, got: %v", err)
+	}
+	u := j.Units()[0]
+	if u.State != StateSwapped {
+		t.Fatalf("unit state = %s, want %s", u.State, StateSwapped)
+	}
+	// The degradation decision must be operator-visible AND partition-specific
+	// (not the generic non-GP-destination fallback).
+	if !eventsContaining(t, dir, "direct_degraded") {
+		t.Fatalf("expected a direct_degraded event, events:\n%s", readFile(t, dir+"/events.jsonl"))
+	}
+	if !eventsContaining(t, dir, "partitioned parent") {
+		t.Fatalf("direct_degraded must cite the partition reason, events:\n%s", readFile(t, dir+"/events.jsonl"))
+	}
+	// And the data must have been read via the parent's coordinator COPY.
+	found := false
+	for _, q := range src.Queried() {
+		if strings.Contains(q, `COPY "public"."events" TO STDOUT`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("degraded run must read the parent via coordinator COPY, source reads were: %v", src.Queried())
 	}
 }
