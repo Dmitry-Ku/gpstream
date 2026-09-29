@@ -76,11 +76,11 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: **post-load `setval` for sequences is not implemented** (`grep create sequence/last_value` in the load path → none); **extension presence check missing** (same gap as F-05).
 - **BLOCKED-INFRA**: "3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.
 
-### F-12 — Stream compression — **PARTIAL**
+### F-12 — Stream compression — **DONE (28.09)**
 - Spec: `--compression zstd|zlib|none` (default zstd), configurable level, between-hosts transparent, **auto-disable for very small tables**.
-- Evidence: `transfer/compress/compress.go:1-36` zstd/zlib/none + level parsing (klauspost zstd); level degradation on CPU saturation driven by ratelimit.
-- Gaps: **small-table auto-disable is missing** (only level auto-lower exists; no size threshold that turns compression off for tiny tables).
-- Test: compress 80.6%.
+- Evidence: `transfer/compress/compress.go:1-36` zstd/zlib/none + level parsing (klauspost zstd); level degradation on CPU saturation driven by ratelimit. **Small-table auto-disable (28.09):** `config.SmallTableThreshold` (default 1 MiB, `--small-table-threshold`, env `SMALL_TABLE_THRESHOLD`, file `small_table_threshold`); `Manager.compressionOffFor`/`unitCompressors` decide per unit (size = `pg_total_relation_size`); `framedPipe` now takes the per-unit compressor pair, so a small table rides the transport with compression off while the rest of the run stays on the operator's mode (each unit owns its own pipe). Decision is logged to events.jsonl as a `compression_off` event (F-04).
+- Closed: `compression_off` event + live acceptance `integration/f12_small_table_test.go` (one run: tiny table below threshold = compression off, big table above = zstd on; both byte-correct under `--verify full`; exactly one `compression_off` event, for the tiny table only).
+- Test: compress 80.6%; manifest F-12 unit tests (decision table, pair swap, event emit/absence) + live integration PASS.
 
 ### F-13 — Secure connections — **PARTIAL**
 - Spec: TLS 1.2+ (prefer 1.3) sender↔receiver, CA + mTLS, config 0600; PG `sslmode=verify-full`; creds only env/`.pgpass`; **audit log of actions**.
@@ -150,7 +150,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
 | F-11 | PARTIAL | no post-load sequence setval; no extension check |
-| F-12 | PARTIAL | no small-table auto-disable |
+| F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | PARTIAL | data path not TLS-exercised; verify-full ON by default but hostname check off (ServerName:""); no audit log |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
 | F-15 | PARTIAL | segment balance max/avg metric missing |
@@ -170,7 +170,10 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    + tests; `unit_failed` event carries the mode).
 3. **F-02 per-table fallback flag** — DONE 28.09 (`--consistent-tables`; per-table
    short snapshot + documented discrepancy + live test f02_per_table).
-4. **F-12 small-table auto-disable** — compression-off threshold for tiny tables.
+4. **F-12 small-table auto-disable** — DONE 28.09 (`--small-table-threshold`,
+   default 1 MiB; per-unit decision in the Manager; `compression_off` event;
+   live acceptance f12_small_table: small table off + big table zstd in one
+   run, both byte-correct).
 5. **F-13 verify-full hostname** — set TLS `ServerName` from the DSN host so
    verify-full actually validates the name (sslmode default is already
    verify-full via ensureVerifyFull).

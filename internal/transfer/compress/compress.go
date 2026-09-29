@@ -90,6 +90,10 @@ func New(mode Mode, level int) *Compressor {
 	return &Compressor{mode: mode, level: level}
 }
 
+// Mode reports the compressor's mode (FR-12); used by the F-12 small-table
+// auto-disable tests to assert which pair a unit's transport received.
+func (c *Compressor) Mode() Mode { return c.mode }
+
 // Encode compresses b, returning the (possibly) smaller encoding.
 func (c *Compressor) Encode(b []byte) []byte {
 	switch c.mode {
@@ -110,6 +114,10 @@ type Decompressor struct {
 
 // NewDec returns a Decompressor for a mode.
 func NewDec(mode Mode) *Decompressor { return &Decompressor{mode: mode} }
+
+// Mode reports the decompressor's mode (FR-12); used by the F-12 small-table
+// auto-disable tests to assert which pair a unit's transport received.
+func (d *Decompressor) Mode() Mode { return d.mode }
 
 // Decode decompresses b, returning the original data.
 func (d *Decompressor) Decode(b []byte) []byte {

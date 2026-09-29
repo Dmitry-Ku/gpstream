@@ -127,12 +127,17 @@ type Config struct {
 	RenameTable  map[string]string // src -> dst (v2 §4.10)
 
 	// Performance (FR-01/FR-03/FR-12/FR-14).
-	Compression    Compression // default zstd
-	ZstdLevel      int         // 1-19, default 3
-	RateLimit      float64     // Gbps total ceiling
-	WorkersPerPair int
-	Streams        int    // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
-	DataPortRange  string // "a-b"
+	Compression Compression // default zstd
+	ZstdLevel   int         // 1-19, default 3
+	// SmallTableThreshold is the F-12 auto-disable threshold (bytes): a table
+	// whose estimated size (pg_total_relation_size) is below it is copied with
+	// compression OFF, because the per-stream compressor overhead does not pay
+	// back on tiny payloads. 0 disables the auto-disable. Default 1 MiB.
+	SmallTableThreshold int64
+	RateLimit           float64 // Gbps total ceiling
+	WorkersPerPair      int
+	Streams             int    // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
+	DataPortRange       string // "a-b"
 
 	// Resilience (FR-06/FR-07).
 	AutoResume int // N >= 0; 0 = manual only
@@ -234,19 +239,20 @@ type Config struct {
 // Default returns a Config populated with the specification defaults.
 func Default() Config {
 	return Config{
-		ConflictAction: SkipExisting,
-		Compression:    CompZstd,
-		ZstdLevel:      3,
-		AutoResume:     0,
-		Verify:         VerifySample,
-		Timeout:        60 * time.Second,
-		LogLevel:       LogInfo,
-		SkewThreshold:  0.05,
-		ConsistentDB:   true,
-		IndexPriority:  "size",
-		SSLMinTLS:      "1.2",
-		WorkersPerPair: 2,
-		StateDir:       "/var/lib/gpstream", // v4 §8 "State"
+		ConflictAction:      SkipExisting,
+		Compression:         CompZstd,
+		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
+		ZstdLevel:           3,
+		AutoResume:          0,
+		Verify:              VerifySample,
+		Timeout:             60 * time.Second,
+		LogLevel:            LogInfo,
+		SkewThreshold:       0.05,
+		ConsistentDB:        true,
+		IndexPriority:       "size",
+		SSLMinTLS:           "1.2",
+		WorkersPerPair:      2,
+		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
 }
 
@@ -255,6 +261,9 @@ func Default() Config {
 func (c Config) Validate() error {
 	if c.ZstdLevel < 1 || c.ZstdLevel > 19 {
 		return fmt.Errorf("zstd level must be 1-19, got %d", c.ZstdLevel)
+	}
+	if c.SmallTableThreshold < 0 {
+		return fmt.Errorf("small-table-threshold must be >= 0 (0 disables auto-disable), got %d", c.SmallTableThreshold)
 	}
 	if c.WorkersPerPair < 1 {
 		return fmt.Errorf("workers-per-pair must be >= 1, got %d", c.WorkersPerPair)
@@ -372,6 +381,11 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("COMPRESS"); ok {
 		c.Compression = Compression(v)
+	}
+	if v, ok := get("SMALL_TABLE_THRESHOLD"); ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.SmallTableThreshold = n
+		}
 	}
 	if v, ok := get("LOG_LEVEL"); ok {
 		c.LogLevel = LogLevel(v)
@@ -543,6 +557,10 @@ func assignConfigString(c *Config, key, v string) {
 	case "zstd_level":
 		if n, err := strconv.Atoi(v); err == nil {
 			c.ZstdLevel = n
+		}
+	case "small_table_threshold":
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.SmallTableThreshold = n
 		}
 	case "auto_resume":
 		if n, err := strconv.Atoi(v); err == nil {

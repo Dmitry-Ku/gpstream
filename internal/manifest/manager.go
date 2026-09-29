@@ -55,8 +55,15 @@ type Manager struct {
 	monitor *monitor.Metrics
 	comp    *compress.Compressor
 	dec     *compress.Decompressor
-	lim     *ratelimit.Limiter // adaptive rate limiter (FR-14); nil when unlimited
-	pacer   *ratelimit.Pacer   // throttles the data path to lim (FR-14)
+	// compMode is the operator's --compression mode (FR-12). compNone/decNone
+	// are the mode-none pair built when compMode != none; the F-12 small-table
+	// auto-disable (F-12: «очень мелкие таблицы — сжатие отключается
+	// автоматически») swaps a unit's transport onto them.
+	compMode compress.Mode
+	compNone *compress.Compressor
+	decNone  *compress.Decompressor
+	lim      *ratelimit.Limiter // adaptive rate limiter (FR-14); nil when unlimited
+	pacer    *ratelimit.Pacer   // throttles the data path to lim (FR-14)
 	// snapshotMode is the FR-02 consistency mode actually in effect for this
 	// run ("db", "cluster", or "" when no snapshot is pinned). snapshotTx is
 	// true while a read-only REPEATABLE READ transaction is open on the source
@@ -115,19 +122,27 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		mode, level = compress.ModeZstd, 3
 	}
 	m := &Manager{
-		cfg:     cfg,
-		srcQ:    srcQ,
-		dstQ:    dstQ,
-		src:     source.New(srcQ),
-		dst:     dest.New(dstQ),
-		journal: j,
-		index:   index.New(cfg),
-		idxPool: index.NewPool(cfg.IndexWorkers, cfg.NoIndexes, cfg.IndexPriority == "size"),
-		idxSeen: map[uint32]bool{},
-		monitor: monitor.New(),
-		events:  monitor.NewEventLog(j.EventsPath()),
-		comp:    compress.New(mode, level),
-		dec:     compress.NewDec(mode),
+		cfg:      cfg,
+		srcQ:     srcQ,
+		dstQ:     dstQ,
+		src:      source.New(srcQ),
+		dst:      dest.New(dstQ),
+		journal:  j,
+		index:    index.New(cfg),
+		idxPool:  index.NewPool(cfg.IndexWorkers, cfg.NoIndexes, cfg.IndexPriority == "size"),
+		idxSeen:  map[uint32]bool{},
+		monitor:  monitor.New(),
+		events:   monitor.NewEventLog(j.EventsPath()),
+		comp:     compress.New(mode, level),
+		dec:      compress.NewDec(mode),
+		compMode: mode,
+	}
+	// F-12 small-table auto-disable: when the operator chose a real
+	// compression mode, prebuild the none-mode pair so a small unit's
+	// transport can swap onto it (per unit, decided in framedPipe).
+	if mode != compress.ModeNone {
+		m.compNone = compress.New(compress.ModeNone, 0)
+		m.decNone = compress.NewDec(compress.ModeNone)
 	}
 	// FR-17/FR-04: expose the background index pool's progress as metrics.
 	m.idxPool.SetOnProgress(func(queueDepth, done int) {
@@ -157,6 +172,30 @@ func (m *Manager) onRateChange(from, to ratelimit.Gbps, reason string) {
 	m.monitor.SetRateLimit(to)
 	m.events.Log("rate_limit_shift",
 		"from_gbps", float64(from), "to_gbps", float64(to), "reason", reason)
+}
+
+// compressionOffFor implements the F-12 small-table auto-disable: a table
+// whose estimated size (plan.Table.Bytes = pg_total_relation_size) is below
+// --small-table-threshold is copied with compression OFF — the per-stream
+// compressor's fixed cost (encoder init, block framing, CRC) does not pay
+// back on tiny payloads. An unknown size (0) or a disabled threshold (0)
+// keeps the operator's mode. The decision is per unit, so a run copies small
+// tables uncompressed and large ones compressed, each with its own pipe.
+func (m *Manager) compressionOffFor(t plan.Table) bool {
+	return m.compMode != compress.ModeNone &&
+		m.cfg.SmallTableThreshold > 0 &&
+		t.Bytes > 0 && t.Bytes < m.cfg.SmallTableThreshold
+}
+
+// unitCompressors returns the compressor/decompressor pair the unit's
+// transport must use: the operator's mode, or the none pair when the F-12
+// small-table auto-disable applies. The destination side must use the SAME
+// mode as the source side of the pipe, so both come from one decision.
+func (m *Manager) unitCompressors(t plan.Table) (comp *compress.Compressor, dec *compress.Decompressor) {
+	if m.compressionOffFor(t) {
+		return m.compNone, m.decNone
+	}
+	return m.comp, m.dec
 }
 
 // Run executes the copy for the plan (FR-01/FR-02). Units are processed through
@@ -697,16 +736,28 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		rows int64
 		fp   *transfer.FramedPipe
 	)
+	// F-12: a small table (below --small-table-threshold) rides the transport
+	// with compression OFF; record the decision in events.jsonl (F-04) so the
+	// operator can see which units skipped the compressor and why.
+	if m.compressionOffFor(t) {
+		m.events.Log("compression_off",
+			"table", t.Schema+"."+t.Name,
+			"bytes", t.Bytes,
+			"threshold", m.cfg.SmallTableThreshold,
+			"reason", "small-table auto-disable (F-12)")
+	}
 	switch {
 	case m.cfg.CopyMode == config.CopyDirect:
 		rows, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
 		if isDirectDegraded(err) {
 			// Unroutable table: fall back to the coordinator path.
-			fp = m.framedPipe(uint32(u.UnitID))
+			uc, ud := m.unitCompressors(t)
+			fp = m.framedPipe(uint32(u.UnitID), uc, ud)
 			rows, err = m.copyStream(ctx, t, u, target, fp, us)
 		}
 	default:
-		fp = m.framedPipe(uint32(u.UnitID))
+		uc, ud := m.unitCompressors(t)
+		fp = m.framedPipe(uint32(u.UnitID), uc, ud)
 		rows, err = m.copyStream(ctx, t, u, target, fp, us)
 	}
 	if err != nil {
@@ -889,22 +940,27 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 	}
 }
 
-// framedPipe builds a framed, compressed transport (FR-01). With
-// --frame-ack (DESIGN §4.6, default on) the transport is a ReliablePipe pair:
-// frames ride a retransmit ring with cumulative ACKs, so a transport reset
-// costs seconds (replay from RAM) and never a table re-read. With
-// --frame-ack off it is the plain net.Pipe.
-func (m *Manager) framedPipe(unitID uint32) *transfer.FramedPipe {
+// framedPipe builds a framed, compressed transport (FR-01) with the given
+// compressor pair. With --frame-ack (DESIGN §4.6, default on) the transport is
+// a ReliablePipe pair: frames ride a retransmit ring with cumulative ACKs, so
+// a transport reset costs seconds (replay from RAM) and never a table re-read.
+// With --frame-ack off it is the plain net.Pipe.
+//
+// F-12 small-table auto-disable: callers pass unitCompressors(t) so a small
+// table's transport runs compression-off while the rest of the run stays on
+// the operator's mode (each unit owns its own pipe, so per-unit modes never
+// interfere).
+func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *compress.Decompressor) *transfer.FramedPipe {
 	if m.cfg.FrameAckOn() {
 		// In-process stand-in for the agent<->agent connection B; the
 		// production TCP variant plugs the same ReliablePipe onto a dialer.
 		s, r := transfer.NewReliablePipePair(m.cfg.ReliablePipeConfig())
-		return transfer.NewFramedPipeOver(s, r, 1, unitID, m.comp, m.dec)
+		return transfer.NewFramedPipeOver(s, r, 1, unitID, comp, dec)
 	}
 	// A net.Pipe is an in-memory, back-pressure-respecting connected pair;
 	// in production this is a net.Conn (optionally TLS, FR-13).
 	w, r := net.Pipe()
-	return transfer.NewFramedPipe(w, r, 1, unitID, m.comp, m.dec)
+	return transfer.NewFramedPipe(w, r, 1, unitID, comp, dec)
 }
 
 // copyStream runs the source and destination COPY in parallel over the framed
@@ -1031,7 +1087,8 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 
 	// Data plane: the merged slice stream goes through the same framed,
 	// compressed pipe as the coordinator path, so the destination is unchanged.
-	fp := m.framedPipe(uint32(u.UnitID))
+	uc, ud := m.unitCompressors(t)
+	fp := m.framedPipe(uint32(u.UnitID), uc, ud)
 
 	var (
 		dstRows int64
@@ -1342,7 +1399,8 @@ func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, t
 	}
 
 	// 4. Source --> framed pipe --> RowRouter --> per-segment pipes.
-	fp := m.framedPipe(uint32(u.UnitID))
+	uc, ud := m.unitCompressors(t)
+	fp := m.framedPipe(uint32(u.UnitID), uc, ud)
 	rw, err := transfer.NewRowRouter(fp, keyIdx, keyOid, D, segWriters)
 	if err != nil {
 		_ = fp.Abort()

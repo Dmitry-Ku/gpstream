@@ -223,6 +223,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `kind` | When | Key fields |
 |--------|------|-----------|
 | `rate_limit_shift` | every adaptive rate-limit change (F-14) | `from_gbps`, `to_gbps`, `reason` (cpu %, disk latency, queue) |
+| `compression_off` | a small table is copied with compression off (F-12 auto-disable) | `table`, `bytes` (estimated size), `threshold` (`--small-table-threshold`), `reason` |
 | `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (strict default) or `skip` (`--skip-conflicts`) |
 | `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |

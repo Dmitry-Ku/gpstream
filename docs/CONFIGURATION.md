@@ -56,6 +56,7 @@ it.
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `Compression` | `Compression` | **`zstd`** | `--compress` / env / file | `none`/`zlib`/`zstd`. |
+| `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env `SMALL_TABLE_THRESHOLD` / file `small_table_threshold` | F-12: a table whose estimated size (`pg_total_relation_size`) is below this copies with compression **off** (compressor overhead). `0` disables the auto-disable. |
 | `ZstdLevel` | int | **`3`** | `--compress zstd:N` / file `zstd_level` | Must be **1–19** (validate). |
 | `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling. |
 | `WorkersPerPair` | int | **`2`** | `--workers-per-pair` / env / file | Must be **≥ 1** (validate). |

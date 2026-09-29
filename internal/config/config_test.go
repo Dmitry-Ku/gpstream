@@ -66,6 +66,7 @@ func TestValidateErrors(t *testing.T) {
 		{"consistent-tables and cluster", func(c *Config) { c.ConsistentCluster, c.ConsistentTables = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},
 		{"bad verify", func(c *Config) { c.Verify = "bogus" }},
+		{"negative small-table threshold", func(c *Config) { c.SmallTableThreshold = -1 }},
 	}
 	for _, tc := range cases {
 		c := Default()

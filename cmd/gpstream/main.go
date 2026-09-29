@@ -319,6 +319,16 @@ func parseConfig(args []string) (config.Config, error) {
 			}
 			cfg.ZstdLevel = n
 
+		// Small-table auto-disable threshold (F-12): --small-table-threshold <bytes>
+		// (suffixes K/M/G allowed; 0 disables the auto-disable). Tables smaller
+		// than this are copied with compression OFF (compressor overhead).
+		case "--small-table-threshold":
+			i++
+			cfg.SmallTableThreshold = parseBytes(args[i])
+			if cfg.SmallTableThreshold < 0 {
+				return cfg, fmt.Errorf("small-table-threshold must be >= 0, got %d", cfg.SmallTableThreshold)
+			}
+
 		// TLS (FR-13).
 		case "--tls":
 			// v2 §26: --tls is the shorthand for "require an encrypted
@@ -1325,6 +1335,8 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --include metadata,data          object classes (empty = both)
   --overwrite, --skip-conflicts    conflict handling
   --compression zstd[:level]       compression (none|zlib|zstd)
+  --small-table-threshold SIZE     F-12: tables smaller than SIZE copy with
+                                   compression off (default 1MiB; 0 disables)
   --copy-mode on_segment           segment-direct fast path (Fallback B, T-B)
   --copy-mode direct               fully segment-direct (R5): route rows to dest
                                    segments directly, dest coordinator out of the

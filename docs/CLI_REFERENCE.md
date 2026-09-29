@@ -174,6 +174,7 @@ is selected.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--compress none\|zlib\|zstd[:1-19]` (alias `--compression`) | `Compression` / `ZstdLevel` | `zstd` / `3` (`zstd:level` sets the level, 1–19) |
+| `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
 | `--rate-limit <rate>` (alias `--max-bw`) | `RateLimit` | `0` (no ceiling; accepts `40`, `40gbps`, `400mbps`, …) |
 | `--workers-per-pair <N>` (alias `--workers`) | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
 | `--streams <N>` | `Streams` | `0` (v4 §8 canonical parallelism knob; mapped onto the worker pool) |

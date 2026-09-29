@@ -19,6 +19,11 @@ func eventsOf(t *testing.T, dir string) []map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			// A lazy-open EventLog with no events never creates the file;
+			// an absent events.jsonl means the run emitted nothing.
+			return nil
+		}
 		t.Fatalf("read events.jsonl: %v", err)
 	}
 	var out []map[string]any
