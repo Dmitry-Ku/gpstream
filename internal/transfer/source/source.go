@@ -323,27 +323,18 @@ func (a *Agent) Indexes(ctx context.Context, schema, table string) ([]IndexDef, 
 // (a plain heap, insertion order) lay the same rows down in different orders —
 // a raw-payload md5 would mismatch on identical data (E1 e2e, 27.09).
 func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
-	var buf writeCloserBuf
-	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, table))
+	// Stream the digest (O(1) memory) instead of buffering the whole payload:
+	// a 2.6 GB table OOM-killed the buffer-all variant (runtime: out of memory
+	// in growslice, 29.09 disk-full test).
+	d := transfer.NewContentDigest()
+	rows, err := a.q.ReadCopy(ctx, d, copySQL(schema, table))
 	if err != nil {
 		return "", err
 	}
 	if rows == 0 {
 		return "0", nil
 	}
-	return transfer.ContentDigest(buf.data)
-}
-
-// writeCloserBuf is an io.Writer that buffers into a []byte. pgx.CopyTo writes
-// the COPY payload to it; the checksum is then computed over the buffered bytes
-// so the source and destination can compare a content digest (FR-02).
-type writeCloserBuf struct {
-	data []byte
-}
-
-func (b *writeCloserBuf) Write(p []byte) (int, error) {
-	b.data = append(b.data, p...)
-	return len(p), nil
+	return d.Sum()
 }
 
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes.

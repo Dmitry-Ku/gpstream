@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"hash"
 )
 
 // ContentDigest returns a row-ORDER-INDEPENDENT digest of a PostgreSQL binary
@@ -94,4 +95,146 @@ func int64ToBytes(v int64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(v))
 	return b
+}
+
+// NewContentDigest returns an io.Writer that consumes a binary-COPY payload
+// incrementally (O(1) memory) and produces the SAME row-order-independent
+// digest as ContentDigest (FR-02). pgx CopyTo streams the payload in chunks,
+// so this is the correct shape for tables whose payload is larger than RAM
+// (a 2.6 GB table OOM-killed the buffer-all variant, 29.09).
+//
+// Usage:
+//
+//	d := transfer.NewContentDigest()
+//	rows, err := q.ReadCopy(ctx, d, sql) // or pgx CopyTo
+//	sum, err := d.Sum()
+//
+// The digest format matches ContentDigest: "<rows>:<hex>" (or "blob:<hex>"
+// for non-COPY payloads, "0:" for an empty payload).
+func NewContentDigest() *ContentDigestWriter {
+	return &ContentDigestWriter{}
+}
+
+type ContentDigestWriter struct {
+	head []byte
+	mode int // 0=header pending, 1=opaque blob, 2=rows
+	blob hash.Hash
+	acc  [32]byte
+	rows int64
+	buf  []byte
+	eof  bool
+}
+
+func (w *ContentDigestWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if w.mode == 0 {
+		w.head = append(w.head, p...)
+		if len(w.head) < copySigLen+copyHdrLen {
+			return n, nil
+		}
+		hdr := w.head[:copySigLen+copyHdrLen]
+		rest := w.head[copySigLen+copyHdrLen:]
+		w.head = nil
+		if string(hdr[:copySigLen]) != copySignature {
+			w.mode = 1
+			w.blob = sha256.New()
+			w.blob.Write(hdr)
+			w.blob.Write(rest)
+			return n, nil
+		}
+		w.mode = 2
+		p = rest
+	}
+	if w.mode == 1 {
+		w.blob.Write(p)
+		return n, nil
+	}
+	w.buf = append(w.buf, p...)
+	for {
+		end, ok, err := rowEndOffset(w.buf)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			break // row not fully buffered yet
+		}
+		if end == -1 {
+			w.buf = nil
+			w.eof = true
+			break
+		}
+		rh := sha256.Sum256(w.buf[:end])
+		for j := range w.acc {
+			w.acc[j] ^= rh[j]
+		}
+		w.rows++
+		rest := copy(w.buf, w.buf[end:])
+		w.buf = w.buf[:rest]
+	}
+	return n, nil
+}
+
+// Sum finalizes the digest. It errors if the stream ended without the
+// binary-COPY end marker (truncated payload).
+func (w *ContentDigestWriter) Sum() (string, error) {
+	switch w.mode {
+	case 0:
+		if len(w.head) == 0 {
+			return "0:", nil
+		}
+		// The stream ended before the full COPY header was seen, so it can
+		// never be a binary-COPY stream: treat it as an opaque blob, exactly
+		// like ContentDigest does for payloads shorter than sig+header.
+		h := sha256.Sum256(w.head)
+		return fmt.Sprintf("blob:%x", h), nil
+	case 1:
+		return fmt.Sprintf("blob:%x", w.blob.Sum(nil)), nil
+	case 2:
+		if !w.eof {
+			if len(w.buf) > 0 {
+				return "", fmt.Errorf("digest: truncated copy stream (row data after end)")
+			}
+			return "", fmt.Errorf("digest: missing copy end marker")
+		}
+		final := sha256.Sum256(append(w.acc[:], int64ToBytes(w.rows)...))
+		return fmt.Sprintf("%d:%x", w.rows, final), nil
+	}
+	return "", fmt.Errorf("digest: no payload")
+}
+
+// rowEndOffset scans buf for the first complete row and returns the offset
+// just past it. It returns (-1, true, nil) when the first entry is the
+// end-of-stream marker, (0, false, nil) when the row is not fully present
+// yet, and an error on malformed field counts/lengths (mirroring the
+// validation of ContentDigest).
+func rowEndOffset(buf []byte) (end int, ok bool, err error) {
+	if len(buf) < 2 {
+		return 0, false, nil
+	}
+	fc := int16(binary.BigEndian.Uint16(buf[0:2]))
+	if fc == -1 {
+		return -1, true, nil
+	}
+	if fc < 0 {
+		return 0, false, fmt.Errorf("digest: bad fieldCount %d", fc)
+	}
+	pos := 2
+	for i := int16(0); i < fc; i++ {
+		if pos+4 > len(buf) {
+			return 0, false, nil
+		}
+		ln := int32(binary.BigEndian.Uint32(buf[pos : pos+4]))
+		pos += 4
+		if ln == -1 {
+			continue
+		}
+		if ln < 0 {
+			return 0, false, fmt.Errorf("digest: bad field length %d", ln)
+		}
+		pos += int(ln)
+		if pos > len(buf) {
+			return 0, false, nil
+		}
+	}
+	return pos, true, nil
 }

@@ -125,14 +125,14 @@ func (a *Agent) CopyIntoStream(ctx context.Context, schema, stagingName string, 
 // raw-payload md5 would mismatch on identical data (E1 e2e, 27.09). It returns
 // the row count too (FR-02).
 func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum string) (bool, int64, error) {
-	var buf writeCloserBuf
-	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, stagingName))
+	d := transfer.NewContentDigest()
+	rows, err := a.q.ReadCopy(ctx, d, copySQL(schema, stagingName))
 	if err != nil {
 		return false, 0, err
 	}
 	got := "0"
 	if rows > 0 {
-		got, err = transfer.ContentDigest(buf.data)
+		got, err = d.Sum()
 		if err != nil {
 			return false, rows, fmt.Errorf("verify: digest: %w", err)
 		}
@@ -150,15 +150,15 @@ func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum st
 // destination produces the same digest as the source. An empty table is
 // "0" (matching source.Checksum) so two empty tables compare equal.
 func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
-	var buf writeCloserBuf
-	rows, err := a.q.ReadCopy(ctx, &buf, copySQL(schema, table))
+	d := transfer.NewContentDigest()
+	rows, err := a.q.ReadCopy(ctx, d, copySQL(schema, table))
 	if err != nil {
 		return "", err
 	}
 	if rows == 0 {
 		return "0", nil
 	}
-	return transfer.ContentDigest(buf.data)
+	return d.Sum()
 }
 
 // Swap atomically renames the staging table to its final name in the same
@@ -364,17 +364,6 @@ func isAlreadyExists(err error) bool {
 		}
 	}
 	return false
-}
-
-// writeCloserBuf buffers the COPY payload so a content checksum can be
-// computed over it (FR-02).
-type writeCloserBuf struct {
-	data []byte
-}
-
-func (b *writeCloserBuf) Write(p []byte) (int, error) {
-	b.data = append(b.data, p...)
-	return len(p), nil
 }
 
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes.

@@ -119,3 +119,89 @@ func TestContentDigestTruncated(t *testing.T) {
 		t.Fatal("truncated stream should error")
 	}
 }
+
+// TestContentDigestStreamMatchesBuffered pins the streaming writer (O(1)
+// memory, 29.09 OOM fix) against the reference buffer-all ContentDigest:
+// same rows, arbitrary chunking (incl. 1-byte writes that split row
+// headers and field data across chunks) must produce the identical digest.
+func TestContentDigestStreamMatchesBuffered(t *testing.T) {
+	a, b := [][]byte{[]byte("alpha"), []byte("1")}, [][]byte{[]byte("beta"), []byte("2")}
+	c, d := [][]byte{[]byte("gamma"), []byte("3")}, [][]byte{nil, []byte("4")}
+	ab := buildCopyStream(t, [][][]byte{a, b, c, d})
+
+	want, err := ContentDigest(ab)
+	if err != nil {
+		t.Fatalf("buffered digest: %v", err)
+	}
+	for _, chunk := range []int{1, 3, 7, 1000} {
+		dw := NewContentDigest()
+		for i := 0; i < len(ab); i += chunk {
+			end := i + chunk
+			if end > len(ab) {
+				end = len(ab)
+			}
+			if _, err := dw.Write(ab[i:end]); err != nil {
+				t.Fatalf("chunk=%d write: %v", chunk, err)
+			}
+		}
+		got, err := dw.Sum()
+		if err != nil {
+			t.Fatalf("chunk=%d sum: %v", chunk, err)
+		}
+		if got != want {
+			t.Fatalf("chunk=%d: streaming %s != buffered %s", chunk, got, want)
+		}
+	}
+}
+
+// TestContentDigestStreamTruncated: a stream cut mid-row must error, not
+// silently produce a partial digest.
+func TestContentDigestStreamTruncated(t *testing.T) {
+	ab := buildCopyStream(t, [][][]byte{
+		{[]byte("alpha"), []byte("1")},
+		{[]byte("beta"), []byte("2")},
+	})
+	// cut after the header, into the first row's field data
+	cut := len(ab) - 6
+	dw := NewContentDigest()
+	if _, err := dw.Write(ab[:cut]); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := dw.Sum(); err == nil {
+		t.Fatalf("truncated stream must error, got nil")
+	}
+}
+
+// TestContentDigestStreamEmpty: no writes -> "0:", same as ContentDigest(nil).
+func TestContentDigestStreamEmpty(t *testing.T) {
+	dw := NewContentDigest()
+	got, err := dw.Sum()
+	if err != nil {
+		t.Fatalf("empty sum: %v", err)
+	}
+	want, _ := ContentDigest(nil)
+	if got != want {
+		t.Fatalf("empty: streaming %q != buffered %q", got, want)
+	}
+}
+
+// TestContentDigestStreamOpaqueBlob: a short non-COPY payload (< sig+header)
+// must produce the same blob digest as ContentDigest (test-fake path).
+func TestContentDigestStreamOpaqueBlob(t *testing.T) {
+	opaque := []byte("not-a-copy-stream")
+	want, err := ContentDigest(opaque)
+	if err != nil {
+		t.Fatalf("buffered: %v", err)
+	}
+	dw := NewContentDigest()
+	if _, err := dw.Write(opaque); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := dw.Sum()
+	if err != nil {
+		t.Fatalf("stream sum: %v", err)
+	}
+	if got != want {
+		t.Fatalf("opaque: streaming %q != buffered %q", got, want)
+	}
+}
