@@ -75,7 +75,10 @@ subset of flags (listed per-command below) and ignore the rest.
   the action to `<state-dir>/<operation-id>/audit.log` (F-13 audit log of
   actions: `run` + `run-finished`), serves
   Prometheus metrics at `--metrics-addr` (FR-04) and honours `--auto-resume N`
-  (FR-07). `run` is the command that used to be called `copy`.
+  (FR-07). On a Greenplum destination it also measures the live segment-fill
+  balance of every copied table (max/avg over `gp_segment_id`, F-15/CR-5) and
+  prints it in the final report, warning when a table exceeds
+  `--segment-balance-threshold`. `run` is the command that used to be called `copy`.
 - **`dry-run`** — plans **without executing** (FR-10); full contract. Renders
   the deterministic plan summary (units, volume, conflicts, redistribution,
   plan hash); on `--timeout` prints the collected fragment as a
@@ -237,6 +240,7 @@ See [PERFORMANCE.md](PERFORMANCE.md).
 |------|--------------|---------|
 | `--no-redistribute` | `NoRedistribute` | `false` (suppress redistribution accounting; sets skew gate off) |
 | `--skew-threshold <X>` | `SkewThreshold` | `0.05` (negative = skew checks off) |
+| `--segment-balance-threshold <X>` | `SegmentBalanceThreshold` | `1.5` (max/avg fill of the destination segments; warning above it; negative = metric only) |
 | `--redistribution-plan` | `RedistributionPlan` | `false` (surface redistribution in the plan) |
 | `--distribution-check` | `DistributionCheck` | `false` (detect distribution mismatch) |
 | `--collation-check` | `CollationCheck` | `false` (detect LC_COLLATE/collation differences) |

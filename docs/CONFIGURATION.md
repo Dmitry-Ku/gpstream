@@ -80,6 +80,7 @@ it.
 |-------|------|---------|--------|
 | `NoRedistribute` | bool | `false` | `--no-redistribute` |
 | `SkewThreshold` | float64 | **`0.05`** | `--skew-threshold` / file | Skew fraction. |
+| `SegmentBalanceThreshold` | float64 | **`1.5`** | `--segment-balance-threshold` / file | Live segment-fill max/avg warning gate (F-15); negative = metric only. |
 
 ### 1.10 TLS (FR-13)
 | Field | Type | Default | Source | Notes |
@@ -162,6 +163,7 @@ default to their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `Timeout` | `60s` |
 | `LogLevel` | `info` |
 | `SkewThreshold` | `0.05` |
+| `SegmentBalanceThreshold` | `1.5` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
@@ -212,6 +214,7 @@ are skipped). The accepted keys (all lowercase) are:
 | `ssl_min_tls` | `SSLMinTLS` | e.g. `1.2` |
 | `data_port_range` | `DataPortRange` | `a-b` |
 | `skew_threshold` | `SkewThreshold` | parsed as float |
+| `segment_balance_threshold` | `SegmentBalanceThreshold` | parsed as float |
 | `index_priority` | `IndexPriority` | `size`/`manual` |
 | `timeout` | `Timeout` | parsed as duration |
 | `overwrite_only_conflicts` | `OverwriteOnlyConflicts` | `true`/`1` |

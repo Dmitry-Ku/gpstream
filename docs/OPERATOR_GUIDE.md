@@ -213,6 +213,25 @@ address you pass to `--metrics-addr`. The exposed series include:
 `gpstream report --job <jobid> --report-json run.json` (or `--report-csv` /
 `--report-text`) gives a final report you can archive.
 
+**Segment balance (F-15, live).** On a Greenplum destination, after each
+table is swapped to its final name the run measures the per-segment fill of
+the copied data (`SELECT gp_segment_id, count(*) ... GROUP BY`) and prints a
+final-report section:
+
+```
+segment balance (F-15, live, per destination segment):
+  balance public.orders                          max=5082 avg=5050.5 max/avg=1.01 (5082 5019)
+  balance public.hotkey                          max=9000 avg=3333.3 max/avg=2.70 (9000 2000 2000)
+  WARNING segment balance: public.hotkey max/avg = 2.70 (> threshold 1.50, max=9000 avg=3333.3 over 3 segments)
+```
+
+The counts are the per-segment row counts in `gp_segment_id` order; `max/avg`
+is the fill-balance ratio (1.0 = perfectly even). A table whose `max/avg`
+exceeds `--segment-balance-threshold` (default `1.5`) emits a `WARNING` line
+and a `warning: true` `segment_balance` event (spec F-15: «предупреждение при
+превышении порога»). The measurement is non-fatal and Greenplum-only: a plain
+PostgreSQL destination has no segments and the section is omitted.
+
 ### The diagnostic event log (`events.jsonl`)
 
 Every run appends a per-operation diagnostic stream to
@@ -229,6 +248,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
 | `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
 | `sequence_sync_failed` | a sequence recreation/resync step failed (non-fatal; the data is in place) | `table`, `sequence`, `reason`, `error` |
+| `segment_balance` | the live segment-fill balance of a copied table was measured on a Greenplum destination (F-15, after the swap) | `table`, `segments`, `max`, `avg`, `max_avg`, `threshold` (`--segment-balance-threshold`), `warning` (true when `max_avg` exceeds the threshold) |
 
 It is a diagnostic log, not the durable record (that is the journal), so a
 write failure never fails the copy. With no `--state-dir` journal mirror the

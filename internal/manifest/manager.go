@@ -109,6 +109,10 @@ type Stats struct {
 	Comps    int   // units with a verified checksum match (FR-02)
 	Skipped  int   // units skipped by --conflict-action (FR-10/FR-11)
 	Failures int   // units that failed after retries
+	// Balances is the F-15 live segment-fill balance measured per copied
+	// table on the destination (max/avg over gp_segment_id). Empty on a
+	// non-Greenplum destination (no segments to measure).
+	Balances []dest.Balance
 }
 
 // Metrics returns the collector so the caller can expose it (FR-04). It is the
@@ -879,11 +883,49 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//     step 3a, before the table DDL.)
 	m.syncSequenceValues(ctx, u)
 
+	// 9c. Segment balance (F-15): measure the destination's per-segment
+	//     fill of the just-swapped table (metric max/avg over
+	//     gp_segment_id) and surface a warning when the fill exceeds
+	//     --segment-balance-threshold. Non-fatal by design (like 9b/10):
+	//     the data is already in place, the metric is diagnostic, and a
+	//     non-Greenplum destination has no segments to measure.
+	m.measureBalance(ctx, u)
+
 	// 10. Enqueue the index build to the background pool (FR-17). Non-fatal by
 	//     design: the data is already in place, and a failed/missing read is
 	//     covered by the journal scan in Run on the next resume.
 	m.enqueueIndexes(ctx, u)
 	return nil
+}
+
+// measureBalance records the F-15 segment-fill balance of a just-swapped
+// unit (spec F-15: «контроль дисбаланса заполнения сегментов приёмника
+// (метрика max/avg по сегментам), предупреждение при превышении порога»).
+// It runs AFTER the swap, so the final table holds the copied rows.
+// Non-fatal by design: the data is already in place and the metric is
+// diagnostic — a non-Greenplum destination (no gp_segment_id) or a
+// measurement fault simply yields no balance. Every measured table is
+// recorded in events.jsonl (F-04) and appended to Stats.Balances for the
+// final report; a threshold breach additionally carries warning=true.
+func (m *Manager) measureBalance(ctx context.Context, u *Unit) {
+	ds, dn := u.DstSchema, u.DstName
+	if ds == "" {
+		ds = u.Schema
+	}
+	if dn == "" {
+		dn = u.Table
+	}
+	b := m.dst.BalanceTable(ctx, ds, dn, m.cfg.SegmentBalanceThreshold)
+	if b.Segments == 0 {
+		return // not Greenplum, or the table is empty / unmeasurable
+	}
+	m.statMu.Lock()
+	m.Balances = append(m.Balances, b)
+	m.statMu.Unlock()
+	m.events.Log("segment_balance",
+		"table", b.Table, "segments", b.Segments, "max", b.Max,
+		"avg", b.Avg, "max_avg", b.MaxAvg,
+		"threshold", b.Threshold, "warning", b.Warning)
 }
 
 // createSequences recreates the unit's source sequences on the destination

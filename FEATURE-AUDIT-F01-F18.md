@@ -110,11 +110,10 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - **Closed (28.09):** every rate shift is now logged to `events.jsonl` as a `rate_limit_shift` event (old/new Gbps + reason) via `Manager.onRateChange` — the F-14 "каждый сдвиг лимита — диагностическое сообщение" requirement. Regression test `TestManagerOnRateChangeEmitsEvent`.
 - Test: ratelimit 92.3%.
 
-### F-15 — Data redistribution — **PARTIAL**
+### F-15 — Data redistribution — **DONE (29.09)**
 - Spec: plan flags redistribution (topologies differ) + coordinator load estimate; **indexes not created until after load**; segment-fill balance metric (max/avg) with skew warning.
-- Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); `manager.go:434-438` index rebuild happens at step 7 (after copy, before swap) — index deferral is real.
-- Gaps: **segment balance max/avg metric is missing from the monitor/report** (`grep balance/skew/max.avg` in `monitor/metrics.go` → none); skew is computed in the planner but not surfaced as a live per-segment balance metric.
-- **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo + gp_segment_id distribution check.
+- Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); index rebuild deferred to the background pool AFTER the swap (FR-17). **Live segment balance (29.09):** `dest.BalanceTable`/`BalanceMaxAvg` (internal/transfer/dest/balance.go) measure the per-segment fill of each copied table (`gp_segment_id, count(*) GROUP BY`) after the swap; `manager.measureBalance` (step 9c) records it in `Stats.Balances` + a `segment_balance` events.jsonl event; the final report prints max/avg per table and a `WARNING` when `max/avg > --segment-balance-threshold` (default 1.5, negative = metric only). Non-fatal + Greenplum-only (plain PG degrades silently).
+- Gaps: none in-env. **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo + gp_segment_id distribution check on real clusters (the live metric now feeds that acceptance).
 
 ### F-16 — Cross-OS compatibility — **PARTIAL**
 - Spec: static binary; byte-for-byte data; **mandatory LC_COLLATE (DB and column) + encoding comparison** with warnings in doctor/dry-run/final report.
@@ -169,7 +168,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
-| F-15 | PARTIAL | segment balance max/avg metric missing |
+| F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above --segment-balance-threshold (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
 | F-16 | PARTIAL | no column-level collation compare |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
 | F-18 | DONE | — |
@@ -202,7 +201,11 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 7. **F-05/F-11 doctor extension check** — DONE 29.09 (doctor `extensions`
    check: `pg_extension` diff source vs dest, WARN naming missing
    extensions; tests doctor_extensions_test.go). (next)
-8. **F-15** — add the segment balance max/avg metric to the monitor/report.
+8. **F-15** — [CLOSED 29.09] live segment balance max/avg metric:
+   `dest.BalanceTable` + `manager.measureBalance` (step 9c) + final-report
+   section + `segment_balance` event + `--segment-balance-threshold`
+   (default 1.5, warning gate). Tests: balance_test.go (dest) +
+   manager_balance_test.go (manifest, GP fake / plain-PG degrade).
 9. **F-16** — column-level (`attcollation`) collation comparison.
 10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +
     `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` + govulncheck in CI.
