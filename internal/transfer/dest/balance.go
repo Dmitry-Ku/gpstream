@@ -94,10 +94,13 @@ func (a *Agent) SegmentCounts(ctx context.Context, schema, table string) ([]int6
 	if len(segIDs) == 0 {
 		return nil, fmt.Errorf("segment balance: no up primary segments on the destination")
 	}
-	// One row per (segment, rows) for the copied table.
+	// One row per (segment, rows) for the copied table. The identifiers are
+	// quoted client-side and bound as $1/$2 (a "%s.%s" format string would
+	// only render in the test fake's fmt.Sprintf path; the live pgx driver
+	// binds positional parameters and rejects args with no $-placeholders).
 	rows, err := a.q.Query(ctx,
-		`SELECT gp_segment_id, count(*) FROM %s.%s GROUP BY gp_segment_id`,
-		quoteIdent(schema), quoteIdent(table))
+		`SELECT gp_segment_id, count(*) FROM $1::regclass GROUP BY gp_segment_id`,
+		quoteIdent(schema)+"."+quoteIdent(table))
 	if err != nil {
 		return nil, fmt.Errorf("segment balance: %s.%s: %w", schema, table, err)
 	}

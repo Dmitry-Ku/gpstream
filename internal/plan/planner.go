@@ -48,6 +48,24 @@ type Table struct {
 	// copying leaf partitions as separate units both duplicates the data and
 	// can misplace rows under a differing glibc).
 	Partitioned bool
+	// Partition is the partitioned parent's partitioning clause captured from
+	// the source (pg.GetPartitionSpec), "" for a plain table. It is
+	// reproduced in the destination DDL so the destination re-creates the
+	// same leaf layout and re-routes the copied rows by ITS OWN collation
+	// (Fix 1). The data flows through the parent (one COPY carries every
+	// leaf's rows); the leaves are NOT separate units.
+	Partition pg.PartitionSpec
+	// PartitionGuard is a non-empty diagnostic when the unit must NOT be
+	// copied as-is: a string-keyed partitioned parent WITHOUT a default
+	// partition on a collation-different destination (a row matching no leaf
+	// bound is rejected and the whole COPY aborts). Set by the planner
+	// (dry-run warning) and enforced at run time (the unit fails early).
+	PartitionGuard string
+	// PartitionedUnsupported is set when the source table is partitioned but
+	// the destination is plain PostgreSQL (no Greenplum catalogs): a
+	// PARTITION BY table cannot be created there, so the unit fails early
+	// with a diagnostic instead of a mid-run DDL error.
+	PartitionedUnsupported bool
 	HasConflict bool     // exists in dest and not overwritten (FR-10)
 	// RouteMode (M4/T4b): how this table's data lands on the destination —
 	// route.Direct1to1 (S==D, keys equal, same major; 0 CPU on hash),
@@ -149,6 +167,14 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// detected against the destination name, so a rename avoids an overwrite.
 	applyRename(cfg, tabs)
 
+	// 2d. Partitioned parents (Fix 1): capture each parent's PARTITION BY
+	// spec (reproduced on the destination) and evaluate the guard — a
+	// string-keyed parent WITHOUT a default partition on a collation-
+	// different destination cannot be copied safely (a row matching no leaf
+	// bound is rejected and aborts the whole COPY). The guard is a warning
+	// in dry-run and an early unit failure at run time.
+	attachPartitionSpecs(ctx, src, dst, tabs)
+
 	// 3. Conflicts: a source table (at its destination name) that exists in
 	// dest and is not overwritten (FR-10/FR-11).
 	p.Conflicts = detectConflicts(ctx, tabs, dst, cfg)
@@ -226,13 +252,40 @@ func checkAvailability(ctx context.Context, src, dst pg.Querier) error {
 }
 
 func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]Table, error) {
+	// GP6 classic partitioning: parent and leaves are ALL relkind 'r'. The
+	// parent is the row with pg_inherits children; a leaf is a row that is
+	// somebody's inhrelid. Fix 1 plans the parent as ONE unit: its single
+	// COPY carries every leaf's rows, so on a Greenplum source the leaves are
+	// excluded from the plan (copying them as separate units duplicates the
+	// data and, under a differing glibc, routes rows by the wrong collation).
+	// On a plain-PostgreSQL source pg_inherits is user inheritance, NOT
+	// partitioning: leaves stay in the plan (their rows are not in the
+	// parent's COPY), so the exclusion is Greenplum-conditional.
+	//
+	// Volume: GREATEST(own total size, sum of leaf sizes) is correct on both
+	// engines — GP6 does not recurse pg_total_relation_size into leaves
+	// (parent reports 0-ish, leaves hold the data); plain PG does recurse
+	// (parent already includes the leaves), so GREATEST just returns the
+	// parent's own size.
+	gpSource := false
+	if oid, err := pg.Row(ctx, src,
+		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy')) /* gs-gp-probe */`); err == nil {
+		gpSource = oid != nil
+	}
+	leafFilter := ""
+	if gpSource {
+		leafFilter = " AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)"
+	}
 	rows, err := src.Query(ctx,
-		`SELECT n.nspname, c.relname, c.relkind, COALESCE(pg_total_relation_size(c.oid),0),
+		`SELECT n.nspname, c.relname, c.relkind,
+		GREATEST(COALESCE(pg_total_relation_size(c.oid),0),
+		         COALESCE((SELECT sum(pg_total_relation_size(i.inhrelid))
+		                   FROM pg_inherits i WHERE i.inhparent = c.oid),0))::bigint,
 		COALESCE((SELECT count(*) FROM pg_inherits WHERE inhparent = c.oid),0),
 		CASE WHEN c.relkind='p' THEN COALESCE((SELECT count(*) FROM pg_index i WHERE i.indrelid=c.oid),0) ELSE 0 END,
 		current_database()
 		FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-		WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema','gp_toolkit')
+		WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema','gp_toolkit')`+leafFilter+`
 		ORDER BY n.nspname, c.relname`)
 	if err != nil {
 		return nil, err
@@ -243,11 +296,12 @@ func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]T
 			continue
 		}
 		t := Table{
-			DB:      asString(r[6]),
-			Schema:  asString(r[0]),
-			Name:    asString(r[1]),
-			Bytes:   int64(toInt64(r[3])),
-			Indexes: int(toInt64(r[5])),
+			DB:          asString(r[6]),
+			Schema:      asString(r[0]),
+			Name:        asString(r[1]),
+			Bytes:       int64(toInt64(r[3])),
+			Indexes:     int(toInt64(r[5])),
+			Partitioned: gpSource && toInt64(r[4]) > 0,
 		}
 		// AO/CO flags would be read from pg_attribute/pg_class in the full
 		// build (FR-03); here we mark the conservative default.
@@ -394,6 +448,120 @@ func splitTableRename(s string) (schema, name string) {
 		return s[:i], s[i+1:]
 	}
 	return "", s
+}
+
+// attachPartitionSpecs (Fix 1) fills in, for every partitioned parent in the
+// selected set, its PARTITION BY spec (to be reproduced on the destination)
+// and evaluates the partition guard.
+//
+// A parent whose spec cannot be captured (plain PostgreSQL has no
+// pg_get_partition_def) is left with an empty spec: it is still planned as ONE
+// unit (its leaves are excluded in collectTables and its single COPY carries
+// every leaf's rows), but the destination is created as a plain table. This
+// keeps plain-PG inheritance working while Fix 1's partition reproduction
+// applies only where the spec actually exists (GP6).
+//
+// The guard (Table.PartitionGuard) is non-empty for the one unsafe combination:
+// a string-keyed partitioned parent WITHOUT a default partition, copied to a
+// destination whose collation sorts the key values differently. Under that
+// combination a source row that matched a leaf on the source can match NO leaf
+// on the destination, so it is rejected and the whole COPY aborts (lab,
+// 29.09). A non-empty guard is a dry-run warning and an early unit failure at
+// run time.
+func attachPartitionSpecs(ctx context.Context, src, dst pg.Querier, tabs []Table) {
+	if len(tabs) == 0 {
+		return
+	}
+	// Only partitioned parents need a spec.
+	var partitioned []int
+	for i := range tabs {
+		if tabs[i].Partitioned {
+			partitioned = append(partitioned, i)
+		}
+	}
+	if len(partitioned) == 0 {
+		return
+	}
+	// Behavioral collation fingerprint of each cluster (glibc-aware: two DBs
+	// with the same locale name but different glibc sort a fixed string set
+	// differently). Compared once, not per table.
+	dstDiffers := false
+	if dst != nil {
+		if sSig, sErr := pg.CollationSignature(src, ctx); sErr == nil {
+			if dSig, dErr := pg.CollationSignature(dst, ctx); dErr == nil && dSig != sSig {
+				dstDiffers = true
+			}
+		}
+	}
+	for _, i := range partitioned {
+		t := &tabs[i]
+		spec, err := pg.CapturePartitionSpec(src, ctx, t.Schema, t.Name)
+		if err != nil || spec.Spec == "" {
+			// Not a reproducible partitioned parent (plain PG or capture
+			// fault): leave the spec empty; the dest is created as a plain
+			// table and still receives all rows via the parent COPY.
+			continue
+		}
+		t.Partition = spec
+		if dstDiffers && !spec.HasDefault && partitionKeyIsString(ctx, src, t.Schema, t.Name, spec.KeyColumns) {
+			t.PartitionGuard = fmt.Sprintf(
+				"%s.%s is partitioned by a string key %v with no DEFAULT partition and the destination collation differs from the source; a row matching no leaf bound would be rejected and abort the copy. Add a DEFAULT partition (or align the destination collation) before running.",
+				t.Schema, t.Name, spec.KeyColumns)
+		}
+	}
+}
+
+// partitionKeyIsString reports whether every partition-key column is a string
+// type (text/char/varchar and close relatives). Only string keys are
+// collation-sensitive; numeric/date/timestamp partitioning is unaffected by a
+// source/destination collation difference, so the guard does not apply to
+// them. A lookup fault is treated as "not string" (guard not raised) — the
+// guard is an optimization for a clear-cut case, not a correctness gate.
+func partitionKeyIsString(ctx context.Context, src pg.Querier, schema, table string, cols []string) bool {
+	if len(cols) == 0 {
+		return false
+	}
+	rows, err := src.Query(ctx,
+		`SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+		   FROM pg_attribute a
+		  WHERE a.attrelid = (quote_ident($2) || '.' || quote_ident($1))::regclass
+		    AND a.attnum > 0 AND NOT a.attisdropped /* gs-partkey-type */`, table, schema)
+	if err != nil {
+		return false
+	}
+	types := map[string]string{}
+	for _, r := range rows {
+		if len(r) >= 2 {
+			types[asString(r[0])] = strings.ToLower(asString(r[1]))
+		}
+	}
+	for _, c := range cols {
+		typ, ok := types[c]
+		if !ok {
+			return false
+		}
+		if !isStringType(typ) {
+			return false
+		}
+	}
+	return true
+}
+
+// isStringType reports whether a format_type rendering is a collation-sensitive
+// string type.
+func isStringType(typ string) bool {
+	switch {
+	case strings.HasPrefix(typ, "text"),
+		strings.HasPrefix(typ, "character varying"),
+		strings.HasPrefix(typ, "char("),
+		strings.HasPrefix(typ, "character("),
+		typ == "name",
+		strings.HasPrefix(typ, "citext"),
+		strings.HasPrefix(typ, "uuid"):
+		return true
+	default:
+		return false
+	}
 }
 
 func detectConflicts(ctx context.Context, tabs []Table, dst pg.Querier, cfg *config.Config) []Conflict {

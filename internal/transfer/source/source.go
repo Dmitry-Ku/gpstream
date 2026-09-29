@@ -98,7 +98,7 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 // in SQL so the result stays driver-type-agnostic.
 func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distribution {
 	oid, err := pg.Row(ctx, a.q,
-		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy'))`)
+		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy')) /* gs-gp-probe */`)
 	if err != nil || oid == nil {
 		return pg.Distribution{} // not Greenplum / catalog absent
 	}

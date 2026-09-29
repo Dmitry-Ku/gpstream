@@ -30,7 +30,7 @@ func TestCreateStaging(t *testing.T) {
 		{Name: "id", Type: "integer", Nullable: false},
 		{Name: "customer", Type: "text", Nullable: true, Default: `''::text`},
 	}
-	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_5", pg.Distribution{}); err != nil {
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_5", pg.Distribution{}, pg.PartitionSpec{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	q := f.Queried()
@@ -56,7 +56,7 @@ func TestCreateStagingDistribution(t *testing.T) {
 	a := mkAgent(f)
 	cols := []pg.Column{{Name: "a", Type: "integer"}}
 	dist := pg.Distribution{Kind: "hash", Keys: []string{"a", "b"}}
-	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_9", dist); err != nil {
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_9", dist, pg.PartitionSpec{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	last := f.Queried()[len(f.Queried())-1]
@@ -68,7 +68,7 @@ func TestCreateStagingDistribution(t *testing.T) {
 	f2 := pg.NewFakeConn()
 	a2 := mkAgent(f2)
 	if err := a2.CreateStaging(context.Background(), "public", cols, "_gs_j1_10",
-		pg.Distribution{Kind: "randomly"}); err != nil {
+		pg.Distribution{Kind: "randomly"}, pg.PartitionSpec{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	last2 := f2.Queried()[len(f2.Queried())-1]

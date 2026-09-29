@@ -667,6 +667,21 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 			p.Redistrib.NeedsRedistrib, p.Redistrib.Skew*100, p.Redistrib.Threshold*100, p.Redistrib.Reason)
 	}
 	fmt.Printf("route:         %s (T4b)\n", routeSummaryLine(p))
+	// Fix 1: partitioned parents with a collation-unsafe combination (string
+	// key + no DEFAULT partition + destination collation differs) cannot be
+	// copied without losing rows. Surface them as explicit warnings so the
+	// operator adds a DEFAULT partition (or aligns collations) BEFORE
+	// running; the run itself fails these units early with the same text.
+	guarded := 0
+	for _, t := range p.Units {
+		if t.PartitionGuard != "" {
+			guarded++
+			fmt.Printf("  ! %s\n", t.PartitionGuard)
+		}
+	}
+	if guarded > 0 {
+		fmt.Printf("partition guard: %d unit(s) would FAIL at run time (add a DEFAULT partition or align collations)\n", guarded)
+	}
 	if len(p.Collations) > 0 {
 		fmt.Printf("collation:     %d difference(s) (FR-10/FR-16)\n", len(p.Collations))
 		for _, cd := range p.Collations {

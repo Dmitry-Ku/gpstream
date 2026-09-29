@@ -46,10 +46,14 @@ func StagingName(jobID string, unitID int64) string {
 // faithfully across clusters (a CREATE TABLE ... LIKE would not work across
 // clusters). dist carries the source's distribution policy; a zero value (or
 // a non-Greenplum source) omits the clause and the destination applies its
-// own default. It is a no-op if the staging table already exists
-// (crash-recovery re-uses it), which is why it swallows an "already exists"
-// error.
-func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Column, stagingName string, dist pg.Distribution) error {
+// own default. part carries the source table's partition spec (Fix 1): a
+// non-empty spec makes the staging table a partitioned parent with the same
+// leaf layout, so the destination re-routes the copied rows by ITS OWN
+// collation. The distribution clause precedes the partition spec (GP6
+// requires "DISTRIBUTED BY" before "PARTITION BY"; live-verified 29.09).
+// It is a no-op if the staging table already exists (crash-recovery re-uses
+// it), which is why it swallows an "already exists" error.
+func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Column, stagingName string, dist pg.Distribution, part pg.PartitionSpec) error {
 	sql := `CREATE TABLE IF NOT EXISTS ` + quoteIdent(schema) + "." + quoteIdent(stagingName) + " ("
 	for i, c := range cols {
 		if i > 0 {
@@ -72,6 +76,9 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 		}
 	}
 	sql += ")" + dist.SQLClause()
+	if part.Spec != "" {
+		sql += " " + part.Spec
+	}
 	_, err := a.q.Exec(ctx, sql)
 	if err != nil {
 		// "relation already exists" is fine on resume; anything else is fatal.
@@ -103,9 +110,10 @@ func (a *Agent) Truncate(ctx context.Context, schema, table string) error {
 
 // CreateTable creates the final table from the source's column layout (FR-11).
 // Used by the truncate/append paths when the destination table does not exist
-// yet (create-then-truncate/append). It is a no-op if the table already exists.
-func (a *Agent) CreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution) error {
-	return a.CreateStaging(ctx, schema, cols, table, dist)
+// yet (create-then-truncate/append). part is the partition spec (Fix 1), ""
+// for a plain table. It is a no-op if the table already exists.
+func (a *Agent) CreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution, part pg.PartitionSpec) error {
+	return a.CreateStaging(ctx, schema, cols, table, dist, part)
 }
 
 // CopyIntoStream writes the streamed binary-COPY payload r into the staging
@@ -210,6 +218,20 @@ func (a *Agent) EnsureSchema(ctx context.Context, schema string) error {
 		return nil
 	}
 	_, err := a.q.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(schema)))
+	if err == nil {
+		return nil
+	}
+	// Concurrency: CREATE SCHEMA IF NOT EXISTS is NOT race-free on the target
+	// kernel (PG 9.4 / GP6): two parallel workers creating the same schema
+	// both pass the existence check, and the loser hits the pg_namespace
+	// unique constraint (SQLSTATE 23505) instead of a no-op. A duplicate-key
+	// on the namespace name means "someone else created it first" — that is
+	// an idempotent success, not a fault (FR-02/FR-03: parallel workers,
+	// lab e2e 29.09).
+	s := err.Error()
+	if strings.Contains(s, "23505") && strings.Contains(s, "pg_namespace_nspname_index") {
+		return nil
+	}
 	return err
 }
 

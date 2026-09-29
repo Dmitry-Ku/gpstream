@@ -72,7 +72,17 @@ type Unit struct {
 	// stays IndexDone=false and is re-enqueued on the next resume (the
 	// idempotent createOneIndex makes that duplicate-safe).
 	IndexDone bool      `json:"index_done,omitempty"`
-	Updated   time.Time `json:"updated"`
+	// Partition is the source table's partition spec (Fix 1); "" for a plain
+	// table. It is reproduced in the destination DDL so the destination
+	// re-creates the same leaf layout. Carried on the unit (not just the plan
+	// table) so a resume re-reads the same spec.
+	Partition pg.PartitionSpec `json:"partition,omitempty"`
+	// PartitionGuard is the planner's Fix-1 guard diagnostic ("" = safe). A
+	// non-empty value means the unit must fail early at run time: a
+	// string-keyed parent without a DEFAULT partition on a collation-
+	// different destination would abort the whole COPY mid-stream.
+	PartitionGuard string `json:"partition_guard,omitempty"`
+	Updated      time.Time `json:"updated"`
 }
 
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier

@@ -21,7 +21,7 @@ func TestCreateStagingCollation(t *testing.T) {
 		{Name: "name", Type: "text", Nullable: true, Collation: "C"},
 		{Name: "other", Type: "text", Nullable: true, Collation: "C.utf8"},
 	}
-	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_1", pg.Distribution{}); err != nil {
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_1", pg.Distribution{}, pg.PartitionSpec{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	last := f.Queried()[len(f.Queried())-1]
@@ -47,7 +47,7 @@ func TestCreateStagingNoCollation(t *testing.T) {
 		{Name: "id", Type: "integer", Nullable: false},
 		{Name: "name", Type: "text", Nullable: true},
 	}
-	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_2", pg.Distribution{}); err != nil {
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_2", pg.Distribution{}, pg.PartitionSpec{}); err != nil {
 		t.Fatalf("create staging: %v", err)
 	}
 	last := f.Queried()[len(f.Queried())-1]

@@ -300,6 +300,10 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			Kind:      "table",
 			Bytes:     t.Bytes,
 			Conflict:  t.HasConflict,
+			// Fix 1: the partition spec (reproduced on the destination) and
+			// the planner's guard (a non-empty guard fails the unit early).
+			Partition:      t.Partition,
+			PartitionGuard: t.PartitionGuard,
 		}
 		// Fall back to the source names when a rename did not supply a
 		// destination (applyRename defaults them, but a hand-built plan may
@@ -791,6 +795,21 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// live e2e, 27.09: the first version read it on the pinned conn and the
 	// resulting error aborted the whole snapshot transaction.)
 	dist := source.New(m.srcQ).Distribution(ctx, schema, name)
+
+	// 2b. Fix-1 partition guard: a string-keyed partitioned parent WITHOUT a
+	//     DEFAULT partition, on a collation-different destination, would have
+	//     its whole COPY abort mid-stream ("no partition for partitioning
+	//     key") once a row matches no leaf bound. Fail the unit EARLY — before
+	//     any DDL or data is moved — with the planner's diagnostic, so the
+	//     operator can add a DEFAULT partition (or align collations) and retry.
+	//     A re-routing to a different leaf (with a default, or a matching
+	//     bound) is the intended Fix-1 behavior and is NOT guarded.
+	if u.PartitionGuard != "" {
+		u.State = StateFailed
+		m.events.Log("partition_guard", "table", schema+"."+name, "reason", u.PartitionGuard)
+		return fmt.Errorf("partition guard: %s", u.PartitionGuard)
+	}
+
 	if err := m.dst.EnsureSchema(ctx, ds); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
@@ -811,7 +830,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// if it does not exist yet, then (optionally) truncate it.
 		target = dn
 		if !m.dst.Exists(ctx, ds, dn) {
-			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist); err != nil {
+			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist, u.Partition); err != nil {
 				return fmt.Errorf("create table: %w", err)
 			}
 		}
@@ -832,7 +851,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			if err := m.dst.Truncate(ctx, ds, target); err != nil {
 				return fmt.Errorf("truncate staging: %w", err)
 			}
-		} else if err := m.dst.CreateStaging(ctx, ds, cols, target, dist); err != nil {
+		} else if err := m.dst.CreateStaging(ctx, ds, cols, target, dist, u.Partition); err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
 	}
