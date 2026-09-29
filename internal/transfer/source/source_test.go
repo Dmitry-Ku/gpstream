@@ -170,3 +170,66 @@ func TestToStrToBool(t *testing.T) {
 		t.Fatal("toBool")
 	}
 }
+
+// TestSequences reads a table's serial sequences (F-11 metadata phase): the
+// discovery query (pg_get_serial_sequence) finds the serial column and its
+// sequence; a table without serial columns yields an empty (non-nil) slice.
+func TestSequences(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("pg_get_serial_sequence", [][]any{
+		{"public.orders_id_seq", "id"},
+	})
+	a := New(f)
+	seqs, err := a.Sequences(context.Background(), "public", "orders")
+	if err != nil {
+		t.Fatalf("sequences: %v", err)
+	}
+	if len(seqs) != 1 {
+		t.Fatalf("got %d sequences, want 1", len(seqs))
+	}
+	s := seqs[0]
+	if s.Name != "public.orders_id_seq" {
+		t.Fatalf("name = %q, want public.orders_id_seq", s.Name)
+	}
+	if s.Col != "id" {
+		t.Fatalf("col = %q, want id", s.Col)
+	}
+
+	// No serial columns: the discovery query returns no rows.
+	f2 := pg.NewFakeConn()
+	f2.On("pg_get_serial_sequence", [][]any{})
+	a2 := New(f2)
+	seqs2, err := a2.Sequences(context.Background(), "public", "orders")
+	if err != nil {
+		t.Fatalf("sequences (none): %v", err)
+	}
+	if len(seqs2) != 0 {
+		t.Fatalf("got %d sequences, want 0", len(seqs2))
+	}
+}
+
+// TestSequenceLastValue reads a sequence's last_value (F-11 post-load sync).
+func TestSequenceLastValue(t *testing.T) {
+	f := pg.NewFakeConn()
+	f.On("last_value", [][]any{{int64(42)}})
+	a := New(f)
+	v, err := a.SequenceLastValue(context.Background(), "public", "orders_id_seq")
+	if err != nil {
+		t.Fatalf("last_value: %v", err)
+	}
+	if v != 42 {
+		t.Fatalf("last_value = %d, want 42", v)
+	}
+
+	// A missing sequence yields 0 (no rows), not an error.
+	f2 := pg.NewFakeConn()
+	f2.On("last_value", [][]any{})
+	a2 := New(f2)
+	v2, err := a2.SequenceLastValue(context.Background(), "public", "gone_seq")
+	if err != nil {
+		t.Fatalf("last_value (none): %v", err)
+	}
+	if v2 != 0 {
+		t.Fatalf("last_value = %d, want 0", v2)
+	}
+}

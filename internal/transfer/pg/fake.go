@@ -145,13 +145,23 @@ func (f *FakeConn) Exec(ctx context.Context, sql string, args ...any) (int64, er
 }
 
 // renderQuery returns the SQL with positional args interpolated (so recorded
-// queries contain the bound values, e.g. index names), which lets tests assert
-// on what was actually issued. If the SQL is not a clean format string (no
-// matching verbs), it falls back to "sql" + a repr of the args instead of
-// letting fmt print %!(EXTRA ...) markers.
+// queries contain the bound values, e.g. index names), which lets tests
+// assert on what was actually issued. When the SQL has no format verbs the
+// driver binds $1..$n parameters, so the bound values are appended as
+// "[args: ...]" instead (the fake has no real parameter binding). If the
+// SQL is a clean format string the verbs are expanded; if the expansion
+// fails it falls back to "sql" + a repr of the args instead of letting fmt
+// print %!(EXTRA ...) markers.
 func renderQuery(sql string, args ...any) string {
 	if len(args) == 0 {
 		return sql
+	}
+	if !strings.Contains(sql, "%") {
+		parts := make([]string, len(args))
+		for i, a := range args {
+			parts[i] = fmt.Sprint(a)
+		}
+		return sql + " [args: " + strings.Join(parts, ", ") + "]"
 	}
 	out := fmt.Sprintf(sql, args...)
 	if strings.Contains(out, "(EXTRA") || strings.Contains(out, "(MISSING") {

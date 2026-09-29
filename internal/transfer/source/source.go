@@ -122,6 +122,91 @@ func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distr
 	return d
 }
 
+// SequenceDef describes one sequence owned by a source table's serial
+// column (F-11: «последовательности (значения синхронизируются post-load)»).
+type SequenceDef struct {
+	// Name is the schema-qualified sequence name on the source
+	// ("public.orders_id_seq"). A serial column's default is copied verbatim
+	// into the destination DDL (nextval('public.orders_id_seq'::regclass)), so
+	// the sequence is recreated on the destination under the SAME
+	// schema-qualified name.
+	Name string
+	// Col is the serial column the sequence supplies.
+	Col string
+}
+
+// Sequences returns the sequences owned by serial columns of schema.table on
+// the source (F-11 metadata phase). A serial column is detected by
+// pg_get_serial_sequence (its DEFAULT is nextval('<seq>'::regclass)); this
+// function exists on PostgreSQL 9.4 / Greenplum 6, so it is the portable
+// detection (pg_get_sequencedef and CREATE SEQUENCE IF NOT EXISTS are
+// PG10+/9.5+ and do NOT exist on the target kernel). A table without serial
+// columns yields an empty (non-nil) slice.
+func (a *Agent) Sequences(ctx context.Context, schema, table string) ([]SequenceDef, error) {
+	rows, err := a.q.Query(ctx,
+		`SELECT pg_get_serial_sequence(n.nspname || '.' || c.relname, a.attname),
+		        a.attname
+		 FROM pg_class c
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 JOIN pg_attribute a ON a.attrelid = c.oid
+		WHERE c.relname = $1 AND n.nspname = $2
+		  AND a.attnum > 0 AND NOT a.attisdropped
+		  AND pg_get_serial_sequence(n.nspname || '.' || c.relname, a.attname) IS NOT NULL
+		ORDER BY a.attnum`,
+		table, schema)
+	if err != nil {
+		return nil, fmt.Errorf("query sequences: %w", err)
+	}
+	out := make([]SequenceDef, 0, len(rows))
+	for _, r := range rows {
+		if len(r) < 2 {
+			continue
+		}
+		name := toStr(r[0])
+		if name == "" {
+			continue
+		}
+		out = append(out, SequenceDef{Name: name, Col: toStr(r[1])})
+	}
+	return out, nil
+}
+
+// SequenceLastValue returns the sequence's current last_value (F-11
+// post-load sync). Reading from a sequence never advances it; the value
+// only ever moves forward, so reading it outside the run's snapshot is
+// safe (it can only make the resynchronised destination value higher).
+func (a *Agent) SequenceLastValue(ctx context.Context, schema, seq string) (int64, error) {
+	rows, err := a.q.Query(ctx,
+		`SELECT last_value FROM `+quoteIdent(schema)+"."+quoteIdent(seq))
+	if err != nil {
+		return 0, fmt.Errorf("sequence last_value %s.%s: %w", schema, seq, err)
+	}
+	if len(rows) == 0 || len(rows[0]) == 0 || rows[0][0] == nil {
+		return 0, nil
+	}
+	return toInt64(rows[0][0]), nil
+}
+
+// toInt64 renders an any as an int64 (0 for nil).
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case int16:
+		return int64(n)
+	case int:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
 // toStr renders an any as a string ("" for nil).
 func toStr(v any) string {
 	if v == nil {

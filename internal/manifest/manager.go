@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -678,6 +679,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 
+	// 3a. Recreate the source sequences BEFORE the table DDL (F-11 metadata
+	//     phase). A serial column's default (nextval('<schema>.<seq>'::regclass))
+	//     is copied verbatim into the destination DDL, so the sequence must
+	//     exist when the table is created.
+	m.createSequences(ctx, u)
+
 	// 3. Resolve the conflict policy (FR-11): the copy target is either a
 	//    staging table (default / --overwrite) or the final table in-place
 	//    (--truncate / --append). All destinations below use ds/dn.
@@ -864,11 +871,123 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("journal swapped: %w", err)
 	}
 
+	// 9b. Resynchronise sequence VALUES (F-11: «значения синхронизируются
+	//     post-load»). The final table now holds the source rows, so the
+	//     destination sequences catch up to the source's last_value: the
+	//     next nextval on the destination returns last_value+1, exactly
+	//     like on the source. (The sequences themselves were created in
+	//     step 3a, before the table DDL.)
+	m.syncSequenceValues(ctx, u)
+
 	// 10. Enqueue the index build to the background pool (FR-17). Non-fatal by
 	//     design: the data is already in place, and a failed/missing read is
 	//     covered by the journal scan in Run on the next resume.
 	m.enqueueIndexes(ctx, u)
 	return nil
+}
+
+// createSequences recreates the unit's source sequences on the destination
+// (F-11 metadata phase: «последовательности»). It runs BEFORE the table
+// DDL, because a serial column's default (nextval('schema.seq'::regclass))
+// is copied verbatim into the destination table and must resolve to an
+// existing sequence. The sequence keeps its source schema-qualified name.
+// Non-fatal by design (like the FR-17 index build): CREATE SEQUENCE IF NOT
+// EXISTS is idempotent, and a failure is recorded in events.jsonl (F-04)
+// with the root cause.
+//
+// The catalog reads (sequence discovery, definition) run on the base source
+// querier m.srcQ, NOT the pinned FR-02 snapshot connection: a fault there
+// must not abort the REPEATABLE READ transaction that every data COPY
+// shares (the F-06 fix 866318b, Columns/Distribution reads).
+func (m *Manager) createSequences(ctx context.Context, u *Unit) {
+	schema, name := u.Schema, u.Table
+	ds, dn := u.DstSchema, u.DstName
+	if ds == "" {
+		ds = schema
+	}
+	if dn == "" {
+		dn = name
+	}
+	src := source.New(m.srcQ)
+	seqs, err := src.Sequences(ctx, schema, name)
+	if err != nil {
+		m.events.Log("sequence_sync_failed",
+			"table", ds+"."+dn,
+			"error", err.Error(),
+			"reason", "sequence catalog read (F-11)")
+		return
+	}
+	for _, s := range seqs {
+		if err := m.dst.CreateSequence(ctx, s.Name); err != nil {
+			m.events.Log("sequence_sync_failed",
+				"table", ds+"."+dn,
+				"sequence", s.Name,
+				"error", err.Error(),
+				"reason", "create sequence (F-11)")
+		}
+	}
+}
+
+// syncSequenceValues resynchronises the unit's destination sequences to the
+// source's last_value (F-11: «значения синхронизируются post-load»). It
+// runs AFTER the swap, so the final table holds the source rows and the
+// next nextval on the destination returns last_value+1 — exactly like on
+// the source. Non-fatal by design: the data is already in place, and the
+// resync is idempotent (setval), so a resume re-runs it.
+//
+// The last_value read runs on the base source querier (not the pinned
+// snapshot): a sequence only ever moves forward, so reading it outside the
+// snapshot can only make the resynchronised destination value HIGHER, and
+// the destination's nextval can never collide with an id the copied rows
+// already hold.
+func (m *Manager) syncSequenceValues(ctx context.Context, u *Unit) {
+	schema, name := u.Schema, u.Table
+	ds, dn := u.DstSchema, u.DstName
+	if ds == "" {
+		ds = schema
+	}
+	if dn == "" {
+		dn = name
+	}
+	src := source.New(m.srcQ)
+	seqs, err := src.Sequences(ctx, schema, name)
+	if err != nil {
+		// createSequences already logged the identical catalog-read fault
+		// (step 3a); the values cannot be resynced, but the data is in
+		// place, so this is not a new failure.
+		return
+	}
+	for _, s := range seqs {
+		srcSeq := s.Name
+		base := s.Name
+		if i := strings.LastIndex(base, "."); i >= 0 {
+			srcSeq = base[:i]
+			base = base[i+1:]
+		}
+		last, err := src.SequenceLastValue(ctx, srcSeq, base)
+		if err != nil {
+			m.events.Log("sequence_sync_failed",
+				"table", ds+"."+dn,
+				"sequence", s.Name,
+				"error", err.Error(),
+				"reason", "read source last_value (F-11)")
+			continue
+		}
+		if last > 0 {
+			if err := m.dst.SetSequenceValue(ctx, srcSeq, base, last); err != nil {
+				m.events.Log("sequence_sync_failed",
+					"table", ds+"."+dn,
+					"sequence", s.Name,
+					"error", err.Error(),
+					"reason", "setval on destination (F-11)")
+				continue
+			}
+		}
+		m.events.Log("sequence_synced",
+			"table", ds+"."+dn,
+			"sequence", s.Name,
+			"last_value", last)
+	}
 }
 
 // enqueueIndexes reads the source table's index definitions and enqueues a

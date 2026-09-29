@@ -73,7 +73,21 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-11 — Object selection, name mapping, metadata/data — **PARTIAL**
 - Spec: `--dbs/--schemas/--tables` (+patterns); default no-overwrite; `--include metadata,data`, `--ddl-only`, `--data-only`; `--map-db/--map-schema/--map-table`; DDL + **sequences synced post-load**; extension check.
 - Evidence: `main.go:165-176` `--include/--metadata-only/--ddl-only/--data-only`; rename/mapping flags present; planner builds per-table units.
-- Gaps: **post-load `setval` for sequences is not implemented** (`grep create sequence/last_value` in the load path → none); **extension presence check missing** (same gap as F-05).
+- **Sequences synced post-load (29.09, this cron run):** serial-column detection via
+  `pg_get_serial_sequence` (portable to PG 9.4 / GP6); the sequence is recreated on
+  the destination BEFORE the table DDL (step 3a, `CREATE SEQUENCE` with the standard
+  serial parameters — `IF NOT EXISTS` and `pg_get_sequencedef` don't exist on the 9.4
+  kernel; idempotency via an explicit existence check + 42P07 swallow) and its value
+  is resynchronised AFTER the swap (`setval($1::regclass, last_value, true)`; the
+  qualified name is passed as a regclass parameter — a bare `schema.seq` is not a valid
+  regclass argument). Non-fatal, logged to events.jsonl (`sequence_synced` /
+  `sequence_sync_failed`). Also fixed a latent bug found while testing:
+  `isAlreadyExists` matched SQLSTATE 42P01 (undefined_table) instead of 42P07
+  (duplicate_object) — it swallowed real DDL failures. Live acceptance:
+  `integration/f11_sequence_test.go` (TestSequencePostLoadSync: seq created,
+  last_value == source 105, next nextval == 106, events recorded;
+  TestSequenceSyncResumeIdempotent: re-run idempotent, no duplicates).
+- Gaps: **extension presence check missing** (same gap as F-05).
 - **BLOCKED-INFRA**: "3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.
 
 ### F-12 — Stream compression — **DONE (28.09)**
@@ -150,7 +164,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
-| F-11 | PARTIAL | no post-load sequence setval; no extension check |
+| F-11 | PARTIAL | sequences synced post-load (29.09); no extension check |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
@@ -180,9 +194,12 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    = diagnosed handshake refusal (real-handshake regression test); CA
    bundle loaded into RootCAs, bad CA/keypair = hard error; audit.log of
    actions: run/run-finished/resume/cleanup at <state>/audit.log 0600).
-6. **F-11 post-load sequence `setval`** sync.
+6. **F-11 post-load sequence `setval`** — DONE 29.09 (serial detection via
+   pg_get_serial_sequence; CREATE SEQUENCE before table DDL + setval after
+   swap; 42P01/42P07 isAlreadyExists fix; events.jsonl sequence_synced /
+   sequence_sync_failed; live acceptance f11_sequence_test.go).
 7. **F-05/F-11 doctor extension check** — detect MADlib/PostGIS/orafce presence
-   in the destination.
+   in the destination. (next)
 8. **F-15** — add the segment balance max/avg metric to the monitor/report.
 9. **F-16** — column-level (`attcollation`) collation comparison.
 10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +

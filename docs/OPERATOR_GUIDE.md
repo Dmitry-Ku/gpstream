@@ -227,6 +227,8 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (strict default) or `skip` (`--skip-conflicts`) |
 | `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
+| `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
+| `sequence_sync_failed` | a sequence recreation/resync step failed (non-fatal; the data is in place) | `table`, `sequence`, `reason`, `error` |
 
 It is a diagnostic log, not the durable record (that is the journal), so a
 write failure never fails the copy. With no `--state-dir` journal mirror the

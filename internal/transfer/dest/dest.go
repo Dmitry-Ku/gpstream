@@ -205,6 +205,74 @@ func (a *Agent) EnsureSchema(ctx context.Context, schema string) error {
 	return err
 }
 
+// CreateSequence recreates a source sequence on the destination (F-11
+// metadata phase: «последовательности»). name is the sequence's
+// schema-qualified source name; the destination table's serial column
+// default was copied verbatim (nextval('<name>'::regclass)), so the
+// sequence must be created under the SAME name for the default to resolve.
+//
+// The DDL is the standard serial-column sequence: `serial` is sugar for a
+// sequence with START 1 / INCREMENT 1 / NO MIN/MAX / CACHE 1, so
+// recreating it with those parameters reproduces the source sequence's
+// parameters (its VALUE is resynchronised separately by SetSequenceValue
+// post-load). CREATE SEQUENCE IF NOT EXISTS does not exist on the target
+// kernel (PostgreSQL 9.4 / Greenplum 6), so idempotency is achieved by
+// checking existence first and swallowing a 42P07 race (FR-07 resume): a
+// sequence that survived a crashed run is left as-is.
+func (a *Agent) CreateSequence(ctx context.Context, name string) error {
+	schema, base := splitQualifiedName(name)
+	if a.sequenceExists(ctx, schema, base) {
+		return nil // resume: the sequence survived a crashed run
+	}
+	sql := fmt.Sprintf(`CREATE SEQUENCE %s.%s START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1`,
+		quoteIdent(schema), quoteIdent(base))
+	if _, err := a.q.Exec(ctx, sql); err != nil {
+		if isAlreadyExists(err) {
+			return nil // a concurrent resume created it between check and create
+		}
+		return fmt.Errorf("create sequence %s: %w", name, err)
+	}
+	return nil
+}
+
+// SetSequenceValue resynchronises a destination sequence to the value the
+// source sequence held at copy time (F-11: «значения синхронизируются
+// post-load»). setval(seq, last_value, true) makes the NEXT nextval
+// return last_value+1 — matching the source's state after a load. It runs
+// AFTER the table swap, so it never touches a staging table, and it is
+// idempotent (a resume re-applies the same value).
+//
+// The sequence is passed as a PARAMETER cast to regclass, not as a bare
+// schema-qualified identifier: a bare `schema.seq` is not a valid regclass
+// function argument (Postgres parses it as a field selection -> "missing
+// FROM-clause entry for table schema"), so the qualified name must be a
+// string literal / parameter.
+func (a *Agent) SetSequenceValue(ctx context.Context, schema, seq string, last int64) error {
+	_, err := a.q.Exec(ctx, `SELECT setval($1::regclass, $2, true)`, schema+"."+seq, last)
+	return err
+}
+
+// sequenceExists reports whether a sequence named seq exists in schema.
+func (a *Agent) sequenceExists(ctx context.Context, schema, seq string) bool {
+	rows, err := a.q.Query(ctx,
+		`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+		 WHERE c.relname=$1 AND n.nspname=$2 AND c.relkind='S'`,
+		seq, schema)
+	if err != nil || len(rows) == 0 {
+		return false
+	}
+	return true
+}
+
+// splitQualifiedName splits "schema.seq" into (schema, seq); a name without
+// a dot is treated as (public, name).
+func splitQualifiedName(name string) (schema, base string) {
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		return name[:i], name[i+1:]
+	}
+	return "public", name
+}
+
 // CreateIndexes applies the source index definitions to schema.table on the
 // destination (F-17). It is called by the background index pool AFTER the
 // staging table has been swapped to its final name, so the table already holds
@@ -273,15 +341,17 @@ func copySQL(schema, table string) string {
 }
 
 // isAlreadyExists reports whether err is a Postgres "already exists" error
-// (SQLSTATE 42P01). It is a lenient string check so a resume can proceed
-// without importing the pg error type.
+// (SQLSTATE 42P07). It is a lenient string check so a resume can proceed
+// without importing the pg error type. (42P01 is undefined-table — a
+// DIFFERENT error; matching it would swallow genuine DDL failures such as a
+// serial default referencing a sequence that was not created yet.)
 func isAlreadyExists(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	for i := 0; i+len("42P01") <= len(s); i++ {
-		if s[i:i+5] == "42P01" {
+	for i := 0; i+len("42P07") <= len(s); i++ {
+		if s[i:i+5] == "42P07" {
 			return true
 		}
 	}

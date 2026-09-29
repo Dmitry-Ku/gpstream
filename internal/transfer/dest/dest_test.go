@@ -210,13 +210,20 @@ func TestEnsureSchema(t *testing.T) {
 	}
 }
 
-// TestIsAlreadyExists checks the lenient 42P01 error detection (FR-07).
+// TestIsAlreadyExists checks the lenient duplicate-object detection (FR-07).
+// "already exists" is SQLSTATE 42P07 (duplicate_object). 42P01
+// (undefined_table) is a DIFFERENT error and must NOT match — matching it
+// would swallow genuine DDL failures (a serial default referencing a
+// sequence that was not created yet, F-11).
 func TestIsAlreadyExists(t *testing.T) {
 	if isAlreadyExists(nil) {
 		t.Fatal("nil is not already-exists")
 	}
-	if !isAlreadyExists(errWith("42P01")) {
-		t.Fatal("42P01 should match")
+	if !isAlreadyExists(errWith("42P07")) {
+		t.Fatal("42P07 should match")
+	}
+	if isAlreadyExists(errWith("42P01")) {
+		t.Fatal("42P01 (undefined_table) must NOT match — it is not already-exists")
 	}
 	if isAlreadyExists(errWith("some other error")) {
 		t.Fatal("unrelated error should not match")
@@ -310,6 +317,61 @@ func TestCreateIndexesEmpty(t *testing.T) {
 	}
 	if len(f.Queried()) != 0 {
 		t.Fatalf("expected no SQL for an empty definition list, got %v", f.Queried())
+	}
+}
+
+// TestCreateSequence issues a CREATE SEQUENCE (F-11 metadata phase) with the
+// standard serial parameters, and is a no-op when the sequence already
+// exists (FR-07 resume). CREATE SEQUENCE IF NOT EXISTS does not exist on the
+// target kernel (PG 9.4 / Greenplum 6), so the existence check is explicit.
+func TestCreateSequence(t *testing.T) {
+	// Fresh destination: the existence check returns no rows -> CREATE.
+	f := pg.NewFakeConn()
+	f.On("relkind='S'", [][]any{})
+	a := mkAgent(f)
+	if err := a.CreateSequence(context.Background(), "public.orders_id_seq"); err != nil {
+		t.Fatalf("create sequence: %v", err)
+	}
+	created := false
+	for _, sql := range f.Queried() {
+		if strings.Contains(sql, `CREATE SEQUENCE "public"."orders_id_seq" START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1`) {
+			created = true
+		}
+	}
+	if !created {
+		t.Fatalf("expected a CREATE SEQUENCE with the serial parameters, got %v", f.Queried())
+	}
+
+	// Resume: the sequence already exists -> no CREATE is issued.
+	f2 := pg.NewFakeConn()
+	f2.On("relkind='S'", [][]any{{1}})
+	a2 := mkAgent(f2)
+	if err := a2.CreateSequence(context.Background(), "public.orders_id_seq"); err != nil {
+		t.Fatalf("create sequence (exists): %v", err)
+	}
+	for _, sql := range f2.Queried() {
+		if strings.Contains(sql, "CREATE SEQUENCE") {
+			t.Fatalf("must not re-create an existing sequence: %v", sql)
+		}
+	}
+}
+
+// TestSetSequenceValue resynchronises a destination sequence to the source
+// last_value (F-11: «значения синхронизируются post-load»). The sequence is
+// passed as a regclass parameter (a bare schema-qualified identifier is not
+// a valid regclass argument).
+func TestSetSequenceValue(t *testing.T) {
+	f := pg.NewFakeConn()
+	a := mkAgent(f)
+	if err := a.SetSequenceValue(context.Background(), "public", "orders_id_seq", 42); err != nil {
+		t.Fatalf("set sequence value: %v", err)
+	}
+	q := f.Queried()
+	if len(q) != 1 {
+		t.Fatalf("expected exactly 1 SQL, got %v", q)
+	}
+	if !strings.Contains(q[0], "setval(") || !strings.Contains(q[0], "42") || !strings.Contains(q[0], "true") {
+		t.Fatalf("expected setval(seq, 42, true), got %q", q[0])
 	}
 }
 
