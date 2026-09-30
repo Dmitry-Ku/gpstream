@@ -177,11 +177,10 @@ Suppress redistribution accounting (sets the skew gate off).
 X
 Fraction (0..1) of source data that must move to a different segment for the
 plan to mark redistribution (F-15); default 0.05; negative = gate off.
-.TP
-.BR --segment-balance-threshold
-X
-Live destination segment-fill max/avg warning gate (F-15); default 1.5;
-negative = metric only (no warning); NaN is rejected.
+The live destination segment-fill balance (max/avg) is always measured after
+each swap and reported; a fixed 1.5 gate emits the WARNING line (the former
+.B --segment-balance-threshold
+knob was removed).
 .TP
 .BR --resume-consistency
 relaxed|strict
@@ -291,7 +290,6 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .RI ACK_TIMEOUT ,
 .RI MAX_RECONNECTS ,
 .RI RETRANSMIT_BUFFER_MAX ,
-.RI SEGMENT_BALANCE_THRESHOLD ,
 .RI SMALL_TABLE_THRESHOLD ,
 .RI LOCALE_CHECK ,
 .RI CONSISTENT_TABLES ,

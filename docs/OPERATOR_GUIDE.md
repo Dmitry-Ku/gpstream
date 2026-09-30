@@ -231,9 +231,9 @@ segment balance (F-15, live, per destination segment):
 
 The counts are the per-segment row counts in `gp_segment_id` order; `max/avg`
 is the fill-balance ratio (1.0 = perfectly even). A table whose `max/avg`
-exceeds `--segment-balance-threshold` (default `1.5`) emits a `WARNING` line
-and a `warning: true` `segment_balance` event (spec F-15: "warning on
-threshold exceeded"). The measurement is non-fatal and Greenplum-only: a plain
+exceeds the fixed F-15 segment-fill gate (`1.5`,
+`dest.DefaultBalanceThreshold`) emits a `WARNING` line and a `warning: true`
+`segment_balance` event (spec F-15: "warning on threshold exceeded"). The measurement is non-fatal and Greenplum-only: a plain
 PostgreSQL destination has no segments and the section is omitted.
 
 ### The diagnostic event log (`events.jsonl`)
@@ -252,7 +252,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
 | `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
 | `sequence_sync_failed` | a sequence recreation/resync step failed (non-fatal; the data is in place) | `table`, `sequence`, `reason`, `error` |
-| `segment_balance` | the live segment-fill balance of a copied table was measured on a Greenplum destination (F-15, after the swap) | `table`, `segments`, `max`, `avg`, `max_avg`, `threshold` (`--segment-balance-threshold`), `warning` (true when `max_avg` exceeds the threshold) |
+| `segment_balance` | the live segment-fill balance of a copied table was measured on a Greenplum destination (F-15, after the swap) | `table`, `segments`, `max`, `avg`, `max_avg`, `threshold` (fixed 1.5 gate), `warning` (true when `max_avg` exceeds the gate) |
 | `collation_diff` | a collation difference was detected in the plan (F-16, at run start) | `level` = `db` (`db`, `lc_collate`, `lc_ctype`) or `column` (`table`, `column`, `source`, `destination`) |
 
 It is a diagnostic log, not the durable record (that is the journal), so a

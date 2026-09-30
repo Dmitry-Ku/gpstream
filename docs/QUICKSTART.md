@@ -279,7 +279,7 @@ instead of the default `--consistent-db`.
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables`, `--resume-consistency` |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
-| Redistribution | `--no-redistribute`, `--skew-threshold X`, `--segment-balance-threshold X` |
+| Redistribution | `--no-redistribute`, `--skew-threshold X` (segment-fill balance is measured always, fixed 1.5 gate) |
 | TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |
 | Planning | `--dry-run`, `--timeout S`, `--plan-file F` |
 | Observability | `--metrics-addr A` (serves `/metrics` during a run) |

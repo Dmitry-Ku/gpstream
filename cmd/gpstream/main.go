@@ -285,9 +285,6 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--skew-threshold":
 			i++
 			cfg.SkewThreshold = atof(args[i])
-		case "--segment-balance-threshold":
-			i++
-			cfg.SegmentBalanceThreshold = atof(args[i])
 
 		// Compression level (F-12): --zstd-level 1-19.
 		case "--zstd-level":
@@ -1449,7 +1446,7 @@ func cmdRun(args []string) error {
 	}
 	// F-15: the live segment-fill balance of the copied tables (max/avg over
 	// the destination's gp_segment_id) with the warnings for any table that
-	// exceeded --segment-balance-threshold. Empty on a non-Greenplum
+	// exceeded the F-15 segment-fill gate (fixed 1.5). Empty on a non-Greenplum
 	// destination (no segments to measure).
 	if bal := dest.RenderBalance(mgr.Balances); bal != "" {
 		fmt.Println("segment balance (F-15, live, per destination segment):")

@@ -88,7 +88,14 @@ from the flags or the file.
 |-------|------|---------|--------|-------|
 | `NoRedistribute` | bool | `false` | `--no-redistribute` | Suppress redistribution accounting. |
 | `SkewThreshold` | float64 | **`0.05`** | `--skew-threshold` / file | Skew fraction; negative = skew checks off. |
-| `SegmentBalanceThreshold` | float64 | **`1.5`** | `--segment-balance-threshold` / env / file | Live segment-fill max/avg warning gate (F-15); negative = metric only. |
+
+The F-15 live segment-fill warning gate (max/avg over the destination
+segments, measured after each swap) is **fixed at 1.5**
+(`dest.DefaultBalanceThreshold`): the metric is always recorded in the final
+report and events.jsonl, and a `WARNING` line is emitted when a table's
+max/avg exceeds 1.5. The `--segment-balance-threshold` flag (and its file
+key / env var) was removed — the metric stays, the knob did not earn its
+place.
 
 ### 1.11 TLS (F-13)
 | Field | Type | Default | Source | Notes |
@@ -164,7 +171,6 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `Verify` | `sample` |
 | `Timeout` | `120s` |
 | `SkewThreshold` | `0.05` |
-| `SegmentBalanceThreshold` | `1.5` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
@@ -229,7 +235,6 @@ covers a different, session-level subset).
 | `seg_tls_key` | `SegTLSKey` | **secret** |
 | `seg_tls_ca` | `SegTLSCA` | **secret** |
 | `skew_threshold` | `SkewThreshold` | parsed as float |
-| `segment_balance_threshold` | `SegmentBalanceThreshold` | parsed as float |
 | `index_priority` | `IndexPriority` | `size`/`fifo` |
 | `timeout` | `Timeout` | parsed as duration |
 | `locale_check` | `LocaleCheck` | `true`/`1` |
@@ -261,7 +266,6 @@ skew_threshold = 0.05
 | `GPSTREAM_AUTO_RESUME` | `AutoResume` | int |
 | `GPSTREAM_ON_UNIT_FAILURE` | `OnUnitFailure` | string |
 | `GPSTREAM_CONSISTENT_TABLES` | `ConsistentTables` | `true`/`1` |
-| `GPSTREAM_SEGMENT_BALANCE_THRESHOLD` | `SegmentBalanceThreshold` | float |
 | `GPSTREAM_SSL_CERT` | `SSLCert` | string (**secret**) |
 | `GPSTREAM_SSL_KEY` | `SSLKey` | string (**secret**) |
 | `GPSTREAM_SSL_CA` | `SSLCA` | string (**secret**) |
@@ -301,7 +305,6 @@ failed validation aborts the command.
 | consistency scope | `--consistent-db`, `--consistent-cluster`, `--consistent-tables` are **mutually exclusive** (pairwise) | `--consistent-db and --consistent-cluster are mutually exclusive` / `--consistent-tables and --consistent-db are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `full`/`sample`/`off` | `unknown verify mode "…"` |
-| segment balance | `SegmentBalanceThreshold` must not be NaN | `segment-balance-threshold is NaN …` |
 | copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |

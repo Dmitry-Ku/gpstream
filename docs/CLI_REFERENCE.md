@@ -81,7 +81,7 @@ subset of flags (listed per-command below) and ignore the rest.
   honours `--auto-resume N` (F-07). On a Greenplum destination it also
   measures the live segment-fill balance of every copied table (max/avg over
   `gp_segment_id`, F-15) and prints it in the final report, warning when a
-  table exceeds `--segment-balance-threshold`. `run` is the command that used
+  table exceeds the fixed F-15 segment-fill gate (1.5). `run` is the command that used
   to be called `copy`.
 - **`dry-run`** — plans **without executing** (F-10); full contract. Renders
   the deterministic plan summary (units, volume, conflicts, redistribution,
@@ -267,7 +267,6 @@ fallback and is off by default.
 |------|--------------|---------|
 | `--no-redistribute` | `NoRedistribute` | `false` (suppress redistribution accounting; sets skew gate off) |
 | `--skew-threshold <X>` | `SkewThreshold` | `0.05` (negative = skew checks off) |
-| `--segment-balance-threshold <X>` | `SegmentBalanceThreshold` | `1.5` (max/avg fill of the destination segments; warning above it; negative = metric only) |
 | `--locale-check` | `LocaleCheck` | `false` (detect locale/encoding/timezone differences, F-16) |
 
 ### TLS (F-13)
@@ -352,7 +351,7 @@ CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 
 `RATE_LIMIT`, `WORKERS`, `COMPRESS`, `SMALL_TABLE_THRESHOLD`,
 `AUTO_RESUME`, `ON_UNIT_FAILURE`, `CONSISTENT_TABLES`,
-`SEGMENT_BALANCE_THRESHOLD`, `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
+`FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
 `RETRANSMIT_BUFFER_MAX`, `SSL_CERT`, `SSL_KEY`, `SSL_CA`, `SEG_TLS_CERT`,
 `SEG_TLS_KEY`, `SEG_TLS_CA`, `LOCALE_CHECK`.
 

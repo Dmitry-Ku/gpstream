@@ -6,7 +6,7 @@ package main
 // flag parsing), cmdStatus with a valid runstats.json (live table: pair,
 // progress, throughput, by_status, per-table) plus jobmeta.json (snap-epoch
 // line), the parseConfig flag branches (--no-redistribute, --skew-threshold,
-// --segment-balance-threshold, --index-workers, --no-indexes,
+// --index-workers, --no-indexes,
 // --no-constraints, --index-priority), and the config-file
 // security-warning loop (0644 file with a password in the DSN).
 import (
@@ -123,7 +123,6 @@ func TestParseConfigFlagsB(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--no-redistribute",
 		"--skew-threshold", "0.2",
-		"--segment-balance-threshold", "0.3",
 		"--index-workers", "7",
 		"--no-indexes",
 		"--no-constraints",
@@ -139,9 +138,6 @@ func TestParseConfigFlagsB(t *testing.T) {
 	// the later flag wins: 0.2.
 	if c.SkewThreshold != 0.2 {
 		t.Errorf("SkewThreshold = %v, want 0.2 (later flag wins)", c.SkewThreshold)
-	}
-	if c.SegmentBalanceThreshold != 0.3 {
-		t.Errorf("SegmentBalanceThreshold = %v, want 0.3", c.SegmentBalanceThreshold)
 	}
 	if c.IndexWorkers != 7 {
 		t.Errorf("IndexWorkers = %d, want 7", c.IndexWorkers)

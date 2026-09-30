@@ -94,7 +94,6 @@ func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_AUTO_RESUME", "2")
 	t.Setenv("GPSTREAM_ON_UNIT_FAILURE", "abort")
 	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "true")
-	t.Setenv("GPSTREAM_SEGMENT_BALANCE_THRESHOLD", "1.25")
 	t.Setenv("GPSTREAM_SSL_CERT", "/c.pem")
 	t.Setenv("GPSTREAM_SSL_KEY", "/k.pem")
 	t.Setenv("GPSTREAM_SSL_CA", "/ca.pem")
@@ -112,7 +111,7 @@ func TestApplyEnvSweep(t *testing.T) {
 
 	if c.RateLimit != 42.5 || c.WorkersPerPair != 3 || c.Compression != "none" ||
 		c.SmallTableThreshold != 2097152 || c.AutoResume != 2 ||
-		c.OnUnitFailure != "abort" || !c.ConsistentTables || c.SegmentBalanceThreshold != 1.25 {
+		c.OnUnitFailure != "abort" || !c.ConsistentTables {
 		t.Errorf("scalar env overlay wrong: %+v", c)
 	}
 	if c.SSLCert != "/c.pem" || c.SSLKey != "/k.pem" || c.SSLCA != "/ca.pem" ||
@@ -171,7 +170,6 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }, "db+cluster")
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentCluster = true, true }, "tables+cluster")
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentDB = true, true }, "tables+db")
-	fail(func(c *Config) { c.SegmentBalanceThreshold = NaN() }, "nan-threshold")
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
@@ -256,7 +254,6 @@ seg_tls_key = "/sb"
 seg_tls_ca = "/sc"
 data_port_range = "9000-9100"
 skew_threshold = "0.8"
-segment_balance_threshold = "1.7"
 index_priority = "size"
 timeout = "2m"
 overwrite_only_conflicts = "1"
@@ -296,7 +293,6 @@ seg_tls_key: "/sb"
 seg_tls_ca: "/sc"
 data_port_range: "9000-9100"
 skew_threshold: "0.8"
-segment_balance_threshold: "1.7"
 index_priority: "size"
 timeout: "2m"
 overwrite_only_conflicts: "1"
@@ -332,7 +328,7 @@ report_text: "/t"
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
 			c.SegTLSCA != "/sc" || c.SkewThreshold != 0.8 ||
-			c.SegmentBalanceThreshold != 1.7 || c.IndexPriority != "size" || c.Timeout != 2*time.Minute ||
+			c.IndexPriority != "size" || c.Timeout != 2*time.Minute ||
 			!c.LocaleCheck {
 			t.Errorf("%s: overlay wrong: %+v", filepath.Base(path), c)
 		}

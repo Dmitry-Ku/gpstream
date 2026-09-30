@@ -114,7 +114,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 
 ### F-15 — Data redistribution — **DONE (29.09)**
 - Spec: plan flags redistribution (topologies differ) + coordinator load estimate; **indexes not created until after load**; segment-fill balance metric (max/avg) with skew warning.
-- Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); index rebuild deferred to the background pool AFTER the swap (FR-17). **Live segment balance (29.09):** `dest.BalanceTable`/`BalanceMaxAvg` (internal/transfer/dest/balance.go) measure the per-segment fill of each copied table (`gp_segment_id, count(*) GROUP BY`) after the swap; `manager.measureBalance` (step 9c) records it in `Stats.Balances` + a `segment_balance` events.jsonl event; the final report prints max/avg per table and a `WARNING` when `max/avg > --segment-balance-threshold` (default 1.5, negative = metric only). Non-fatal + Greenplum-only (plain PG degrades silently).
+- Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); index rebuild deferred to the background pool AFTER the swap (FR-17). **Live segment balance (29.09):** `dest.BalanceTable`/`BalanceMaxAvg` (internal/transfer/dest/balance.go) measure the per-segment fill of each copied table (`gp_segment_id, count(*) GROUP BY`) after the swap; `manager.measureBalance` (step 9c) records it in `Stats.Balances` + a `segment_balance` events.jsonl event; the final report prints max/avg per table and a `WARNING` when `max/avg > 1.5` (fixed F-15 gate; the operator knob was removed 30.09). Non-fatal + Greenplum-only (plain PG degrades silently).
 - Gaps: none in-env. **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo + gp_segment_id distribution check on real clusters (the live metric now feeds that acceptance).
 
 ### F-16 — Cross-OS compatibility — **DONE (29.09)**
@@ -171,7 +171,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (30.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason); receiver-queue detection (RAZRYV-3) via in-process dest write-latency, reduce>50ms/recover<20ms, gpstream_receive_write_latency_ms gauge; disk-util now delta-based |
-| F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above --segment-balance-threshold (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
+| F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above the fixed 1.5 gate (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
 | F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; **two-distro/glibc + C↔en_US.UTF-8 acceptance CLOSED (live 29.09, re-verified 30.09: static binary on EL7/glibc 2.17 + EL8/glibc 2.28, F16_E2E_PASSED 7/0)** |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
 | F-18 | DONE | — |
@@ -206,7 +206,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    extensions; tests doctor_extensions_test.go). (next)
 8. **F-15** — [CLOSED 29.09] live segment balance max/avg metric:
    `dest.BalanceTable` + `manager.measureBalance` (step 9c) + final-report
-   section + `segment_balance` event + `--segment-balance-threshold`
+   section + `segment_balance` event (fixed 1.5 gate; knob removed 30.09)
    (default 1.5, warning gate). Tests: balance_test.go (dest) +
    manager_balance_test.go (manifest, GP fake / plain-PG degrade).
 9. **F-16** — column-level (`attcollation`) collation comparison. [CLOSED 29.09: planner per-table + doctor `column-collation` pre-flight + DDL reproduces COLLATE + dry-run/final-report/events.jsonl; live test f16_collation]

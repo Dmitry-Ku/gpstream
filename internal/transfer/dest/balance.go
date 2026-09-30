@@ -22,7 +22,7 @@ type Balance struct {
 	Max       int64   `json:"max"`              // busiest segment
 	Avg       float64 `json:"avg"`              // rows / segments
 	MaxAvg    float64 `json:"max_avg"`          // Max / Avg (1.0 = perfectly even)
-	Threshold float64 `json:"threshold"`        // the --segment-balance-threshold applied
+	Threshold float64 `json:"threshold"`        // the fixed F-15 warning gate applied
 	Warning   bool    `json:"warning"`          // MaxAvg > Threshold (spec: warning when the threshold is exceeded)
 	Counts    []int64 `json:"counts,omitempty"` // per-segment rows in gp_segment_id order
 }
@@ -41,6 +41,11 @@ func (b Balance) WarningText() string {
 // per-segment row counts (F-15/CR-5). It returns the zero Balance when there
 // are no segments (empty table or a cluster that cannot report a layout): the
 // caller must then treat the table as non-measurable, not as balanced.
+// DefaultBalanceThreshold is the fixed F-15 warning gate (max/avg segment
+// fill): a segment holding more than 50% above the average is a real skew
+// signal. The metric is always recorded; only the warning is gated.
+const DefaultBalanceThreshold = 1.5
+
 func BalanceMaxAvg(table string, threshold float64, counts []int64) Balance {
 	b := Balance{Table: table, Threshold: threshold}
 	if len(counts) == 0 {
@@ -60,8 +65,8 @@ func BalanceMaxAvg(table string, threshold float64, counts []int64) Balance {
 	if b.Avg > 0 {
 		b.MaxAvg = float64(b.Max) / b.Avg
 	}
-	// The threshold is the operator's --segment-balance-threshold; negative
-	// disables the warning gate (like --skew-threshold), so MaxAvg >= 0
+	// The threshold is the fixed F-15 gate (DefaultBalanceThreshold);
+	// negative disables the warning gate (metric only), so MaxAvg >= 0
 	// cannot trip it.
 	b.Warning = threshold > 0 && b.MaxAvg > threshold
 	return b

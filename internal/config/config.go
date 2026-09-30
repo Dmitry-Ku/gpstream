@@ -159,11 +159,6 @@ type Config struct {
 	// Redistribution (FR-15).
 	NoRedistribute bool
 	SkewThreshold  float64
-	// SegmentBalanceThreshold is the F-15 live segment-fill warning gate:
-	// the measured max/avg row count over the destination segments warns
-	// above it. Default 1.5 (a segment holding >50% more than the average
-	// is a real skew signal); negative disables the gate (metric only).
-	SegmentBalanceThreshold float64
 
 	// TLS (FR-13). PG connections are always sslmode=verify-full unless the
 	// DSN sets another mode explicitly; the keypair/CA below provide the
@@ -244,20 +239,19 @@ type Config struct {
 // Default returns a Config populated with the specification defaults.
 func Default() Config {
 	return Config{
-		ConflictAction:          Stop,
-		Compression:             CompZstd,
-		SmallTableThreshold:     1 << 20, // 1 MiB (F-12 auto-disable default)
-		ZstdLevel:               3,
-		AutoResume:              0,
-		Verify:                  VerifySample,
-		Timeout:                 120 * time.Second, // F-10 §6: default 120 s
-		SkewThreshold:           0.05,
-		SegmentBalanceThreshold: 1.5,
-		ConsistentDB:            true,
-		IndexPriority:           "size",
-		SSLMinTLS:               "1.2",
-		WorkersPerPair:          2,
-		StateDir:                "/var/lib/gpstream", // v4 §8 "State"
+		ConflictAction:      Stop,
+		Compression:         CompZstd,
+		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
+		ZstdLevel:           3,
+		AutoResume:          0,
+		Verify:              VerifySample,
+		Timeout:             120 * time.Second, // F-10 §6: default 120 s
+		SkewThreshold:       0.05,
+		ConsistentDB:        true,
+		IndexPriority:       "size",
+		SSLMinTLS:           "1.2",
+		WorkersPerPair:      2,
+		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
 }
 
@@ -311,13 +305,6 @@ func (c *Config) Validate() error {
 	// (NoRedistribute sets the skew sentinel -1 by itself; a negative
 	// skew threshold is valid on its own, so there is nothing to special-
 	// case here — do NOT return early, the checks below still apply.)
-	// F-15: the segment-balance threshold is a ratio (max/avg); only the
-	// negative sentinel (gate off) is a special value, anything >= 0 is a
-	// valid ratio. Reject NaN so a mistyped value cannot silently disable
-	// the gate (NaN > 0 is false, which would look like "off").
-	if c.SegmentBalanceThreshold != c.SegmentBalanceThreshold {
-		return fmt.Errorf("segment-balance-threshold is NaN (want a ratio >= 0, or negative to disable the warning)")
-	}
 	switch c.ConflictAction {
 	case Stop, Skip, Overwrite, Truncate:
 	default:
@@ -419,11 +406,6 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("CONSISTENT_TABLES"); ok {
 		c.ConsistentTables = v == "true" || v == "1"
-	}
-	if v, ok := get("SEGMENT_BALANCE_THRESHOLD"); ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			c.SegmentBalanceThreshold = f
-		}
 	}
 	// Secrets: only from env, never argv (FR-08).
 	if v, ok := get("SSL_CERT"); ok {
@@ -716,10 +698,6 @@ func assignConfigString(c *Config, key, v string) {
 	case "skew_threshold":
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SkewThreshold = f
-		}
-	case "segment_balance_threshold":
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			c.SegmentBalanceThreshold = f
 		}
 	case "index_priority":
 		c.IndexPriority = v

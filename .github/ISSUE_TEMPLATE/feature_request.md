@@ -16,7 +16,7 @@ change, not a PR.
 
 **Problem it solves:** what operator pain, and why the existing flags
 (`--rate-limit`, `--consistent-tables`, `--small-table-threshold`,
-`--on-unit-failure`, `--segment-balance-threshold`, …) don't cover it.
+`--on-unit-failure`, …) don't cover it.
 
 **Proposed behavior:** the exact CLI surface (command + flags), what appears
 in the journal/audit/events, and how it degrades on failure. One paragraph,

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -84,25 +85,24 @@ func TestManagerRunNoBalanceOnPlainPG(t *testing.T) {
 	}
 }
 
-// TestManagerBalanceHonoursThreshold verifies the operator's
-// --segment-balance-threshold gates the warning: the same 80/20 fill warns
-// at 1.5 but not at 2.0 (the metric is still recorded either way — the
-// warning is the gate, not the measurement).
-func TestManagerBalanceHonoursThreshold(t *testing.T) {
+// TestManagerBalanceUsesFixedGate verifies the F-15 gate is the fixed
+// DefaultBalanceThreshold (1.5): the same 80/20 fill (max/avg 1.6) warns,
+// and the recorded threshold is the fixed constant (no operator knob —
+// the flag was removed).
+func TestManagerBalanceUsesFixedGate(t *testing.T) {
 	cfg := config.Default()
-	cfg.SegmentBalanceThreshold = 2.0
 	m, _ := newManagerGP(t, &cfg, []byte("data"))
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if len(m.Balances) != 1 {
-		t.Fatalf("balances = %d, want 1 (metric recorded regardless of gate)", len(m.Balances))
+		t.Fatalf("balances = %d, want 1", len(m.Balances))
 	}
-	if b := m.Balances[0]; b.Warning {
-		t.Fatalf("balance = %+v, want NO warning at threshold 2.0 (max/avg 1.6 < 2.0)", b)
+	if b := m.Balances[0]; !b.Warning {
+		t.Fatalf("balance = %+v, want warning at max/avg 1.6 > fixed gate 1.5", b)
 	}
-	if b := m.Balances[0]; b.Threshold != 2.0 {
-		t.Fatalf("threshold = %v, want 2.0", b.Threshold)
+	if b := m.Balances[0]; b.Threshold != dest.DefaultBalanceThreshold {
+		t.Fatalf("threshold = %v, want fixed %v", b.Threshold, dest.DefaultBalanceThreshold)
 	}
 }

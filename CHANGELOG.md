@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed `--segment-balance-threshold` (flag, file key, env var)
+
+the maintainer: the knob did not earn its place. The F-15 live segment-fill metric
+stays — it is still measured after every swap, recorded in the final report
+and events.jsonl, and the WARNING line now fires at a fixed 1.5 gate
+(`dest.DefaultBalanceThreshold`). Removed: the CLI flag, the
+`segment_balance_threshold` config-file key, and
+`GPSTREAM_SEGMENT_BALANCE_THRESHOLD`. Docs, man page and tests updated;
+the fixed-gate behavior is covered by TestManagerBalanceUsesFixedGate.
+
 ### Bug fixes found by the config-file semantic audit
 
 - `--no-redistribute` no longer short-circuits `Validate()`: an early

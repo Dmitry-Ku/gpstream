@@ -69,7 +69,7 @@ gpstream run
   [--max-reconnects N] [--retransmit-buffer-max SIZE]
   [--verify full|sample|off]                           # default: sample
   [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
-  [--no-redistribute | --skew-threshold X | --segment-balance-threshold X]
+  [--no-redistribute | --skew-threshold X]
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
   [--operation-id <id>] [--state-dir DIR]
   [--timeout S] [--plan-file F]

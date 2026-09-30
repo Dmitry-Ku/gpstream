@@ -1193,8 +1193,8 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 
 	// 9c. Segment balance (F-15): measure the destination's per-segment
 	//     fill of the just-swapped table (metric max/avg over
-	//     gp_segment_id) and surface a warning when the fill exceeds
-	//     --segment-balance-threshold. Non-fatal by design (like 9b/10):
+	//     gp_segment_id) and surface a warning when the fill exceeds the
+	//     fixed 1.5 gate. Non-fatal by design (like 9b/10):
 	//     the data is already in place, the metric is diagnostic, and a
 	//     non-Greenplum destination has no segments to measure.
 	m.measureBalance(ctx, u)
@@ -1223,7 +1223,7 @@ func (m *Manager) measureBalance(ctx context.Context, u *Unit) {
 	if dn == "" {
 		dn = u.Table
 	}
-	b := m.dst.BalanceTable(ctx, ds, dn, m.cfg.SegmentBalanceThreshold)
+	b := m.dst.BalanceTable(ctx, ds, dn, dest.DefaultBalanceThreshold)
 	if b.Segments == 0 {
 		return // not Greenplum, or the table is empty / unmeasurable
 	}
