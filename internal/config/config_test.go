@@ -61,8 +61,8 @@ func TestValidateErrors(t *testing.T) {
 		{"negative auto-resume", func(c *Config) { c.AutoResume = -1 }},
 		{"bad on-unit-failure", func(c *Config) { c.OnUnitFailure = "bogus" }},
 		{"both metadata and data", func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }},
-		{"both consistent modes", func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }},
-		{"consistent-tables and db", func(c *Config) { c.ConsistentDB, c.ConsistentTables = true, true }},
+		{"both consistent modes", func(c *Config) { c.RequestConsistentDB(); c.ConsistentCluster = true }},
+		{"consistent-tables and db", func(c *Config) { c.RequestConsistentDB(); c.ConsistentTables = true }},
 		{"consistent-tables and cluster", func(c *Config) { c.ConsistentCluster, c.ConsistentTables = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},
 		{"bad verify", func(c *Config) { c.Verify = "bogus" }},
@@ -100,6 +100,81 @@ func TestApplyEnvConsistentTables(t *testing.T) {
 	c.ApplyEnv()
 	if !c.ConsistentTables {
 		t.Errorf("consistent-tables = false, want true from env")
+	}
+	// The per-table env value OVERRIDES the default db scope: Validate must
+	// succeed (it used to error "mutually exclusive" against the default).
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate with GPSTREAM_CONSISTENT_TABLES=1: %v", err)
+	}
+	if c.ConsistentDB {
+		t.Errorf("ConsistentDB must be overridden to false by per-table env")
+	}
+}
+
+// TestConsistentScopeResolution covers the FR-02 scope rules: consistent-db is
+// the default; an explicit non-DB scope overrides it; two explicit scopes are
+// a conflict (the default never conflicts).
+func TestConsistentScopeResolution(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(c *Config)
+		wantErr bool
+		wantDB  bool
+	}{
+		{"default", func(c *Config) {}, false, true},
+		{"explicit-db", func(c *Config) { c.RequestConsistentDB() }, false, true},
+		{"cluster-overrides-default", func(c *Config) { c.ConsistentCluster = true }, false, false},
+		{"tables-overrides-default", func(c *Config) { c.ConsistentTables = true }, false, false},
+		{"explicit-db-plus-cluster", func(c *Config) { c.RequestConsistentDB(); c.ConsistentCluster = true }, true, false},
+		{"explicit-db-plus-tables", func(c *Config) { c.RequestConsistentDB(); c.ConsistentTables = true }, true, false},
+		{"cluster-plus-tables", func(c *Config) { c.ConsistentCluster = true; c.ConsistentTables = true }, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default()
+			tc.setup(&c)
+			err := c.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && c.ConsistentDB != tc.wantDB {
+				t.Errorf("ConsistentDB = %v, want %v", c.ConsistentDB, tc.wantDB)
+			}
+		})
+	}
+}
+
+// TestConsistentEnvVars covers GPSTREAM_CONSISTENT_DB / _CLUSTER / _TABLES.
+func TestConsistentEnvVars(t *testing.T) {
+	t.Setenv("GPSTREAM_CONSISTENT_CLUSTER", "true")
+	c := Default()
+	c.ApplyEnv()
+	if !c.ConsistentCluster {
+		t.Fatalf("consistent-cluster env not bound: %+v", c)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if c.ConsistentDB {
+		t.Errorf("env cluster must override the default db scope")
+	}
+
+	t.Setenv("GPSTREAM_CONSISTENT_CLUSTER", "false")
+	t.Setenv("GPSTREAM_CONSISTENT_DB", "1")
+	c = Default()
+	c.ApplyEnv()
+	if !c.ConsistentDB || c.ConsistentCluster {
+		t.Fatalf("consistent-db env not bound / cluster not cleared: %+v", c)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate explicit-db env: %v", err)
+	}
+
+	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "1")
+	c = Default()
+	c.ApplyEnv()
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate: want error for two explicit scopes (db env + tables env)")
 	}
 }
 

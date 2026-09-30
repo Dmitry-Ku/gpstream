@@ -71,7 +71,6 @@ func richPlan() *plan.Plan {
 func TestPrintPlanSummaryFull(t *testing.T) {
 	cfg := config.Default()
 	cfg.RateLimit = 40
-	cfg.LocaleCheck = true
 	if err := printPlanSummarySafe(richPlan(), cfg); err != nil {
 		t.Fatalf("printPlanSummary: %v", err)
 	}
@@ -132,7 +131,6 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--zstd-level", "5",
 		"--small-table-threshold", "2M",
 		"--ssl-ca", "/ca.pem",
-		"--locale-check",
 		"--metrics-addr", "127.0.0.1:9191",
 	})
 	if err != nil {
@@ -177,9 +175,6 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	if c.SSLCA != "/ca.pem" {
 		t.Error("ssl-ca not bound")
 	}
-	if !c.LocaleCheck {
-		t.Error("locale-check not bound")
-	}
 	if c.MetricsAddr != "127.0.0.1:9191" {
 		t.Error("metrics-addr not bound")
 	}
@@ -190,9 +185,14 @@ func TestParseConfigFlagErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--zstd-level", "25"}); err == nil {
 		t.Error("zstd-level 25: want error")
 	}
-	// --consistent-tables is mutually exclusive with the default --consistent-db.
-	if _, err := parseConfig([]string{"--consistent-tables"}); err == nil {
-		t.Error("consistent-tables with default consistent-db: want validation error")
+	// --consistent-tables OVERRIDES the default --consistent-db scope (no error);
+	// the per-table fallback becomes the active mode.
+	c, err := parseConfig([]string{"--consistent-tables"})
+	if err != nil {
+		t.Fatalf("consistent-tables overriding the default db scope: %v", err)
+	}
+	if !c.ConsistentTables || c.ConsistentDB {
+		t.Fatalf("consistent-tables must override the default db scope: %+v", c)
 	}
 	// --include was removed (duplicated the -only shorthands): it is an unknown flag.
 	if _, err := parseConfig([]string{"--include", "bogus"}); err == nil {

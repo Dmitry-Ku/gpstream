@@ -44,7 +44,6 @@ func TestParseConfigFull(t *testing.T) {
 		"--timeout", "60s",
 		"--plan-file", "/tmp/plan.json",
 		"--metrics-addr", "127.0.0.1:9090",
-		"--locale-check",
 	})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
@@ -147,9 +146,17 @@ func TestParseConfigValidationErrors(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected error for MetadataOnly + DataOnly")
 	}
-	// --consistent-db and --consistent-cluster are mutually exclusive.
+	// --consistent-db and --consistent-cluster are two EXPLICIT scopes: conflict.
 	if _, err := parseConfig([]string{"--consistent-db", "--consistent-cluster"}); err == nil {
 		t.Fatal("expected error for --consistent-db + --consistent-cluster")
+	}
+	// --consistent-cluster alone overrides the DEFAULT db scope (no error).
+	c, err := parseConfig([]string{"--consistent-cluster"})
+	if err != nil {
+		t.Fatalf("parseConfig --consistent-cluster: %v", err)
+	}
+	if !c.ConsistentCluster || c.ConsistentDB {
+		t.Fatalf("consistent-cluster must override the default db scope: %+v", c)
 	}
 	// --compress zstd:25 exceeds the valid zstd level range (1-19).
 	if _, err := parseConfig([]string{"--compress", "zstd:25"}); err == nil {

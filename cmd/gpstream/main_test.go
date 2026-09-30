@@ -270,17 +270,6 @@ func TestHelpFlag(t *testing.T) {
 	}
 }
 
-// TestParseConfigDiagnostics: the surviving dry-run diagnostic flag binds.
-func TestParseConfigDiagnostics(t *testing.T) {
-	c, err := parseConfig([]string{"--locale-check"})
-	if err != nil {
-		t.Fatalf("parseConfig: %v", err)
-	}
-	if !c.LocaleCheck {
-		t.Fatalf("locale-check not bound: %+v", c)
-	}
-}
-
 // TestParseConfigSelection: --dbs/--rate-limit units/--map-table bind into
 // the config.
 func TestParseConfigSelection(t *testing.T) {

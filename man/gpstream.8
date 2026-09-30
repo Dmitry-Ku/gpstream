@@ -209,12 +209,10 @@ In-flight window per stream (default 64MiB).
 full|sample|off
 Verification depth (default sample).
 .TP
-.BR --locale-check
-Extra dry-run line counting locale (LC_TYPE) differences (F-16). Collation
-differences are reported in the dry-run always; this flag adds the locale
-count line.
 .BR --consistent-db | --consistent-cluster | --consistent-tables
-Snapshot scope (mutually exclusive; default --consistent-db).
+Snapshot scope (default --consistent-db; an explicit --consistent-cluster or
+--consistent-tables overrides the default; two explicit scopes are mutually
+exclusive).
 .TP
 .BR --auto-resume
 N
@@ -285,7 +283,8 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .RI MAX_RECONNECTS ,
 .RI RETRANSMIT_BUFFER_MAX ,
 .RI SMALL_TABLE_THRESHOLD ,
-.RI LOCALE_CHECK ,
+.RI CONSISTENT_DB ,
+.RI CONSISTENT_CLUSTER ,
 .RI CONSISTENT_TABLES ,
 .RI SSL_CERT ,
 .RI SSL_KEY ,

@@ -243,9 +243,13 @@ default, `workers 2` / `size`). An advisory on stderr names the ignored flag(s).
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--no-constraints` | `NoConstraints` | `false` (disable the F-11 constraint-restore pass: FK/PK/unique are re-applied post-load by default) |
-| `--consistent-db` | `ConsistentDB` | `true` (db scope; mutually exclusive with `--consistent-cluster` / `--consistent-tables`) |
-| `--consistent-cluster` | `ConsistentCluster` | `false` (cluster scope; mutually exclusive with `--consistent-db` / `--consistent-tables`) |
-| `--consistent-tables` | `ConsistentTables` | `false` (per-table fallback: each table under its own short snapshot; the per-table discrepancy is documented — see below) |
+| `--consistent-db` | `ConsistentDB` | `true` (db scope — the default; overridable by an explicit `--consistent-cluster` / `--consistent-tables`) |
+| `--consistent-cluster` | `ConsistentCluster` | `false` (cluster-wide freeze; overrides the default db scope) |
+| `--consistent-tables` | `ConsistentTables` | `false` (per-table fallback: each table under its own short snapshot; overrides the default db scope — see below) |
+
+The scopes resolve in `Validate()`: `--consistent-db` is the default, an explicit
+`--consistent-cluster` or `--consistent-tables` overrides it, and only two
+*explicitly* requested scopes are mutually exclusive.
 
 **Per-table fallback (`--consistent-tables`).** Instead of one long run-wide
 `READ ONLY, REPEATABLE READ` snapshot per database, each table is copied under
@@ -351,10 +355,10 @@ Environment variables are read by `ApplyEnv()` (the env layer of
 CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 
 `RATE_LIMIT`, `WORKERS`, `COMPRESS`, `SMALL_TABLE_THRESHOLD`,
-`AUTO_RESUME`, `ON_UNIT_FAILURE`, `CONSISTENT_TABLES`,
-`FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
+`AUTO_RESUME`, `ON_UNIT_FAILURE`, `CONSISTENT_DB`, `CONSISTENT_CLUSTER`,
+`CONSISTENT_TABLES`, `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
 `RETRANSMIT_BUFFER_MAX`, `SSL_CERT`, `SSL_KEY`, `SSL_CA`, `SEG_TLS_CERT`,
-`SEG_TLS_KEY`, `SEG_TLS_CA`, `LOCALE_CHECK`.
+`SEG_TLS_KEY`, `SEG_TLS_CA`.
 
 Boolean env vars accept `true`/`1`. See
 [CONFIGURATION.md](CONFIGURATION.md) for the full env/TOML/YAML/precedence

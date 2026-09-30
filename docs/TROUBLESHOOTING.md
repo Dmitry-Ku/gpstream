@@ -109,7 +109,6 @@ the default is to **stop**, not to skip.
 | Check | Flag | Meaning |
 |-------|------|---------|
 | Collation | (built into `doctor` + `dry-run`) | `LC_COLLATE` / explicit column collation differences (warn) |
-| Locale | `--locale-check` | locale differences (warn) |
 | Redistribution | (built into `dry-run`) | raw segment skew + layout verdict, always reported |
 
 A **distribution** difference may require redistribution on the destination.

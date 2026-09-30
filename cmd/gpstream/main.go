@@ -227,7 +227,7 @@ func parseConfig(args []string) (config.Config, error) {
 
 		// Consistency (FR-02).
 		case "--consistent-db":
-			cfg.ConsistentDB = true
+			cfg.RequestConsistentDB() // explicit: conflicts with the other scopes
 		case "--consistent-cluster":
 			cfg.ConsistentCluster = true
 		case "--consistent-tables":
@@ -329,9 +329,6 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.MetricsAddr = args[i]
 
-		// Dry-run diagnostics (FR-16).
-		case "--locale-check":
-			cfg.LocaleCheck = true
 		default:
 			return cfg, fmt.Errorf("unknown flag %q (see `gpstream --help`)", a)
 		}
@@ -621,17 +618,6 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	// line, expected errors, and a confidence. These are predictions (the plan
 	// is formed offline), so they are labelled as such where they cannot be
 	// measured without a live copy.
-	if cfg.LocaleCheck {
-		// Locale/encoding differences ride alongside collation differences
-		// (FR-10/FR-16); LC_TYPE differences are the locale signal.
-		locale := 0
-		for _, cd := range p.Collations {
-			if cd.LCType != "" {
-				locale++
-			}
-		}
-		fmt.Printf("locale:        %d difference(s) (FR-10/FR-16)\n", locale)
-	}
 	fmt.Printf("rate-limit:    %s (FR-14)\n", rateLimitNote(cfg))
 	fmt.Printf("cpu/disk:      prediction (measured on a live copy; FR-13)\n")
 	fmt.Printf("tls/compress:  %s (FR-13/FR-12)\n", overheadNote(cfg))

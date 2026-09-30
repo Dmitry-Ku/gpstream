@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added `GPSTREAM_CONSISTENT_DB`/`_CLUSTER` env vars + `consistent_db`/`consistent_cluster` file keys; fixed consistency-scope resolution
+
+the maintainer: the per-table env var had no sibling for the other two scopes
+(asymmetry vs the naming rule), and `GPSTREAM_CONSISTENT_TABLES=1` was a
+hard error ("mutually exclusive with --consistent-db") because the default
+`ConsistentDB=true` could not be told apart from an explicit request — the
+documented per-table fallback was effectively dead. Now: `Validate()`
+resolves the scopes — `--consistent-db` stays the default, an explicit
+`--consistent-cluster`/`--consistent-tables` (CLI/env/file) overrides it,
+and only two *explicitly* requested scopes conflict. Added
+`RequestConsistentDB()` (CLI `--consistent-db`), the two env vars and the two
+file keys. Tests: `TestConsistentScopeResolution` (7-case matrix),
+`TestConsistentEnvVars`, `TestLoadFileConsistentKeys`; the old
+"tables+default-db errors" expectations inverted. Live-verified on GP6:
+`GPSTREAM_CONSISTENT_TABLES=1` dry-run now succeeds, `--consistent-db
+--consistent-cluster` still errors.
+
+### Removed `--locale-check` (flag + env + file key)
+
+the maintainer: collation/locale differences are always detected and reported
+(`detectCollations` runs unconditionally; the dry-run always prints the
+collation block), so the flag only added a redundant LC_TYPE count line.
+Removed the CLI flag, `GPSTREAM_LOCALE_CHECK`, the `locale_check` file key,
+the `Config.LocaleCheck` field and the dry-run locale line. File keys: 21→22
+(net: −1 locale_check, +2 consistent_db/_cluster); env vars: 18→19 (−1
+LOCALE_CHECK, +2 CONSISTENT_DB/_CLUSTER). Docs, man, CHANGELOG updated. All
+tests green, English guard OK.
+
 ### Removed `--skew-threshold` and `--no-redistribute` (flags + file keys); raw skew metric kept
 
 the maintainer (variant b): the threshold only drove a dry-run boolean warning (and a

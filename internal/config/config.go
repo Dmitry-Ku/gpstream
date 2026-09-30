@@ -188,6 +188,12 @@ type Config struct {
 	ConsistentDB      bool // default
 	ConsistentCluster bool
 	ConsistentTables  bool // explicit fallback flag (spec F-02)
+	// consistentDBExplicit is true when the DB scope was requested explicitly
+	// (CLI/env/file) rather than taken from the built-in default. It lets
+	// Validate tell a real --consistent-db conflict apart from the default, so
+	// an explicit --consistent-cluster/--consistent-tables can override the
+	// default DB mode without a false "mutually exclusive" error.
+	consistentDBExplicit bool
 
 	// Transport (T-B, DESIGN §1.3). CopyMode selects the source data path;
 	// the on_segment fields configure the segment-direct fast path.
@@ -216,11 +222,6 @@ type Config struct {
 	MaxReconnects       int    // default 20
 	RetransmitBufferMax int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
 
-	// LocaleCheck enables the dry-run locale/encoding summary (FR-16):
-	// LC_COLLATE/LC_TYPE/encoding differences are already detected by the
-	// planner; the flag controls the extra dry-run prediction block.
-	LocaleCheck bool
-
 	// v4 §8: operation identity. The operation-id is the v4 handle for a job;
 	// the state (journal mirror, staging, reports) lives under
 	// <StateDir>/<operation-id>/ (default /var/lib/gpstream, v4 §8 "State").
@@ -244,6 +245,17 @@ func Default() Config {
 		WorkersPerPair:      2,
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
+}
+
+// RequestConsistentDB enables the DB consistency scope and marks it as
+// explicitly requested (as opposed to the built-in default). The CLI
+// --consistent-db flag calls this; the env/file layers set the fields
+// directly. Validate then resolves the scopes so an explicit
+// --consistent-cluster or --consistent-tables overrides the default DB mode,
+// and two explicitly requested scopes are a conflict.
+func (c *Config) RequestConsistentDB() {
+	c.ConsistentDB = true
+	c.consistentDBExplicit = true
 }
 
 // Validate reports configuration errors that are independent of the live
@@ -279,14 +291,25 @@ func (c *Config) Validate() error {
 	if c.MetadataOnly && c.DataOnly {
 		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
 	}
-	if c.ConsistentDB && c.ConsistentCluster {
-		return fmt.Errorf("--consistent-db and --consistent-cluster are mutually exclusive")
+	// FR-02: resolve the consistency scopes. consistent-db is the default; an
+	// explicit --consistent-cluster or --consistent-tables overrides it. Only
+	// two *explicitly* requested scopes conflict (the default never does, so
+	// GPSTREAM_CONSISTENT_TABLES=1 is not an error — it just switches the mode).
+	explicit := 0
+	if c.consistentDBExplicit {
+		explicit++
 	}
-	if c.ConsistentTables && c.ConsistentCluster {
-		return fmt.Errorf("--consistent-tables and --consistent-cluster are mutually exclusive")
+	if c.ConsistentCluster {
+		explicit++
 	}
-	if c.ConsistentTables && c.ConsistentDB {
-		return fmt.Errorf("--consistent-tables and --consistent-db are mutually exclusive")
+	if c.ConsistentTables {
+		explicit++
+	}
+	if explicit > 1 {
+		return fmt.Errorf("--consistent-db, --consistent-cluster and --consistent-tables are mutually exclusive")
+	}
+	if c.ConsistentCluster || c.ConsistentTables {
+		c.ConsistentDB = false // an explicit non-DB scope overrides the default
 	}
 	switch c.ConflictAction {
 	case Stop, Skip, Overwrite, Truncate:
@@ -387,6 +410,13 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("ON_UNIT_FAILURE"); ok {
 		c.OnUnitFailure = v
 	}
+	if v, ok := get("CONSISTENT_DB"); ok && (v == "true" || v == "1") {
+		c.ConsistentDB = true
+		c.consistentDBExplicit = true
+	}
+	if v, ok := get("CONSISTENT_CLUSTER"); ok {
+		c.ConsistentCluster = v == "true" || v == "1"
+	}
 	if v, ok := get("CONSISTENT_TABLES"); ok {
 		c.ConsistentTables = v == "true" || v == "1"
 	}
@@ -411,9 +441,6 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("SEG_TLS_CA"); ok {
 		c.SegTLSCA = v
-	}
-	if v, ok := get("LOCALE_CHECK"); ok {
-		c.LocaleCheck = v == "true" || v == "1"
 	}
 	// Frame-ack (§4.6).
 	if v, ok := get("FRAME_ACK"); ok {
@@ -656,6 +683,13 @@ func assignConfigString(c *Config, key, v string) {
 		}
 	case "on_unit_failure":
 		c.OnUnitFailure = v
+	case "consistent_db":
+		if v == "true" || v == "1" {
+			c.ConsistentDB = true
+			c.consistentDBExplicit = true
+		}
+	case "consistent_cluster":
+		c.ConsistentCluster = v == "true" || v == "1"
 	case "consistent_tables":
 		c.ConsistentTables = v == "true" || v == "1"
 	case "verify":
@@ -682,7 +716,5 @@ func assignConfigString(c *Config, key, v string) {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Timeout = d
 		}
-	case "locale_check":
-		c.LocaleCheck = v == "true" || v == "1"
 	}
 }

@@ -139,19 +139,21 @@ place.
 |-------|------|---------|--------|
 | `MetricsAddr` | string | `""` | `--metrics-addr` | Serve the Prometheus endpoint during `run`. |
 
-### 1.16 Locale check (F-16)
+### 1.16 Consistency (F-02)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `LocaleCheck` | bool | `false` | `--locale-check` / env / file | Extra dry-run locale/encoding prediction block. |
+| `ConsistentDB` | bool | **`true`** | `--consistent-db` / env / file — db scope (the default) |
+| `ConsistentCluster` | bool | `false` | `--consistent-cluster` / env / file — cluster-wide freeze |
+| `ConsistentTables` | bool | `false` | `--consistent-tables` / env / file — per-table fallback |
 
-### 1.17 Consistency (F-02)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `ConsistentDB` | bool | **`true`** | `--consistent-db` (mutually exclusive with `ConsistentCluster` / `ConsistentTables`) |
-| `ConsistentCluster` | bool | `false` | `--consistent-cluster` (mutually exclusive with the other two) |
-| `ConsistentTables` | bool | `false` | `--consistent-tables` — per-table fallback (per-table discrepancy, off by default) |
+The scopes are resolved in `Validate()`: `--consistent-db` is the default, and an
+explicit `--consistent-cluster` or `--consistent-tables` **overrides** it (so
+`GPSTREAM_CONSISTENT_TABLES=1` on its own is a valid per-table run, not a
+conflict). Only two *explicitly* requested scopes are mutually exclusive
+(“—consistent-db, —consistent-cluster and —consistent-tables are mutually
+exclusive”).
 
-### 1.18 Operational / state (v4 §8)
+### 1.17 Operational / state (v4 §8)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
 | `ConfigFile` | string | `""` | `--config` |
@@ -211,7 +213,7 @@ are:
 
 **Naming rule:** a file key is the CLI flag name with dashes turned into
 underscores — `--index-priority` ↔ `index_priority`, `--workers` ↔
-`workers`. The 21 keys below are 1:1 with 21 CLI flags, so the name
+`workers`. The 22 keys below are 1:1 with 22 CLI flags, so the name
 in the docs without the leading `--` is exactly the file key. Env vars are the
 same names uppercased under the `GPSTREAM_` prefix where they exist (env
 covers a different, session-level subset).
@@ -227,7 +229,6 @@ covers a different, session-level subset).
 | `small_table_threshold` | `SmallTableThreshold` | int64 bytes, or a size with a `K`/`M`/`G`/`T` suffix (same notation as the CLI) |
 | `auto_resume` | `AutoResume` | parsed as int |
 | `on_unit_failure` | `OnUnitFailure` | `continue`/`abort` |
-| `consistent_tables` | `ConsistentTables` | `true`/`1` |
 | `verify` | `Verify` | `full`/`sample`/`off` |
 | `ssl_cert` | `SSLCert` | **secret** |
 | `ssl_key` | `SSLKey` | **secret** |
@@ -238,7 +239,9 @@ covers a different, session-level subset).
 | `seg_tls_ca` | `SegTLSCA` | **secret** |
 | `index_priority` | `IndexPriority` | `size`/`fifo` |
 | `timeout` | `Timeout` | parsed as duration |
-| `locale_check` | `LocaleCheck` | `true`/`1` |
+| `consistent_db` | `ConsistentDB` | `true`/`1` |
+| `consistent_cluster` | `ConsistentCluster` | `true`/`1` |
+| `consistent_tables` | `ConsistentTables` | `true`/`1` |
 
 A file example:
 
@@ -265,6 +268,8 @@ ssl_ca   = "/secrets/ca.pem"
 | `GPSTREAM_SMALL_TABLE_THRESHOLD` | `SmallTableThreshold` | int64 bytes |
 | `GPSTREAM_AUTO_RESUME` | `AutoResume` | int |
 | `GPSTREAM_ON_UNIT_FAILURE` | `OnUnitFailure` | string |
+| `GPSTREAM_CONSISTENT_DB` | `ConsistentDB` | `true`/`1` |
+| `GPSTREAM_CONSISTENT_CLUSTER` | `ConsistentCluster` | `true`/`1` |
 | `GPSTREAM_CONSISTENT_TABLES` | `ConsistentTables` | `true`/`1` |
 | `GPSTREAM_SSL_CERT` | `SSLCert` | string (**secret**) |
 | `GPSTREAM_SSL_KEY` | `SSLKey` | string (**secret**) |
@@ -272,7 +277,6 @@ ssl_ca   = "/secrets/ca.pem"
 | `GPSTREAM_SEG_TLS_CERT` | `SegTLSCert` | string (**secret**) |
 | `GPSTREAM_SEG_TLS_KEY` | `SegTLSKey` | string (**secret**) |
 | `GPSTREAM_SEG_TLS_CA` | `SegTLSCA` | string (**secret**) |
-| `GPSTREAM_LOCALE_CHECK` | `LocaleCheck` | `true`/`1` |
 | `GPSTREAM_FRAME_ACK` | `FrameAck` | `on`/`off` |
 | `GPSTREAM_ACK_TIMEOUT` | `AckTimeout` | string |
 | `GPSTREAM_MAX_RECONNECTS` | `MaxReconnects` | int |
@@ -300,9 +304,8 @@ failed validation aborts the command.
 | workers | `WorkersPerPair` must be **≥ 1** | `workers must be >= 1, got N` |
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
 | on-unit-failure | must be `continue`/`abort` (or empty) | `unknown on-unit-failure "…" (want continue\|abort)` |
-| resume consistency | must be `relaxed`/`strict` (or empty) | `unknown resume consistency "…" (relaxed\|strict)` |
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
-| consistency scope | `--consistent-db`, `--consistent-cluster`, `--consistent-tables` are **mutually exclusive** (pairwise) | `--consistent-db and --consistent-cluster are mutually exclusive` / `--consistent-tables and --consistent-db are mutually exclusive` |
+| consistency scope | `--consistent-db` is the default; an explicit `--consistent-cluster`/`--consistent-tables` overrides it; two **explicitly** requested scopes are mutually exclusive | `--consistent-db, --consistent-cluster and --consistent-tables are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `full`/`sample`/`off` | `unknown verify mode "…"` |
 | copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |

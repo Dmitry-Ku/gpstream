@@ -100,7 +100,6 @@ func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_SEG_TLS_CERT", "/sc.pem")
 	t.Setenv("GPSTREAM_SEG_TLS_KEY", "/sk.pem")
 	t.Setenv("GPSTREAM_SEG_TLS_CA", "/sca.pem")
-	t.Setenv("GPSTREAM_LOCALE_CHECK", "true")
 	t.Setenv("GPSTREAM_FRAME_ACK", "off")
 	t.Setenv("GPSTREAM_ACK_TIMEOUT", "adaptive")
 	t.Setenv("GPSTREAM_MAX_RECONNECTS", "5")
@@ -117,9 +116,6 @@ func TestApplyEnvSweep(t *testing.T) {
 	if c.SSLCert != "/c.pem" || c.SSLKey != "/k.pem" || c.SSLCA != "/ca.pem" ||
 		c.SegTLSCert != "/sc.pem" || c.SegTLSKey != "/sk.pem" || c.SegTLSCA != "/sca.pem" {
 		t.Errorf("tls env overlay wrong: %+v", c)
-	}
-	if !c.LocaleCheck {
-		t.Errorf("locale-check env overlay wrong: %+v", c)
 	}
 	if c.FrameAck != "off" || c.AckTimeout != "adaptive" || c.MaxReconnects != 5 ||
 		c.RetransmitBufferMax != 64<<20 {
@@ -166,9 +162,9 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.AutoResume = -1 }, "auto-resume<0")
 	fail(func(c *Config) { c.OnUnitFailure = "stop" }, "on-unit-failure")
 	fail(func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }, "metadata+data")
-	fail(func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }, "db+cluster")
+	fail(func(c *Config) { c.RequestConsistentDB(); c.ConsistentCluster = true }, "db+cluster (both explicit)")
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentCluster = true, true }, "tables+cluster")
-	fail(func(c *Config) { c.ConsistentTables, c.ConsistentDB = true, true }, "tables+db")
+	fail(func(c *Config) { c.RequestConsistentDB(); c.ConsistentTables = true }, "tables+db (both explicit)")
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
@@ -255,7 +251,6 @@ index_priority = "size"
 timeout = "2m"
 overwrite_only_conflicts = "1"
 collation_check = "1"
-locale_check = "true"
 distribution_check = "1"
 redistribution_plan = "1"
 adaptive_rate_limit = "1"
@@ -292,7 +287,6 @@ index_priority: "size"
 timeout: "2m"
 overwrite_only_conflicts: "1"
 collation_check: "1"
-locale_check: "true"
 distribution_check: "1"
 redistribution_plan: "1"
 adaptive_rate_limit: "1"
@@ -323,8 +317,7 @@ report_text: "/t"
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
 			c.SegTLSCA != "/sc" ||
-			c.IndexPriority != "size" || c.Timeout != 2*time.Minute ||
-			!c.LocaleCheck {
+			c.IndexPriority != "size" || c.Timeout != 2*time.Minute {
 			t.Errorf("%s: overlay wrong: %+v", filepath.Base(path), c)
 		}
 	}

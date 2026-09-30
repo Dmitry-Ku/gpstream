@@ -83,7 +83,7 @@ never touch the filesystem as data. Compatibility is checked by
 
 | Check | Flag | What it looks at |
 |-------|------|------------------|
-| Collation / locale | `--locale-check` | `LC_COLLATE` / locale / encoding differences (warn, F-16) |
+| Collation / locale | (built into `doctor` + `dry-run`) | `LC_COLLATE` / locale / encoding differences (warn, F-16) — always reported |
 | Distribution / skew | (built into `dry-run`) | raw segment skew + layout verdict, always reported (F-15/CR-5) |
 
 A **distribution** difference may require redistribution on the destination.

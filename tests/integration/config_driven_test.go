@@ -27,7 +27,6 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "50")
 	t.Setenv("GPSTREAM_SSL_CERT", "/etc/ssl/cert.pem")
 	t.Setenv("GPSTREAM_SSL_KEY", "/etc/ssl/key.pem")
-	t.Setenv("GPSTREAM_LOCALE_CHECK", "true")
 
 	cfg := config.Default()
 	cfg.ApplyEnv()
@@ -39,9 +38,6 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	if cfg.SSLCert != "/etc/ssl/cert.pem" {
 		t.Errorf("ssl cert = %q, want /etc/ssl/cert.pem (from env)", cfg.SSLCert)
-	}
-	if !cfg.LocaleCheck {
-		t.Error("locale_check not parsed from env")
 	}
 }
 
@@ -58,7 +54,6 @@ func TestConfigFromFile(t *testing.T) {
 		"rate_limit: \"50\"",
 		"compress: zstd",
 		"zstd_level: \"9\"",
-		"locale_check: \"true\"",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -75,9 +70,6 @@ func TestConfigFromFile(t *testing.T) {
 	}
 	if cfg.ZstdLevel != 9 {
 		t.Errorf("zstd level = %d, want 9", cfg.ZstdLevel)
-	}
-	if !cfg.LocaleCheck {
-		t.Error("locale_check not parsed from file")
 	}
 }
 
