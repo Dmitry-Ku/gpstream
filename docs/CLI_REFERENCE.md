@@ -262,11 +262,13 @@ point-in-time copy keep the default `--consistent-db`. The flag is an explicit
 fallback and is off by default.
 
 ### Redistribution / checks (F-15/F-16)
-| Flag | Config field | Default |
-|------|--------------|---------|
-| `--no-redistribute` | `NoRedistribute` | `false` (suppress redistribution accounting; sets skew gate off) |
-| `--skew-threshold <X>` | `SkewThreshold` | `0.05` (negative = skew checks off) |
-| `--locale-check` | `LocaleCheck` | `false` (detect locale/encoding/timezone differences, F-16) |
+
+Redistribution accounting (F-15/CR-5) is always computed and reported in the
+`dry-run`: the raw segment skew (the fraction of data that moves to a
+different segment under the destination layout) plus the layout verdict
+(`identical` / `differs` / `cannot confirm`). There is no gate flag: the
+operator reads the number and decides. The `--locale-check` flag was removed
+— collation/locale differences are always detected (F-16).
 
 ### TLS (F-13)
 | Flag | Config field | Default |

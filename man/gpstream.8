@@ -169,18 +169,16 @@ runs jobs in enqueue order.
 .TP
 .B --no-constraints
 Skip the FK/CHECK constraint-restore pass on the destination (F-11).
-.TP
-.B --no-redistribute
-Suppress redistribution accounting (sets the skew gate off).
-.TP
-.BR --skew-threshold
-X
-Fraction (0..1) of source data that must move to a different segment for the
-plan to mark redistribution (F-15); default 0.05; negative = gate off.
+
 The live destination segment-fill balance (max/avg) is always measured after
 each swap and reported; a fixed 1.5 gate emits the WARNING line (the former
 .B --segment-balance-threshold
 knob was removed).
+
+The FR-15 redistribution accounting (raw segment skew + layout verdict) is
+always computed and reported in the
+.B --dry-run
+output; there is no gate flag — the operator reads the number and decides.
 .SS Transport / resilience
 .TP
 .BR --copy-mode

@@ -42,7 +42,7 @@ func richPlan() *plan.Plan {
 			{Schema: "s", Table: "t_conflict", Action: "stop"},
 		},
 		Redistrib: plan.Redistribution{
-			NeedsRedistrib: true, Skew: 0.42, Threshold: 0.05, Reason: "skew above threshold",
+			Skew: 0.42, Reason: "layout differs (skew 42%% of data moves)",
 		},
 		Collations: []plan.CollationDiff{
 			{DB: "db", LCCollate: "C", LCType: "C"},
@@ -81,7 +81,6 @@ func TestPrintPlanSummaryFull(t *testing.T) {
 // route-unresolvable / partial branches.
 func TestPrintPlanSummaryMinimal(t *testing.T) {
 	cfg := config.Default()
-	cfg.NoRedistribute = true
 	p := &plan.Plan{
 		Units:           []plan.Table{{Schema: "s", Name: "t", DstSchema: "s", DstName: "t"}},
 		EstimatedVolume: 10,
@@ -211,7 +210,6 @@ func TestParseConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	pf := filepath.Join(dir, "cfg.toml")
 	if err := os.WriteFile(pf, []byte(`rate_limit = 77
-skew_threshold = 0.1
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -219,8 +217,8 @@ skew_threshold = 0.1
 	if err != nil {
 		t.Fatalf("parseConfig --config: %v", err)
 	}
-	if c.RateLimit != 77 || c.SkewThreshold != 0.1 {
-		t.Errorf("file values = rate %v / skew %v, want 77/0.1", c.RateLimit, c.SkewThreshold)
+	if c.RateLimit != 77 {
+		t.Errorf("file value = rate %v, want 77", c.RateLimit)
 	}
 	// A missing config file is an error (not a silent default).
 	if _, err := parseConfig([]string{"--config", filepath.Join(dir, "nope.toml")}); err == nil {

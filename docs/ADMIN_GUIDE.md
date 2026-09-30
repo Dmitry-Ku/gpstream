@@ -84,13 +84,13 @@ never touch the filesystem as data. Compatibility is checked by
 | Check | Flag | What it looks at |
 |-------|------|------------------|
 | Collation / locale | `--locale-check` | `LC_COLLATE` / locale / encoding differences (warn, F-16) |
-| Distribution / skew | `--skew-threshold` (default `0.05`) | distribution-key / fill skew; `--no-redistribute` to suppress accounting |
+| Distribution / skew | (built into `dry-run`) | raw segment skew + layout verdict, always reported (F-15/CR-5) |
 
 A **distribution** difference may require redistribution on the destination.
-`gpstream` can account for this with `--no-redistribute` and
-`--skew-threshold` (default `0.05`). The `planner` computes a skew threshold
-and includes it in the deterministic plan hash, so a plan that must
-redistribute is distinguishable from one that does not.
+`gpstream` reports the raw segment skew and the layout verdict in the
+`dry-run` (there is no gate flag). The `planner` includes the measured skew in
+the deterministic plan hash, so a plan that must redistribute is
+distinguishable from one that does not.
 
 > Honesty note: the physical-scale target (100 TB–1 PB over a 100 Gbps link)
 > and the fault-injection behaviors are validated on a **live stand**. The

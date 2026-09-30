@@ -221,33 +221,25 @@ func mkRedistribFake(hasKey bool) *pg.FakeConn {
 }
 
 // TestRedistributionNeeded verifies (FR-15/CR-5) that differing distribution
-// keys between source and destination are flagged as requiring redistribution,
-// with a measured skew of 1 (a layout difference forces a full redistribute).
+// keys between source and destination are reported as a full redistribution
+// (skew 1, since a layout difference with no size data forces a full move).
 func TestRedistributionNeeded(t *testing.T) {
-	cfg := config.Default()
 	src := mkRedistribFake(true)  // source has a distribution key
 	dst := mkRedistribFake(false) // destination does not
 	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 1000}}
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if !r.NeedsRedistrib {
-		t.Errorf("expected redistribution needed (src key != dst key)")
-	}
+	r := detectRedistribution(context.Background(), src, dst, tabs)
 	if r.Skew != 1 {
 		t.Errorf("skew = %v, want 1 (different layout, no size data)", r.Skew)
 	}
 }
 
 // TestRedistributionNotNeeded verifies (FR-15/CR-5) that identical distribution
-// keys are reported as not requiring redistribution, with zero skew.
+// keys are reported with zero skew (no redistribution).
 func TestRedistributionNotNeeded(t *testing.T) {
-	cfg := config.Default()
 	src := mkRedistribFake(true)
 	dst := mkRedistribFake(true)
 	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 1000}}
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if r.NeedsRedistrib {
-		t.Errorf("expected no redistribution (identical distribution keys)")
-	}
+	r := detectRedistribution(context.Background(), src, dst, tabs)
 	if r.Skew != 0 {
 		t.Errorf("skew = %v, want 0 (identical layout)", r.Skew)
 	}
@@ -257,35 +249,14 @@ func TestRedistributionNotNeeded(t *testing.T) {
 // cannot report its distribution key, the plan conservatively reports
 // redistribution with skew 1.
 func TestRedistributionConservative(t *testing.T) {
-	cfg := config.Default()
 	src := mkRedistribFake(true)
 	// dst does not register the gs-redistrib-check probe, so its query errors
 	// and distKey returns "" (conservative).
 	dst := pg.NewFakeConn()
 	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 1000}}
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if !r.NeedsRedistrib {
-		t.Errorf("expected redistribution when a cluster cannot report its key")
-	}
+	r := detectRedistribution(context.Background(), src, dst, tabs)
 	if r.Skew != 1 {
 		t.Errorf("skew = %v, want 1 (conservative)", r.Skew)
-	}
-}
-
-// TestRedistributionNoRedistribute verifies that --no-redistribute reports the
-// operator's choice as a no-op (the accounting still reflects the choice).
-func TestRedistributionNoRedistribute(t *testing.T) {
-	cfg := config.Default()
-	cfg.NoRedistribute = true
-	src := mkRedistribFake(true)
-	dst := mkRedistribFake(false)
-	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 1000}}
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if r.NeedsRedistrib {
-		t.Errorf("expected no redistribution when --no-redistribute is set")
-	}
-	if r.Skew != 0 {
-		t.Errorf("skew = %v, want 0 (suppressed)", r.Skew)
 	}
 }
 
@@ -295,11 +266,10 @@ func TestRedistributionNoRedistribute(t *testing.T) {
 // substring, so without this guard a broken query could silently pass. It
 // mirrors the TestDetectCollationsQuery guard that caught pg_encoding_to_char.
 func TestRedistributionQuery(t *testing.T) {
-	cfg := config.Default()
 	src := mkRedistribFake(true)
 	dst := mkRedistribFake(true)
 	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 1000}}
-	detectRedistribution(context.Background(), &cfg, src, dst, tabs)
+	detectRedistribution(context.Background(), src, dst, tabs)
 	for _, fc := range []*pg.FakeConn{src, dst} {
 		if !containsQuery(fc, "gs-redistrib-check") {
 			t.Errorf("no gs-redistrib-check probe; got: %v", fc.Queried())

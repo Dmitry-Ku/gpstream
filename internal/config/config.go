@@ -152,10 +152,6 @@ type Config struct {
 	// safer default.
 	NoConstraints bool
 
-	// Redistribution (FR-15).
-	NoRedistribute bool
-	SkewThreshold  float64
-
 	// TLS (FR-13). PG connections are always sslmode=verify-full unless the
 	// DSN sets another mode explicitly; the keypair/CA below provide the
 	// client certificate and trust store for that handshake.
@@ -242,7 +238,6 @@ func Default() Config {
 		AutoResume:          0,
 		Verify:              VerifySample,
 		Timeout:             120 * time.Second, // F-10 §6: default 120 s
-		SkewThreshold:       0.05,
 		ConsistentDB:        true,
 		IndexPriority:       "size",
 		SSLMinTLS:           "1.2",
@@ -293,9 +288,6 @@ func (c *Config) Validate() error {
 	if c.ConsistentTables && c.ConsistentDB {
 		return fmt.Errorf("--consistent-tables and --consistent-db are mutually exclusive")
 	}
-	// (NoRedistribute sets the skew sentinel -1 by itself; a negative
-	// skew threshold is valid on its own, so there is nothing to special-
-	// case here — do NOT return early, the checks below still apply.)
 	switch c.ConflictAction {
 	case Stop, Skip, Overwrite, Truncate:
 	default:
@@ -684,10 +676,6 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegTLSKey = v
 	case "seg_tls_ca":
 		c.SegTLSCA = v
-	case "skew_threshold":
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			c.SkewThreshold = f
-		}
 	case "index_priority":
 		c.IndexPriority = v
 	case "timeout":

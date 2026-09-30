@@ -83,10 +83,15 @@ from the flags or the file.
 | `NoConstraints` | bool | `false` | `--no-constraints` | Disable the constraint-restore pass (FK/PK/unique re-applied post-load by default). |
 
 ### 1.10 Redistribution (F-15)
-| Field | Type | Default | Source | Notes |
-|-------|------|---------|--------|-------|
-| `NoRedistribute` | bool | `false` | `--no-redistribute` | Suppress redistribution accounting. |
-| `SkewThreshold` | float64 | **`0.05`** | `--skew-threshold` / file | Skew fraction; negative = skew checks off. |
+
+The FR-15 redistribution accounting has no configuration knob: the measured
+segment skew (fraction of the copied data that moves to a different segment
+under the destination layout) and the layout verdict are always computed in
+the `dry-run` and reported as-is — the operator reads the number and decides.
+The former `--no-redistribute` / `--skew-threshold` flags (and the
+`NoRedistribute` / `SkewThreshold` fields) were removed: the raw metric stays,
+the gate did not earn its place (it only drove a dry-run warning and a plan-
+hash input, and `--skew-threshold -1` was a bug, not an off-switch).
 
 The F-15 live segment-fill warning gate (max/avg over the destination
 segments, measured after each swap) is **fixed at 1.5**
@@ -169,7 +174,6 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `AutoResume` | `0` |
 | `Verify` | `sample` |
 | `Timeout` | `120s` |
-| `SkewThreshold` | `0.05` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
@@ -206,8 +210,8 @@ are honoured (non-scalar nodes are skipped). The accepted keys (all lowercase)
 are:
 
 **Naming rule:** a file key is the CLI flag name with dashes turned into
-underscores — `--skew-threshold` ↔ `skew_threshold`, `--workers` ↔
-`workers`. The 24 keys below are 1:1 with 24 CLI flags, so the name
+underscores — `--index-priority` ↔ `index_priority`, `--workers` ↔
+`workers`. The 21 keys below are 1:1 with 21 CLI flags, so the name
 in the docs without the leading `--` is exactly the file key. Env vars are the
 same names uppercased under the `GPSTREAM_` prefix where they exist (env
 covers a different, session-level subset).
@@ -232,7 +236,6 @@ covers a different, session-level subset).
 | `seg_tls_cert` | `SegTLSCert` | **secret** |
 | `seg_tls_key` | `SegTLSKey` | **secret** |
 | `seg_tls_ca` | `SegTLSCA` | **secret** |
-| `skew_threshold` | `SkewThreshold` | parsed as float |
 | `index_priority` | `IndexPriority` | `size`/`fifo` |
 | `timeout` | `Timeout` | parsed as duration |
 | `locale_check` | `LocaleCheck` | `true`/`1` |
@@ -248,7 +251,6 @@ rate_limit = 10
 workers = 2
 verify = "sample"
 ssl_ca   = "/secrets/ca.pem"
-skew_threshold = 0.05
 ```
 
 ### 3.2 Environment layer (`GPSTREAM_*`)
@@ -307,8 +309,6 @@ failed validation aborts the command.
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |
 
-Note: when `NoRedistribute` is set and `SkewThreshold < 0`, validation returns
-`nil` (this combination is fine) — it is a no-op guard, not an error.
 
 ---
 

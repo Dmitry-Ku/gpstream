@@ -270,16 +270,6 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.IndexPriority = args[i]
 
-		// Redistribution (FR-15).
-		case "--no-redistribute":
-			cfg.NoRedistribute = true
-			// Negative skew threshold is the sentinel "skew checks off":
-			// no redistribution means no skew gate to enforce (F-15).
-			cfg.SkewThreshold = -1
-		case "--skew-threshold":
-			i++
-			cfg.SkewThreshold = atof(args[i])
-
 		// Compression level (F-12): --zstd-level 1-19.
 		case "--zstd-level":
 			i++
@@ -571,12 +561,8 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	} else {
 		fmt.Printf("conflicts:     none\n")
 	}
-	if cfg.NoRedistribute {
-		fmt.Printf("redistribution: suppressed (--no-redistribute)\n")
-	} else {
-		fmt.Printf("redistribution: %v (skew %.0f%%, threshold %.0f%%) — %s (FR-15/CR-5)\n",
-			p.Redistrib.NeedsRedistrib, p.Redistrib.Skew*100, p.Redistrib.Threshold*100, p.Redistrib.Reason)
-	}
+	fmt.Printf("redistribution: skew %.0f%% — %s (FR-15/CR-5)\n",
+		p.Redistrib.Skew*100, p.Redistrib.Reason)
 	fmt.Printf("route:         %s (T4b)\n", routeSummaryLine(p))
 	// Fix 1: partitioned parents with a collation-unsafe combination (string
 	// key + no DEFAULT partition + destination collation differs) cannot be
@@ -650,8 +636,8 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	fmt.Printf("cpu/disk:      prediction (measured on a live copy; FR-13)\n")
 	fmt.Printf("tls/compress:  %s (FR-13/FR-12)\n", overheadNote(cfg))
 	fmt.Printf("background idx: %d unit(s) pending (FR-17)\n", backgroundIndexNote(cfg, p))
-	warnings := len(p.Conflicts) + len(p.Collations) + redistribCount(p)
-	fmt.Printf("warnings:      %d (conflicts+collation+redistribution)\n", warnings)
+	warnings := len(p.Conflicts) + len(p.Collations)
+	fmt.Printf("warnings:      %d (conflicts+collation)\n", warnings)
 	if p.Partial {
 		fmt.Printf("errors:        1 (timed out; partial fragment)\n")
 	} else {
@@ -727,14 +713,6 @@ func backgroundIndexNote(cfg config.Config, p *plan.Plan) int {
 		return 0
 	}
 	return len(p.Units)
-}
-
-// redistribCount reports how many redistribution warnings the plan carries.
-func redistribCount(p *plan.Plan) int {
-	if p.Redistrib.NeedsRedistrib {
-		return 1
-	}
-	return 0
 }
 
 // confidenceNote returns a dry-run confidence (v2 §26). A deterministic plan with

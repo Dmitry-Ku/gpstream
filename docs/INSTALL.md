@@ -267,9 +267,7 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 | `ZstdLevel` | `3` (range 1–19) |
 | `AutoResume` | `0` (manual only) |
 | `Verify` | `sample` |
-| `Timeout` | `60s` |
-| `LogLevel` | `info` |
-| `SkewThreshold` | `0.05` |
+| `Timeout` | `120s` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |

@@ -5,7 +5,7 @@ package main
 // --mode drop with an unreachable --dest (connect-fail path + the TLS/dest
 // flag parsing), cmdStatus with a valid runstats.json (live table: pair,
 // progress, throughput, by_status, per-table) plus jobmeta.json (snap-epoch
-// line), the parseConfig flag branches (--no-redistribute, --skew-threshold,
+// line), the parseConfig flag branches (--index-workers, --no-indexes,
 // --index-workers, --no-indexes,
 // --no-constraints, --index-priority), and the config-file
 // security-warning loop (0644 file with a password in the DSN).
@@ -121,8 +121,6 @@ func TestStatusLiveTable(t *testing.T) {
 // redistribution, index and constraint flags.
 func TestParseConfigFlagsB(t *testing.T) {
 	c, err := parseConfig([]string{
-		"--no-redistribute",
-		"--skew-threshold", "0.2",
 		"--index-workers", "7",
 		"--no-indexes",
 		"--no-constraints",
@@ -130,14 +128,6 @@ func TestParseConfigFlagsB(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
-	}
-	if !c.NoRedistribute {
-		t.Error("--no-redistribute: NoRedistribute = false")
-	}
-	// --skew-threshold is parsed AFTER --no-redistribute (which sets -1), so
-	// the later flag wins: 0.2.
-	if c.SkewThreshold != 0.2 {
-		t.Errorf("SkewThreshold = %v, want 0.2 (later flag wins)", c.SkewThreshold)
 	}
 	if c.IndexWorkers != 7 {
 		t.Errorf("IndexWorkers = %d, want 7", c.IndexWorkers)

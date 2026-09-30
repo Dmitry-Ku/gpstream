@@ -58,7 +58,6 @@ compress = "zstd"
 zstd_level = 9
 auto_resume = 2
 verify = "full"
-skew_threshold = 0.2
 `)
 	if err := c.LoadFile(path); err != nil {
 		t.Fatalf("load toml: %v", err)
@@ -83,9 +82,6 @@ skew_threshold = 0.2
 	}
 	if c.Verify != VerifyFull {
 		t.Errorf("verify = %v, want full", c.Verify)
-	}
-	if c.SkewThreshold != 0.2 {
-		t.Errorf("skew = %v, want 0.2", c.SkewThreshold)
 	}
 }
 
@@ -115,7 +111,6 @@ ssl_cert: /etc/cert.pem
 ssl_key: /etc/key.pem
 ssl_ca: /etc/ca.pem
 ssl_min_tls: "1.3"
-skew_threshold: "0.1"
 index_priority: fifo
 timeout: "5m"
 `)
@@ -148,9 +143,6 @@ timeout: "5m"
 	}
 	if c.SSLMinTLS != "1.3" {
 		t.Errorf("ssl min tls = %q, want 1.3", c.SSLMinTLS)
-	}
-	if c.SkewThreshold != 0.1 {
-		t.Errorf("skew = %v, want 0.1", c.SkewThreshold)
 	}
 	if c.IndexPriority != "fifo" {
 		t.Errorf("index priority = %q, want fifo", c.IndexPriority)
@@ -229,16 +221,5 @@ func TestApplyEnvBadNumbersIgnored(t *testing.T) {
 	// Defaults: rate limit 0 (Default leaves it 0), workers 2.
 	if c.WorkersPerPair != 2 {
 		t.Errorf("workers = %d, want 2 (bad env int ignored)", c.WorkersPerPair)
-	}
-}
-
-// TestValidateNoRedistributeNegSkew verifies the explicit fine-case branch in
-// Validate (no-redistribute with a negative skew is allowed).
-func TestValidateNoRedistributeNegSkew(t *testing.T) {
-	c := Default()
-	c.NoRedistribute = true
-	c.SkewThreshold = -1 // negative skew with no-redistribute is fine
-	if err := c.Validate(); err != nil {
-		t.Errorf("validate: %v", err)
 	}
 }

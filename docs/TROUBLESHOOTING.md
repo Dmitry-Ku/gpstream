@@ -110,12 +110,12 @@ the default is to **stop**, not to skip.
 |-------|------|---------|
 | Collation | (built into `doctor` + `dry-run`) | `LC_COLLATE` / explicit column collation differences (warn) |
 | Locale | `--locale-check` | locale differences (warn) |
-| Redistribution | `--no-redistribute`, `--skew-threshold` (default `0.05`) | skip redistribution / skew tolerance |
+| Redistribution | (built into `dry-run`) | raw segment skew + layout verdict, always reported |
 
 A **distribution** difference may require redistribution on the destination.
-`gpstream` accounts for it with `--no-redistribute` and `--skew-threshold`.
-A warning is **not** a failure — review it in the `dry-run` output and decide
-whether to proceed. The per-table × column collation detail lives in the
+`gpstream` reports it in the `dry-run` as the raw segment skew plus the layout
+verdict (there is no gate flag). The number is **not** a failure — review it
+in the `dry-run` output and decide whether to proceed. The per-table × column collation detail lives in the
 `dry-run` plan (`collation_diffs`) and the run's `events.jsonl`
 (`collation_diff` events).
 
@@ -202,8 +202,8 @@ problem.
 - If a copy dies and `resume` does not continue it, inspect the journal
   (`journal.jsonl`) and the `events.jsonl` / `audit.log` files before
   assuming corruption.
-- If a `dry-run` shows a redistribution requirement, decide explicitly
-  (accept it, or avoid it with `--no-redistribute`) rather than guessing.
+- If a `dry-run` shows a non-zero skew, decide explicitly (accept the
+  redistribution or rework the destination layout) rather than guessing.
 
 > Honesty note: the physical-scale and fault-injection behaviors
 > (100 TB–1 PB, kill -9 / tc netem / disk-fill) are validated on a

@@ -174,7 +174,7 @@ func TestPlanNotes(t *testing.T) {
 		t.Errorf("routeSummaryLine mixed = %q", got)
 	}
 
-	// rateLimitNote / overheadNote / backgroundIndexNote / redistribCount.
+	// rateLimitNote / overheadNote / backgroundIndexNote.
 	if got := rateLimitNote(config.Config{}); got != "no ceiling (full bandwidth)" {
 		t.Errorf("rateLimitNote none = %q", got)
 	}
@@ -195,12 +195,6 @@ func TestPlanNotes(t *testing.T) {
 	}
 	if got := backgroundIndexNote(config.Config{}, p); got != 4 {
 		t.Errorf("backgroundIndexNote = %d", got)
-	}
-	if got := redistribCount(&plan.Plan{}); got != 0 {
-		t.Errorf("redistribCount none = %d", got)
-	}
-	if got := redistribCount(&plan.Plan{Redistrib: plan.Redistribution{NeedsRedistrib: true}}); got != 1 {
-		t.Errorf("redistribCount = %d", got)
 	}
 
 	// confidenceNote: partial -> low, hashed -> high, else medium.

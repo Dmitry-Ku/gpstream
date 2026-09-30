@@ -269,7 +269,6 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--verify", "full",
 		"--overwrite",
 		"--compress", "zstd",
-		"--no-redistribute",
 		"--consistent-db",
 		"--metadata-only",
 		"--auto-resume", "1",
@@ -289,9 +288,6 @@ func TestParseConfigKitchenSink(t *testing.T) {
 	}
 	if cfg.MetadataOnly != true {
 		t.Fatal("MetadataOnly not set")
-	}
-	if cfg.SkewThreshold >= 0 {
-		t.Fatal("expected negative skew with --no-redistribute")
 	}
 	if cfg.RateLimit != 2 {
 		t.Fatalf("RateLimit = %v", cfg.RateLimit)

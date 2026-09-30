@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed `--skew-threshold` and `--no-redistribute` (flags + file keys); raw skew metric kept
+
+the maintainer (variant b): the threshold only drove a dry-run boolean warning (and a
+plan-hash input) and never affected data or routing; `--skew-threshold -1` was
+a bug (always-warn), not an off-switch, and `--no-redistribute` was
+reporting-only (redistribution is done by the destination at COPY). The
+`SkewThreshold`/`NoRedistribute` fields, the `--skew-threshold`/
+`--no-redistribute` flags, the `skew_threshold` file key, the
+`Redistribution.NeedsRedistrib`/`Threshold` fields and the `redistribCount`
+warning were removed. The FR-15 metric stays: `detectRedistribution` now
+reports the raw segment skew plus a layout verdict
+(`identical` / `differs` / `cannot confirm`), always printed in the dry-run
+(`redistribution: skew N% — <verdict>`), and the plan hash uses the raw skew
+only (so report knobs no longer change the fingerprint). Tests: threshold
+cases removed/converted (planner, planner_skew, main coverage, config). Docs,
+man, packaging example updated. All tests green, English guard OK.
+
 ### Removed `--resume-consistency` (flag + file key); relaxed is now the only resume re-read rule
 
 the maintainer: the strict mode (re-read the ENTIRE database on every resume) was a

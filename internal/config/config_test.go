@@ -103,19 +103,6 @@ func TestApplyEnvConsistentTables(t *testing.T) {
 	}
 }
 
-// TestValidateNoRedistributeDoesNotSkipChecks: the old early `return nil`
-// made --no-redistribute bypass every later validation (verify/copy-mode/
-// frame-ack values went unvalidated). A bad value must still error.
-func TestValidateNoRedistributeDoesNotSkipChecks(t *testing.T) {
-	c := Default()
-	c.NoRedistribute = true
-	c.SkewThreshold = -1 // the sentinel --no-redistribute sets
-	c.Verify = "bogus"
-	if err := c.Validate(); err == nil {
-		t.Fatal("Validate: want error for verify=bogus with --no-redistribute (early return regression)")
-	}
-}
-
 // TestParseSizeValue: the file accepts the same size notation as the CLI.
 func TestParseSizeValue(t *testing.T) {
 	cases := []struct {

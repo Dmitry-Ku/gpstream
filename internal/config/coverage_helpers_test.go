@@ -251,7 +251,6 @@ seg_tls_cert = "/sa"
 seg_tls_key = "/sb"
 seg_tls_ca = "/sc"
 data_port_range = "9000-9100"
-skew_threshold = "0.8"
 index_priority = "size"
 timeout = "2m"
 overwrite_only_conflicts = "1"
@@ -289,7 +288,6 @@ seg_tls_cert: "/sa"
 seg_tls_key: "/sb"
 seg_tls_ca: "/sc"
 data_port_range: "9000-9100"
-skew_threshold: "0.8"
 index_priority: "size"
 timeout: "2m"
 overwrite_only_conflicts: "1"
@@ -324,7 +322,7 @@ report_text: "/t"
 			!c.ConsistentTables || c.Verify != "sample" ||
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
-			c.SegTLSCA != "/sc" || c.SkewThreshold != 0.8 ||
+			c.SegTLSCA != "/sc" ||
 			c.IndexPriority != "size" || c.Timeout != 2*time.Minute ||
 			!c.LocaleCheck {
 			t.Errorf("%s: overlay wrong: %+v", filepath.Base(path), c)
@@ -337,7 +335,7 @@ report_text: "/t"
 func TestLoadFileBadNumbersAreTolerant(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "bad.yaml")
-	src := "rate_limit: \"not-a-float\"\nworkers: \"nope\"\nzstd_level: \"x\"\nskew_threshold: \"zz\"\ntimeout: \"junk\"\n"
+	src := "rate_limit: \"not-a-float\"\nworkers: \"nope\"\nzstd_level: \"x\"\ntimeout: \"junk\"\n"
 	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}

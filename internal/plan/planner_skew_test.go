@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -61,63 +60,17 @@ func TestSkewMeasureDifferentLayoutWithSize(t *testing.T) {
 	}
 }
 
-// TestRedistributionSkewWithThreshold verifies the full path (FR-15/CR-5):
-// with per-segment size data the plan reports the measured skew and applies the
-// --skew-threshold to decide NeedsRedistrib.
-func TestRedistributionSkewWithThreshold(t *testing.T) {
-	cfg := config.Default()
-	cfg.SkewThreshold = 0.05
+// TestRedistributionSkewReported verifies the full path (FR-15/CR-5): with
+// per-segment size data the plan reports the measured skew as-is (no gate).
+func TestRedistributionSkewReported(t *testing.T) {
 	// src: even layout, key "true"; dst: different key "false" but sizes all on
 	// one segment, so the measured skew is 0.75 (see the helper below).
 	src := mkSkewFake(true, []int64{10, 10, 10, 10})
 	dst := mkSkewFake(false, []int64{40, 0, 0, 0})
 	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 40}}
 
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
+	r := detectRedistribution(context.Background(), src, dst, tabs)
 	if r.Skew != 0.75 {
 		t.Errorf("skew = %v, want 0.75", r.Skew)
-	}
-	if r.Threshold != 0.05 {
-		t.Errorf("threshold = %v, want 0.05", r.Threshold)
-	}
-	if !r.NeedsRedistrib {
-		t.Errorf("expected NeedsRedistrib (skew 0.75 > threshold 0.05)")
-	}
-}
-
-// TestRedistributionSkewBelowThreshold verifies (CR-5) that a measured skew at
-// or below the --skew-threshold is reported as NOT requiring redistribution.
-func TestRedistributionSkewBelowThreshold(t *testing.T) {
-	cfg := config.Default()
-	// A high threshold (0.9) makes the 0.75 skew fall below it.
-	cfg.SkewThreshold = 0.9
-	src := mkSkewFake(true, []int64{10, 10, 10, 10})
-	dst := mkSkewFake(false, []int64{40, 0, 0, 0})
-	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 40}}
-
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if r.Skew != 0.75 {
-		t.Errorf("skew = %v, want 0.75", r.Skew)
-	}
-	if r.NeedsRedistrib {
-		t.Errorf("expected no redistribution (skew 0.75 <= threshold 0.9)")
-	}
-}
-
-// TestRedistributionSkewBoundary verifies the strict inequality at the
-// threshold: skew == threshold is NOT a redistribution.
-func TestRedistributionSkewBoundary(t *testing.T) {
-	cfg := config.Default()
-	cfg.SkewThreshold = 0.75
-	src := mkSkewFake(true, []int64{10, 10, 10, 10})
-	dst := mkSkewFake(false, []int64{40, 0, 0, 0})
-	tabs := []Table{{Schema: "s", Name: "orders", Bytes: 40}}
-
-	r := detectRedistribution(context.Background(), &cfg, src, dst, tabs)
-	if r.Skew != 0.75 {
-		t.Errorf("skew = %v, want 0.75", r.Skew)
-	}
-	if r.NeedsRedistrib {
-		t.Errorf("skew == threshold must not be a redistribution (strict >)")
 	}
 }

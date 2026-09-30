@@ -38,8 +38,6 @@ func TestParseConfigFull(t *testing.T) {
 		"--index-workers", "3",
 		"--no-indexes",
 		"--index-priority", "size",
-		"--no-redistribute",
-		"--skew-threshold", "0.1",
 		"--ssl-cert", "/c.pem", "--ssl-key", "/k.pem",
 		"--ssl-ca", "/ca.pem", "--ssl-min-tls", "TLS12",
 		"--dry-run",
@@ -97,12 +95,6 @@ func TestParseConfigFull(t *testing.T) {
 	}
 	if c.IndexPriority != "size" {
 		t.Fatalf("index-priority = %q", c.IndexPriority)
-	}
-	if !c.NoRedistribute {
-		t.Fatalf("no-redistribute not set")
-	}
-	if c.SkewThreshold != 0.1 {
-		t.Fatalf("skew = %g", c.SkewThreshold)
 	}
 	if c.SSLCert != "/c.pem" || c.SSLKey != "/k.pem" || c.SSLCA != "/ca.pem" || c.SSLMinTLS != "TLS12" {
 		t.Fatalf("ssl not bound: %+v", c)

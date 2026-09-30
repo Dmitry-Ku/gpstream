@@ -154,20 +154,15 @@ type Conflict struct {
 	Action string // what the policy does (skip/overwrite/...)
 }
 
-// Redistribution is the FR-15 redistribution accounting: whether the copied
-// data lands in the same distribution on the destination as on the source,
-// and — the metric CR-5 requires — the measured segment skew of the copied
-// data. Skew is the fraction (0..1) of the total data that must be moved
-// between segments by a redistribution: 0 means the destination lays the data
-// out exactly like the source (no redistribution), 1 means every row changes
-// segment. NeedsRedistrib is true when the measured skew exceeds the
-// operator's --skew-threshold (or when a cluster cannot report its distribution
-// layout, the conservative answer).
+// Redistribution is the FR-15 redistribution accounting (CR-5): the measured
+// segment skew of the copied data. Skew is the fraction (0..1) of the total
+// data that must be moved between segments by a redistribution: 0 means the
+// destination lays the data out exactly like the source (no redistribution),
+// 1 means every row changes segment. The raw value is reported as-is so the
+// operator decides; there is no boolean gate.
 type Redistribution struct {
-	NeedsRedistrib bool    `json:"needs_redistribution"` // FR-15: skew > threshold
-	Skew           float64 `json:"skew"`                 // FR-15/CR-5: measured segment skew (0..1)
-	Threshold      float64 `json:"threshold"`            // the --skew-threshold applied
-	Reason         string  `json:"reason"`               // why redistribution is (not) needed
+	Skew   float64 `json:"skew"`   // FR-15/CR-5: measured segment skew (0..1)
+	Reason string  `json:"reason"` // layout verdict (identical / differs / cannot confirm)
 }
 
 // Build produces the plan for a config against source + destination clusters.
@@ -225,10 +220,10 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 
 	// 4b. Redistribution accounting (FR-15/CR-5): compute, from the clusters'
 	// own distribution keys and segment counts, the measured segment skew of
-	// the copied data and whether it exceeds the --skew-threshold. A mismatch
-	// in distribution keys means the destination lays the data out differently
-	// and the data would be redistributed on the destination.
-	p.Redistrib = detectRedistribution(ctx, cfg, src, dst, tabs)
+	// the copied data (raw value, reported as-is). A mismatch in distribution
+	// keys means the destination lays the data out differently and the data
+	// is redistributed on the destination.
+	p.Redistrib = detectRedistribution(ctx, src, dst, tabs)
 
 	// 4c. Route-mode (M4/T4b): per-unit direct_1to1 vs router_full from the
 	// clusters' distribution policies + segment counts. Degrades to "" (not
@@ -1033,49 +1028,31 @@ func encodingOIDMap(rows [][]any) map[string]int64 {
 	return m
 }
 
-// detectRedistribution computes the FR-15 redistribution accounting (CR-5): the
-// measured segment skew of the copied data and whether it exceeds the
-// operator's --skew-threshold. It reads the clusters' own distribution keys
-// (gp_distribution_policy) and per-segment sizes: a mismatch in distribution
-// keys or segment counts means the destination lays the data out differently
-// and the data is redistributed on the destination. Skew is the fraction (0..1)
-// of the source data that must move to a different segment; NeedsRedistrib is
-// true when skew exceeds the threshold (or when a cluster cannot report its
-// layout, the conservative answer).
-func detectRedistribution(ctx context.Context, cfg *config.Config, src, dst pg.Querier, tabs []Table) Redistribution {
-	thr := cfg.SkewThreshold
-	r := Redistribution{Threshold: thr}
-
-	// --no-redistribute: the operator suppressed redistribution; the accounting
-	// reflects the choice (no skew, no redistribution).
-	if cfg.NoRedistribute {
-		r.Reason = "suppressed (--no-redistribute)"
-		return r
-	}
+// detectRedistribution computes the FR-15 redistribution accounting (CR-5):
+// the measured segment skew of the copied data, reported as-is. It reads the
+// clusters' own distribution keys (gp_distribution_policy) and per-segment
+// sizes: a mismatch in distribution keys or segment counts means the
+// destination lays the data out differently and the data is redistributed on
+// the destination. The raw skew fraction and the layout verdict are reported;
+// the operator decides what matters.
+func detectRedistribution(ctx context.Context, src, dst pg.Querier, tabs []Table) Redistribution {
 	if len(tabs) == 0 {
-		r.Reason = "no tables to redistribute"
-		return r
+		return Redistribution{Reason: "no tables to redistribute"}
 	}
 
 	srcKey := distKey(ctx, src)
 	dstKey := distKey(ctx, dst)
 	// A cluster that cannot report its distribution layout cannot prove the
-	// layouts match: the data must be redistributed (skew = 1, FR-15
-	// conservative).
+	// layouts match: the data must be redistributed (skew = 1, conservative).
 	if srcKey == "" || dstKey == "" {
-		r.Skew = 1
-		r.NeedsRedistrib = true
-		r.Reason = "cannot confirm layout on one cluster (conservative)"
-		return r
+		return Redistribution{Skew: 1, Reason: "cannot confirm layout on one cluster (conservative)"}
 	}
 
 	// Measure the per-segment skew of the copied data against the destination
-	// layout (FR-15/CR-5). This is the actual metric CR-5 requires, and the
-	// threshold is what turns it into the NeedsRedistrib decision.
+	// layout (FR-15/CR-5) — the raw metric, no gate.
 	srcSeg := segmentBytes(ctx, src)
 	dstSeg := segmentBytes(ctx, dst)
-	r.Skew = measureSkew(srcKey, dstKey, srcSeg, dstSeg)
-	r.NeedsRedistrib = r.Skew > thr
+	r := Redistribution{Skew: measureSkew(srcKey, dstKey, srcSeg, dstSeg)}
 	r.Reason = skewReason(r)
 	return r
 }
@@ -1141,15 +1118,15 @@ func segmentBytes(ctx context.Context, q pg.Querier) []int64 {
 	return out
 }
 
-// skewReason explains the redistribution decision (FR-15/CR-5) for reporting.
+// skewReason renders the layout verdict with the raw skew (FR-15/CR-5).
 func skewReason(r Redistribution) string {
 	if r.Skew >= 1 {
 		return "layout differs (full redistribution required)"
 	}
-	if r.NeedsRedistrib {
-		return fmt.Sprintf("skew %.0f%% > threshold %.0f%%", r.Skew*100, r.Threshold*100)
+	if r.Skew <= 0 {
+		return "layout identical (no redistribution)"
 	}
-	return fmt.Sprintf("skew %.0f%% <= threshold %.0f%%", r.Skew*100, r.Threshold*100)
+	return "layout differs"
 }
 
 // sum returns the total of an int64 slice.
@@ -1214,7 +1191,7 @@ func hash(p *Plan) string {
 		fmt.Fprintf(&b, "|%s.%s:%d", u.Schema, u.Name, u.Bytes)
 	}
 	fmt.Fprintf(&b, "|pairs=%s", strings.Join(p.Pairs, ","))
-	fmt.Fprintf(&b, "|redistrib=%v skew=%.6g thr=%.6g", p.Redistrib.NeedsRedistrib, p.Redistrib.Skew, p.Redistrib.Threshold)
+	fmt.Fprintf(&b, "|skew=%.6g", p.Redistrib.Skew)
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
