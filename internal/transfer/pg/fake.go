@@ -23,6 +23,7 @@ type FakeConn struct {
 	queries        []string           // log of executed queries (for assertions)
 	pingErr        error
 	pingDelay      time.Duration // blocks Ping for this long (FR-10 hung segment)
+	execErr        error         // Exec returns this (models a rejected statement)
 	panicQuery     string        // Query panics if the SQL contains this (CR-7/FR-06)
 	panicCopy      bool          // ReadCopy panics (CR-7 data-path fault / FR-06)
 	panicCopyTimes int           // panic on the N-th ReadCopy call (0 = first)
@@ -63,6 +64,15 @@ func (f *FakeConn) SetPingError(err error) *FakeConn {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pingErr = err
+	return f
+}
+
+// SetExecError controls what Exec returns (models a failing statement, e.g.
+// a rejected COPY ... ON SEGMENT probe on a non-Greenplum or GUC-off build).
+func (f *FakeConn) SetExecError(err error) *FakeConn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execErr = err
 	return f
 }
 
@@ -141,6 +151,9 @@ func (f *FakeConn) Exec(ctx context.Context, sql string, args ...any) (int64, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = append(f.queries, renderQuery(sql, args...))
+	if f.execErr != nil {
+		return 0, f.execErr
+	}
 	return 1, nil
 }
 
