@@ -231,8 +231,20 @@ so status/resume/cleanup find it regardless of --plan-file.
 .TP
 .BR --operation-id
 id
-Operation identity (default: generated); state lives at
+Operation identity; state lives at
 .BR <state-dir>/<operation-id>/ .
+When omitted,
+.B run
+generates the id as the deterministic plan hash (the same value the
+.BR --dry-run
+prints as
+.BR "plan hash:"
+) — the same plan yields the same id, so an unchanged plan resumes the
+same operation; an explicit id names the operation for
+.BR status ,
+.BR resume
+and
+.BR cleanup .
 .TP
 .BR --state-dir
 dir

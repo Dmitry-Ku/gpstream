@@ -132,8 +132,10 @@ What happens:
   final name. A Prometheus `/metrics` endpoint is served when you pass
   `--metrics-addr`.
 
-The operation identity is `--operation-id <id>` (default: a generated id). Use
-the same id for `status` / `resume` / `cleanup`.
+The operation identity is `--operation-id <id>`. When omitted, `run` generates
+the id as the **deterministic plan hash** (the same value `dry-run` prints as
+`plan hash:`) — the same plan yields the same id, so an unchanged plan resumes
+the same operation. Use the same id for `status` / `resume` / `cleanup`.
 
 ---
 
