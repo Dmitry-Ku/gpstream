@@ -58,7 +58,6 @@ compress = "zstd"
 zstd_level = 9
 auto_resume = 2
 verify = "full"
-log_level = "warn"
 skew_threshold = 0.2
 `)
 	if err := c.LoadFile(path); err != nil {
@@ -84,9 +83,6 @@ skew_threshold = 0.2
 	}
 	if c.Verify != VerifyFull {
 		t.Errorf("verify = %v, want full", c.Verify)
-	}
-	if c.LogLevel != LogWarn {
-		t.Errorf("log level = %v, want warn", c.LogLevel)
 	}
 	if c.SkewThreshold != 0.2 {
 		t.Errorf("skew = %v, want 0.2", c.SkewThreshold)
@@ -115,12 +111,10 @@ compress: zlib
 zstd_level: "7"
 auto_resume: "2"
 verify: full
-log_level: debug
 ssl_cert: /etc/cert.pem
 ssl_key: /etc/key.pem
 ssl_ca: /etc/ca.pem
 ssl_min_tls: "1.3"
-data_port_range: "1000-2000"
 skew_threshold: "0.1"
 index_priority: manual
 timeout: "5m"
@@ -152,14 +146,8 @@ timeout: "5m"
 	if c.Verify != VerifyFull {
 		t.Errorf("verify = %v, want full", c.Verify)
 	}
-	if c.LogLevel != LogDebug {
-		t.Errorf("log level = %v, want debug", c.LogLevel)
-	}
 	if c.SSLMinTLS != "1.3" {
 		t.Errorf("ssl min tls = %q, want 1.3", c.SSLMinTLS)
-	}
-	if c.DataPortRange != "1000-2000" {
-		t.Errorf("data port range = %q", c.DataPortRange)
 	}
 	if c.SkewThreshold != 0.1 {
 		t.Errorf("skew = %v, want 0.1", c.SkewThreshold)
@@ -252,18 +240,5 @@ func TestValidateNoRedistributeNegSkew(t *testing.T) {
 	c.SkewThreshold = -1 // negative skew with no-redistribute is fine
 	if err := c.Validate(); err != nil {
 		t.Errorf("validate: %v", err)
-	}
-}
-
-// TestParsePortsGoodAndBad covers the success and the low>high branches.
-func TestParsePortsGoodAndBad(t *testing.T) {
-	c := Default()
-	c.DataPortRange = "100-1000"
-	lo, hi, err := c.ParsePorts()
-	if err != nil {
-		t.Fatalf("parse ports: %v", err)
-	}
-	if lo != 100 || hi != 1000 {
-		t.Errorf("got %d-%d, want 100-1000", lo, hi)
 	}
 }

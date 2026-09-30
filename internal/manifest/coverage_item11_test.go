@@ -577,20 +577,6 @@ func TestRunInPlaceTruncate(t *testing.T) {
 	}
 }
 
-// TestRunInPlaceAppend runs a full copy with the Append conflict policy:
-// in-place, no truncate, no verify.
-func TestRunInPlaceAppend(t *testing.T) {
-	cfg := config.Default()
-	cfg.ConflictAction = config.Append
-	m, _ := newManager(t, &cfg, []byte("data"), []byte("data"))
-	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
-		t.Fatalf("run (in-place append): %v", err)
-	}
-	if m.Units != 1 {
-		t.Errorf("units = %d, want 1", m.Units)
-	}
-}
-
 // TestRunMissingExtensions covers the F-11 metadata-phase diagnostic: a plan
 // that reports dependent extensions missing on the destination logs the
 // extension_missing event (non-fatal, the run still succeeds).

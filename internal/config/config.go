@@ -29,26 +29,23 @@ const (
 )
 
 // ConflictAction controls how the planner/manager treats tables that already
-// exist in the destination (FR-10/FR-11). Combined with SkipConflicts it
-// yields the runtime conflict policy (FR-10 §8):
+// exist in the destination (FR-10/FR-11), selected by --resolve-conflicts:
 //
-//	SkipExisting + !SkipConflicts (the DEFAULT) -> STRICT: the run STOPS on a
-//	  conflict so the operator decides (re-run with --skip-conflicts /
-//	  --overwrite / a rename). Nothing is clobbered.
-//	SkipExisting + SkipConflicts (--skip-conflicts / --skip-existing) -> the
-//	  conflicting unit is skipped and the run continues.
-//	Overwrite / Truncate / Append -> explicitly rewrite the destination
-//	  (Overwrite additionally skips tables whose checksum already matches).
+//	Stop (the DEFAULT) -> STRICT: the run STOPS on a conflict so the operator
+//	  decides (re-run with another policy or a rename). Nothing is clobbered.
+//	Skip        -> the conflicting unit is skipped and the run continues.
+//	Overwrite   -> copy to a staging table and swap over the final;
+//	  additionally skips tables whose checksum already matches.
+//	Truncate    -> copy in-place into the final table after TRUNCATE, verify.
 type ConflictAction string
 
 const (
-	// SkipExisting is the default conflict action. On its OWN (SkipConflicts
-	// off) it is STRICT: the run stops on a conflict (FR-10 §8). Paired with
-	// SkipConflicts it skips conflicting units.
-	SkipExisting ConflictAction = "skip-existing"
-	Overwrite    ConflictAction = "overwrite"
-	Truncate     ConflictAction = "truncate"
-	Append       ConflictAction = "append"
+	// Stop is the default conflict policy (FR-10 §8): the run stops on the
+	// first collision and the operator decides.
+	Stop      ConflictAction = "stop"
+	Skip      ConflictAction = "skip"
+	Overwrite ConflictAction = "overwrite"
+	Truncate  ConflictAction = "truncate"
 )
 
 // VerifyMode controls the verification depth (FR-02).
@@ -60,15 +57,6 @@ const (
 	VerifyOff    VerifyMode = "off"
 )
 
-// LogLevel selects verbosity.
-type LogLevel string
-
-const (
-	LogDebug LogLevel = "debug"
-	LogInfo  LogLevel = "info"
-	LogWarn  LogLevel = "warn"
-	LogError LogLevel = "error"
-)
 
 // CopyMode selects the source data-path transport (DESIGN §1.3 / T-B). The
 // operator can override the doctor-detected capability with --copy-mode.
@@ -119,8 +107,7 @@ type Config struct {
 	DataOnly     bool
 
 	// Conflict / safety (FR-10/FR-11).
-	ConflictAction ConflictAction // default SkipExisting
-	SkipConflicts  bool           // default false (strict)
+	ConflictAction ConflictAction // default Stop (strict)
 
 	// Rename (FR-11).
 	RenameDB     map[string]string // src -> dst
@@ -137,8 +124,6 @@ type Config struct {
 	SmallTableThreshold int64
 	RateLimit           float64 // Gbps total ceiling
 	WorkersPerPair      int
-	Streams             int    // v4 §8 --streams: parallel stream workers (alias of WorkersPerPair)
-	DataPortRange       string // "a-b"
 
 	// Resilience (FR-06/FR-07).
 	AutoResume int // N >= 0; 0 = manual only
@@ -173,8 +158,9 @@ type Config struct {
 	// is a real skew signal); negative disables the gate (metric only).
 	SegmentBalanceThreshold float64
 
-	// TLS (FR-13).
-	SSL       bool // --tls: force an encrypted (TLS) connection (v2 §4.12)
+	// TLS (FR-13). PG connections are always sslmode=verify-full unless the
+	// DSN sets another mode explicitly; the keypair/CA below provide the
+	// client certificate and trust store for that handshake.
 	SSLCert   string
 	SSLKey    string
 	SSLCA     string
@@ -198,9 +184,6 @@ type Config struct {
 
 	// Operational.
 	ConfigFile string
-	LogLevel   LogLevel
-	Quiet      bool
-	Debug      bool
 
 	// Consistency (FR-02). The three consistency scopes are mutually
 	// exclusive: ConsistentDB (default) pins one long-running
@@ -239,28 +222,10 @@ type Config struct {
 	MaxReconnects       int    // default 20
 	RetransmitBufferMax int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
 
-	// v2 conflict refinement (§6.3).
-	// OverwriteOnlyConflicts refines Overwrite: only conflicting objects are
-	// re-written, never the whole target (FR-11/§4.9).
-	OverwriteOnlyConflicts bool
-
-	// v2 diagnostics / checks (§6.10, §4.13, §4.14, §4.16).
-	CollationCheck     bool // detect LC_COLLATE/collation differences
-	LocaleCheck        bool // detect locale/encoding/timezone differences
-	DistributionCheck  bool // detect distribution mismatch
-	RedistributionPlan bool // surface redistribution in the plan
-	AdaptiveRateLimit  bool // throttle per host-pair on a detected bottleneck
-
-	// v2 checksum / dedup (§6.4).
-	ChecksumAlgorithm  string // sha256|blake3 (default sha256)
-	Dedup              bool   // skip units whose checksum matches the target
-	SkipIfSameChecksum bool   // alias for Dedup
-
-	// v2 observability / reports (§4.4, §6.9).
-	MetricsOn  bool // enable the Prometheus endpoint
-	ReportJSON string
-	ReportCSV  string
-	ReportText string
+	// LocaleCheck enables the dry-run locale/encoding summary (FR-16):
+	// LC_COLLATE/LC_TYPE/encoding differences are already detected by the
+	// planner; the flag controls the extra dry-run prediction block.
+	LocaleCheck bool
 
 	// v4 §8: operation identity. The operation-id is the v4 handle for a job;
 	// the state (journal mirror, staging, reports) lives under
@@ -272,14 +237,13 @@ type Config struct {
 // Default returns a Config populated with the specification defaults.
 func Default() Config {
 	return Config{
-		ConflictAction:          SkipExisting,
+		ConflictAction:          Stop,
 		Compression:             CompZstd,
 		SmallTableThreshold:     1 << 20, // 1 MiB (F-12 auto-disable default)
 		ZstdLevel:               3,
 		AutoResume:              0,
 		Verify:                  VerifySample,
 		Timeout:                 60 * time.Second,
-		LogLevel:                LogInfo,
 		SkewThreshold:           0.05,
 		SegmentBalanceThreshold: 1.5,
 		ConsistentDB:            true,
@@ -343,9 +307,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("segment-balance-threshold is NaN (want a ratio >= 0, or negative to disable the warning)")
 	}
 	switch c.ConflictAction {
-	case SkipExisting, Overwrite, Truncate, Append:
+	case Stop, Skip, Overwrite, Truncate:
 	default:
-		return fmt.Errorf("unknown conflict action %q", c.ConflictAction)
+		return fmt.Errorf("unknown --resolve-conflicts value %q (want stop|skip|overwrite|truncate)", c.ConflictAction)
 	}
 	switch c.Verify {
 	case VerifyFull, VerifySample, VerifyOff:
@@ -433,9 +397,6 @@ func (c *Config) ApplyEnv() {
 			c.SmallTableThreshold = n
 		}
 	}
-	if v, ok := get("LOG_LEVEL"); ok {
-		c.LogLevel = LogLevel(v)
-	}
 	if v, ok := get("AUTO_RESUME"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.AutoResume = n
@@ -474,42 +435,8 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("SEG_TLS_CA"); ok {
 		c.SegTLSCA = v
 	}
-	// v2 flags (§6.3/§6.4/§6.6/§6.7/§6.9/§6.10/§6.11).
-	if v, ok := get("OVERWRITE_ONLY_CONFLICTS"); ok {
-		c.OverwriteOnlyConflicts = v == "true" || v == "1"
-	}
-	if v, ok := get("COLLATION_CHECK"); ok {
-		c.CollationCheck = v == "true" || v == "1"
-	}
 	if v, ok := get("LOCALE_CHECK"); ok {
 		c.LocaleCheck = v == "true" || v == "1"
-	}
-	if v, ok := get("DISTRIBUTION_CHECK"); ok {
-		c.DistributionCheck = v == "true" || v == "1"
-	}
-	if v, ok := get("REDISTRIBUTION_PLAN"); ok {
-		c.RedistributionPlan = v == "true" || v == "1"
-	}
-	if v, ok := get("ADAPTIVE_RATE_LIMIT"); ok {
-		c.AdaptiveRateLimit = v == "true" || v == "1"
-	}
-	if v, ok := get("CHECKSUM_ALGORITHM"); ok {
-		c.ChecksumAlgorithm = v
-	}
-	if v, ok := get("DEDUP"); ok {
-		c.Dedup = v == "true" || v == "1"
-	}
-	if v, ok := get("METRICS"); ok {
-		c.MetricsOn = v == "true" || v == "1"
-	}
-	if v, ok := get("REPORT_JSON"); ok {
-		c.ReportJSON = v
-	}
-	if v, ok := get("REPORT_CSV"); ok {
-		c.ReportCSV = v
-	}
-	if v, ok := get("REPORT_TEXT"); ok {
-		c.ReportText = v
 	}
 	// Frame-ack (§4.6).
 	if v, ok := get("FRAME_ACK"); ok {
@@ -694,8 +621,6 @@ func assignConfigString(c *Config, key, v string) {
 		c.ResumeConsistency = v
 	case "verify":
 		c.Verify = VerifyMode(v)
-	case "log_level":
-		c.LogLevel = LogLevel(v)
 	case "ssl_cert":
 		c.SSLCert = v
 	case "ssl_key":
@@ -712,8 +637,6 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegTLSKey = v
 	case "seg_tls_ca":
 		c.SegTLSCA = v
-	case "data_port_range":
-		c.DataPortRange = v
 	case "skew_threshold":
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.SkewThreshold = f
@@ -728,52 +651,8 @@ func assignConfigString(c *Config, key, v string) {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Timeout = d
 		}
-	case "overwrite_only_conflicts":
-		c.OverwriteOnlyConflicts = v == "true" || v == "1"
-	case "collation_check":
-		c.CollationCheck = v == "true" || v == "1"
 	case "locale_check":
 		c.LocaleCheck = v == "true" || v == "1"
-	case "distribution_check":
-		c.DistributionCheck = v == "true" || v == "1"
-	case "redistribution_plan":
-		c.RedistributionPlan = v == "true" || v == "1"
-	case "adaptive_rate_limit":
-		c.AdaptiveRateLimit = v == "true" || v == "1"
-	case "checksum_algorithm":
-		c.ChecksumAlgorithm = v
-	case "dedup":
-		c.Dedup = v == "true" || v == "1"
-	case "metrics":
-		c.MetricsOn = v == "true" || v == "1"
-	case "report_json":
-		c.ReportJSON = v
-	case "report_csv":
-		c.ReportCSV = v
-	case "report_text":
-		c.ReportText = v
 	}
 }
 
-// ParsePorts extracts the low/high endpoints of an "a-b" range string.
-func (c Config) ParsePorts() (int, int, error) {
-	if c.DataPortRange == "" {
-		return 0, 0, fmt.Errorf("data-port-range is empty")
-	}
-	parts := strings.SplitN(c.DataPortRange, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("data-port-range must be a-b, got %q", c.DataPortRange)
-	}
-	lo, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return 0, 0, fmt.Errorf("data-port-range low: %w", err)
-	}
-	hi, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err != nil {
-		return 0, 0, fmt.Errorf("data-port-range high: %w", err)
-	}
-	if lo > hi {
-		return 0, 0, fmt.Errorf("data-port-range low > high")
-	}
-	return lo, hi, nil
-}

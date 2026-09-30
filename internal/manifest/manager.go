@@ -59,7 +59,7 @@ type Manager struct {
 	monitor *monitor.Metrics
 	comp    *compress.Compressor
 	dec     *compress.Decompressor
-	// compMode is the operator's --compression mode (FR-12). compNone/decNone
+	// compMode is the operator's --compress mode (FR-12). compNone/decNone
 	// are the mode-none pair built when compMode != none; the F-12 small-table
 	// auto-disable (F-12: «очень мелкие таблицы — сжатие отключается
 	// автоматически») swaps a unit's transport onto them.
@@ -117,7 +117,7 @@ type Stats struct {
 	Rows     int64 // rows copied (FR-02)
 	Units    int   // units processed
 	Comps    int   // units with a verified checksum match (FR-02)
-	Skipped  int   // units skipped by --conflict-action (FR-10/FR-11)
+	Skipped  int   // units skipped by --resolve-conflicts skip (FR-10/FR-11)
 	Failures int   // units that failed after retries
 	// Balances is the F-15 live segment-fill balance measured per copied
 	// table on the destination (max/avg over gp_segment_id). Empty on a
@@ -611,7 +611,7 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	// snapshot; runUnit starts from a clean staging table (a56be8b), so the
 	// re-read replaces rather than appends. A re-read unit is marked
 	// conflicting: the destination holds the PREVIOUS result and the swap
-	// must overwrite it (step 9), which is why it bypasses the skip-existing
+	// must overwrite it (step 9), which is why it bypasses the stop/skip
 	// gate below.
 	reReading := false
 	if u.State == StateCompleted || u.State == StateSwapped {
@@ -637,28 +637,29 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	// present when the planner flagged it (u.Conflict) or a live existence
 	// check confirms the destination already holds the target.
 	//
-	//   strict (default): ConflictAction=skip-existing AND --skip-conflicts is
-	//     OFF. A conflict STOPS the run: the unit is marked failed and the run
-	//     returns an error, so the operator sees the collision and decides
-	//     (re-run with --skip-conflicts / --overwrite / a rename). Nothing is
-	//     clobbered.
-	//   skip: ConflictAction=skip-existing AND --skip-conflicts (or an explicit
-	//     --skip-existing). The conflicting unit is skipped; the run continues.
-	//   proceed: --overwrite / --truncate / --append explicitly opt in to
-	//     rewriting the destination (overwrite additionally skips tables whose
-	//     data already matches, below).
+	//   stop (default): --resolve-conflicts stop. A conflict STOPS the run:
+	//     the unit is marked failed and the run returns an error, so the
+	//     operator sees the collision and decides (re-run with another
+	//     policy or a rename). Nothing is clobbered.
+	//   skip: --resolve-conflicts skip. The conflicting unit is skipped; the
+	//     run continues.
+	//   proceed: --overwrite / --truncate explicitly opt in to rewriting the
+	//     destination (overwrite additionally skips tables whose data already
+	//     matches, below).
 	if !reReading && u.Table != "" {
 		conflicted := u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)
-		if conflicted && m.cfg.ConflictAction == config.SkipExisting {
-			if m.cfg.SkipConflicts {
-				m.addSkipped()
-				m.journal.CreateUnit(u, StatePending)
-				// F-04: conflict event (skipped) — the operator audit trail.
-				m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
-					"action", "skip")
-				return nil
-			}
-			// strict default (FR-10 §8): surface the conflict and stop.
+		switch {
+		case conflicted && m.cfg.ConflictAction == config.Skip:
+			m.addSkipped()
+			m.journal.CreateUnit(u, StatePending)
+			// F-04: conflict event (skipped) — the operator audit trail.
+			m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
+				"action", "skip")
+			return nil
+		case conflicted && m.cfg.ConflictAction == config.Stop:
+			// stop is the default policy (FR-10 §8): surface the conflict
+			// and stop; the operator decides (re-run with another policy or
+			// a rename). Nothing is clobbered.
 			_ = m.setUnitState(u, StateFailed)
 			m.addFailure()
 			// F-04: conflict event (stop) — the run halts on this collision.
@@ -666,13 +667,15 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 				"action", "stop")
 			return &ConflictError{Schema: u.DstSchema, Table: u.DstName}
 		}
+		// Overwrite/Truncate: the conflict is expected — the destination is
+		// rewritten below (overwrite via staging+swap, truncate in-place).
 	}
 	// F-10 §8: --overwrite checksum-skip — a conflicting table whose data is
 	// ALREADY identical on the destination (same row-order-independent content
-	// digest) is skipped, not rewritten. Only --overwrite qualifies: the other
-	// policies (truncate/append) deliberately change the destination, and
-	// skip-existing is handled above. Re-read units are exempt (their target
-	// holds the PREVIOUS result, which must be replaced).
+	// digest) is skipped, not rewritten. Only --overwrite qualifies:
+	// --truncate deliberately changes the destination, and --skip is handled
+	// above. Re-read units are exempt (their target holds the PREVIOUS result,
+	// which must be replaced).
 	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.Overwrite &&
 		m.dst.Exists(ctx, u.DstSchema, u.DstName) && m.overwriteChecksumMatches(ctx, u) {
 		m.addSkipped()
@@ -730,7 +733,7 @@ func (m *Manager) overwriteChecksumMatches(ctx context.Context, u *Unit) bool {
 // ConflictError is returned (FR-10 §8, strict default) when a unit collides
 // with an object that already exists on the destination and no conflict
 // policy was given. The run STOPS with this error so the operator sees the
-// collision and decides (re-run with --skip-conflicts, --overwrite,
+// collision and decides (re-run with --resolve-conflicts skip|overwrite,
 // --truncate, --append, or a rename). Nothing is clobbered.
 type ConflictError struct {
 	Schema string
@@ -738,7 +741,7 @@ type ConflictError struct {
 }
 
 func (e *ConflictError) Error() string {
-	return fmt.Sprintf("conflict: %s.%s already exists on the destination and no conflict policy was given (re-run with --skip-conflicts to skip it, or --overwrite/--truncate/--append to replace it)",
+	return fmt.Sprintf("conflict: %s.%s already exists on the destination (re-run with --resolve-conflicts skip|overwrite|truncate to proceed)",
 		e.Schema, e.Table)
 }
 
@@ -824,29 +827,28 @@ func (m *Manager) tableFor(u *Unit) plan.Table {
 }
 
 // resolve returns how a conflicting unit must be handled (FR-11). It reads the
-// operator's --conflict-action and decides the copy target and verification:
+// operator's --resolve-conflicts value and decides the copy target and
+// verification:
 //
-//	skip-existing  -> the caller (processUnit) skips the unit (never reaches here)
-//	overwrite      -> copy to a staging table and swap over the final (default)
-//	truncate       -> copy in-place into the final table after TRUNCATE, verify
-//	append         -> copy in-place into the final table WITHOUT truncate, no
-//	                 exact checksum verify (final = existing rows + source rows)
+//	stop         -> the caller (processUnit) stops the run (never reaches here)
+//	skip         -> the caller (processUnit) skips the unit (never reaches here)
+//	overwrite    -> copy to a staging table and swap over the final (default)
+//	truncate     -> copy in-place into the final table after TRUNCATE, verify
 //
-// inPlace  : copy into the final table directly (truncate/append)
+// inPlace  : copy into the final table directly (only truncate)
 // truncate : clear the final table before copying (only --truncate)
-// verify   : compare the content checksum after copying (default + --truncate)
+// verify   : compare the content checksum after copying (always)
 func (m *Manager) resolve(u *Unit) (inPlace, truncate, verify bool) {
 	switch m.cfg.ConflictAction {
 	case config.Truncate:
 		return true, true, true
-	case config.Append:
-		return true, false, false
 	default:
-		// SkipExisting is handled in processUnit; Overwrite and any unlisted
+		// Stop/Skip are handled in processUnit; Overwrite and any unlisted
 		// action fall back to the staging+swap path.
 		return false, false, true
 	}
 }
+
 
 // runUnit copies, verifies, rebuilds indexes and swaps a single unit
 // (FR-01/FR-02/FR-11/FR-17), recording each transition in the journal. It takes

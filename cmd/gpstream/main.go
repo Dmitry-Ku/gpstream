@@ -95,8 +95,21 @@ func cmdSelftest(args []string) error {
 // precedence CLI > env > file > defaults, then validates (FR-08/FR-10/FR-11).
 // Every subcommand that consumes the full contract goes through it, so a flag
 // cannot be silently ignored.
+// errHelpRequested is a sentinel returned by parseConfig when the user passes
+// --help/-h among a subcommand's flags; the caller renders printHelp() instead
+// of surfacing a parse error.
+var errHelpRequested = errors.New("help requested")
+
 func parseConfig(args []string) (config.Config, error) {
 	cfg := config.Default()
+
+	// --help/-h anywhere in the subcommand's flags: render usage (the caller
+	// checks errHelpRequested) instead of treating it as an unknown flag.
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return cfg, errHelpRequested
+		}
+	}
 
 	// First pass: locate --config so file values form the base before CLI.
 	var configFile string
@@ -138,15 +151,6 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--tables":
 			i++
 			cfg.Tables = append(cfg.Tables, splitCSV(args[i])...)
-		case "--db": // deprecated alias of --dbs
-			i++
-			cfg.DBs = append(cfg.DBs, splitCSV(args[i])...)
-		case "--schema": // deprecated alias of --schemas
-			i++
-			cfg.Schemas = append(cfg.Schemas, splitCSV(args[i])...)
-		case "--table": // deprecated alias of --tables
-			i++
-			cfg.Tables = append(cfg.Tables, splitCSV(args[i])...)
 		case "--exclude":
 			i++
 			cfg.Exclude = append(cfg.Exclude, splitCSV(args[i])...)
@@ -171,70 +175,34 @@ func parseConfig(args []string) (config.Config, error) {
 			if err := includeClasses(args[i], &cfg); err != nil {
 				return cfg, err
 			}
-		// v4 F-11: --ddl-only (structure without data) / --data-only (into
-		// existing structure). Mutual exclusion is enforced in Validate.
-		case "--metadata-only", "--ddl-only":
+		// v4 F-11: --metadata-only (structure without data) / --data-only
+		// (into existing structure). Mutual exclusion is enforced in Validate.
+		case "--metadata-only":
 			cfg.MetadataOnly = true
 		case "--data-only":
 			cfg.DataOnly = true
 
 		// Conflict / safety (FR-10/FR-11). The DEFAULT is strict: conflicts
-		// STOP the run (FR-10 §8). The flags below are explicit opt-ins.
-		// --conflict-action is a convenience alias.
+		// STOP the run (FR-10 §8). --resolve-conflicts selects the policy;
+		// --overwrite / --truncate are the two common explicit opt-ins.
 		case "--overwrite":
 			cfg.ConflictAction = config.Overwrite
 		case "--truncate":
 			cfg.ConflictAction = config.Truncate
-		case "--append":
-			cfg.ConflictAction = config.Append
-		case "--skip-existing":
-			// Explicit opt-in to skipping conflicts (the default already
-			// stops the run; this makes the skip behaviour deliberate).
-			cfg.ConflictAction = config.SkipExisting
-			cfg.SkipConflicts = true
-		case "--skip-conflicts":
-			cfg.ConflictAction = config.SkipExisting
-			cfg.SkipConflicts = true
-		case "--conflict-action":
+		case "--resolve-conflicts":
 			i++
 			cfg.ConflictAction = config.ConflictAction(args[i])
-
-		// Rename (FR-11): --rename-db src=dst / --rename-schema src=dst.
-		case "--rename-db":
-			i++
-			k, v := splitKV(args[i])
-			cfg.RenameDB = setRename(cfg.RenameDB, k, v)
-		case "--rename-schema":
-			i++
-			k, v := splitKV(args[i])
-			cfg.RenameSchema = setRename(cfg.RenameSchema, k, v)
-		case "--rename-table":
-			i++
-			k, v := splitKV(args[i])
-			cfg.RenameTable = setRename(cfg.RenameTable, k, v)
 
 		// Performance (FR-01/FR-12/FR-14).
 		case "--compress":
 			i++
 			compress(args[i], &cfg)
-		case "--compression": // v4 §8 canonical name
-			i++
-			compress(args[i], &cfg)
 		case "--rate-limit":
 			i++
 			cfg.RateLimit = parseRateLimit(args[i])
-		case "--max-bw": // v4 §8 canonical name: Gbps ceiling
-			i++
-			cfg.RateLimit = parseRateLimit(args[i])
-		case "--workers-per-pair", "--workers":
+		case "--workers":
 			i++
 			cfg.WorkersPerPair = atoi(args[i])
-		case "--streams": // v4 §8 canonical name: parallel stream workers
-			i++
-			cfg.Streams = atoi(args[i])
-		case "--data-port-range":
-			i++
-			cfg.DataPortRange = args[i]
 
 		// Resilience (FR-06/FR-07).
 		case "--auto-resume":
@@ -306,9 +274,6 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--index-workers":
 			i++
 			cfg.IndexWorkers = atoi(args[i])
-		case "--index-parallel": // v4 §8 canonical name
-			i++
-			cfg.IndexWorkers = atoi(args[i])
 		case "--no-indexes":
 			cfg.NoIndexes = true
 		case "--no-constraints":
@@ -350,14 +315,6 @@ func parseConfig(args []string) (config.Config, error) {
 			}
 
 		// TLS (FR-13).
-		case "--tls":
-			// v2 §26: --tls is the shorthand for "require an encrypted
-			// connection". The PG connections are ALWAYS sslmode=verify-full
-			// (enforced, no opt-out); the segment-direct data plane is TLS
-			// when the --seg-tls-cert + --seg-tls-key serving keypair is
-			// configured. --tls asserts the intent explicitly so the
-			// operator's "encrypted run" is recorded.
-			cfg.SSL = true
 		case "--ssl-cert":
 			i++
 			cfg.SSLCert = args[i]
@@ -365,9 +322,6 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.SSLKey = args[i]
 		case "--ssl-ca":
-			i++
-			cfg.SSLCA = args[i]
-		case "--tls-ca": // v4 §8 canonical name
 			i++
 			cfg.SSLCA = args[i]
 		case "--ssl-min-tls":
@@ -399,61 +353,17 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--metrics-addr":
 			i++
 			cfg.MetricsAddr = args[i]
-		case "--log-level":
-			i++
-			cfg.LogLevel = config.LogLevel(args[i])
-		case "--quiet":
-			cfg.Quiet = true
-		case "--debug":
-			cfg.Debug = true
 
-		// v2 conflict refinement (§6.3).
-		case "--overwrite-only-conflicts":
-			cfg.OverwriteOnlyConflicts = true
-
-		// v2 diagnostics / checks (§6.10, §4.13, §4.14, §4.16).
-		case "--collation-check":
-			cfg.CollationCheck = true
+		// Dry-run diagnostics (FR-16).
 		case "--locale-check":
 			cfg.LocaleCheck = true
-		case "--distribution-check":
-			cfg.DistributionCheck = true
-		case "--redistribution-plan":
-			cfg.RedistributionPlan = true
-		case "--adaptive-rate-limit":
-			cfg.AdaptiveRateLimit = true
-
-		// v2 checksum / dedup (§6.4).
-		case "--checksum-algorithm":
-			i++
-			cfg.ChecksumAlgorithm = args[i]
-		case "--dedup", "--skip-if-same-checksum":
-			cfg.Dedup = true
-
-		// v2 observability / reports (§4.4, §6.9).
-		case "--metrics":
-			cfg.MetricsOn = true
-		case "--background-indexes":
-			cfg.NoIndexes = false
-		case "--report-json":
-			i++
-			cfg.ReportJSON = args[i]
-		case "--report-csv":
-			i++
-			cfg.ReportCSV = args[i]
-		case "--report-text":
-			i++
-			cfg.ReportText = args[i]
+		default:
+			return cfg, fmt.Errorf("unknown flag %q (see `gpstream --help`)", a)
 		}
 	}
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
-	}
-	// v4 §8: --streams is the canonical parallelism knob; map it onto the
-	// worker pool the job manager actually sizes (--workers-per-pair).
-	if cfg.Streams > 0 {
-		cfg.WorkersPerPair = cfg.Streams
 	}
 
 	// F-13/F-08: surface config-file security notes (password in a plaintext
@@ -518,6 +428,9 @@ func parseDuration(s string) time.Duration {
 func cmdDryRun(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return printHelp()
+		}
 		return err
 	}
 	// FR-10 --timeout bounds the plan-formation phase (incl. metric collection):
@@ -560,6 +473,9 @@ func cmdDryRun(args []string) error {
 func cmdDoctor(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return printHelp()
+		}
 		return err
 	}
 	ctx := context.Background()
@@ -806,10 +722,12 @@ func routeSummaryLine(p *plan.Plan) string {
 		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router)
 }
 
-// rateLimitNote renders the rate-limit expectation for the dry-run (v2 §26).
+// rateLimitNote renders the rate-limit expectation for the dry-run. The
+// limiter is adaptive (FR-14): it lowers the per-pair rate on a detected
+// receiver bottleneck and recovers when it stabilises.
 func rateLimitNote(cfg config.Config) string {
 	if cfg.RateLimit > 0 {
-		return fmt.Sprintf("%g Gbps ceiling (adaptive=%v)", cfg.RateLimit, cfg.AdaptiveRateLimit)
+		return fmt.Sprintf("%g Gbps ceiling (adaptive per host-pair)", cfg.RateLimit)
 	}
 	return "no ceiling (full bandwidth)"
 }
@@ -823,7 +741,7 @@ func overheadNote(cfg config.Config) string {
 	case config.CompZstd:
 		note = fmt.Sprintf("zstd level %d", cfg.ZstdLevel)
 	}
-	if cfg.SSL || cfg.SSLCert != "" {
+	if cfg.SSLCert != "" {
 		note += " + TLS"
 	}
 	return note
@@ -1050,13 +968,12 @@ func humanDuration(sec int) string {
 //
 // State lives under --state-dir (default /var/lib/gpstream) as
 // <state-dir>/<operation-id>/journal.jsonl — the durable operation journal.
-// Legacy --mirror F is accepted as the journal path itself.
 func cmdStatus(args []string) error {
-	opID, stateDir, mirror := parseOperationArgs(args)
-	if opID == "" && mirror == "" {
-		return fmt.Errorf("status: --operation-id <id> is required (or legacy --mirror <path>)")
+	opID, stateDir := parseOperationArgs(args)
+	if opID == "" {
+		return fmt.Errorf("status: --operation-id <id> is required")
 	}
-	journalPath := resolveJournalPath(mirror, stateDir, opID)
+	journalPath := resolveJournalPath(stateDir, opID)
 	j := manifest.NewJournal(nil, journalPath)
 	if err := j.LoadFromMirror(); err != nil {
 		return fmt.Errorf("status: load journal %s: %w", journalPath, err)
@@ -1138,7 +1055,7 @@ func cmdStatus(args []string) error {
 // --mode drop requires --dest (the destination connstring; --ssl-cert/key/ca
 // are honoured). Destructive: requires --yes.
 func cmdCleanup(args []string) error {
-	opID, stateDir, mirror := parseOperationArgs(args)
+	opID, stateDir := parseOperationArgs(args)
 	var (
 		allIncomplete, drop, yes        bool
 		destStr, sslCert, sslKey, sslCA string
@@ -1173,8 +1090,8 @@ func cmdCleanup(args []string) error {
 	if !yes {
 		return fmt.Errorf("cleanup is destructive; pass --yes to proceed")
 	}
-	if !allIncomplete && opID == "" && mirror == "" {
-		return fmt.Errorf("cleanup: --operation-id <id> is required (or --all-incomplete / legacy --mirror <path>)")
+	if !allIncomplete && opID == "" {
+		return fmt.Errorf("cleanup: --operation-id <id> is required (or --all-incomplete)")
 	}
 	if drop && destStr == "" {
 		return fmt.Errorf("cleanup --mode drop requires --dest <connstring> to reach the destination cluster")
@@ -1191,7 +1108,7 @@ func cmdCleanup(args []string) error {
 			targets = append(targets, target{id, filepath.Join(stateDir, id, "journal.jsonl")})
 		}
 	} else {
-		targets = append(targets, target{opID, resolveJournalPath(mirror, stateDir, opID)})
+		targets = append(targets, target{opID, resolveJournalPath(stateDir, opID)})
 	}
 
 	var dropAgent *dest.Agent
@@ -1303,8 +1220,8 @@ func dropDestObjects(ctx context.Context, a *dest.Agent, opID string, j *manifes
 	return dropped, nil
 }
 
-// parseOperationArgs extracts --operation-id, --state-dir and legacy --mirror.
-func parseOperationArgs(args []string) (opID, stateDir, mirror string) {
+// parseOperationArgs extracts --operation-id and --state-dir.
+func parseOperationArgs(args []string) (opID, stateDir string) {
 	stateDir = config.Default().StateDir
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1314,20 +1231,14 @@ func parseOperationArgs(args []string) (opID, stateDir, mirror string) {
 		case "--state-dir":
 			i++
 			stateDir = args[i]
-		case "--mirror": // legacy: direct journal path
-			i++
-			mirror = args[i]
 		}
 	}
-	return opID, stateDir, mirror
+	return opID, stateDir
 }
 
-// resolveJournalPath returns the durable journal path: an explicit --mirror
-// wins, otherwise <state-dir>/<operation-id>/journal.jsonl (v4 §8 "State").
-func resolveJournalPath(mirror, stateDir, opID string) string {
-	if mirror != "" {
-		return mirror
-	}
+// resolveJournalPath returns the durable journal path:
+// <state-dir>/<operation-id>/journal.jsonl (v4 §8 "State").
+func resolveJournalPath(stateDir, opID string) string {
 	if opID == "" {
 		return ""
 	}
@@ -1388,9 +1299,9 @@ func cmdMan(args []string) error {
 // cmdRun executes a copy between two Greenplum 6 clusters (v4 §8):
 //
 //	gpstream run --source ... --dest ... --dbs sales,hr \
-//	             --overwrite --skip-conflicts --include metadata,data \
-//	             --compression zstd --streams 32 --max-bw 60 \
-//	             --auto-resume 3 --index-parallel 8 --tls-ca /etc/gpstream/ca.pem
+//	             --overwrite --include metadata,data \
+//	             --compress zstd --workers 32 --rate-limit 60 \
+//	             --auto-resume 3 --index-workers 8 --ssl-ca /etc/gpstream/ca.pem
 //
 // It plans (bounded by --timeout), streams every unit source -> dest with no
 // intermediate storage (F-01), verifies (F-02), rebuilds indexes (F-17) and
@@ -1400,6 +1311,9 @@ func cmdMan(args []string) error {
 func cmdRun(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return printHelp()
+		}
 		return err
 	}
 
@@ -1411,9 +1325,6 @@ func cmdRun(args []string) error {
 	// Size the pool for the worker pool plus the journal and the (optional)
 	// FR-02 snapshot pin.
 	maxConns := cfg.WorkersPerPair + 4
-	if cfg.Streams > maxConns {
-		maxConns = cfg.Streams + 4
-	}
 	srcQ, err := pg.NewPool(ctx, cfg.Source, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
 	if err != nil {
 		return fmt.Errorf("run: connect source %q: %w", cfg.Source, err)
@@ -1450,21 +1361,21 @@ func cmdRun(args []string) error {
 	}
 
 	// Operation identity (v4 §8 "State"): the journal lives at
-	// <state-dir>/<operation-id>/; a legacy --plan-file / --mirror still wins.
+	// <state-dir>/<operation-id>/; --plan-file still wins when given.
 	if cfg.OperationID == "" {
 		cfg.OperationID = p.Hash
 	}
-	mirrorPath := cfg.PlanFile
-	if mirrorPath == "" {
-		mirrorPath = filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
+	journalPath := cfg.PlanFile
+	if journalPath == "" {
+		journalPath = filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
 	}
-	if err := os.MkdirAll(filepath.Dir(mirrorPath), 0o755); err != nil {
-		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(mirrorPath), err)
+	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
+		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(journalPath), err)
 	}
 	fmt.Printf("operation-id:   %s\n", cfg.OperationID)
-	fmt.Printf("state:          %s\n", mirrorPath)
+	fmt.Printf("state:          %s\n", journalPath)
 
-	j := manifest.NewJournal(dstQ, mirrorPath)
+	j := manifest.NewJournal(dstQ, journalPath)
 
 	// F-10 §8: persist the conflict diagnosis to conflicts.jsonl (alongside
 	// the journal) so the operator can audit what would collide — and with
@@ -1568,7 +1479,7 @@ func cmdRun(args []string) error {
 // It reopens the durable operation journal and restarts every unit not in a
 // terminal state.
 func cmdResume(args []string) error {
-	opID, stateDir, mirror := parseOperationArgs(args)
+	opID, stateDir := parseOperationArgs(args)
 	maxResume := 0
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--auto-resume" && i+1 < len(args) {
@@ -1576,10 +1487,10 @@ func cmdResume(args []string) error {
 			maxResume = atoi(args[i])
 		}
 	}
-	if opID == "" && mirror == "" {
-		return fmt.Errorf("resume: --operation-id <id> is required (or legacy --mirror <path>)")
+	if opID == "" {
+		return fmt.Errorf("resume: --operation-id <id> is required")
 	}
-	journalPath := resolveJournalPath(mirror, stateDir, opID)
+	journalPath := resolveJournalPath(stateDir, opID)
 	// Durable resume: rebuild the in-memory journal from the file mirror
 	// (which survived the crash) before computing which units to re-queue.
 	j := manifest.NewJournal(nil, journalPath)
@@ -1634,8 +1545,10 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --map-schema src=dst             rename schemas
   --map-table src=dst              rename tables
   --include metadata,data          object classes (empty = both)
-  --overwrite, --skip-conflicts    conflict handling
-  --compression zstd[:level]       compression (none|zlib|zstd)
+  --resolve-conflicts stop|skip|overwrite|truncate
+                               conflict policy (default stop)
+  --overwrite, --truncate          conflict handling (explicit opt-ins)
+  --compress zstd[:level]          compression (none|zlib|zstd)
   --small-table-threshold SIZE     F-12: tables smaller than SIZE copy with
                                    compression off (default 1MiB; 0 disables)
   --copy-mode on_segment           segment-direct fast path (Fallback B, T-B)
@@ -1645,8 +1558,8 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
                                    when a table can't be routed)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the segment hosts
-  --streams N                      parallel stream workers
-  --max-bw <Gbps>                  total bandwidth ceiling
+  --workers N                      parallel workers per host-pair
+  --rate-limit <Gbps>              total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
   --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
   --consistent-tables              FR-02 fallback: each table under its own short
@@ -1657,8 +1570,8 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --ack-timeout 15s|30s|adaptive   blackhole detector (default 30s; adaptive = 3x median RTT)
   --max-reconnects N               reconnect budget (default 20; exhausted = unit failed)
   --retransmit-buffer-max SIZE     in-flight window per stream (default 64M; raise for long-haul WAN)
-  --index-parallel N               background index-build workers
-  --tls-ca F                       TLS CA bundle
+  --index-workers N                background index-build workers
+  --ssl-ca F                       TLS CA bundle
   --operation-id <id>              operation identity (run/status/resume/cleanup)
   --state-dir DIR                  state root (default /var/lib/gpstream)
 

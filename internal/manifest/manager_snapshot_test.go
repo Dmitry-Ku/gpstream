@@ -23,7 +23,7 @@ func snapshotManager(t *testing.T, cfg *config.Config, payload []byte) (*Manager
 	dst := pg.NewFakeConn()
 	dst.OnWriteCopy("FROM STDIN")
 	dst.OnReadCopy("TO STDOUT", payload)
-	// The target table is ABSENT so the (default) skip-existing policy still
+	// The target table is ABSENT so the (default) stop policy still
 	// copies the unit — the snapshot test is about the transaction, not the
 	// conflict policy.
 	dst.On("pg_class", [][]any{})

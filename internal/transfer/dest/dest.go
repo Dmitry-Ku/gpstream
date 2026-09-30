@@ -243,7 +243,7 @@ func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, err
 // schema (FR-02). Because the staging and final tables share a schema, the
 // rename is a single statement and therefore atomic. If the final table
 // already exists it is dropped first only when overwrite is set (FR-11);
-// otherwise the swap fails (skip-existing default).
+// otherwise the swap fails (stop default).
 func (a *Agent) Swap(ctx context.Context, schema, table, stagingName string, overwrite bool) error {
 	if overwrite {
 		if _, err := a.q.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s`,
@@ -252,7 +252,7 @@ func (a *Agent) Swap(ctx context.Context, schema, table, stagingName string, ove
 		}
 	}
 	// Guard: if the final name exists and we are not overwriting, fail
-	// (skip-existing default, FR-11) rather than silently clobbering.
+	// (stop default, FR-11) rather than silently clobbering.
 	if !overwrite {
 		if a.exists(ctx, schema, table) {
 			return fmt.Errorf("swap: target %s.%s exists and overwrite is not set", schema, table)

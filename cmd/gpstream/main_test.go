@@ -151,16 +151,16 @@ func TestV2SubcommandGone(t *testing.T) {
 	}
 }
 
-// TestStatusNeedsMirror: status without --mirror must error.
-func TestStatusNeedsMirror(t *testing.T) {
+// TestStatusNeedsID: status without --operation-id must error.
+func TestStatusNeedsID(t *testing.T) {
 	if err := run([]string{"status"}); err == nil {
-		t.Fatal("expected an error without --mirror")
+		t.Fatal("expected an error without --operation-id")
 	}
 }
 
 // TestCleanupNeedsYes: cleanup without --yes must error (destructive guard).
 func TestCleanupNeedsYes(t *testing.T) {
-	if err := run([]string{"cleanup", "--mirror", "/tmp/none.json"}); err == nil {
+	if err := run([]string{"cleanup", "--operation-id", "none"}); err == nil {
 		t.Fatal("expected an error without --yes")
 	}
 }
@@ -191,39 +191,39 @@ func TestDoctorNoCluster(t *testing.T) {
 
 // ---- v2 commands (§4.2, §4.4, §4.5, §4.7, §4.12, §4.13, §4.16) ----
 
-// TestResumeNoMirror: resume without --mirror must error.
-func TestResumeNoMirror(t *testing.T) {
+// TestResumeNoID: resume without --operation-id must error.
+func TestResumeNoID(t *testing.T) {
 	if err := run([]string{"resume"}); err == nil {
-		t.Fatal("expected resume to error without --mirror")
+		t.Fatal("expected resume to error without --operation-id")
 	}
 }
 
-// TestResumeEmptyJournal: resume against an empty (unpopulated) mirror is a
+// TestResumeEmptyJournal: resume against an empty (unpopulated) journal is a
 // clean no-op (all units terminal → nothing to resume).
 func TestResumeEmptyJournal(t *testing.T) {
-	if err := run([]string{"resume", "--mirror", "/tmp/gpstream_test_resume_none.json"}); err != nil {
+	if err := run([]string{"resume", "--operation-id", "none", "--state-dir", "/tmp/gpstream-test-state"}); err != nil {
 		t.Fatalf("resume empty journal: %v", err)
 	}
 }
 
 // TestCancelNeedsYes: cancel is destructive; without --yes it must error.
 func TestCancelNeedsYes(t *testing.T) {
-	if err := run([]string{"cancel", "--mirror", "/tmp/none.json"}); err == nil {
+	if err := run([]string{"cancel", "--operation-id", "none"}); err == nil {
 		t.Fatal("expected cancel to error without --yes")
 	}
 }
 
 // TestRollbackNeedsYes: rollback is destructive; without --yes it must error.
 func TestRollbackNeedsYes(t *testing.T) {
-	if err := run([]string{"rollback", "--mirror", "/tmp/none.json"}); err == nil {
+	if err := run([]string{"rollback", "--operation-id", "none"}); err == nil {
 		t.Fatal("expected rollback to error without --yes")
 	}
 }
 
-// TestLogsNoMirror: logs without --mirror must error.
-func TestLogsNoMirror(t *testing.T) {
+// TestLogsNoID: logs without --operation-id must error.
+func TestLogsNoID(t *testing.T) {
 	if err := run([]string{"logs"}); err == nil {
-		t.Fatal("expected logs to error without --mirror")
+		t.Fatal("expected logs to error without --operation-id")
 	}
 }
 
@@ -246,45 +246,48 @@ func TestSecurityCheckNoCluster(t *testing.T) {
 	}
 }
 
-// TestIndexesNoMirror: indexes without --mirror must error.
-func TestIndexesNoMirror(t *testing.T) {
+// TestIndexesNoID: indexes without --operation-id must error.
+func TestIndexesNoID(t *testing.T) {
 	if err := run([]string{"indexes"}); err == nil {
-		t.Fatal("expected indexes to error without --mirror")
+		t.Fatal("expected indexes to error without --operation-id")
 	}
 }
 
-// TestParseConfigV2Flags: the v2 flags bind into the config (v2 §6.3/§4.13/§4.16).
-func TestParseConfigV2Flags(t *testing.T) {
-	c, err := parseConfig([]string{
-		"--overwrite-only-conflicts", "--collation-check", "--locale-check",
-		"--distribution-check", "--redistribution-plan", "--adaptive-rate-limit",
-		"--checksum-algorithm", "blake3", "--dedup", "--metrics",
-		"--report-json", "/tmp/r.json",
-	})
+// TestHelpFlag: --help/-h in a subcommand's flags renders usage (no error),
+// while any other unknown flag is rejected.
+func TestHelpFlag(t *testing.T) {
+	if err := run([]string{"run", "--help"}); err != nil {
+		t.Fatalf("run --help: %v", err)
+	}
+	if err := run([]string{"dry-run", "-h"}); err != nil {
+		t.Fatalf("dry-run -h: %v", err)
+	}
+	if err := run([]string{"doctor", "--source", "s", "--help"}); err != nil {
+		t.Fatalf("doctor --help: %v", err)
+	}
+	if err := run([]string{"run", "--bogus-flag"}); err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+}
+
+// TestParseConfigDiagnostics: the surviving dry-run diagnostic flag binds.
+func TestParseConfigDiagnostics(t *testing.T) {
+	c, err := parseConfig([]string{"--locale-check"})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if !c.OverwriteOnlyConflicts || !c.CollationCheck || !c.LocaleCheck ||
-		!c.DistributionCheck || !c.RedistributionPlan || !c.AdaptiveRateLimit ||
-		!c.Dedup || !c.MetricsOn {
-		t.Fatalf("v2 flags not bound: %+v", c)
-	}
-	if c.ChecksumAlgorithm != "blake3" {
-		t.Fatalf("checksum = %q, want blake3", c.ChecksumAlgorithm)
-	}
-	if c.ReportJSON != "/tmp/r.json" {
-		t.Fatalf("report-json = %q", c.ReportJSON)
+	if !c.LocaleCheck {
+		t.Fatalf("locale-check not bound: %+v", c)
 	}
 }
 
-// TestParseConfigV2SelectionTLS: --dbs/--tls/--rate-limit units/--rename-table
-// bind into the config (v2 §26 success criterion, §4.9/§4.12/§4.13/§4.10).
-func TestParseConfigV2SelectionTLS(t *testing.T) {
+// TestParseConfigSelection: --dbs/--rate-limit units/--map-table bind into
+// the config.
+func TestParseConfigSelection(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--dbs", "analytics",
-		"--tls",
 		"--rate-limit", "80gbit",
-		"--rename-table", "public.t1=schema1.t2",
+		"--map-table", "public.t1=schema1.t2",
 	})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
@@ -292,14 +295,11 @@ func TestParseConfigV2SelectionTLS(t *testing.T) {
 	if len(c.DBs) != 1 || c.DBs[0] != "analytics" {
 		t.Fatalf("databases = %v, want [analytics]", c.DBs)
 	}
-	if !c.SSL {
-		t.Fatalf("tls not bound: SSL=false")
-	}
 	if c.RateLimit != 80 {
 		t.Fatalf("rate-limit 80gbit = %g, want 80 (Gbps)", c.RateLimit)
 	}
 	if len(c.RenameTable) != 1 || c.RenameTable["public.t1"] != "schema1.t2" {
-		t.Fatalf("rename-table = %v", c.RenameTable)
+		t.Fatalf("map-table = %v", c.RenameTable)
 	}
 }
 

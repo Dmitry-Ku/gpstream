@@ -77,14 +77,14 @@ func TestCopyHappyPath(t *testing.T) {
 	}
 }
 
-// TestSkipExistingNoCopy verifies the explicit skip policy (FR-10/FR-11):
-// with --skip-existing (SkipConflicts=true) and a target that already exists,
-// the unit is skipped — no copy, no failure, no overwrite of existing data.
-// (The DEFAULT without --skip-existing/--skip-conflicts is strict and STOPS the
-// run — see TestManagerStrictConflictStops.)
-func TestSkipExistingNoCopy(t *testing.T) {
+// TestSkipNoCopy verifies the explicit skip policy (FR-10/FR-11): with
+// --resolve-conflicts skip and a target that already exists, the unit is
+// skipped — no copy, no failure, no overwrite of existing data.
+// (The DEFAULT --resolve-conflicts stop is strict and STOPS the run — see
+// TestManagerStrictConflictStops.)
+func TestSkipNoCopy(t *testing.T) {
 	cfg := config.Default()
-	cfg.SkipConflicts = true // --skip-existing: explicit opt-in to skipping
+	cfg.ConflictAction = config.Skip // --resolve-conflicts skip
 	payload := []byte("BINARY-COPY-ROW-BATCH")
 	m, _ := newManager(t, &cfg, payload, payload)
 

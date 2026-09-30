@@ -73,10 +73,10 @@ func TestPlanVolumeAndConflict(t *testing.T) {
 	if len(p.Conflicts) != 2 {
 		t.Errorf("conflicts = %d, want 2", len(p.Conflicts))
 	}
-	// FR-10 §8: the default (skip-existing, --skip-conflicts OFF) is STRICT —
+	// FR-10 §8: the default (--resolve-conflicts stop) is STRICT —
 	// the run stops on a conflict, so the dry-run verdict says the copy ends
 	// in an error.
-	if p.Conflicts[0].Action != "STOP (default: re-run with --skip-conflicts to skip, or --overwrite/--truncate/--append to replace)" {
+	if p.Conflicts[0].Action != "STOP (default: re-run with --resolve-conflicts skip|overwrite|truncate)" {
 		t.Errorf("conflict action = %q, want the strict STOP verdict", p.Conflicts[0].Action)
 	}
 	if len(p.Pairs) != 1 {

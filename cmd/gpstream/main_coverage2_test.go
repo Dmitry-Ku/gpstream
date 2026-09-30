@@ -116,10 +116,10 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--map-db", "a=b", "--map-schema", "c=d", "--map-table", "e=f",
 		"--data-only",
 		"--truncate",
-		"--conflict-action", "append",
-		"--compression", "zlib",
-		"--max-bw", "100",
-		"--streams", "8",
+		"--resolve-conflicts", "truncate",
+		"--compress", "zlib",
+		"--rate-limit", "100",
+		"--workers", "8",
 		"--verify", "sample",
 		"--resume-consistency", "strict",
 		"--on-unit-failure", "abort",
@@ -130,16 +130,11 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--copy-mode", "on_segment", "--seg-listen", "10.0.0.5:9432",
 		"--seg-binary", "/tmp/segreceiver",
 		"--seg-tls-cert", "/c.pem", "--seg-tls-key", "/k.pem", "--seg-tls-ca", "/ca.pem",
-		"--index-parallel", "4", "--no-constraints",
+		"--index-workers", "4", "--no-constraints",
 		"--zstd-level", "5",
 		"--small-table-threshold", "2M",
-		"--tls", "--tls-ca", "/ca.pem",
-		"--metrics", "--report-json", "/tmp/r.json", "--report-text", "/tmp/r.txt",
-		"--checksum-algorithm", "sha256",
-		"--dedup",
-		"--collation-check", "--locale-check", "--distribution-check",
-		"--redistribution-plan", "--adaptive-rate-limit",
-		"--overwrite-only-conflicts",
+		"--ssl-ca", "/ca.pem",
+		"--locale-check",
 		"--metrics-addr", "127.0.0.1:9191",
 	})
 	if err != nil {
@@ -151,16 +146,16 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	if !c.DataOnly {
 		t.Error("data-only not set")
 	}
-	if c.ConflictAction != config.Append {
-		t.Errorf("conflict-action = %q, want append", c.ConflictAction)
+	if c.ConflictAction != config.Truncate {
+		t.Errorf("resolve-conflicts = %q, want truncate", c.ConflictAction)
 	}
 	if c.Compression != config.CompZlib {
 		t.Errorf("compression = %q, want zlib", c.Compression)
 	}
 	if c.RateLimit != 100 {
-		t.Errorf("max-bw = %v, want 100", c.RateLimit)
+		t.Errorf("rate-limit = %v, want 100", c.RateLimit)
 	}
-	if c.WorkersPerPair != 8 { // --streams maps onto the worker pool
+	if c.WorkersPerPair != 8 {
 		t.Errorf("workers = %d, want 8", c.WorkersPerPair)
 	}
 	if c.ResumeConsistency != "strict" || c.OnUnitFailure != "abort" {
@@ -176,23 +171,16 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		t.Error("seg-tls trio not bound")
 	}
 	if c.IndexWorkers != 4 || !c.NoConstraints {
-		t.Error("index-parallel/no-constraints not bound")
+		t.Error("index-workers/no-constraints not bound")
 	}
 	if c.ZstdLevel != 5 || c.SmallTableThreshold != 2<<20 {
 		t.Errorf("zstd/small-table = %d/%d", c.ZstdLevel, c.SmallTableThreshold)
 	}
-	if !c.SSL || c.SSLCA != "/ca.pem" {
-		t.Error("tls/tls-ca not bound")
+	if c.SSLCA != "/ca.pem" {
+		t.Error("ssl-ca not bound")
 	}
-	if !c.MetricsOn || c.ReportJSON != "/tmp/r.json" || c.ReportText != "/tmp/r.txt" {
-		t.Error("metrics/report flags not bound")
-	}
-	if c.ChecksumAlgorithm != "sha256" || !c.Dedup {
-		t.Error("checksum/dedup not bound")
-	}
-	if !c.CollationCheck || !c.LocaleCheck || !c.DistributionCheck ||
-		!c.RedistributionPlan || !c.AdaptiveRateLimit || !c.OverwriteOnlyConflicts {
-		t.Error("diagnostic flags not bound")
+	if !c.LocaleCheck {
+		t.Error("locale-check not bound")
 	}
 	if c.MetricsAddr != "127.0.0.1:9191" {
 		t.Error("metrics-addr not bound")

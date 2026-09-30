@@ -268,9 +268,8 @@ func TestParseConfigKitchenSink(t *testing.T) {
 	}
 
 	argv := []string{
-		"run",
-		"--src", "postgres://src?host=localhost",
-		"--dst", "postgres://dst?host=localhost",
+		"--source", "postgres://src?host=localhost",
+		"--dest", "postgres://dst?host=localhost",
 		"--dbs", "db1,db2",
 		"--include", "metadata,data",
 		"--state-dir", dir,
@@ -278,17 +277,14 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--rate-limit", "2",
 		"--workers", "3",
 		"--zstd-level", "3",
-		"--batch", "4096",
 		"--verify", "full",
-		"--conflict", "overwrite",
-		"--compression", "zstd",
-		"--log-level", "info",
+		"--overwrite",
+		"--compress", "zstd",
 		"--no-redistribute",
 		"--consistent-db",
 		"--metadata-only",
 		"--auto-resume", "1",
 		"--metrics-addr", "127.0.0.1:0",
-		"--skip-checks",
 		"--dry-run",
 	}
 

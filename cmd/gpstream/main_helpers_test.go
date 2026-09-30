@@ -178,7 +178,7 @@ func TestPlanNotes(t *testing.T) {
 	if got := rateLimitNote(config.Config{}); got != "no ceiling (full bandwidth)" {
 		t.Errorf("rateLimitNote none = %q", got)
 	}
-	if got := rateLimitNote(config.Config{RateLimit: 80, AdaptiveRateLimit: true}); got != "80 Gbps ceiling (adaptive=true)" {
+	if got := rateLimitNote(config.Config{RateLimit: 80}); got != "80 Gbps ceiling (adaptive per host-pair)" {
 		t.Errorf("rateLimitNote 80 = %q", got)
 	}
 	if got := overheadNote(config.Config{}); got != "off" {
@@ -187,7 +187,7 @@ func TestPlanNotes(t *testing.T) {
 	if got := overheadNote(config.Config{Compression: config.CompZstd, ZstdLevel: 3}); got != "zstd level 3" {
 		t.Errorf("overheadNote zstd = %q", got)
 	}
-	if got := overheadNote(config.Config{Compression: config.CompZlib, SSL: true}); got != "zlib + TLS" {
+	if got := overheadNote(config.Config{Compression: config.CompZlib, SSLCert: "/c.pem"}); got != "zlib + TLS" {
 		t.Errorf("overheadNote zlib+tls = %q", got)
 	}
 	if got := backgroundIndexNote(config.Config{NoIndexes: true}, p); got != 0 {
@@ -246,8 +246,8 @@ func TestCmdDryRunFake(t *testing.T) {
 		t.Errorf("plan-file not written: %v", err)
 	}
 
-	// --rename-db / --map-schema flag parsing (splitKV/setRename in parseConfig).
-	if err := run([]string{"dry-run", "--rename-db", "sales=finance", "--map-schema", "old=new"}); err != nil {
+	// --map-db / --map-schema flag parsing (splitKV/setRename in parseConfig).
+	if err := run([]string{"dry-run", "--map-db", "sales=finance", "--map-schema", "old=new"}); err != nil {
 		t.Errorf("dry-run renames: %v", err)
 	}
 }
@@ -298,10 +298,6 @@ func TestCmdStatusWithJournal(t *testing.T) {
 	}
 	if err := run([]string{"status", "--operation-id", "op1", "--state-dir", dir}); err != nil {
 		t.Errorf("status with journal: %v", err)
-	}
-	// Legacy --mirror form: the path is the journal itself.
-	if err := run([]string{"status", "--mirror", filepath.Join(opDir, "journal.jsonl")}); err != nil {
-		t.Errorf("status --mirror: %v", err)
 	}
 }
 

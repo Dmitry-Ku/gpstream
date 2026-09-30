@@ -78,11 +78,11 @@ func TestManagerStrictConflictEmitsEvent(t *testing.T) {
 	}
 }
 
-// TestManagerSkipConflictEmitsEvent verifies the --skip-conflicts path
+// TestManagerSkipConflictEmitsEvent verifies the --resolve-conflicts skip path
 // records a conflict event with action=skip (spec F-04).
 func TestManagerSkipConflictEmitsEvent(t *testing.T) {
 	cfg := config.Default()
-	cfg.SkipConflicts = true
+	cfg.ConflictAction = config.Skip
 	m, dir := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
 
 	p := oneUnitPlan()

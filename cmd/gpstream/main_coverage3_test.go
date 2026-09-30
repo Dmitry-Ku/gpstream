@@ -6,8 +6,8 @@ package main
 // flag parsing), cmdStatus with a valid runstats.json (live table: pair,
 // progress, throughput, by_status, per-table) plus jobmeta.json (snap-epoch
 // line), the parseConfig flag branches (--no-redistribute, --skew-threshold,
-// --segment-balance-threshold, --index-workers, --index-parallel,
-// --no-indexes, --no-constraints, --index-priority), and the config-file
+// --segment-balance-threshold, --index-workers, --no-indexes,
+// --no-constraints, --index-priority), and the config-file
 // security-warning loop (0644 file with a password in the DSN).
 import (
 	"encoding/json"
@@ -125,7 +125,6 @@ func TestParseConfigFlagsB(t *testing.T) {
 		"--skew-threshold", "0.2",
 		"--segment-balance-threshold", "0.3",
 		"--index-workers", "7",
-		"--index-parallel", "9",
 		"--no-indexes",
 		"--no-constraints",
 		"--index-priority", "background",
@@ -144,8 +143,8 @@ func TestParseConfigFlagsB(t *testing.T) {
 	if c.SegmentBalanceThreshold != 0.3 {
 		t.Errorf("SegmentBalanceThreshold = %v, want 0.3", c.SegmentBalanceThreshold)
 	}
-	if c.IndexWorkers != 9 { // --index-parallel (9) is parsed after --index-workers (7)
-		t.Errorf("IndexWorkers = %d, want 9 (later flag wins)", c.IndexWorkers)
+	if c.IndexWorkers != 7 {
+		t.Errorf("IndexWorkers = %d, want 7", c.IndexWorkers)
 	}
 	if !c.NoIndexes || !c.NoConstraints {
 		t.Error("NoIndexes/NoConstraints not set")

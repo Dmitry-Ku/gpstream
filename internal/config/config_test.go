@@ -30,8 +30,8 @@ func TestExampleConfigLoads(t *testing.T) {
 
 func TestDefault(t *testing.T) {
 	c := Default()
-	if c.ConflictAction != SkipExisting {
-		t.Errorf("default conflict action = %v, want skip-existing", c.ConflictAction)
+	if c.ConflictAction != Stop {
+		t.Errorf("default conflict action = %v, want stop", c.ConflictAction)
 	}
 	if c.Compression != CompZstd {
 		t.Errorf("default compression = %v, want zstd", c.Compression)
@@ -77,34 +77,10 @@ func TestValidateErrors(t *testing.T) {
 	}
 }
 
-func TestParsePorts(t *testing.T) {
-	c := Default()
-	c.DataPortRange = "2000-2010"
-	lo, hi, err := c.ParsePorts()
-	if err != nil {
-		t.Fatalf("ParsePorts: %v", err)
-	}
-	if lo != 2000 || hi != 2010 {
-		t.Errorf("got %d-%d, want 2000-2010", lo, hi)
-	}
-}
-
-func TestParsePortsErrors(t *testing.T) {
-	cases := []string{"", "abc", "5-1", "5", "5-"}
-	for _, s := range cases {
-		c := Default()
-		c.DataPortRange = s
-		if _, _, err := c.ParsePorts(); err == nil {
-			t.Errorf("ParsePorts(%q): expected error", s)
-		}
-	}
-}
-
 func TestApplyEnv(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "50")
 	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "8")
 	t.Setenv("GPSTREAM_COMPRESS", "zlib")
-	t.Setenv("GPSTREAM_LOG_LEVEL", "debug")
 	c := Default()
 	c.ApplyEnv()
 	if c.RateLimit != 50 {
@@ -115,9 +91,6 @@ func TestApplyEnv(t *testing.T) {
 	}
 	if c.Compression != CompZlib {
 		t.Errorf("compression = %v, want zlib", c.Compression)
-	}
-	if c.LogLevel != LogDebug {
-		t.Errorf("log level = %v, want debug", c.LogLevel)
 	}
 }
 

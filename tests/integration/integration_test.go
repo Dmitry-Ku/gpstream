@@ -27,7 +27,7 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "50")
 	t.Setenv("GPSTREAM_SSL_CERT", "/etc/ssl/cert.pem")
 	t.Setenv("GPSTREAM_SSL_KEY", "/etc/ssl/key.pem")
-	t.Setenv("GPSTREAM_OVERWRITE_ONLY_CONFLICTS", "true")
+	t.Setenv("GPSTREAM_LOCALE_CHECK", "true")
 
 	cfg := config.Default()
 	cfg.ApplyEnv()
@@ -40,8 +40,8 @@ func TestConfigFromEnv(t *testing.T) {
 	if cfg.SSLCert != "/etc/ssl/cert.pem" {
 		t.Errorf("ssl cert = %q, want /etc/ssl/cert.pem (from env)", cfg.SSLCert)
 	}
-	if !cfg.OverwriteOnlyConflicts {
-		t.Error("overwrite_only_conflicts not parsed from env")
+	if !cfg.LocaleCheck {
+		t.Error("locale_check not parsed from env")
 	}
 }
 
@@ -58,12 +58,7 @@ func TestConfigFromFile(t *testing.T) {
 		"rate_limit: \"50\"",
 		"compress: zstd",
 		"zstd_level: \"9\"",
-		"overwrite_only_conflicts: \"true\"",
-		"collation_check: \"true\"",
 		"locale_check: \"true\"",
-		"distribution_check: \"true\"",
-		"metrics: \"true\"",
-		"report_json: /tmp/out.json",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
@@ -81,45 +76,24 @@ func TestConfigFromFile(t *testing.T) {
 	if cfg.ZstdLevel != 9 {
 		t.Errorf("zstd level = %d, want 9", cfg.ZstdLevel)
 	}
-	if !cfg.OverwriteOnlyConflicts {
-		t.Error("overwrite_only_conflicts not parsed from file")
-	}
-	if !cfg.CollationCheck {
-		t.Error("collation_check not parsed from file")
-	}
 	if !cfg.LocaleCheck {
 		t.Error("locale_check not parsed from file")
-	}
-	if !cfg.DistributionCheck {
-		t.Error("distribution_check not parsed from file")
-	}
-	if !cfg.MetricsOn {
-		t.Error("metrics not parsed from file")
-	}
-	if cfg.ReportJSON != "/tmp/out.json" {
-		t.Errorf("report_json = %q, want /tmp/out.json", cfg.ReportJSON)
 	}
 }
 
 // TestConfigSafetyDefaults verifies (FR-10/FR-11) that the defaults are safe:
-// strict conflict policy (conflicts STOP the run — skip-existing with
-// --skip-conflicts OFF), sample verify, zstd compression, no overwrite.
+// strict conflict policy (conflicts STOP the run — stop by default),
+// sample verify, zstd compression, no overwrite.
 func TestConfigSafetyDefaults(t *testing.T) {
 	cfg := config.Default()
-	if cfg.ConflictAction != config.SkipExisting {
-		t.Errorf("default conflict = %q, want %q", cfg.ConflictAction, config.SkipExisting)
-	}
-	if cfg.SkipConflicts {
-		t.Error("default skip_conflicts must be false (strict: conflicts stop the run)")
+	if cfg.ConflictAction != config.Stop {
+		t.Errorf("default conflict = %q, want %q", cfg.ConflictAction, config.Stop)
 	}
 	if cfg.Verify != config.VerifySample {
 		t.Errorf("default verify = %q, want sample", cfg.Verify)
 	}
 	if cfg.Compression != config.CompZstd {
 		t.Errorf("default compression = %q, want zstd", cfg.Compression)
-	}
-	if cfg.OverwriteOnlyConflicts {
-		t.Error("default overwrite_only_conflicts must be false (never overwrite silently)")
 	}
 }
 

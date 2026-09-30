@@ -10,7 +10,7 @@ import (
 )
 
 // conflictManager builds a Manager over two fake streaming conns whose dest
-// reports the target table EXISTS (so the in-place --truncate/--append paths
+// reports the target table EXISTS (so the in-place --truncate path
 // do not create it, matching a real conflicting table). The source and dest
 // serve the same binary COPY payload so a verify (when performed) matches.
 func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists bool) (*Manager, *pg.FakeConn) {
@@ -60,45 +60,16 @@ func TestManagerTruncate(t *testing.T) {
 	}
 }
 
-// TestManagerAppend verifies the --append policy (FR-11): the data is copied
-// into the final table WITHOUT truncating it, and NO exact checksum verify is
-// performed (the final holds existing + source rows).
-func TestManagerAppend(t *testing.T) {
-	cfg := config.Default()
-	cfg.ConflictAction = config.Append
-	m, dst := conflictManager(t, &cfg, []byte("BATCH"), true)
-
-	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if m.Units != 1 {
-		t.Errorf("units = %d, want 1", m.Units)
-	}
-	if m.Rows == 0 {
-		t.Errorf("rows = 0, want > 0 (data must have been appended)")
-	}
-	if m.Comps != 0 {
-		t.Errorf("comps = %d, want 0 (--append must not verify an exact checksum)", m.Comps)
-	}
-	if hasQuery(dst.Queried(), "TRUNCATE") {
-		t.Errorf("--append must not TRUNCATE the final table")
-	}
-	if hasQuery(dst.Queried(), "RENAME TO") {
-		t.Errorf("in-place --append must not swap (no ALTER ... RENAME)")
-	}
-}
-
-// TestManagerResolve locks the conflict-action resolution (FR-11): each action
+// TestManagerResolve locks the --resolve-conflicts resolution (FR-11): each
 // selects the right (inPlace, truncate, verify) combination.
 func TestManagerResolve(t *testing.T) {
 	cases := []struct {
 		action                config.ConflictAction
 		inPlace, trun, verify bool
 	}{
-		{config.SkipExisting, false, false, true}, // skipped upstream; default path
+		{config.Stop, false, false, true},         // stopped upstream; default path
 		{config.Overwrite, false, false, true},    // staging + swap
 		{config.Truncate, true, true, true},
-		{config.Append, true, false, false},
 	}
 	for _, c := range cases {
 		cfg := config.Default()

@@ -182,12 +182,12 @@ func TestManagerRunHonoursDistribution(t *testing.T) {
 }
 
 // TestManagerSkipConflict verifies the EXPLICIT skip policy (FR-10/FR-11):
-// with --skip-conflicts (SkipConflicts=true) a conflicting unit is skipped and
-// the run still succeeds. (The DEFAULT without --skip-conflicts is strict: it
+// with --resolve-conflicts skip a conflicting unit is skipped and the run
+// still succeeds. (The DEFAULT --resolve-conflicts stop is strict: it
 // stops the run — see TestManagerStrictConflictStops.)
 func TestManagerSkipConflict(t *testing.T) {
 	cfg := config.Default()
-	cfg.SkipConflicts = true // --skip-conflicts: explicit opt-in to skipping
+	cfg.ConflictAction = config.Skip // --resolve-conflicts skip
 	payload := []byte("data")
 	m, _ := newManager(t, &cfg, payload, payload)
 
@@ -206,11 +206,11 @@ func TestManagerSkipConflict(t *testing.T) {
 }
 
 // TestManagerStrictConflictStops verifies the FR-10 §8 DEFAULT: without a
-// conflict policy (--skip-conflicts off) a conflicting unit STOPS the run —
+// conflict policy (--resolve-conflicts stop) a conflicting unit STOPS the run —
 // the run returns a ConflictError, the unit is journaled failed, and nothing
 // is copied or clobbered.
 func TestManagerStrictConflictStops(t *testing.T) {
-	cfg := config.Default() // skip-existing, SkipConflicts=false -> strict
+	cfg := config.Default() // stop (strict) by default
 	payload := []byte("data")
 	m, _ := newManager(t, &cfg, payload, payload)
 

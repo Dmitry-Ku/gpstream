@@ -26,14 +26,13 @@ func TestParseConfigFull(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--source", "source://s", "--dest", "dest://d",
 		"--include", "metadata,data",
-		"--db", "db1", "--schema", "sch1", "--table", "tab1",
+		"--dbs", "db1", "--schemas", "sch1", "--tables", "tab1",
 		"--exclude", "x.1",
 		"--overwrite",
-		"--rename-db", "old=New", "--rename-schema", "o=n",
+		"--map-db", "old=New", "--map-schema", "o=n",
 		"--compress", "zstd:9",
 		"--rate-limit", "80gbit",
-		"--workers-per-pair", "4",
-		"--data-port-range", "6000-6010",
+		"--workers", "4",
 		"--auto-resume", "2",
 		"--verify", "full",
 		"--consistent-db",
@@ -48,11 +47,7 @@ func TestParseConfigFull(t *testing.T) {
 		"--timeout", "60s",
 		"--plan-file", "/tmp/plan.json",
 		"--metrics-addr", "127.0.0.1:9090",
-		"--log-level", "debug",
-		"--quiet", "--debug",
-		"--background-indexes",
-		"--report-csv", "/tmp/r.csv", "--report-text", "/tmp/r.txt",
-		"--skip-if-same-checksum",
+		"--locale-check",
 	})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
@@ -88,9 +83,6 @@ func TestParseConfigFull(t *testing.T) {
 	if c.WorkersPerPair != 4 {
 		t.Fatalf("workers = %d", c.WorkersPerPair)
 	}
-	if c.DataPortRange != "6000-6010" {
-		t.Fatalf("port-range = %q", c.DataPortRange)
-	}
 	if c.AutoResume != 2 {
 		t.Fatalf("auto-resume = %d", c.AutoResume)
 	}
@@ -121,22 +113,11 @@ func TestParseConfigFull(t *testing.T) {
 	if c.MetricsAddr != "127.0.0.1:9090" {
 		t.Fatalf("metrics-addr = %q", c.MetricsAddr)
 	}
-	if c.LogLevel != "debug" || !c.Quiet || !c.Debug {
-		t.Fatalf("log-level/quiet/debug not set: %+v", c)
-	}
-	if c.ReportCSV != "/tmp/r.csv" || c.ReportText != "/tmp/r.txt" {
-		t.Fatalf("report flags = %q/%q", c.ReportCSV, c.ReportText)
-	}
-	if !c.Dedup {
-		t.Fatalf("skip-if-same-checksum -> Dedup not set")
-	}
 	if c.Timeout != 60*time.Second {
 		t.Fatalf("timeout = %s, want 60s", c.Timeout)
 	}
-	// --background-indexes forces NoIndexes=false even though --no-indexes was
-	// set earlier (last-wins on the boolean via the flag that sets it).
-	if c.NoIndexes {
-		t.Fatalf("background-indexes should have cleared NoIndexes")
+	if !c.NoIndexes {
+		t.Fatalf("no-indexes not bound")
 	}
 }
 
@@ -183,9 +164,16 @@ func TestParseConfigValidationErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--compress", "zstd:25"}); err == nil {
 		t.Fatal("expected error for --compress zstd:25 (level out of range)")
 	}
-	// --workers-per-pair 0 fails the >= 1 check.
-	if _, err := parseConfig([]string{"--workers-per-pair", "0"}); err == nil {
-		t.Fatal("expected error for --workers-per-pair 0")
+	// --workers 0 fails the >= 1 check.
+	if _, err := parseConfig([]string{"--workers", "0"}); err == nil {
+		t.Fatal("expected error for --workers 0")
+	}
+	// unknown flags must be rejected (no silent no-ops).
+	if _, err := parseConfig([]string{"--no-such-flag"}); err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if _, err := parseConfig([]string{"--workerss", "4"}); err == nil {
+		t.Fatal("expected error for typo flag")
 	}
 }
 

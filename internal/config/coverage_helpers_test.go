@@ -91,7 +91,6 @@ func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "3")
 	t.Setenv("GPSTREAM_COMPRESS", "none")
 	t.Setenv("GPSTREAM_SMALL_TABLE_THRESHOLD", "2097152")
-	t.Setenv("GPSTREAM_LOG_LEVEL", "debug")
 	t.Setenv("GPSTREAM_AUTO_RESUME", "2")
 	t.Setenv("GPSTREAM_ON_UNIT_FAILURE", "abort")
 	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "true")
@@ -102,18 +101,7 @@ func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_SEG_TLS_CERT", "/sc.pem")
 	t.Setenv("GPSTREAM_SEG_TLS_KEY", "/sk.pem")
 	t.Setenv("GPSTREAM_SEG_TLS_CA", "/sca.pem")
-	t.Setenv("GPSTREAM_OVERWRITE_ONLY_CONFLICTS", "1")
-	t.Setenv("GPSTREAM_COLLATION_CHECK", "true")
 	t.Setenv("GPSTREAM_LOCALE_CHECK", "true")
-	t.Setenv("GPSTREAM_DISTRIBUTION_CHECK", "true")
-	t.Setenv("GPSTREAM_REDISTRIBUTION_PLAN", "1")
-	t.Setenv("GPSTREAM_ADAPTIVE_RATE_LIMIT", "true")
-	t.Setenv("GPSTREAM_CHECKSUM_ALGORITHM", "sha256")
-	t.Setenv("GPSTREAM_DEDUP", "1")
-	t.Setenv("GPSTREAM_METRICS", "true")
-	t.Setenv("GPSTREAM_REPORT_JSON", "/r.json")
-	t.Setenv("GPSTREAM_REPORT_CSV", "/r.csv")
-	t.Setenv("GPSTREAM_REPORT_TEXT", "/r.txt")
 	t.Setenv("GPSTREAM_FRAME_ACK", "off")
 	t.Setenv("GPSTREAM_ACK_TIMEOUT", "adaptive")
 	t.Setenv("GPSTREAM_MAX_RECONNECTS", "5")
@@ -123,7 +111,7 @@ func TestApplyEnvSweep(t *testing.T) {
 	c.ApplyEnv()
 
 	if c.RateLimit != 42.5 || c.WorkersPerPair != 3 || c.Compression != "none" ||
-		c.SmallTableThreshold != 2097152 || c.LogLevel != "debug" || c.AutoResume != 2 ||
+		c.SmallTableThreshold != 2097152 || c.AutoResume != 2 ||
 		c.OnUnitFailure != "abort" || !c.ConsistentTables || c.SegmentBalanceThreshold != 1.25 {
 		t.Errorf("scalar env overlay wrong: %+v", c)
 	}
@@ -131,11 +119,8 @@ func TestApplyEnvSweep(t *testing.T) {
 		c.SegTLSCert != "/sc.pem" || c.SegTLSKey != "/sk.pem" || c.SegTLSCA != "/sca.pem" {
 		t.Errorf("tls env overlay wrong: %+v", c)
 	}
-	if !c.OverwriteOnlyConflicts || !c.CollationCheck || !c.LocaleCheck ||
-		!c.DistributionCheck || !c.RedistributionPlan || !c.AdaptiveRateLimit ||
-		c.ChecksumAlgorithm != "sha256" || !c.Dedup || !c.MetricsOn ||
-		c.ReportJSON != "/r.json" || c.ReportCSV != "/r.csv" || c.ReportText != "/r.txt" {
-		t.Errorf("v2 env overlay wrong: %+v", c)
+	if !c.LocaleCheck {
+		t.Errorf("locale-check env overlay wrong: %+v", c)
 	}
 	if c.FrameAck != "off" || c.AckTimeout != "adaptive" || c.MaxReconnects != 5 ||
 		c.RetransmitBufferMax != 64<<20 {
@@ -150,7 +135,6 @@ func TestApplyEnvInvalidValues(t *testing.T) {
 	t.Setenv("GPSTREAM_AUTO_RESUME", "junk")
 	t.Setenv("GPSTREAM_MAX_RECONNECTS", "junk")
 	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "false")
-	t.Setenv("GPSTREAM_DEDUP", "nope")
 
 	c := Default()
 	c.RateLimit = 99
@@ -162,7 +146,7 @@ func TestApplyEnvInvalidValues(t *testing.T) {
 	if c.RateLimit != 99 || c.WorkersPerPair != 7 || c.AutoResume != 3 || c.MaxReconnects != 11 {
 		t.Errorf("invalid env values must not clobber: %+v", c)
 	}
-	if c.ConsistentTables || c.Dedup {
+	if c.ConsistentTables {
 		t.Error("false-ish bool env values must parse to false")
 	}
 }
@@ -188,7 +172,7 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentCluster = true, true }, "tables+cluster")
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentDB = true, true }, "tables+db")
 	fail(func(c *Config) { c.SegmentBalanceThreshold = NaN() }, "nan-threshold")
-	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "conflict-action")
+	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
 	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegBinary = "" }, "on_segment-no-binary")
@@ -345,14 +329,11 @@ report_text: "/t"
 			c.WorkersPerPair != 4 || c.Compression != "none" || c.ZstdLevel != 9 ||
 			c.SmallTableThreshold != 1024 || c.AutoResume != 1 || c.OnUnitFailure != "abort" ||
 			!c.ConsistentTables || c.ResumeConsistency != "strict" || c.Verify != "sample" ||
-			c.LogLevel != "warn" || c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
+			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
-			c.SegTLSCA != "/sc" || c.DataPortRange != "9000-9100" || c.SkewThreshold != 0.8 ||
+			c.SegTLSCA != "/sc" || c.SkewThreshold != 0.8 ||
 			c.SegmentBalanceThreshold != 1.7 || c.IndexPriority != "size" || c.Timeout != 2*time.Minute ||
-			!c.OverwriteOnlyConflicts || !c.CollationCheck || !c.LocaleCheck || !c.DistributionCheck ||
-			!c.RedistributionPlan || !c.AdaptiveRateLimit || c.ChecksumAlgorithm != "sha256" ||
-			!c.Dedup || !c.MetricsOn || c.ReportJSON != "/j" || c.ReportCSV != "/v" ||
-			c.ReportText != "/t" {
+			!c.LocaleCheck {
 			t.Errorf("%s: overlay wrong: %+v", filepath.Base(path), c)
 		}
 	}
@@ -374,33 +355,5 @@ func TestLoadFileBadNumbersAreTolerant(t *testing.T) {
 	}
 	if c.RateLimit != 11 || c.ZstdLevel != Default().ZstdLevel || c.Timeout != Default().Timeout {
 		t.Errorf("bad numbers must be dropped: %+v", c)
-	}
-}
-
-func TestParsePortsExtended(t *testing.T) {
-	c := Config{DataPortRange: "9000-9100"}
-	lo, hi, err := c.ParsePorts()
-	if err != nil || lo != 9000 || hi != 9100 {
-		t.Errorf("ParsePorts = %d,%d,%v; want 9000,9100,nil", lo, hi, err)
-	}
-	c = Config{}
-	if _, _, err := c.ParsePorts(); err == nil {
-		t.Error("empty range must error")
-	}
-	c = Config{DataPortRange: "9000"}
-	if _, _, err := c.ParsePorts(); err == nil {
-		t.Error("missing dash must error")
-	}
-	c = Config{DataPortRange: "x-9100"}
-	if _, _, err := c.ParsePorts(); err == nil {
-		t.Error("bad low must error")
-	}
-	c = Config{DataPortRange: "9000-y"}
-	if _, _, err := c.ParsePorts(); err == nil {
-		t.Error("bad high must error")
-	}
-	c = Config{DataPortRange: "9100-9000"}
-	if _, _, err := c.ParsePorts(); err == nil {
-		t.Error("lo>hi must error")
 	}
 }

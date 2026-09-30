@@ -184,7 +184,7 @@ func TestVerifyMatch(t *testing.T) {
 }
 
 // TestSwapNoOverwriteFails refuses to clobber an existing final table
-// (FR-11 skip-existing default).
+// (FR-11 stop default).
 func TestSwapNoOverwriteFails(t *testing.T) {
 	f := pg.NewFakeConn()
 	f.On("pg_class", [][]any{{int64(1)}}) // exists -> true
