@@ -1,0 +1,121 @@
+# goreleaser (TASK-SPEC-v4 F-05: "Package: tar.gz + RPM + DEB (goreleaser/fpm)").
+#
+# Produces, per git tag (or --snapshot):
+#   dist/gpstream-<ver>-linux-{amd64,arm64}.tar.gz           (main CLI)
+#   dist/gpstream-segreceiver-<ver>-linux-{amd64,arm64}.tar.gz
+#   dist/gpstream-<ver>-{amd64,arm64}.deb
+#   dist/gpstream-<ver>-{amd64,arm64}.rpm
+#
+# Local:  goreleaser release --snapshot --clean --skip=sign,publish,docker
+# CI:     .github/workflows/release.yml (on tag v*) publishes to GitHub.
+#
+# Both binaries are static (CGO_ENABLED=0): no runtime library dependency,
+# which is why the packages carry no Requires/Depends beyond the filesystem.
+# Pinned: goreleaser v1.24.0 (config `version: 1`).
+version: 1
+
+project_name: gpstream
+
+before:
+  hooks:
+    # regenerate the man family (subcommand .so aliases of gpstream.8)
+    - scripts/gen-man-pages.sh
+
+builds:
+  - id: gpstream
+    main: ./cmd/gpstream
+    binary: gpstream
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: gpstream-segreceiver
+    main: ./cmd/gpstream-segreceiver
+    binary: gpstream-segreceiver
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: gpstream
+    builds:
+      - gpstream
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/QUICKSTART.md
+  - id: gpstream-segreceiver
+    builds:
+      - gpstream-segreceiver
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-segreceiver-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
+
+# gzip the man pages once, into dist/man/, so both package formats ship .gz
+# (man(8) reads either, .gz is the conventional on-disk form)
+changelog:
+  disable: true
+
+# ---- packages (deb + rpm) ----
+nfpms:
+  - id: gpstream
+    builds:
+      - gpstream
+      - gpstream-segreceiver
+    package_name: gpstream
+    file_name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Arch }}"
+    formats:
+      - deb
+      - rpm
+    vendor: gpstream
+    homepage: https://github.com/gpstream/gpstream
+    license: Apache-2.0
+    maintainer: gpstream maintainers <gpstream@example.com>
+    description: >-
+      gpstream streams logical data between two Greenplum 6 clusters over a
+      direct high-speed network without intermediate storage, with
+      snapshot-level consistency, fault tolerance, auto-resume, monitoring,
+      background index rebuild, redistribution awareness and a detailed
+      --dry-run.
+    section: database
+    priority: optional
+    # static binary (CGO_ENABLED=0): no runtime library dependency — proven on
+    # EL7/glibc 2.17 and EL8/glibc 2.28 (F-16 acceptance). Empty list so
+    # nfpms does not auto-add libc6.
+    dependencies: []
+    contents:
+      - src: packaging/systemd/gpstream.service
+        dst: /usr/lib/systemd/system/gpstream.service
+      - src: packaging/examples/gpstream.toml
+        dst: /etc/gpstream/gpstream.toml
+        type: config
+      - src: packaging/logrotate.conf
+        dst: /etc/logrotate.d/gpstream
+        type: config
+      - src: man/gpstream.8
+        dst: /usr/share/man/man8/gpstream.8
+      - src: man/gpstream-*.8
+        dst: /usr/share/man/man8/
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh

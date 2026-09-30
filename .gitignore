@@ -21,6 +21,9 @@ poc/pg9426.tar.bz2
 /pgboot
 /pg94probe
 
+# goreleaser auto-download (scripts/package.sh)
+/.tools/
+
 # diagnostic driver build artifact
 /segdump
 r5probe2

@@ -1,0 +1,43 @@
+# F-05: release pipeline. On every tag v*: build (goreleaser) + publish
+# artifacts (tar.gz/deb/rpm, amd64+arm64) to the GitHub release.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for goreleaser changelog/tag resolution
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # proxy.golang.org intermittently 403s klauspost/compress; the direct
+      # (git clone) fallback resolves it (ADR-000).
+      - name: Build + publish
+        run: |
+          export GOPROXY=https://proxy.golang.org,direct
+          scripts/package.sh release
+        env:
+          GORELEASER_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpstream-${{ github.ref_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*_checksums.txt
