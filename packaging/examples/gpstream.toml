@@ -2,6 +2,7 @@
 # Precedence: CLI flags > environment (GPSTREAM_*) > this file > defaults.
 # Secrets are NEVER read from argv; put them in a 0600 file or the environment.
 # Note: selection (--dbs/--schemas/--tables) is a CLI concern, not a config key.
+# Unknown keys are ignored (tolerant parse) — keep this file to the keys below.
 
 source = "host=prod-coordinator port=5432 user=gpstream dbname=postgres"
 dest   = "host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
@@ -11,14 +12,13 @@ compress       = "zstd"        # none | zlib | zstd
 zstd_level     = 3             # 1-19
 rate_limit     = 80            # Gbps total ceiling
 workers_per_pair = 8
-data_port_range = "20000-20999"
 
 # Resilience (F-06/F-07)
 auto_resume = 0                # 0 = manual only; N >= 1 = auto from checkpoint
 verify      = "sample"         # full | sample | off
 
 # Indexes (F-17)
-index_priority = "size"        # size | manual
+index_priority = "size"        # size | fifo
 
 # Redistribution (F-15)
 skew_threshold = 0.05
@@ -30,5 +30,4 @@ ssl_min_tls = "1.2"
 # ssl_ca   = "/etc/gpstream/tls/ca.crt"
 
 # Operational
-log_level = "info"             # debug | info | warn | error
 timeout   = "60s"              # plan formation, duration string
