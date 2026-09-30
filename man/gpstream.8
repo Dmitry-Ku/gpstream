@@ -215,7 +215,10 @@ Bounds plan formation (default 60s).
 .TP
 .BR --plan-file
 F
-Persist the plan JSON.
+Persist the plan JSON to F (dry-run and run both write it). This is a
+plan artifact, not the journal: the operation journal always lives at
+.BR <state-dir>/<operation-id>/journal.jsonl
+so status/resume/cleanup find it regardless of --plan-file.
 .TP
 .BR --operation-id
 id

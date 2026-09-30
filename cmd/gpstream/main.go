@@ -1341,17 +1341,24 @@ func cmdRun(args []string) error {
 		return nil
 	}
 
-	// Operation identity (v4 §8 "State"): the journal lives at
-	// <state-dir>/<operation-id>/; --plan-file still wins when given.
+	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
+	// <state-dir>/<operation-id>/journal.jsonl so status/resume/cleanup
+	// (which take only --operation-id/--state-dir) find it. --plan-file is a
+	// separate concern: it persists the plan JSON (same as dry-run), not the
+	// journal.
 	if cfg.OperationID == "" {
 		cfg.OperationID = p.Hash
 	}
-	journalPath := cfg.PlanFile
-	if journalPath == "" {
-		journalPath = filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
-	}
+	journalPath := filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
 	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
 		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(journalPath), err)
+	}
+	if cfg.PlanFile != "" {
+		data, _ := json.MarshalIndent(p, "", "  ")
+		if err := os.WriteFile(cfg.PlanFile, data, 0o644); err != nil {
+			return fmt.Errorf("run: write plan-file: %w", err)
+		}
+		fmt.Printf("plan written:   %s\n", cfg.PlanFile)
 	}
 	fmt.Printf("operation-id:   %s\n", cfg.OperationID)
 	fmt.Printf("state:          %s\n", journalPath)
