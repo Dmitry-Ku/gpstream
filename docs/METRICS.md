@@ -80,6 +80,10 @@ gpstream_frame_errors_total <n>
 # TYPE gpstream_rate_limit_gbits gauge
 gpstream_rate_limit_gbits <g>
 
+# HELP gpstream_receive_write_latency_ms Average data-path write latency (ms) — destination receive-queue depth as the controller observes it (FR-14).
+# TYPE gpstream_receive_write_latency_ms gauge
+gpstream_receive_write_latency_ms <ms>
+
 # HELP gpstream_throughput_bytes Current throughput in bytes/sec.
 # TYPE gpstream_throughput_bytes gauge
 gpstream_throughput_bytes <b>
@@ -110,6 +114,7 @@ Summary of the series:
 | `gpstream_errors_total` | counter | transfer errors |
 | `gpstream_frame_errors_total` | counter | CRC / framing errors (FR-01 / §4.2) |
 | `gpstream_rate_limit_gbits` | gauge | current rate limit in Gbps (FR-14) |
+| `gpstream_receive_write_latency_ms` | gauge | avg data-path write latency (ms) = destination receive-queue depth (FR-14) |
 | `gpstream_throughput_bytes` | gauge | current throughput in bytes/sec |
 | `gpstream_compression_level` | gauge | current zstd level (FR-12) |
 | `gpstream_compression_mode` | gauge | current mode, labelled `{mode="..."}` |
@@ -125,6 +130,13 @@ Summary of the series:
 - **`gpstream_rate_limit_gbits`** — set by the limiter on every rate change
   via `SetRateLimit(to)` (FR-14), so an adaptive degradation is visible as
   a gauge movement.
+- **`gpstream_receive_write_latency_ms`** — the destination's receive queue
+  as the controller observes it (FR-14 «очередь приёма … метрики COPY»): the
+  average time a source-side frame write takes to drain into the
+  destination over the last second (the data path is an unbuffered pipe).
+  Refreshed by the limiter sampler each tick; a rising value means the
+  receiver is falling behind and (above 50 ms) will trigger an adaptive
+  reduction with reason `dest-receive-queue`.
 - **`gpstream_compression_level` / `gpstream_compression_mode`** — set by
   `SetCompression` on each compression-mode / level change (FR-12/FR-14
   auto-degradation); the change is **counted and observable** (FR-04).

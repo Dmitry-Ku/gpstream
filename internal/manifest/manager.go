@@ -68,6 +68,10 @@ type Manager struct {
 	decNone  *compress.Decompressor
 	lim      *ratelimit.Limiter // adaptive rate limiter (FR-14); nil when unlimited
 	pacer    *ratelimit.Pacer   // throttles the data path to lim (FR-14)
+	// recvRec records data-path write latencies so the limiter can observe the
+	// destination's receive queue (FR-14 «очередь приёма … метрики COPY»).
+	// Shared across all units of the run; nil when no rate-limit is set.
+	recvRec *ratelimit.WriteRecorder
 	// snapshotMode is the FR-02 consistency mode actually in effect for this
 	// run ("db", "cluster", or "" when no snapshot is pinned). snapshotTx is
 	// true while a read-only REPEATABLE READ transaction is open on the source
@@ -171,6 +175,15 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		m.lim = lim
 		m.pacer = ratelimit.NewPacer(lim)
 		m.monitor.SetRateLimit(cfg.RateLimit)
+		// FR-14 «очередь приёма»: the destination host's /proc is not
+		// readable from the controller, but the data path is an unbuffered
+		// pipe — every source-side frame write only completes once the
+		// destination has drained it. Record those write durations and feed
+		// their 1s average to the limiter as the receive-queue signal.
+		m.recvRec = &ratelimit.WriteRecorder{}
+		lim.SetReceiveWriteLatency(func() float64 {
+			return m.recvRec.AvgMs(time.Second)
+		})
 	}
 	return m
 }
@@ -1352,16 +1365,25 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 // the operator's mode (each unit owns its own pipe, so per-unit modes never
 // interfere).
 func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *compress.Decompressor) *transfer.FramedPipe {
+	var fp *transfer.FramedPipe
 	if m.cfg.FrameAckOn() {
 		// In-process stand-in for the agent<->agent connection B; the
 		// production TCP variant plugs the same ReliablePipe onto a dialer.
 		s, r := transfer.NewReliablePipePair(m.cfg.ReliablePipeConfig())
-		return transfer.NewFramedPipeOver(s, r, 1, unitID, comp, dec)
+		fp = transfer.NewFramedPipeOver(s, r, 1, unitID, comp, dec)
+	} else {
+		// A net.Pipe is an in-memory, back-pressure-respecting connected pair;
+		// in production this is a net.Conn (optionally TLS, FR-13).
+		w, r := net.Pipe()
+		fp = transfer.NewFramedPipe(w, r, 1, unitID, comp, dec)
 	}
-	// A net.Pipe is an in-memory, back-pressure-respecting connected pair;
-	// in production this is a net.Conn (optionally TLS, FR-13).
-	w, r := net.Pipe()
-	return transfer.NewFramedPipe(w, r, 1, unitID, comp, dec)
+	if m.recvRec != nil {
+		// FR-14 «очередь приёма»: record each transport write's duration
+		// (the destination drains an unbuffered pipe, so the write time is
+		// the receive-queue depth the controller can observe).
+		fp.SetWriteLatencyHook(m.recvRec.Record)
+	}
+	return fp
 }
 
 // copyStream runs the source and destination COPY in parallel over the framed
@@ -2021,6 +2043,12 @@ func (m *Manager) startLimiterSampler(ctx context.Context) func() {
 				return
 			case <-t.C:
 				m.lim.Update()
+				// Expose the receive-queue depth as a gauge (FR-04) so the
+				// operator can see the destination falling behind even when the
+				// rate is at its ceiling.
+				if m.recvRec != nil {
+					m.monitor.SetReceiveWriteMs(m.recvRec.AvgMs(time.Second))
+				}
 			}
 		}
 	}()

@@ -104,10 +104,12 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Test: `TestBuildTLSVerifyFullHostname` (ServerName set / IP exempt), `TestBuildTLSLoadsCA` (RootCAs; missing/CA-less file → error), `TestHostOf` (both DSN forms), `TestBuildTLSRejectsWrongHostname` (REAL handshake against a local TLS server: wrong DSN host → `certificate is valid for wrong.example.com, not right.example.com`; matching host → success; no CA → rejected), `TestAuditLogWritesJSONLines` (format + 0600), `TestJournalAuditPath`.
 - **BLOCKED-INFRA**: wireshark encrypted-traffic acceptance (real network).
 
-### F-14 — Rate limiting + adaptive control — **DONE (28.09)**
+### F-14 — Rate limiting + adaptive control — **DONE (30.09)**
 - Spec: `--max-bw` global ceiling; per-host-pair token bucket; adaptive AIMD (detect receiver CPU/disk/queue bottleneck → step down ~25% floor ~1 Gbps, recover on stabilize); **each shift logged to `events.jsonl`**.
 - Evidence: `ratelimit/limiter.go:1-36` per-host-pair adaptive limiter (step ~25%, floor ~1 Gbps); `ratelimit/pacer.go:9,66` pacer throttles the data path to the current rate; `manager.go:97-117` builds limiter+pacer and shares one pacer across the pool so total flow stays under the ceiling.
 - **Closed (28.09):** every rate shift is now logged to `events.jsonl` as a `rate_limit_shift` event (old/new Gbps + reason) via `Manager.onRateChange` — the F-14 "каждый сдвиг лимита — диагностическое сообщение" requirement. Regression test `TestManagerOnRateChangeEmitsEvent`.
+- **Closed (30.09, RAZRYV-3 — receiver-queue detection):** the limiter now sees the destination's receive queue (spec: «рост очереди приёма — данные воркера приёмника из /proc и метрик COPY»). The destination host's /proc is not readable from the controller, so the in-process «метрики COPY» is used: the data path is an unbuffered pipe, so `ratelimit.WriteRecorder` (new) records each source-side frame-write duration via `FramedPipe.SetWriteLatencyHook` (installed in `Manager.framedPipe` — all three data paths: coordinator, on_segment, direct); the 1 s average feeds the limiter via `Limiter.SetReceiveWriteLatency`. Reduce above 50 ms average write latency (reason `dest-receive-queue`), recover below 20 ms (hysteresis — no flapping). Exposed as the `gpstream_receive_write_latency_ms` gauge (FR-04). Tests: `ratelimit/receivequeue_test.go` (reduce/healthy/hysteresis + WriteRecorder window/prune + ProcProvider disk-delta), `transfer/framing_latency_test.go` (slow vs fast reader), `manifest/manager_receivequeue_test.go` (manager wiring).
+- **Also fixed (30.09, latent):** `ProcProvider.readDisk` read the cumulative-since-boot `io_ticks` as a util proxy — always > 90 on any host with real IO, which would have pinned the limiter at the floor forever. Now computed from per-device deltas (await = Δticks/Δios, util = Δio_ticks/Δelapsed).
 - Test: ratelimit 92.3%.
 
 ### F-15 — Data redistribution — **DONE (29.09)**
@@ -168,7 +170,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-11 | PARTIAL | sequences synced post-load (29.09); extension check DONE (29.09) |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
-| F-14 | DONE (28.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason) |
+| F-14 | DONE (30.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason); receiver-queue detection (RAZRYV-3) via in-process dest write-latency, reduce>50ms/recover<20ms, gpstream_receive_write_latency_ms gauge; disk-util now delta-based |
 | F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above --segment-balance-threshold (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
 | F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; (two-distro/glibc + C↔en_US.UTF-8 acceptance infra-blocked) |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |

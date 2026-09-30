@@ -18,20 +18,24 @@ import (
 
 // Metrics is the in-memory state of a running manifest.
 type Metrics struct {
-	mu            sync.Mutex
-	start         time.Time
-	Bytes         uint64  // bytes transferred (compressed on the wire)
-	BytesDecoded  uint64  // bytes after decompression (logical)
-	Rows          uint64  // rows copied (FR-04 «строки»)
-	Errors        uint64  // frame / transfer errors
-	FrameErrors   uint64  // CRC-mismatch / framing errors
-	ChecksumErrs  uint64  // content-checksum mismatches in the verify phase (FR-04 «ошибки чексумм»)
-	AutoRecovery  uint64  // auto-recovery actions: resume re-reads + failed-unit retries (FR-04 «события авто-восстановления»)
-	RateLimit     float64 // current Gbps (from the limiter)
-	CompressLevel int     // current zstd level (degrades on CPU saturation)
-	CompressMode  string  // none / zlib / zstd
-	IndexQueue    int     // pending background index builds (FR-17/FR-04)
-	IndexDone     int     // finished background index builds (FR-17/FR-04)
+	mu           sync.Mutex
+	start        time.Time
+	Bytes        uint64  // bytes transferred (compressed on the wire)
+	BytesDecoded uint64  // bytes after decompression (logical)
+	Rows         uint64  // rows copied (FR-04 «строки»)
+	Errors       uint64  // frame / transfer errors
+	FrameErrors  uint64  // CRC-mismatch / framing errors
+	ChecksumErrs uint64  // content-checksum mismatches in the verify phase (FR-04 «ошибки чексумм»)
+	AutoRecovery uint64  // auto-recovery actions: resume re-reads + failed-unit retries (FR-04 «события авто-восстановления»)
+	RateLimit    float64 // current Gbps (from the limiter)
+	// ReceiveWriteMs is the average data-path frame-write latency (ms) over
+	// the last second — the destination's receive-queue depth as the
+	// controller observes it (FR-14 «очередь приёма», FR-04 gauge).
+	ReceiveWriteMs float64
+	CompressLevel  int    // current zstd level (degrades on CPU saturation)
+	CompressMode   string // none / zlib / zstd
+	IndexQueue     int    // pending background index builds (FR-17/FR-04)
+	IndexDone      int    // finished background index builds (FR-17/FR-04)
 	// ActiveFlows is the number of units currently in the copying state
 	// (FR-04 «число активных потоков»).
 	ActiveFlows int
@@ -276,6 +280,16 @@ func (m *Metrics) SetRateLimit(gbps float64) {
 	m.RateLimit = gbps
 }
 
+// SetReceiveWriteMs records the average data-path frame-write latency (ms)
+// (FR-14 «очередь приёма» / FR-04 gauge). Called by the limiter sampler each
+// tick so the /metrics endpoint exposes the receive-queue depth the
+// controller observes.
+func (m *Metrics) SetReceiveWriteMs(ms float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ReceiveWriteMs = ms
+}
+
 // SetCompression records a compression-mode / level change (FR-12/FR-14
 // auto-degradation). It is observable (FR-04) and counts the change.
 func (m *Metrics) SetCompression(mode string, level int) {
@@ -342,6 +356,7 @@ func (m *Metrics) Prometheus() string {
 		checksumErrs: m.ChecksumErrs,
 		autoRecovery: m.AutoRecovery,
 		rate:         m.RateLimit,
+		receiveMs:    m.ReceiveWriteMs,
 		compressMode: m.CompressMode,
 		compressLv:   m.CompressLevel,
 		indexQueue:   m.IndexQueue,
@@ -375,6 +390,7 @@ type snapshot struct {
 	checksumErrs uint64
 	autoRecovery uint64
 	rate         float64
+	receiveMs    float64
 	compressMode string
 	compressLv   int
 	indexQueue   int
@@ -422,6 +438,10 @@ func (s snapshot) render(throughput float64) string {
 	out = append(out, "# HELP gpstream_rate_limit_gbits Current rate limit in Gbps (FR-14).")
 	out = append(out, "# TYPE gpstream_rate_limit_gbits gauge")
 	out = append(out, fmt.Sprintf("gpstream_rate_limit_gbits %g", s.rate))
+
+	out = append(out, "# HELP gpstream_receive_write_latency_ms Average data-path write latency (ms) — destination receive-queue depth as the controller observes it (FR-14).")
+	out = append(out, "# TYPE gpstream_receive_write_latency_ms gauge")
+	out = append(out, fmt.Sprintf("gpstream_receive_write_latency_ms %g", s.receiveMs))
 
 	out = append(out, "# HELP gpstream_throughput_bytes Current throughput in bytes/sec.")
 	out = append(out, "# TYPE gpstream_throughput_bytes gauge")

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 )
@@ -63,6 +64,15 @@ func NewFramedPipeOver(writeConn, readConn Pipe, jobID, unitID uint32, comp *com
 // Reliable returns the frame-ack transport on the write side, or nil when the
 // pipe is a plain (non-reliable) transport.
 func (fp *FramedPipe) Reliable() *ReliablePipe { return fp.rpS }
+
+// SetWriteLatencyHook installs a callback that receives the wall duration of
+// each source-side transport write (FramedWriter.Flush → conn.Write). The
+// transport is an unbuffered pipe, so the write duration is the destination's
+// receive-queue depth as the controller observes it — the in-process
+// «метрики COPY» the FR-14 adaptive limiter consumes. nil clears the hook.
+func (fp *FramedPipe) SetWriteLatencyHook(fn func(d time.Duration)) {
+	fp.write.latHook = fn
+}
 
 // Stats returns the pipe's byte counters (FR-04 volume/speed metrics):
 // wire bytes the write side actually pushed onto the transport (compressed,
@@ -148,6 +158,11 @@ type FramedWriter struct {
 	// (FR-04 volume). Atomic: the manager reads it via Stats() while the
 	// source goroutine is still writing.
 	wire uint64
+	// latHook, when set, records the wall duration of each transport write
+	// (Flush → conn.Write). The transport is an unbuffered pipe, so that
+	// duration is the destination's receive-queue depth as the controller
+	// observes it (F-14 «очередь приёма … метрики COPY»).
+	latHook func(d time.Duration)
 }
 
 // Write buffers p and flushes a compressed, CRC-framed frame once the
@@ -179,7 +194,11 @@ func (fw *FramedWriter) Flush() error {
 	data := fw.comp.Encode(fw.buf)
 	f := &Frame{JobID: fw.jobID, UnitID: fw.unitID, Seq: fw.seq, Data: data}
 	fw.seq++
+	start := time.Now()
 	err := WriteFrameCounted(fw.conn, f, &fw.wire)
+	if fw.latHook != nil {
+		fw.latHook(time.Since(start))
+	}
 	fw.buf = fw.buf[:0]
 	return err
 }

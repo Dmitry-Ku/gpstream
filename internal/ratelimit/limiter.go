@@ -11,6 +11,7 @@
 package ratelimit
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -26,7 +27,27 @@ type Metrics struct {
 	DiskUtil float64
 	// Retransmits is the TCP retransmit rate (per second); 0 if unknown.
 	Retransmits float64
+	// ReceiveWriteLatencyMs is the average data-path frame-write latency
+	// (ms) over the last second (FR-14 «рост очереди приёма — данные
+	// воркера приёмника из /proc и метрик COPY»). The data path is an
+	// unbuffered pipe: a frame write only completes once the destination
+	// has drained the bytes, so the average write latency is the receive
+	// queue as the controller observes it — the in-process «метрики COPY»
+	// the spec names. 0 = no data moved, or the destination drained
+	// instantly.
+	ReceiveWriteLatencyMs float64
 }
+
+// receiveWriteReduceMs and receiveWriteRecoverMs are the backpressure
+// thresholds with hysteresis: reduce when the average data-path write
+// latency exceeds the upper bound (the receiver is falling behind), recover
+// only when it drops below the lower bound, so a borderline receiver does
+// not flap the rate up and down every sample (FR-14 AIMD: медленный рост,
+// быстрое снижение).
+const (
+	receiveWriteReduceMs  = 50.0
+	receiveWriteRecoverMs = 20.0
+)
 
 // Provider supplies Metrics snapshots (so the limiter is testable).
 type Provider interface {
@@ -35,15 +56,16 @@ type Provider interface {
 
 // Limiter is the adaptive rate limiter for one host-pair (FR-14).
 type Limiter struct {
-	mu          sync.Mutex
-	baseline    float64 // Gbps ceiling (from --rate-limit)
-	current     float64 // current Gbps (starts at baseline)
-	floor       float64 // minimum Gbps (~1 Gbps)
-	step        float64 // reduction fraction (~0.25)
-	recoverStep float64 // recovery fraction per healthy interval
-	overload    float64 // sustained overload score (iowait% etc.)
-	provider    Provider
-	onChange    func(Gbps, Gbps, string) // callback for diagnostic logging
+	mu             sync.Mutex
+	baseline       float64 // Gbps ceiling (from --rate-limit)
+	current        float64 // current Gbps (starts at baseline)
+	floor          float64 // minimum Gbps (~1 Gbps)
+	step           float64 // reduction fraction (~0.25)
+	recoverStep    float64 // recovery fraction per healthy interval
+	overload       float64 // sustained overload score (iowait% etc.)
+	provider       Provider
+	receiveWriteMs func() float64           // destination receive-queue write-latency supplier (F-14)
+	onChange       func(Gbps, Gbps, string) // callback for diagnostic logging
 }
 
 // Options configure a Limiter.
@@ -82,6 +104,18 @@ func (l *Limiter) SetOnChange(fn func(from, to Gbps, reason string)) {
 	l.onChange = fn
 }
 
+// SetReceiveWriteLatency registers a supplier of the destination
+// receive-queue write-latency in milliseconds (F-14: «рост очереди приёма —
+// данные воркера приёмника из /proc и метрик COPY»). It is sampled in
+// Update() alongside the host metrics; when the supplier is nil the
+// receive-queue signal is simply absent (the limiter behaves as before). The
+// supplier must not block.
+func (l *Limiter) SetReceiveWriteLatency(fn func() float64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.receiveWriteMs = fn
+}
+
 // Current returns the current rate in Gbps.
 func (l *Limiter) Current() Gbps {
 	l.mu.Lock()
@@ -96,6 +130,9 @@ func (l *Limiter) Update() {
 		return
 	}
 	m := l.provider.Snapshot()
+	if l.receiveWriteMs != nil {
+		m.ReceiveWriteLatencyMs = l.receiveWriteMs()
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.overload = m.IOWaitPercent
@@ -106,9 +143,17 @@ func (l *Limiter) Update() {
 		l.reduceLocked("disk-util", m)
 	case m.Retransmits > 100:
 		l.reduceLocked("tcp-retransmits", m)
+	case m.ReceiveWriteLatencyMs > receiveWriteReduceMs:
+		// The data path is slow to drain into the destination: its receive
+		// queue (COPY drain) is growing, so the receiver is the bottleneck
+		// (FR-14).
+		l.reduceLocked("dest-receive-queue", m)
 	default:
-		// Load is healthy: recover towards baseline (FR-14).
-		if l.current < l.baseline {
+		// Load is healthy: recover towards baseline (FR-14), but only when
+		// the receiver's drain is also stable (hysteresis, see
+		// receiveWriteRecoverMs) — a still-stalling destination would just
+		// be re-reduced on the next sample.
+		if l.current < l.baseline && m.ReceiveWriteLatencyMs <= receiveWriteRecoverMs {
 			before := l.current
 			l.current += l.current * l.recoverStep
 			if l.current > l.baseline {
@@ -122,7 +167,8 @@ func (l *Limiter) Update() {
 }
 
 // reduceLocked reduces the current rate by the step (floor-limited). It must
-// be called with l.mu held.
+// be called with l.mu held. The reason is enriched with the triggering
+// metric value (FR-14: «причина: cpu %, disk latency, очередь»).
 func (l *Limiter) reduceLocked(cause string, m Metrics) string {
 	if l.current <= l.floor {
 		return "" // already at the floor
@@ -132,7 +178,23 @@ func (l *Limiter) reduceLocked(cause string, m Metrics) string {
 	if l.current < l.floor {
 		l.current = l.floor
 	}
-	return l.emit(before, l.current, cause)
+	return l.emit(before, l.current, causeDetail(cause, m))
+}
+
+// causeDetail appends the triggering metric value to the bare cause name so
+// the diagnostic message is self-explanatory (FR-14/FR-04).
+func causeDetail(cause string, m Metrics) string {
+	switch cause {
+	case "iowait":
+		return fmt.Sprintf("iowait %.0f%% (>30%%)", m.IOWaitPercent)
+	case "disk-util":
+		return fmt.Sprintf("disk-util %.0f%% (>90%%)", m.DiskUtil)
+	case "tcp-retransmits":
+		return fmt.Sprintf("tcp-retransmits %.0f/s (>100)", m.Retransmits)
+	case "dest-receive-queue":
+		return fmt.Sprintf("dest-receive-queue %.0fms write-latency (>%.0fms)", m.ReceiveWriteLatencyMs, receiveWriteReduceMs)
+	}
+	return cause
 }
 
 // emit records the change and fires the diagnostic callback (FR-14/FR-04).

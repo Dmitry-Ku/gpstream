@@ -174,16 +174,26 @@ The stream uses **back-pressure**: the source agent blocks when the destination
 cannot keep up, so gpstream never buffers the whole table in RAM — only small
 in-memory buffers. There is no intermediate disk.
 
-With `--adaptive-rate-limit`, one limiter runs per host-pair. It samples host
-load (CPU iowait, disk await/utilisation, TCP retransmits) and:
+With `--adaptive-rate-limit`, one limiter runs per host-pair. It samples
+**source** host load (CPU iowait, disk await/utilisation, TCP retransmits)
+**and the destination's receive queue** — the data path is an unbuffered
+pipe, so the average time a source-side frame write takes to drain into the
+destination (the in-process «метрики COPY», the destination host's own /proc
+is not readable from the controller) — and:
 
 - **reduces** the rate by a step (~25%, floor ~1 Gbps) on sustained overload;
-- **recovers** toward the baseline when load subsides (~10% per healthy interval).
+- **recovers** toward the baseline when load subsides (~10% per healthy
+  interval), and only when the destination's drain is also stable
+  (hysteresis: reduce above a 50 ms average write latency, recover below
+  20 ms, so a borderline receiver does not flap the rate).
 
-A reduction is a diagnostic message (it carries the triggering metric values), so
-"why did the run slow down?" has an answer in the logs and the metrics endpoint.
-Typical trigger thresholds: iowait > 30%, disk utilisation > 90%, TCP
-retransmits > 100/s.
+A reduction is a diagnostic message (it carries the triggering metric
+values), so "why did the run slow down?" has an answer in the logs and the
+metrics endpoint. Typical trigger thresholds: iowait > 30%, disk
+utilisation > 90%, TCP retransmits > 100/s, destination receive-queue
+write latency > 50 ms (reason `dest-receive-queue`). The current
+receive-queue depth is exposed as the `gpstream_receive_write_latency_ms`
+gauge.
 
 ---
 

@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ProcProvider reads host load metrics from /proc (FR-14). It is the
@@ -23,6 +25,25 @@ type ProcProvider struct {
 	prevIdle   uint64 // idle jiffies at last sample
 	prevIoWait uint64 // iowait jiffies at last sample
 	lastIOWait float64
+	// per-disk previous samples (real devices only) so await/util are computed
+	// from deltas between snapshots. Without deltas the counters are
+	// cumulative-since-boot and always exceed any threshold (which would pin
+	// the limiter at the floor on any host that has seen real IO).
+	prevDisk   map[string]diskSample
+	lastSample time.Time
+	mu         sync.Mutex
+}
+
+// diskSample is the previous /proc/diskstats counters for one real device:
+// reads/writes completed and the reading/writing time plus io_ticks (ms).
+// 2.6+ layout: fields[3]=rd_ios, fields[6]=rd_ticks, fields[7]=wr_ios,
+// fields[10]=wr_ticks, fields[11]=io_ticks (time doing I/Os, ms).
+type diskSample struct {
+	reads   uint64
+	writes  uint64
+	rdMs    uint64
+	wrMs    uint64
+	ioTicks uint64
 }
 
 // NewProcProvider returns a ProcProvider reading the standard /proc paths.
@@ -30,6 +51,7 @@ func NewProcProvider() *ProcProvider {
 	return &ProcProvider{
 		StatPath: "/proc/stat",
 		DiskPath: "/proc/diskstats",
+		prevDisk: make(map[string]diskSample),
 	}
 }
 
@@ -88,15 +110,25 @@ func (p *ProcProvider) readIOWait() float64 {
 }
 
 // readDisk reads disk await (ms) and utilisation from /proc/diskstats,
-// averaging across real devices (ignoring partitions and loop devices).
+// averaging across real devices (ignoring partitions and pseudo devices).
+// Counters are cumulative since boot, so await/util are computed from the
+// delta between this and the previous snapshot:
+//
+//	await = (Δrd_ticks + Δwr_ticks) / (Δrd_ios + Δwr_ios)
+//	util  = Δio_ticks / Δelapsed_ms * 100
+//
+// On the first snapshot (no previous sample) both are 0.
 func (p *ProcProvider) readDisk() (await, util float64) {
 	f, err := os.Open(p.DiskPath)
 	if err != nil {
 		return 0, 0
 	}
 	defer f.Close()
+
+	now := time.Now()
 	sc := bufio.NewScanner(f)
 	var sumAwait, sumUtil, n float64
+	seen := make(map[string]diskSample)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) < 14 {
@@ -108,17 +140,41 @@ func (p *ProcProvider) readDisk() (await, util float64) {
 			strings.HasSuffix(dev, "dm-") || isPartition(dev) {
 			continue
 		}
-		// fields[11] = io time (ms), fields[13] = number of sectors... we use
-		// a simple await proxy: io_ticks / (total ticks). Without per-sample
-		// deltas this is a coarse utilisation proxy; a full implementation
-		// keeps prev samples. Here we approximate util from io_ticks.
-		ioTicks, _ := strconv.ParseFloat(fields[11], 64)
-		_ = n
-		sumAwait += ioTicks // proxy; a real impl divides by in-flight
-		sumUtil += ioTicks
-		_ = n
-		n++
+		var cur diskSample
+		cur.reads, _ = strconv.ParseUint(fields[3], 10, 64)
+		cur.rdMs, _ = strconv.ParseUint(fields[6], 10, 64)
+		cur.writes, _ = strconv.ParseUint(fields[7], 10, 64)
+		cur.wrMs, _ = strconv.ParseUint(fields[10], 10, 64)
+		cur.ioTicks, _ = strconv.ParseUint(fields[11], 10, 64)
+		seen[dev] = cur
 	}
+
+	p.mu.Lock()
+	prev := p.prevDisk
+	first := len(prev) == 0
+	p.prevDisk = seen
+	if !first && !p.lastSample.IsZero() {
+		elapsedMs := now.Sub(p.lastSample).Milliseconds()
+		if elapsedMs <= 0 {
+			elapsedMs = 1
+		}
+		for dev, cur := range seen {
+			pv, ok := prev[dev]
+			if !ok {
+				continue // device appeared since the last snapshot
+			}
+			dIos := int64(cur.reads+cur.writes) - int64(pv.reads+pv.writes)
+			dTicks := int64(cur.rdMs+cur.wrMs) - int64(pv.rdMs+pv.wrMs)
+			dIo := int64(cur.ioTicks) - int64(pv.ioTicks)
+			if dIos > 0 {
+				sumAwait += float64(dTicks) / float64(dIos)
+			}
+			sumUtil += float64(dIo) / float64(elapsedMs) * 100
+			n++
+		}
+	}
+	p.lastSample = now
+	p.mu.Unlock()
 	if n > 0 {
 		await = sumAwait / n
 		util = sumUtil / n
