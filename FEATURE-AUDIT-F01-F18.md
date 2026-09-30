@@ -56,7 +56,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Spec: static build; stdlib + small set of vetted free libs; <10 deps; each external dep justified in `docs/design.md`; no telemetry.
 - Evidence: `go.mod` has 5 direct deps (BurntSushi/toml, embedded-postgres [test-only], jackc/pgx/v5, klauspost/compress, yaml.v3) — well under 10, all pure Go, no telemetry.
 - Gaps: **`docs/design.md` (dependency justification) is missing**; static-build flag not confirmed in `Makefile`.
-- **BLOCKED-INFRA**: two-distro/glibc run acceptance.
+- **BLOCKED-INFRA**: ~~two-distro/glibc run acceptance.~~ **CLOSED 30.09 (live):** static binary (CGO_ENABLED=0, built on the agent host Fedora 44/glibc 2.40, `ldd` = "not a dynamic executable") runs WITHOUT ERRORS on CentOS 7 (glibc 2.17, `version`+`selftest` OK) and drives a cross-distro copy to CentOS 8 (glibc 2.28) segments; source DB `f16_src` (LC_COLLATE='C') → dest `f16_dst` (en_US.utf8): doctor `[WARN] collation LC_COLLATE differs: source="C" dest="en_US.utf8"` + behavioral probe, dry-run `C -> en_US.utf8 (and different glibc sort behavior)`, run exit 0, data byte-correct (md5 src==dst, 7 rows incl. cyrillic/accented). Script  /tmp/gs-work/vms/f16-e2e.sh, result F16_E2E_PASSED 7/0.
 
 ### F-09 — Automated tests — **PARTIAL**
 - Spec: unit (manifest/checksum/limiter/planner/mapping/idempotency); integration on 2×GP6; fault injection; scale 100k + 100 Gbit soak; CI (lint, unit, x86_64/aarch64 build, govulncheck); **unit coverage ≥ 80%**.
@@ -89,7 +89,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
   last_value == source 105, next nextval == 106, events recorded;
   TestSequenceSyncResumeIdempotent: re-run idempotent, no duplicates).
 - **Extension presence check DONE (29.09)** — doctor `extensions` check (diff of `pg_extension` source vs dest; same implementation as F-05, see there).
-- **BLOCKED-INFRA**: "3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.
+- **BLOCKED-INFRA**: ~~"3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.~~ **CLOSED 30.09 (live A:5432 EL7 → C:7432 EL8):** 3 source DBs (f10_db1..3) × 2 schemas (s1/s2) × 2 empty tables, 1 table renamed (`t4`→`t4_renamed` via `--map-table s2.t4=s2.t4_renamed`); 3 runs (one source DB → one dest DB, gpstream does not auto-create dest DBs); dest holds EXACTLY the specified objects (2 tables/2 schemas per DB, renamed table present, old name absent, no `_gs_*` staging leftovers, tables empty); dry-run: `conflicts: none` + stable deterministic plan hash; idempotent re-run with `--overwrite`: exit 0, checksum-skip, object set unchanged. Script  /tmp/gs-work/vms/f10-e2e.sh, result F10_E2E_PASSED 12/0.
 
 ### F-12 — Stream compression — **DONE (28.09)**
 - Spec: `--compression zstd|zlib|none` (default zstd), configurable level, between-hosts transparent, **auto-disable for very small tables**.
@@ -166,13 +166,13 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
 | F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
-| F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant) |
+| F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant); **live "3 DB/2 schemas/1 renamed, idempotent re-run" acceptance CLOSED 30.09 (F10_E2E_PASSED 12/0)** |
 | F-11 | PARTIAL | sequences synced post-load (29.09); extension check DONE (29.09) |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (30.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason); receiver-queue detection (RAZRYV-3) via in-process dest write-latency, reduce>50ms/recover<20ms, gpstream_receive_write_latency_ms gauge; disk-util now delta-based |
 | F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above --segment-balance-threshold (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
-| F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; (two-distro/glibc + C↔en_US.UTF-8 acceptance infra-blocked) |
+| F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; **two-distro/glibc + C↔en_US.UTF-8 acceptance CLOSED (live 29.09, re-verified 30.09: static binary on EL7/glibc 2.17 + EL8/glibc 2.28, F16_E2E_PASSED 7/0)** |
 | F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
 | F-18 | DONE | — |
 
