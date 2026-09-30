@@ -1,11 +1,11 @@
 package route
 
-// Тест на живых данных GPDB 6.30.1 (T0-2, 27.09.2026):
-// t02_hash (id int) DISTRIBUTED BY (id), 2 primary, 2000 строк.
-// Данные: SELECT id, gp_segment_id ... через координатор vm1:5432.
+// Test on live GPDB 6.30.1 data (T0-2, 27.09.2026):
+// t02_hash (id int) DISTRIBUTED BY (id), 2 primary, 2000 rows.
+// Data: SELECT id, gp_segment_id ... via the vm1:5432 coordinator.
 import "testing"
 
-// livePlacement — [id]seg из живого кластера (id 0..1999).
+// livePlacement — [id]seg from the live cluster (id 0..1999).
 var livePlacement = map[int32]int32{
 	0: 1, 1: 1, 2: 0, 3: 0, 4: 0, 5: 1, 6: 0, 7: 0, 8: 0, 9: 0,
 	10: 0, 11: 1, 12: 1, 13: 0, 14: 1, 15: 1, 16: 0, 17: 1, 18: 0, 19: 0,
@@ -226,7 +226,7 @@ func TestRouteInt4LiveCluster(t *testing.T) {
 }
 
 func TestRouteInt4Known(t *testing.T) {
-	// выборочные контрольные точки из живого кластера
+	// spot check points from the live cluster
 	cases := []struct {
 		id  int32
 		seg int32

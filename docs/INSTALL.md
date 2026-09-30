@@ -262,7 +262,7 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 
 | Setting | Default |
 | --- | --- |
-| `ConflictAction` | `skip-existing` (never overwrites existing data) |
+| `ConflictAction` | `stop` (the run halts on the first conflict; opt in to `skip`/`overwrite`/`truncate` with `--resolve-conflicts`) |
 | `Compression` | `zstd` |
 | `ZstdLevel` | `3` (range 1–19) |
 | `AutoResume` | `0` (manual only) |

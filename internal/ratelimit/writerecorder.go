@@ -6,13 +6,13 @@ import (
 )
 
 // WriteRecorder records the durations of data-path writes so the limiter can
-// observe the destination's receive queue (F-14: «рост очереди приёма —
-// данные воркера приёмника из /proc и метрик COPY»).
+// observe the destination's receive queue (F-14: "receive-queue growth —
+// receiver worker data from /proc and COPY metrics").
 //
 // The data path is an unbuffered pipe (net.Pipe / ReliablePipe ring): a
 // write only completes once the destination has drained the bytes. So the
 // per-write duration IS the receive-queue depth as the controller observes
-// it — the in-process «метрики COPY» the spec names, without needing the
+// it — the in-process "COPY metrics" the spec names, without needing the
 // destination host's /proc (which the controller cannot read).
 //
 // The recorder keeps the samples of the last few seconds and reports the

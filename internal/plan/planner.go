@@ -3,7 +3,7 @@
 // indexes) BEFORE the job starts, estimates the volume and duration, detects
 // conflicts and collation differences, and emits a deterministic plan.
 //
-// Determinism (FR-10/CР-4): the plan hash is a pure function of the inputs
+// Determinism (FR-10/CR-4): the plan hash is a pure function of the inputs
 // (units, selection, compression, workers, …) with no time or randomness, so
 // two --dry-run on an unchanged topology are byte-identical.
 package plan
@@ -100,7 +100,7 @@ type Plan struct {
 	// OtherObjects is the F-11 metadata-phase detection of non-table objects
 	// in scope (views, materialized views, functions): reported in dry-run so
 	// the operator knows what the data copy does NOT carry by itself (F-11:
-	// «по опции — views/functions»; views are recreated when opted in, below).
+	// "per option — views/functions"; views are recreated when opted in, below).
 	OtherObjects OtherObjects `json:"other_objects"`
 	// MissingExtensions is the F-11 metadata-phase check of dependent
 	// extensions (MADlib/PostGIS/orafce, ...): extension types used by the
@@ -113,7 +113,7 @@ type Plan struct {
 }
 
 // OtherObjects is the F-11 detection of non-table objects within the selected
-// schemas (metadata phase: «по опции — views/functions»). Names are
+// schemas (metadata phase: "per option — views/functions"). Names are
 // schema-qualified. Functions are counted (not enumerated) because a database
 // can hold thousands and the operator only needs the signal that some exist.
 type OtherObjects struct {
@@ -172,7 +172,7 @@ type Redistribution struct {
 
 // Build produces the plan for a config against source + destination clusters.
 // src and dst are queried with pg.Querier so the plan is testable without a
-// live cluster (CР-4/CР-7). The plan hash is deterministic (CР-4).
+// live cluster (CR-4/CR-7). The plan hash is deterministic (CR-4).
 func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan, error) {
 	p := &Plan{
 		WorkPerPair: cfg.WorkersPerPair,
@@ -200,7 +200,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// 2c2. F-11 metadata phase: detect non-table objects (views, matviews,
 	// functions) within the selected schemas. Reported in dry-run — the data
 	// copy does not carry them, so the operator decides (F-11:
-	// «по опции — views/functions»).
+	// "per option — views/functions").
 	p.OtherObjects = detectOtherObjects(ctx, src, tabs)
 	// 2c3. F-11 metadata phase: dependent-extension check (MADlib/PostGIS/
 	// orafce, ...) — extension types used by the selected tables' columns that
@@ -257,7 +257,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// it is not clobbered by the zero initial value).
 	p.EstimatedETA = p.ETASeconds
 
-	// 8. Deterministic hash (CР-4): no time, no randomness. A partial plan
+	// 8. Deterministic hash (CR-4): no time, no randomness. A partial plan
 	// (formed under a --timeout) is not a complete plan, so it carries no hash.
 	if !p.Partial {
 		p.Hash = hash(p)
@@ -269,7 +269,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 // if the context was cancelled/timed out (FR-10 --timeout) it returns the
 // partial fragment already collected plus the error, so cmdDryRun can print the
 // fragment with a "prediction/forecast" marker (§6.6) instead of a hard failure;
-// any other error is returned with a nil plan (a genuine failure, CР-7).
+// any other error is returned with a nil plan (a genuine failure, CR-7).
 func timeoutOrPartial(p *Plan, ctx context.Context, err error) (*Plan, error) {
 	if ctx.Err() != nil {
 		p.Partial = true
@@ -359,7 +359,7 @@ func collectTables(ctx context.Context, cfg *config.Config, src pg.Querier) ([]T
 
 // detectOtherObjects reads the F-11 non-table objects (views, materialized
 // views, functions) from the selected schemas of the source (metadata phase:
-// «по опции — views/functions»). It is a detection-only pass: the data copy
+// "per option — views/functions"). It is a detection-only pass: the data copy
 // does not carry these objects, so the plan reports them and the operator
 // decides. A catalog fault yields an empty result (detection must never fail
 // the plan, like the other advisory passes).
@@ -773,7 +773,7 @@ func detectConflicts(ctx context.Context, tabs []Table, dst pg.Querier, cfg *con
 	for _, t := range tabs {
 		// The conflict check uses a distinctive marker so test fakes can
 		// register the destination's table set separately from the source's
-		// pg_class listing (CР-4 determinism). It is evaluated against the
+		// pg_class listing (CR-4 determinism). It is evaluated against the
 		// DESTINATION name (after rename) so a rename avoids a would-be
 		// overwrite (FR-11).
 		rows, err := dst.Query(ctx,
@@ -944,7 +944,7 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, de
 				names = append(names, name)
 			}
 		}
-		// Deterministic order (CР-4): the plan JSON must be byte-identical
+		// Deterministic order (CR-4): the plan JSON must be byte-identical
 		// across dry-runs, so the column diffs are emitted in sorted
 		// column-name order (map iteration is random).
 		sort.Strings(names)
@@ -1205,7 +1205,7 @@ func hostPairs(cfg *config.Config) []string {
 	return []string{"source-host:5432->dest-host:5432"}
 }
 
-// hash produces the deterministic plan hash (FR-10/CР-4). It is a pure
+// hash produces the deterministic plan hash (FR-10/CR-4). It is a pure
 // function of the plan contents with no time or randomness.
 func hash(p *Plan) string {
 	var b strings.Builder

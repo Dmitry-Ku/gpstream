@@ -82,7 +82,7 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 }
 
 // Distribution reads the table's Greenplum distribution policy (F-11: the
-// metadata phase must reproduce «типы, распределение, AO-параметры»). It
+// metadata phase must reproduce 'types, distribution, AO parameters'). It
 // degrades to pg.Distribution{} (Kind "") on a plain-PostgreSQL source or a
 // read fault — the destination then uses its own default, which is the
 // conservative, non-fatal choice (the data copy itself is unaffected).
@@ -131,7 +131,7 @@ func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distr
 			d.Kind = "randomly"
 		}
 	}
-	// F-11 metadata «AO-параметры»: the table's storage options (appendonly,
+	// F-11 metadata 'AO parameters': the table's storage options (appendonly,
 	// orientation, blocksize, compress, fillfactor, ...) from pg_class. Read
 	// as a separate contained query (a catalog fault must not fail the
 	// distribution read, which already succeeded).
@@ -205,7 +205,7 @@ func splitReopts(s string) []string {
 }
 
 // SequenceDef describes one sequence owned by a source table's serial
-// column (F-11: «последовательности (значения синхронизируются post-load)»).
+// column (F-11: 'sequences (values are synchronised post-load)').
 type SequenceDef struct {
 	// Name is the schema-qualified sequence name on the source
 	// ("public.orders_id_seq"). A serial column's default is copied verbatim

@@ -173,7 +173,7 @@ func TestManNoFile(t *testing.T) {
 }
 
 // TestCopyNoCluster: copy must fail cleanly (no live cluster) rather than
-// fabricate a result (FR-01/CР-7). An empty connstring cannot connect.
+// fabricate a result (FR-01/CR-7). An empty connstring cannot connect.
 func TestCopyNoCluster(t *testing.T) {
 	if err := run([]string{"copy"}); err == nil {
 		t.Fatal("expected copy to fail without a reachable cluster")

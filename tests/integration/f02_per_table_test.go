@@ -14,8 +14,9 @@ import (
 )
 
 // TestPerTableFallbackSnapshot — FR-02 per-table fallback (--consistent-tables,
-// spec F-02: «допустимый режим "по таблицам" (каждая таблица — свой короткий
-// снимок, расхождение задокументировано) — только как явный fallback-флаг»).
+// spec F-02: "allowed 'per-table' mode (each table takes its own short
+// snapshot, the discrepancy is documented) — only as an explicit
+// fallback flag").
 //
 // The discriminating property of the fallback is that EACH table is read under
 // its OWN short snapshot, so two tables can legitimately see DIFFERENT points

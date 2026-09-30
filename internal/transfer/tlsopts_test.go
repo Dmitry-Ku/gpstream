@@ -84,7 +84,7 @@ func genTestLeaf(t *testing.T, caDER []byte, caKey *ecdsa.PrivateKey, serial int
 }
 
 func itoa(n int64) string {
-	return string(rune('0' + n/10)) + string(rune('0'+n%10))
+	return string(rune('0'+n/10)) + string(rune('0'+n%10))
 }
 
 func writePEMCert(t *testing.T, dir, name string, der []byte) string {
@@ -115,9 +115,9 @@ func writePEMKey(t *testing.T, dir, name string, key *ecdsa.PrivateKey) string {
 // as plain TCP).
 func TestTLSEnabledRule(t *testing.T) {
 	cases := []struct {
-		name string
+		name          string
 		cert, key, ca string
-		want bool
+		want          bool
 	}{
 		{"none", "", "", "", false},
 		{"ca only (PG-only verify-full config)", "", "", "ca.pem", false},
@@ -134,8 +134,8 @@ func TestTLSEnabledRule(t *testing.T) {
 }
 
 // TestServerTLSConfigErrors: a serving side without a complete keypair is a
-// hard, diagnosed error (F-13: «при неверном сертификате — отказ с
-// диагностикой»), and a missing CA file is one too.
+// hard, diagnosed error (F-13: 'on a bad certificate — refusal with
+// diagnostics'), and a missing CA file is one too.
 func TestServerTLSConfigErrors(t *testing.T) {
 	if _, err := ServerTLSConfig("", "", "", ""); err == nil {
 		t.Fatal("ServerTLSConfig(no keypair) must error")
@@ -177,8 +177,8 @@ func TestClientTLSConfigHostname(t *testing.T) {
 	}
 }
 
-// TestDataPlaneTLSEndToEnd (F-13 acceptance: «трафик между кластерами только
-// шифрованный») drives a REAL handshake in both directions: the controller
+// TestDataPlaneTLSEndToEnd (F-13 acceptance: 'traffic between clusters
+// is only encrypted') drives a REAL handshake in both directions: the controller
 // serves with ServerTLSConfig, the (fake) segreceiver dials with
 // ClientTLSConfig, and bytes round-trip. Variants:
 //   - one-way TLS (no CA): client verifies the server chain+name, succeeds;
@@ -312,7 +312,7 @@ func TestDataPlaneTLSEndToEnd(t *testing.T) {
 	// Client trusting the WRONG CA: chain validation fails (diagnosed).
 	runRoundTrip(t, srvCert, srvKeyPEM, "", foreignPEM, "", "", false)
 	// Server cert that does not cover the listen address: hostname check
-	// fails (diagnosed) — F-13 «при неверном сертификате — отказ».
+	// fails (diagnosed) — F-13 'on a bad certificate — refusal'.
 	runRoundTrip(t, wrongCert, wrongKeyPEM, "", caPEM, "", "", false)
 }
 

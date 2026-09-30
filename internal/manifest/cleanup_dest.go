@@ -7,9 +7,9 @@ import (
 )
 
 // DropTarget is one destination-side object that `gpstream cleanup --mode
-// drop` removes, with the reason it is owned by gpstream (FR-02: «все
-// объекты, созданные gpstream в приёмнике, регистрируются в manifest
-// со статусом» — the journal IS that registration).
+// drop` removes, with the reason it is owned by gpstream (FR-02: "all
+// objects created by gpstream on the destination are registered in the
+// manifest with a status" — the journal IS that registration).
 type DropTarget struct {
 	Schema string `json:"schema"`
 	Name   string `json:"name"`

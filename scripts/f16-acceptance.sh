@@ -1,8 +1,8 @@
 #!/bin/bash
 # F-16 acceptance (two-distro/glibc + C<->en_US.UTF-8):
-#  «запуск бинарника, собранного на одной ОС, на хостах с двумя разными
-#   дистрибутивами и glibc — без ошибок; тест с БД C ↔ en_US.UTF-8 ⇒
-#   корректное предупреждение и корректные данные.»
+#  run a binary built on one OS on hosts with two different distros and
+#   glibc without errors; a C <-> en_US.UTF-8 database test => a correct
+#   warning and correct data.
 #
 #  Binary: built on the agent host (Fedora 44, glibc 2.40), CGO_ENABLED=0 static.
 #   vm1 (A master): CentOS 7, glibc 2.17

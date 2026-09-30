@@ -10,8 +10,8 @@ import (
 )
 
 // Balance is the F-15 segment-fill balance of one table on the destination
-// (spec F-15: «контроль дисбаланса заполнения сегментов приёмника (метрика
-// max/avg по сегментам), предупреждение при превышении порога»). It is the
+// (spec F-15: 'control of destination segment fill imbalance (metric
+// max/avg across segments), warning when the threshold is exceeded'). It is the
 // LIVE per-segment metric the CR-5/F-15 acceptance requires — the planner's
 // redistribution skew is a pre-copy prediction, this is the measured layout
 // of the copied data.
@@ -23,7 +23,7 @@ type Balance struct {
 	Avg       float64 `json:"avg"`              // rows / segments
 	MaxAvg    float64 `json:"max_avg"`          // Max / Avg (1.0 = perfectly even)
 	Threshold float64 `json:"threshold"`        // the --segment-balance-threshold applied
-	Warning   bool    `json:"warning"`          // MaxAvg > Threshold (spec: предупреждение при превышении)
+	Warning   bool    `json:"warning"`          // MaxAvg > Threshold (spec: warning when the threshold is exceeded)
 	Counts    []int64 `json:"counts,omitempty"` // per-segment rows in gp_segment_id order
 }
 
@@ -134,8 +134,8 @@ func (a *Agent) BalanceTable(ctx context.Context, schema, table string, threshol
 
 // RenderBalance renders the F-15 balance lines for a final report: one line
 // per measured table (max/avg and the per-segment counts) plus the warning
-// lines for the tables that exceed the threshold (spec: «предупреждение при
-// превышении порога»). It returns "" when no table was measurable.
+// lines for the tables that exceed the threshold (spec: 'warning when
+// the threshold is exceeded'). It returns "" when no table was measurable.
 func RenderBalance(balances []Balance) string {
 	var lines []string
 	for _, b := range balances {

@@ -61,15 +61,15 @@ type Manager struct {
 	dec     *compress.Decompressor
 	// compMode is the operator's --compress mode (FR-12). compNone/decNone
 	// are the mode-none pair built when compMode != none; the F-12 small-table
-	// auto-disable (F-12: «очень мелкие таблицы — сжатие отключается
-	// автоматически») swaps a unit's transport onto them.
+	// auto-disable (F-12: "very small tables — compression is disabled
+	// automatically") swaps a unit's transport onto them.
 	compMode compress.Mode
 	compNone *compress.Compressor
 	decNone  *compress.Decompressor
 	lim      *ratelimit.Limiter // adaptive rate limiter (FR-14); nil when unlimited
 	pacer    *ratelimit.Pacer   // throttles the data path to lim (FR-14)
 	// recvRec records data-path write latencies so the limiter can observe the
-	// destination's receive queue (FR-14 «очередь приёма … метрики COPY»).
+	// destination's receive queue (FR-14 "receive queue … COPY metrics").
 	// Shared across all units of the run; nil when no rate-limit is set.
 	recvRec *ratelimit.WriteRecorder
 	// snapshotMode is the FR-02 consistency mode actually in effect for this
@@ -174,7 +174,7 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		m.lim = lim
 		m.pacer = ratelimit.NewPacer(lim)
 		m.monitor.SetRateLimit(cfg.RateLimit)
-		// FR-14 «очередь приёма»: the destination host's /proc is not
+		// FR-14 "receive queue": the destination host's /proc is not
 		// readable from the controller, but the data path is an unbuffered
 		// pipe — every source-side frame write only completes once the
 		// destination has drained it. Record those write durations and feed
@@ -189,8 +189,8 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 
 // onRateChange is the limiter's diagnostic callback (FR-14). A rate shift is
 // observable two ways: as a metric (FR-04) and as an event in events.jsonl
-// (F-14: «каждый сдвиг лимита — диагностическое сообщение в events.jsonl
-// (пара, старое/новое, причина: cpu %, disk latency, очередь)»).
+// (F-14: "every limit shift — a diagnostic message in events.jsonl
+// (pair, old/new, cause: cpu %, disk latency, queue)").
 func (m *Manager) onRateChange(from, to ratelimit.Gbps, reason string) {
 	m.monitor.SetRateLimit(to)
 	m.events.Log("rate_limit_shift",
@@ -474,7 +474,7 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		}
 	}
 
-	// F-11 (metadata phase, «ограничения»): restore the source table-level
+	// F-11 (metadata phase, "constraints"): restore the source table-level
 	// constraints (foreign keys and user CHECK constraints) on the destination
 	// tables. This runs AFTER the data path and AFTER the FR-17 index pool
 	// drains: a foreign key must reference a destination table whose unique
@@ -627,7 +627,7 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		// the fresh snapshot (T5, DESIGN §2.2).
 		m.events.Log("unit_reread", "schema", u.Schema, "table", u.Table,
 			"reason", "resume re-read", "epoch", m.epoch)
-		// FR-04 «события авто-восстановления».
+		// FR-04 "auto-recovery events".
 		m.monitor.RecordAutoRecovery()
 		reReading = true
 	}
@@ -744,7 +744,7 @@ func (e *ConflictError) Error() string {
 		e.Schema, e.Table)
 }
 
-// unitTableKey is the per-table metrics key (FR-04 «по таблице»): the
+// unitTableKey is the per-table metrics key (FR-04 "per table"): the
 // destination-qualified name the operator sees. A DB prefix is included only
 // when the unit carries one (single-DB runs key by schema.name).
 func unitTableKey(u *Unit) string {
@@ -848,7 +848,6 @@ func (m *Manager) resolve(u *Unit) (inPlace, truncate, verify bool) {
 	}
 }
 
-
 // runUnit copies, verifies, rebuilds indexes and swaps a single unit
 // (FR-01/FR-02/FR-11/FR-17), recording each transition in the journal. It takes
 // the pre-built unit (see Run) so the pool can share unit construction. The
@@ -873,7 +872,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    (and the copy target) from it (FR-02). The target is built from the
 	//    source's own column definitions (format_type) so it is faithful
 	//    across clusters; the distribution policy is reproduced on a
-	//    Greenplum source (F-11 metadata: «типы, распределение»).
+	//    Greenplum source (F-11 metadata: "types, distribution").
 	t := m.tableFor(u)
 	schema, name := u.Schema, u.Table
 	// The column list is stable catalog data (not snapshot state), so it is
@@ -964,7 +963,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// surviving one (a crashed/failed run that copied but never swapped)
 		// holds unswapped partial data; it MUST be empty before the copy,
 		// otherwise a resume appends to the partial data and doubles the rows
-		// (F-06/F-07: "resume доводит до конца без дублей"). A fresh run has
+		// (F-06/F-07: "resume completes to the end without duplicates"). A fresh run has
 		// no staging table, so it is created from the source layout.
 		if m.dst.Exists(ctx, ds, target) {
 			if err := m.dst.Truncate(ctx, ds, target); err != nil {
@@ -1083,7 +1082,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 				_ = m.dst.DropStaging(ctx, ds, target)
 			}
 			_ = m.setUnitState(u, StateFailed)
-			// FR-04 «ошибки чексумм»: a content mismatch in the verify phase.
+			// FR-04 "checksum errors": a content mismatch in the verify phase.
 			m.monitor.RecordChecksumError()
 			return fmt.Errorf("verify: checksum mismatch (rows=%d)", vrows)
 		}
@@ -1128,8 +1127,8 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("journal swapped: %w", err)
 	}
 
-	// 9b. Resynchronise sequence VALUES (F-11: «значения синхронизируются
-	//     post-load»). The final table now holds the source rows, so the
+	// 9b. Resynchronise sequence VALUES (F-11: "values are synchronised
+	//     post-load"). The final table now holds the source rows, so the
 	//     destination sequences catch up to the source's last_value: the
 	//     next nextval on the destination returns last_value+1, exactly
 	//     like on the source. (The sequences themselves were created in
@@ -1152,8 +1151,8 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 }
 
 // measureBalance records the F-15 segment-fill balance of a just-swapped
-// unit (spec F-15: «контроль дисбаланса заполнения сегментов приёмника
-// (метрика max/avg по сегментам), предупреждение при превышении порога»).
+// unit (spec F-15: "control of destination segment-fill imbalance
+// (max/avg metric per segment), warning when the threshold is exceeded").
 // It runs AFTER the swap, so the final table holds the copied rows.
 // Non-fatal by design: the data is already in place and the metric is
 // diagnostic — a non-Greenplum destination (no gp_segment_id) or a
@@ -1182,7 +1181,7 @@ func (m *Manager) measureBalance(ctx context.Context, u *Unit) {
 }
 
 // createSequences recreates the unit's source sequences on the destination
-// (F-11 metadata phase: «последовательности»). It runs BEFORE the table
+// (F-11 metadata phase: "sequences"). It runs BEFORE the table
 // DDL, because a serial column's default (nextval('schema.seq'::regclass))
 // is copied verbatim into the destination table and must resolve to an
 // existing sequence. The sequence keeps its source schema-qualified name.
@@ -1224,7 +1223,7 @@ func (m *Manager) createSequences(ctx context.Context, u *Unit) {
 }
 
 // syncSequenceValues resynchronises the unit's destination sequences to the
-// source's last_value (F-11: «значения синхронизируются post-load»). It
+// source's last_value (F-11: "values are synchronised post-load"). It
 // runs AFTER the swap, so the final table holds the source rows and the
 // next nextval on the destination returns last_value+1 — exactly like on
 // the source. Non-fatal by design: the data is already in place, and the
@@ -1378,7 +1377,7 @@ func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *comp
 		fp = transfer.NewFramedPipe(w, r, 1, unitID, comp, dec)
 	}
 	if m.recvRec != nil {
-		// FR-14 «очередь приёма»: record each transport write's duration
+		// FR-14 "receive queue": record each transport write's duration
 		// (the destination drains an unbuffered pipe, so the write time is
 		// the receive-queue depth the controller can observe).
 		fp.SetWriteLatencyHook(m.recvRec.Record)
@@ -2158,9 +2157,9 @@ type unitSource struct {
 // ROLLBACK if a statement aborted it) and returns the connection to the pool.
 // Outside per-table mode end is a no-op.
 //
-// FR-02 per-table fallback (spec: «допустимый режим "по таблицам" (каждая
-// таблица — свой короткий снимок, расхождение задокументировано) — только как
-// явный fallback-флаг»): the data COPY and the checksum read of one table run
+// FR-02 per-table fallback (spec: "permitted mode 'per table' (each table
+// has its own short snapshot, discrepancy documented) — only as an explicit
+// fallback flag"): the data COPY and the checksum read of one table run
 // on one dedicated REPEATABLE READ snapshot connection, so they see one
 // consistent point for THAT table. The per-table discrepancy (tables are not
 // mutually consistent) is the documented trade-off, in exchange for not holding

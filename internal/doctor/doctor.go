@@ -1,7 +1,7 @@
 // Package doctor implements `gpstream doctor` (FR-05): a self-diagnostic that
 // reports PASS/FAIL/WARN for the source and destination clusters with
 // actionable recommendations. It is intentionally dependency-free of a live
-// cluster so it can be exercised against fakes (CР-7: the doctor must detect
+// cluster so it can be exercised against fakes (CR-7: the doctor must detect
 // all seeded faults on a test bench).
 package doctor
 
@@ -293,7 +293,7 @@ func (r *Report) checkSegments(side string, q pg.Querier) {
 			Rec: "query gp_segment_configuration"})
 		return
 	}
-	// A cluster with zero up segments cannot copy data (CР-7): report it as a
+	// A cluster with zero up segments cannot copy data (CR-7): report it as a
 	// FAIL rather than a silent PASS. This is what a fault injection for
 	// "no up segments" seeds.
 	count := top.UpCount()
@@ -308,7 +308,7 @@ func (r *Report) checkSegments(side string, q pg.Querier) {
 
 func (r *Report) checkDisk(side string, q pg.Querier) {
 	// Free disk is an OS metric; in a live run the doctor reads statvfs. For a
-	// testable path we query a sentinel the bench injects (CР-7: "no space").
+	// testable path we query a sentinel the bench injects (CR-7: "no space").
 	rows, err := q.Query(context.Background(), "SELECT 1")
 	if err != nil {
 		r.Add(Check{Name: "disk", Side: side, Sev: Fail, Msg: "disk probe failed",

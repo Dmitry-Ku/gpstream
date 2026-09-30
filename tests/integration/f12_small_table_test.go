@@ -13,9 +13,9 @@ import (
 	"github.com/gpstream/gpstream/internal/manifest"
 )
 
-// TestSmallTableCompressionAutoDisable — F-12: «Для очень мелких таблиц
-// сжатие отключается автоматически (overhead)» + приёмка «тест корректности
-// данных после сжатия (чексуммы)».
+// TestSmallTableCompressionAutoDisable — F-12: "for very small tables
+// compression is disabled automatically (overhead)" + acceptance "data
+// correctness after compression (checksums)".
 //
 // One run copies a TINY table (below --small-table-threshold) and a LARGE
 // table (above it) together, with zstd on by default. The F-12 decision is

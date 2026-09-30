@@ -27,9 +27,8 @@ import (
 )
 
 // TestF02Kill9CleanupRestoresReceiver — spec F-02 acceptance (kill -9 part):
-// «kill -9 процесса в середине операции ⇒ cleanup оставляет приёмник в
-// состоянии "до операции" (или "полностью скопировано" для завершённых
-// таблиц)».
+// "kill -9 mid-operation => cleanup leaves the destination in its
+// pre-operation state (or 'fully copied' for completed tables)".
 //
 // Phase 1: `gpstream run` (real binary, subprocess) copies one table at a
 // crawling rate-limit; the test waits until the durable journal shows the
@@ -165,8 +164,8 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 }
 
-// TestF02TwoDBConcurrentSnapshot — spec F-02 acceptance («тесты на 2 БД с
-// конкурентной записью»). The CLI is one database per operation (a
+// TestF02TwoDBConcurrentSnapshot — spec F-02 acceptance ("two-database
+// concurrent-write tests"). The CLI is one database per operation (a
 // connstring), so two databases = two CONCURRENT operations, each with its
 // own REPEATABLE READ snapshot. A writer hammers BOTH databases while both
 // copies run; every destination table must equal exactly its own snapshot

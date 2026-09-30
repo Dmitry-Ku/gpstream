@@ -20,10 +20,10 @@ import (
 // TestDryRunAcceptance is the TASK-SPEC v4 F-10 (M3) acceptance test, live on
 // real PG 9.4.26 clusters:
 //
-//	dry-run на приёмнике с намеренно созданными конфликтующими таблицами и
-//	другой collation ⇒ точный отчёт; два последовательных dry-run без
-//	изменения среды ⇒ byte-идентичный план (кроме помеченных прогнозных
-//	полей).
+//	dry-run against a destination holding deliberately conflicting tables
+//	with a different collation => an exact report; two consecutive dry-runs
+//	with no environment change => a byte-identical plan (except the marked
+//	prediction fields).
 //
 // Setup: source cluster, DB "srcdb" (LC_COLLATE C); destination cluster, DB
 // "srcdb" (LC_COLLATE C.utf8 — the only other locale the --no-locale C
@@ -105,7 +105,7 @@ func TestDryRunAcceptance(t *testing.T) {
 	}
 
 	// 3. Determinism: a second dry-run on the unchanged environment yields a
-	// byte-identical plan (stable hash + stable JSON), CР-4/F-10 §7.
+	// byte-identical plan (stable hash + stable JSON), CR-4/F-10 §7.
 	p2, err := plan.Build(ctx, &cfg, src, dst)
 	if err != nil {
 		t.Fatalf("plan.Build 2: %v", err)
@@ -125,8 +125,8 @@ func TestDryRunAcceptance(t *testing.T) {
 		t.Errorf("two dry-runs are not byte-identical:\n%v\n%v", j1, j2)
 	}
 
-	// 4. Dry-run makes NO changes to the destination (F-10: без изменений в
-	// приёмнике): a still absent, b still 10 rows.
+	// 4. Dry-run makes NO changes to the destination (F-10: no destination
+	// changes): a still absent, b still 10 rows.
 	if got := mustCount(t, dst, `SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename='a'`); got != 0 {
 		t.Errorf("dry-run created table a on the destination (%d), want 0", got)
 	}

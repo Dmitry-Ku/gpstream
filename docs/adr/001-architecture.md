@@ -41,7 +41,7 @@ CLI (cmd/gpstream) ── parses flags, binds config, dispatches subcommands
   │
   ├── metrics      progress + JSON/CSV + optional /metrics (FR-04)
   │
-  └── doctor       self-diagnostic, PASS/FAIL/WARN (FR-05/CР-7)
+  └── doctor       self-diagnostic, PASS/FAIL/WARN (FR-05/CR-7)
 ```
 
 Plus shared packages: `config` (defaults + flag/env binding, FR-08), `pg`
@@ -86,7 +86,7 @@ is done when all units are done plus a final report.
   systemd `Restart=on-failure` + an internal watchdog.
 - The `pg.Querier` interface lets `doctor`, `planner`, and the source/dest
   agents be unit-tested with `pg.FakeConn` (no live cluster) — this is how
-  CР-7 (detect all seeded faults) and plan-determinism (CР-4) are verified.
+  CR-7 (detect all seeded faults) and plan-determinism (CR-4) are verified.
 - The plan hash is a pure function of (units, compression, workers, …) with no
   time or randomness, so two `--dry-run` on an unchanged topology are
-  byte-identical (FR-10/CР-4).
+  byte-identical (FR-10/CR-4).

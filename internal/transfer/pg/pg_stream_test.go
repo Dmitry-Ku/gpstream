@@ -31,7 +31,7 @@ func TestReadCopy(t *testing.T) {
 }
 
 // TestReadCopyUnregistered returns an error for an unregistered COPY (models a
-// "cannot determine" fault, CР-7).
+// "cannot determine" fault, CR-7).
 func TestReadCopyUnregistered(t *testing.T) {
 	f := NewFakeConn()
 	var buf bytes.Buffer

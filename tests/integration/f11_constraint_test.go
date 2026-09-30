@@ -11,7 +11,7 @@ import (
 	"github.com/gpstream/gpstream/internal/manifest"
 )
 
-// TestConstraintRestoreFKCheckRename — F-11 (metadata phase, «ограничения»):
+// TestConstraintRestoreFKCheckRename — F-11 (metadata phase, "constraints"):
 // a source table with a foreign key and a user CHECK constraint is copied
 // end-to-end. The staging+swap path creates a fresh destination table, so the
 // post-swap constraint pass must re-apply BOTH constraints. The referenced

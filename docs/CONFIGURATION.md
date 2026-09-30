@@ -6,172 +6,175 @@ Greenplum 6 clusters over a direct, high-speed network via `COPY (binary)`
 with **no intermediate storage** (it is *not* `gpbackup`/`gprestore`/`gpcopy`).
 
 It describes the `Config` struct and its defaults, the three sources that fold
-into it (YAML file, environment, CLI), the precedence that resolves them, the
-validation rules, and the secret-handling rule (FR-08). See
+into it (TOML/YAML file, environment, CLI), the precedence that resolves them,
+the validation rules, and the secret-handling rule (F-08). See
 [CLI_REFERENCE.md](CLI_REFERENCE.md) for the command and flag reference.
 
 ---
 
 ## 1. The Config struct
 
-`config.Config` (defined at `internal/config/config.go` line 60) is the fully
-resolved runtime configuration and the single source of truth consumed by
-every component. Every CLI flag, environment variable, and YAML key folds into
-it.
+`config.Config` (defined at `internal/config/config.go`) is the fully resolved
+runtime configuration and the single source of truth consumed by every
+component. Every CLI flag, environment variable, and file key folds into it.
 
 ### 1.1 Connection
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `Source` | string | `""` | CLI `--source` / env / file | Source connstring. May hold secrets but **never** via argv in production (FR-08). |
-| `Dest` | string | `""` | CLI `--dest` / env / file | Destination connstring. |
+| `Source` | string | `""` | CLI `--source` / file `source` | Source connstring. May hold secrets but **never** via argv in production (F-08). |
+| `Dest` | string | `""` | CLI `--dest` / file `dest` | Destination connstring. |
 
-### 1.2 Selection (FR-11)
+There is **no** `GPSTREAM_SOURCE`/`GPSTREAM_DEST` env var; the endpoints come
+from the flags or the file.
+
+### 1.2 Selection (F-11)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `Full` | bool | `false` | `--full` |
-| `DBs` | []string | `[]` | `--db` (repeatable) |
-| `Schemas` | []string | `[]` | `--schema` (repeatable, `db.schema`) |
-| `Tables` | []string | `[]` | `--table` (repeatable, `db.schema.table`) |
-| `Exclude` | []string | `[]` | `--exclude` (repeatable) |
+| `Full` | bool | `false` | (internal) |
+| `DBs` | []string | `[]` | `--dbs` (comma-separated) |
+| `Schemas` | []string | `[]` | `--schemas` (comma-separated, `db.schema`) |
+| `Tables` | []string | `[]` | `--tables` (comma-separated, `db.schema.table`) |
+| `Exclude` | []string | `[]` | `--exclude` (comma-separated) |
+| `Include` | []string | `[]` | `--include` (empty = both metadata and data) |
 
-### 1.3 Metadata / data (FR-11)
+### 1.3 Metadata / data (F-11)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
 | `MetadataOnly` | bool | `false` | `--metadata-only` (mutually exclusive with `DataOnly`) |
 | `DataOnly` | bool | `false` | `--data-only` (mutually exclusive with `MetadataOnly`) |
 
-### 1.4 Conflict / safety (FR-10/FR-11)
+### 1.4 Conflict / safety (F-10)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `ConflictAction` | `ConflictAction` | **`SkipExisting`** | `--skip-existing`/`--overwrite`/`--truncate`/`--append`/`--conflict-action` | One of `skip-existing`/`overwrite`/`truncate`/`append`. |
-| `SkipConflicts` | bool | **`false` (strict)** | `--skip-conflicts` | Off by default = strict: conflicts are surfaced, not silently skipped. |
+| `ConflictAction` | `ConflictAction` | **`stop`** | `--resolve-conflicts` / `--overwrite` / `--truncate` | One of `stop`/`skip`/`overwrite`/`truncate`. `stop` (default) halts the run on the first collision; `skip` skips conflicting units; `overwrite` = staging + swap; `truncate` = in-place after TRUNCATE. |
 
-### 1.5 Rename (FR-11)
+### 1.5 Rename (F-11)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `RenameDB` | map[string]string | `{}` | `--rename-db src=dst` |
-| `RenameSchema` | map[string]string | `{}` | `--rename-schema src=dst` |
+| `RenameDB` | map[string]string | `{}` | `--map-db src=dst` |
+| `RenameSchema` | map[string]string | `{}` | `--map-schema src=dst` |
+| `RenameTable` | map[string]string | `{}` | `--map-table src=dst` |
 
-### 1.6 Performance (FR-01/FR-12/FR-14)
+### 1.6 Performance (F-01/F-12/F-14)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `Compression` | `Compression` | **`zstd`** | `--compress` / env / file | `none`/`zlib`/`zstd`. |
-| `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env `SMALL_TABLE_THRESHOLD` / file `small_table_threshold` | F-12: a table whose estimated size (`pg_total_relation_size`) is below this copies with compression **off** (compressor overhead). `0` disables the auto-disable. |
-| `ZstdLevel` | int | **`3`** | `--compress zstd:N` / file `zstd_level` | Must be **1–19** (validate). |
-| `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling. |
-| `WorkersPerPair` | int | **`2`** | `--workers-per-pair` / env / file | Must be **≥ 1** (validate). |
-| `DataPortRange` | string | `""` | `--data-port-range` / file | `a-b` (low ≤ high, parsed by `ParsePorts`). |
+| `ZstdLevel` | int | **`3`** | `--zstd-level` / `--compress zstd:N` / file | Must be **1–19** (validate). |
+| `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env / file | F-12: a table whose estimated size is below this copies with compression **off**. `0` disables the auto-disable. |
+| `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling; adaptive AIMD (F-14) is always active. |
+| `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
 
-### 1.7 Resilience (FR-06/FR-07)
+### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `AutoResume` | int | **`0`** | `--auto-resume` / env / file | `N ≥ 0`; `0` = manual only. |
+| `OnUnitFailure` | string | `""` → `continue` | `--on-unit-failure` / env / file | `continue` (default) \| `abort` (F-06). |
 | `Verify` | `VerifyMode` | **`sample`** | `--verify` / file | `full`/`sample`/`off`. |
+| `ResumeConsistency` | string | `""` → `relaxed` | `--resume-consistency` / env / file | `relaxed` (default) \| `strict` (T5). |
 
-### 1.8 Indexes (FR-17)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `IndexWorkers` | int | `0` | `--index-workers` |
-| `NoIndexes` | bool | `false` | `--no-indexes` / `--background-indexes` (sets false) |
-| `IndexPriority` | string | **`size`** | `--index-priority` / file | `size`/`manual`. |
-
-### 1.9 Redistribution (FR-15)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `NoRedistribute` | bool | `false` | `--no-redistribute` |
-| `SkewThreshold` | float64 | **`0.05`** | `--skew-threshold` / file | Skew fraction. |
-| `SegmentBalanceThreshold` | float64 | **`1.5`** | `--segment-balance-threshold` / file | Live segment-fill max/avg warning gate (F-15); negative = metric only. |
-
-### 1.10 TLS (FR-13)
+### 1.8 Indexes (F-17)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `SSLCert` | string | `""` | `--ssl-cert` / env / file | **Secret — env/file, never argv (FR-08).** |
-| `SSLKey` | string | `""` | `--ssl-key` / env / file | **Secret — env/file, never argv (FR-08).** |
-| `SSLCA` | string | `""` | `--ssl-ca` / env / file | **Secret — env/file, never argv (FR-08).** |
-| `SSLMinTLS` | string | **`1.2`** | `--ssl-min-tls` / file | Minimum TLS version. |
+| `IndexWorkers` | int | `0` | `--index-workers` | Background index-build parallelism. |
+| `NoIndexes` | bool | `false` | `--no-indexes` | Set to `true` to skip index creation entirely. |
+| `IndexPriority` | string | **`size`** | `--index-priority` / file | `size` (default) \| `manual` \| `background`. |
 
-### 1.11 Dry-run / planning (FR-10)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `DryRun` | bool | `false` | `--dry-run` |
+### 1.9 Constraints (F-11)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `NoConstraints` | bool | `false` | `--no-constraints` | Disable the constraint-restore pass (FK/PK/unique re-applied post-load by default). |
+
+### 1.10 Redistribution (F-15)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `NoRedistribute` | bool | `false` | `--no-redistribute` | Suppress redistribution accounting. |
+| `SkewThreshold` | float64 | **`0.05`** | `--skew-threshold` / file | Skew fraction; negative = skew checks off. |
+| `SegmentBalanceThreshold` | float64 | **`1.5`** | `--segment-balance-threshold` / env / file | Live segment-fill max/avg warning gate (F-15); negative = metric only. |
+
+### 1.11 TLS (F-13)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `SSLCert` | string | `""` | `--ssl-cert` / env / file | **Secret — env/file, never argv (F-08).** |
+| `SSLKey` | string | `""` | `--ssl-key` / env / file | **Secret — env/file, never argv (F-08).** |
+| `SSLCA` | string | `""` | `--ssl-ca` / env / file | **Secret — env/file, never argv (F-08).** |
+| `SSLMinTLS` | string | **`1.2`** | `--ssl-min-tls` / file | Minimum TLS version. The pg plane uses `sslmode=verify-full` by default. |
+
+### 1.12 Transport (T-B, §1.3)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `on_segment` \| `direct`. |
+| `SegListen` | string | `""` | `--seg-listen` | Controller listen address; **required** for `on_segment`. |
+| `SegBinary` | string | `""` | `--seg-binary` | gpstream-segreceiver path; **required** for `on_segment`. |
+| `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
+| `SegTLSKey` | string | `""` | `--seg-tls-key` / env / file | Controller serving key. |
+| `SegTLSCA` | string | `""` | `--seg-tls-ca` / env / file | CA for the segment data plane. |
+
+### 1.13 Frame-ack / reliability (§4.6)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `FrameAck` | string | `on` | `--frame-ack` / env / file | `on` (default) \| `off` (plain pipe). |
+| `AckTimeout` | string | `30s` | `--ack-timeout` / env / file | `15s` \| `30s` \| `adaptive` (3x median RTT). |
+| `MaxReconnects` | int | `20` | `--max-reconnects` / env | Reconnect budget; exhausted = unit failed. |
+| `RetransmitBufferMax` | int64 | `64MiB` | `--retransmit-buffer-max` / env | In-flight window per stream. |
+
+### 1.14 Dry-run / planning (F-10)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `DryRun` | bool | `false` | `--dry-run` | Plan only, do not execute. |
 | `Timeout` | time.Duration | **`60s`** | `--timeout` / file | Bounds plan formation. |
-| `PlanFile` | string | `""` | `--plan-file` |
+| `PlanFile` | string | `""` | `--plan-file` | Persist the plan JSON. |
 
-### 1.12 Observability (FR-04)
+### 1.15 Observability (F-04)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `MetricsAddr` | string | `""` | `--metrics-addr` |
+| `MetricsAddr` | string | `""` | `--metrics-addr` | Serve the Prometheus endpoint during `run`. |
 
-### 1.13 Operational
+### 1.16 Locale check (F-16)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `ConfigFile` | string | `""` | `--config` |
-| `LogLevel` | `LogLevel` | **`info`** | `--log-level` / env / file |
-| `Quiet` | bool | `false` | `--quiet` |
-| `Debug` | bool | `false` | `--debug` |
+| `LocaleCheck` | bool | `false` | `--locale-check` / env / file | Extra dry-run locale/encoding prediction block. |
 
-### 1.14 Consistency (FR-02)
+### 1.17 Consistency (F-02)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
 | `ConsistentDB` | bool | **`true`** | `--consistent-db` (mutually exclusive with `ConsistentCluster` / `ConsistentTables`) |
-| `ConsistentCluster` | bool | `false` | `--consistent-cluster` (mutually exclusive with `ConsistentDB` / `ConsistentTables`) |
-| `ConsistentTables` | bool | `false` | `--consistent-tables` — per-table fallback: each table under its own short snapshot (per-table discrepancy, off by default) |
+| `ConsistentCluster` | bool | `false` | `--consistent-cluster` (mutually exclusive with the other two) |
+| `ConsistentTables` | bool | `false` | `--consistent-tables` — per-table fallback (per-table discrepancy, off by default) |
 
-### 1.15 v2 conflict refinement (§6.3)
+### 1.18 Operational / state (v4 §8)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `OverwriteOnlyConflicts` | bool | `false` | `--overwrite-only-conflicts` / env / file | Refines `Overwrite`: only conflicting objects are re-written, never the whole target. |
-
-### 1.16 v2 diagnostics / checks (§6.10, §4.13, §4.14, §4.16)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `CollationCheck` | bool | `false` | `--collation-check` / env / file |
-| `LocaleCheck` | bool | `false` | `--locale-check` / env / file |
-| `DistributionCheck` | bool | `false` | `--distribution-check` / env / file |
-| `RedistributionPlan` | bool | `false` | `--redistribution-plan` / env / file |
-| `AdaptiveRateLimit` | bool | `false` | `--adaptive-rate-limit` / env / file |
-
-### 1.17 v2 checksum / dedup (§6.4)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `ChecksumAlgorithm` | string | `""` (spec default `sha256`) | `--checksum-algorithm` / env / file | `sha256`/`blake3`. |
-| `Dedup` | bool | `false` | `--dedup` / env / file |
-| `SkipIfSameChecksum` | bool | `false` | alias for `Dedup` |
-
-### 1.18 v2 observability / reports (§4.4, §6.9)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `MetricsOn` | bool | `false` | `--metrics` / env / file |
-| `ReportJSON` | string | `""` | `--report-json` / env / file |
-| `ReportCSV` | string | `""` | `--report-csv` / env / file |
-| `ReportText` | string | `""` | `--report-text` / env / file |
+| `ConfigFile` | string | `""` | `--config` |
+| `OperationID` | string | `""` | `--operation-id` |
+| `StateDir` | string | **`/var/lib/gpstream`** | `--state-dir` |
 
 ---
 
 ## 2. Defaults (the `Default()` function)
 
-`config.Default()` (line 153) seeds the following fields; all other fields
-default to their zero values (`""`, `false`, `0`, `nil`, `[]`).
+`config.Default()` seeds the following fields; all other fields default to
+their zero values (`""`, `false`, `0`, `nil`, `[]`).
 
 | Field | Default |
 |-------|---------|
-| `ConflictAction` | `SkipExisting` |
+| `ConflictAction` | `stop` |
 | `Compression` | `zstd` |
+| `SmallTableThreshold` | `1 MiB` |
 | `ZstdLevel` | `3` |
 | `AutoResume` | `0` |
 | `Verify` | `sample` |
 | `Timeout` | `60s` |
-| `LogLevel` | `info` |
 | `SkewThreshold` | `0.05` |
 | `SegmentBalanceThreshold` | `1.5` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
 | `WorkersPerPair` | `2` |
+| `StateDir` | `/var/lib/gpstream` |
 
-Note: the struct comment documents `sha256` as the intended default for
-`ChecksumAlgorithm`, but `Default()` does **not** set it — its zero value is
-`""` (unset). Set it explicitly via `--checksum-algorithm` to be safe.
+`Validate()` additionally normalises the frame-ack defaults in place:
+`AckTimeout` → `30s`, `MaxReconnects` → `20`, `RetransmitBufferMax` → `64 MiB`
+when unset, so the data path always sees a usable config.
 
 ---
 
@@ -181,23 +184,24 @@ The precedence is **CLI > env > file > defaults**. `parseConfig`
 (`cmd/gpstream/main.go`) assembles the `Config` in this order:
 
 1. **defaults** — `cfg := config.Default()`.
-2. **file** — `cfg.LoadFile(configFile)` overlays the `--config` YAML file onto
-   the defaults (the file is the base layer).
+2. **file** — `cfg.LoadFile(configFile)` overlays the `--config` file onto the
+   defaults (the file is the base layer).
 3. **env** — `cfg.ApplyEnv()` overlays `GPSTREAM_*` variables. Values already
    set by higher-precedence sources are **not** clobbered.
 4. **CLI** — a second pass over `os.Args` applies CLI flags last, so **CLI
    flags win**.
 
 Because the file is loaded before env, **env beats file**; because CLI is
-applied last, **CLI beats env**. Unknown YAML keys are ignored.
+applied last, **CLI beats env**. Unknown file keys are ignored.
 
-### 3.1 YAML config file (`--config file.yaml`)
+### 3.1 Config file (`--config file.toml` or `file.yaml`)
 
-`LoadFile` reads the file and overlays known keys via `assignConfigString`.
-Only **string leaves** are honoured by the file loader (non-string YAML nodes
-are skipped). The accepted keys (all lowercase) are:
+`LoadFile` reads the file (TOML by `.toml` extension, otherwise YAML) and
+overlays known scalar leaves via `assignConfigString`. Only **scalar leaves**
+are honoured (non-scalar nodes are skipped). The accepted keys (all lowercase)
+are:
 
-| YAML key | Field | Notes |
+| File key | Field | Notes |
 |----------|-------|-------|
 | `source` | `Source` | |
 | `dest` | `Dest` | |
@@ -205,127 +209,134 @@ are skipped). The accepted keys (all lowercase) are:
 | `workers_per_pair` | `WorkersPerPair` | parsed as int |
 | `compress` | `Compression` | `none`/`zlib`/`zstd` |
 | `zstd_level` | `ZstdLevel` | parsed as int (1–19) |
+| `small_table_threshold` | `SmallTableThreshold` | parsed as int64 bytes |
 | `auto_resume` | `AutoResume` | parsed as int |
+| `on_unit_failure` | `OnUnitFailure` | `continue`/`abort` |
+| `consistent_tables` | `ConsistentTables` | `true`/`1` |
+| `resume_consistency` | `ResumeConsistency` | `relaxed`/`strict` |
 | `verify` | `Verify` | `full`/`sample`/`off` |
-| `log_level` | `LogLevel` | `debug`/`info`/`warn`/`error` |
 | `ssl_cert` | `SSLCert` | **secret** |
 | `ssl_key` | `SSLKey` | **secret** |
 | `ssl_ca` | `SSLCA` | **secret** |
 | `ssl_min_tls` | `SSLMinTLS` | e.g. `1.2` |
-| `data_port_range` | `DataPortRange` | `a-b` |
+| `seg_tls_cert` | `SegTLSCert` | **secret** |
+| `seg_tls_key` | `SegTLSKey` | **secret** |
+| `seg_tls_ca` | `SegTLSCA` | **secret** |
 | `skew_threshold` | `SkewThreshold` | parsed as float |
 | `segment_balance_threshold` | `SegmentBalanceThreshold` | parsed as float |
-| `index_priority` | `IndexPriority` | `size`/`manual` |
+| `index_priority` | `IndexPriority` | `size`/`manual`/`background` |
 | `timeout` | `Timeout` | parsed as duration |
-| `overwrite_only_conflicts` | `OverwriteOnlyConflicts` | `true`/`1` |
-| `collation_check` | `CollationCheck` | `true`/`1` |
 | `locale_check` | `LocaleCheck` | `true`/`1` |
-| `distribution_check` | `DistributionCheck` | `true`/`1` |
-| `redistribution_plan` | `RedistributionPlan` | `true`/`1` |
-| `adaptive_rate_limit` | `AdaptiveRateLimit` | `true`/`1` |
-| `checksum_algorithm` | `ChecksumAlgorithm` | `sha256`/`blake3` |
-| `dedup` | `Dedup` | `true`/`1` |
-| `metrics` | `MetricsOn` | `true`/`1` |
-| `report_json` | `ReportJSON` | path |
-| `report_csv` | `ReportCSV` | path |
-| `report_text` | `ReportText` | path |
 
-Boolean keys accept `true` or `1`. A file example:
+A file example:
 
-```yaml
-source: "host=src port=5432 dbname=app"
-dest:   "host=dst port=5432 dbname=app"
-compress: "zstd"
-zstd_level: 3
-rate_limit: 10
-workers_per_pair: 2
-verify: sample
-log_level: info
-ssl_cert: "/secrets/gpstream.pem"
-ssl_key:  "/secrets/gpstream.key"
-ssl_ca:   "/secrets/ca.pem"
-ssl_min_tls: "1.2"
-skew_threshold: 0.05
+```toml
+source = "host=src port=5432 dbname=app"
+dest   = "host=dst port=5432 dbname=app"
+compress = "zstd"
+zstd_level = 3
+rate_limit = 10
+workers_per_pair = 2
+verify = "sample"
+ssl_ca   = "/secrets/ca.pem"
+skew_threshold = 0.05
 ```
 
 ### 3.2 Environment layer (`GPSTREAM_*`)
 
-`ApplyEnv` (line 207) reads `GPSTREAM_*` variables. Recognised variables:
+`ApplyEnv` reads `GPSTREAM_*` variables. Recognised variables:
 
 | Env var | Field | Parsing |
 |---------|-------|---------|
 | `GPSTREAM_RATE_LIMIT` | `RateLimit` | float |
 | `GPSTREAM_WORKERS_PER_PAIR` | `WorkersPerPair` | int |
 | `GPSTREAM_COMPRESS` | `Compression` | string |
-| `GPSTREAM_LOG_LEVEL` | `LogLevel` | string |
+| `GPSTREAM_SMALL_TABLE_THRESHOLD` | `SmallTableThreshold` | int64 bytes |
 | `GPSTREAM_AUTO_RESUME` | `AutoResume` | int |
+| `GPSTREAM_ON_UNIT_FAILURE` | `OnUnitFailure` | string |
+| `GPSTREAM_CONSISTENT_TABLES` | `ConsistentTables` | `true`/`1` |
+| `GPSTREAM_SEGMENT_BALANCE_THRESHOLD` | `SegmentBalanceThreshold` | float |
 | `GPSTREAM_SSL_CERT` | `SSLCert` | string (**secret**) |
 | `GPSTREAM_SSL_KEY` | `SSLKey` | string (**secret**) |
 | `GPSTREAM_SSL_CA` | `SSLCA` | string (**secret**) |
-| `GPSTREAM_OVERWRITE_ONLY_CONFLICTS` | `OverwriteOnlyConflicts` | `true`/`1` |
-| `GPSTREAM_COLLATION_CHECK` | `CollationCheck` | `true`/`1` |
+| `GPSTREAM_SEG_TLS_CERT` | `SegTLSCert` | string (**secret**) |
+| `GPSTREAM_SEG_TLS_KEY` | `SegTLSKey` | string (**secret**) |
+| `GPSTREAM_SEG_TLS_CA` | `SegTLSCA` | string (**secret**) |
 | `GPSTREAM_LOCALE_CHECK` | `LocaleCheck` | `true`/`1` |
-| `GPSTREAM_DISTRIBUTION_CHECK` | `DistributionCheck` | `true`/`1` |
-| `GPSTREAM_REDISTRIBUTION_PLAN` | `RedistributionPlan` | `true`/`1` |
-| `GPSTREAM_ADAPTIVE_RATE_LIMIT` | `AdaptiveRateLimit` | `true`/`1` |
-| `GPSTREAM_CHECKSUM_ALGORITHM` | `ChecksumAlgorithm` | string |
-| `GPSTREAM_DEDUP` | `Dedup` | `true`/`1` |
-| `GPSTREAM_METRICS` | `MetricsOn` | `true`/`1` |
-| `GPSTREAM_REPORT_JSON` | `ReportJSON` | string |
-| `GPSTREAM_REPORT_CSV` | `ReportCSV` | string |
-| `GPSTREAM_REPORT_TEXT` | `ReportText` | string |
+| `GPSTREAM_FRAME_ACK` | `FrameAck` | `on`/`off` |
+| `GPSTREAM_ACK_TIMEOUT` | `AckTimeout` | string |
+| `GPSTREAM_MAX_RECONNECTS` | `MaxReconnects` | int |
+| `GPSTREAM_RETRANSMIT_BUFFER_MAX` | `RetransmitBufferMax` | size (e.g. `64M`) |
 
 ApplyEnv does not clobber values already set by higher-precedence sources, so
 CLI beats env and env beats file.
+
+> **Endpoints are not env-driven:** there is no `GPSTREAM_SOURCE`/
+> `GPSTREAM_DEST`. The source/destination connstrings come from the
+> `--source`/`--dest` flags or the file.
 
 ---
 
 ## 4. Validation rules
 
-`Config.Validate()` (line 172) reports configuration errors independent of the
-live clusters. It is called by `parseConfig` after assembling the `Config`. A
+`Config.Validate()` reports configuration errors independent of the live
+clusters. It is called by `parseConfig` after assembling the `Config`. A
 failed validation aborts the command.
 
 | Rule | Condition | Error |
 |------|-----------|-------|
 | zstd level range | `ZstdLevel` must be **1–19** | `zstd level must be 1-19, got N` |
-| workers-per-pair | `WorkersPerPair` must be **≥ 1** | `workers-per-pair must be >= 1, got N` |
+| small-table threshold | `SmallTableThreshold` must be **≥ 0** | `small-table-threshold must be >= 0 …` |
+| workers | `WorkersPerPair` must be **≥ 1** | `workers-per-pair must be >= 1, got N` |
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
+| on-unit-failure | must be `continue`/`abort` (or empty) | `unknown on-unit-failure "…" (want continue\|abort)` |
+| resume consistency | must be `relaxed`/`strict` (or empty) | `unknown resume consistency "…" (relaxed\|strict)` |
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
-| consistency scope | `--consistent-db`, `--consistent-cluster` and `--consistent-tables` are **mutually exclusive** (pairwise) | `--consistent-db and --consistent-cluster are mutually exclusive` / `--consistent-tables and --consistent-db are mutually exclusive` |
-| conflict action | must be `skip-existing`/`overwrite`/`truncate`/`append` | `unknown conflict action "…"` |
+| consistency scope | `--consistent-db`, `--consistent-cluster`, `--consistent-tables` are **mutually exclusive** (pairwise) | `--consistent-db and --consistent-cluster are mutually exclusive` / `--consistent-tables and --consistent-db are mutually exclusive` |
+| conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `full`/`sample`/`off` | `unknown verify mode "…"` |
+| segment balance | `SegmentBalanceThreshold` must not be NaN | `segment-balance-threshold is NaN …` |
+| copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |
+| frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
+| ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |
 
 Note: when `NoRedistribute` is set and `SkewThreshold < 0`, validation returns
 `nil` (this combination is fine) — it is a no-op guard, not an error.
 
 ---
 
-## 5. Secrets and FR-08
+## 5. Secrets and F-08
 
-Secrets — the SSL certificate, key, and CA (`SSLCert`, `SSLKey`, `SSLCA`) —
+Secrets — the SSL certificate, key, and CA (`SSLCert`, `SSLKey`, `SSLCA`) and
+the segment-plane keypair/CA (`SegTLSCert`, `SegTLSKey`, `SegTLSCA`) —
 **come only from environment variables or a `0600` file, never from argv
-(FR-08).** Although `parseConfig` technically accepts `--ssl-cert`/`--ssl-key`/
-`--ssl-ca` on the command line, the production posture is to supply them via:
+(F-08).** Although `parseConfig` technically accepts them on the command
+line, the production posture is to supply them via:
 
-- env: `GPSTREAM_SSL_CERT`, `GPSTREAM_SSL_KEY`, `GPSTREAM_SSL_CA`; or
-- the YAML config file: `ssl_cert`, `ssl_key`, `ssl_ca` (in a file with
-  `0600` permissions).
+- env: `GPSTREAM_SSL_CERT`, `GPSTREAM_SSL_KEY`, `GPSTREAM_SSL_CA` (and
+  `GPSTREAM_SEG_TLS_CERT`/`_KEY`/`_CA`); or
+- the config file: `ssl_cert`, `ssl_key`, `ssl_ca` (and `seg_tls_cert`/
+  `seg_tls_key`/`seg_tls_ca`) in a file with `0600` permissions.
 
 This keeps secrets out of the process command line (visible via `ps`, shell
 history, and job schedulers). `SSLMinTLS` (a non-secret version string,
 default `1.2`) may be passed as `--ssl-min-tls` or via the `ssl_min_tls` key.
 
+> **Credential provenance (F-13):** when a DSN with a password is loaded from
+> the config *file* (tracked by `SourceFromFile`/`DestFromFile`),
+> `SecurityWarnings()` emits an advisory — credentials belong in env /
+> `.pgpass`, not a plaintext config. A CLI override clears the provenance.
+
 ---
 
 ## 6. Worked precedence example
 
-Given `config.Default()`, a file `file.yaml`, environment, and CLI, the final
-value of `WorkersPerPair` resolves as:
+Given `config.Default()`, a file, environment, and CLI, the final value of
+`WorkersPerPair` resolves as:
 
-- CLI `--workers-per-pair 4` → **4** (wins).
+- CLI `--workers 4` → **4** (wins).
 - else env `GPSTREAM_WORKERS_PER_PAIR=3` → **3**.
-- else file `workers_per_pair: 2` → **2**.
+- else file `workers_per_pair = 2` → **2**.
 - else default → **2** (default).
 
 The same last-wins ordering applies to every field: **CLI > env > file >
@@ -335,5 +346,5 @@ defaults**.
 
 *This reference is derived from `internal/config/config.go` and
 `cmd/gpstream/main.go` (module `github.com/gpstream/gpstream`, Go 1.27).
-Field names, defaults, env vars, YAML keys, and validation rules above match
+Field names, defaults, env vars, file keys, and validation rules above match
 the source exactly.*

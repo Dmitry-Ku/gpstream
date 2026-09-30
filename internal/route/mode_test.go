@@ -15,7 +15,7 @@ func TestResolveModeTable(t *testing.T) {
 		wantPairs  int
 		wantErr    string
 		wantG      int32
-		identPairs bool // пары = идентичность s->s
+		identPairs bool // pairs = identity s->s
 	}{
 		{
 			name:     "direct_1to1: S==D, keys equal, same major",
@@ -122,7 +122,7 @@ func TestResolveModeTable(t *testing.T) {
 				}
 			}
 			if c.wantMode == RouterFull {
-				// все S×D пар ровно по одному разу
+				// every S×D pair exactly once
 				seen := map[Pair]bool{}
 				for _, p := range got.Pairs {
 					if seen[p] {
@@ -140,7 +140,7 @@ func TestResolveModeTable(t *testing.T) {
 }
 
 func TestResolveModeAllPairsCovered(t *testing.T) {
-	// router_full при любом (S,D): покрытие = ровно S×D уникальных пар.
+	// router_full for any (S,D): coverage = exactly S×D unique pairs.
 	for _, s := range []int32{1, 2, 3, 4, 6, 8, 10} {
 		for _, d := range []int32{1, 2, 3, 4, 6, 8, 12} {
 			got, err := ResolveMode(ModeInput{s, d, "hash", "hash", []string{"k"}, []string{"k"}, true})
@@ -153,7 +153,7 @@ func TestResolveModeAllPairsCovered(t *testing.T) {
 			if s != d && got.Mode != RouterFull {
 				t.Fatalf("S=%d D=%d: mode %v, want router_full", s, d, got.Mode)
 			}
-			// direct_1to1: S идентичных пар (s->s); router_full: все S×D.
+			// direct_1to1: S identity pairs (s->s); router_full: all S×D.
 			wantPairs := int(s * d)
 			if s == d {
 				wantPairs = int(s)

@@ -1,74 +1,74 @@
 package route
 
-// routeMode-реши́тель (M2, T4b).
+// routeMode resolver (M2, T4b).
 //
-// Определяет, как данные из source-кластера (S primary-сегментов) попадают в
-// dest-кластер (D primary-сегментов). ВАЖНО (ANSWER-T4B-FASTPATH-DISPROVEN-
-// 2026-09-27): fast-path «fan-in D|S» и «congruence mod g» ОПРОВЕРГНУТЫ для
-// non-legacy hash (REDUCE_JUMP_HASH) — JCH(h,S) mod D ≠ JCH(h,D) и
-// JCH(h,S) mod g ≠ JCH(h,D) mod g при g>1. Поэтому в non-legacy достижимы
-// ВСЕ пары (s,d), и корректных режимов ровно два:
+// Determines how data from the source cluster (S primary segments) lands in
+// the dest cluster (D primary segments). IMPORTANT (ANSWER-T4B-FASTPATH-DISPROVEN-
+// 2026-09-27): fast-path "fan-in D|S" and "congruence mod g" are DISPROVEN for
+// non-legacy hash (REDUCE_JUMP_HASH) — JCH(h,S) mod D ≠ JCH(h,D) and
+// JCH(h,S) mod g ≠ JCH(h,D) mod g when g>1. So in non-legacy ALL
+// pairs (s,d) are reachable, and exactly two modes are valid:
 //
-//	direct_1to1 — S==D, ключи распределения равны, оба hash, та же мажорная
-//	    версия ядра: segment = JCH(h, S) на обоих кластерах тождественно,
-//	    s==d, потоки 1:1, 0 CPU на hash.
-//	router_full — во всех остальных случаях: per-row hash по K_dest
-//	    (JCH по ключу dest), eligible-сужение = ВСЕ S×D пар (без ложного
-//	    конгруэнтного сужения).
+//	direct_1to1 — S==D, distribution keys equal, both hash, same major
+//	    kernel version: segment = JCH(h, S) identically on both clusters,
+//	    s==d, streams 1:1, 0 CPU on hashing.
+//	router_full — in all other cases: per-row hash over K_dest
+//	    (JCH over the dest key), eligible narrowing = ALL S×D pairs (no false
+//	    congruence narrowing).
 //
-// (Для legacy opclass (REDUCE_BITMASK/LAZYMOD) конгруэнция mod g работала бы,
-// но gp_use_legacy_hashops — post-upgrade режим; v0.1 его не поддерживает —
-// doctor проверит и отклонит.)
+// (For the legacy opclass (REDUCE_BITMASK/LAZYMOD) congruence mod g would work,
+// but gp_use_legacy_hashops is a post-upgrade mode; v0.1 does not support it —
+// doctor will check and reject it.)
 
 import (
 	"fmt"
 	"strings"
 )
 
-// Mode — режим маршрутизации source→dest.
+// Mode — the source→dest routing mode.
 type Mode string
 
 const (
-	// Direct1to1: S==D, ключи равны — поток с сегмента s идёт на сегмент s.
+	// Direct1to1: S==D, keys equal — stream from segment s goes to segment s.
 	Direct1to1 Mode = "direct_1to1"
-	// RouterFull: per-row hash по K_dest; данные из s могут попасть на любой d.
+	// RouterFull: per-row hash over K_dest; data from s can land on any d.
 	RouterFull Mode = "router_full"
 )
 
-// Pair — пара (source content, dest content), по которой идут данные.
+// Pair — a (source content, dest content) pair over which data flows.
 type Pair struct {
 	SrcContent int32 `json:"src_content"`
 	DstContent int32 `json:"dst_content"`
 }
 
-// ModeResult — результат реши́теля.
+// ModeResult — the resolver's result.
 type ModeResult struct {
 	Mode  Mode
-	Pairs []Pair // eligible-сужение: какие пары (s,d) реально несут данные
-	G     int32  // gcd(S, D) — метаданные (для legacy); для JCH пар ВСЕ
+	Pairs []Pair // eligible narrowing: which (s,d) pairs actually carry data
+	G     int32  // gcd(S, D) — metadata (for legacy); for JCH all pairs
 }
 
-// ModeInput — входы реши́теля.
+// ModeInput — the resolver's inputs.
 type ModeInput struct {
 	SrcSegments int32
 	DstSegments int32
-	// SrcDistribution/DstDistribution — из DDL (gp_distribution_policy):
+	// SrcDistribution/DstDistribution — from DDL (gp_distribution_policy):
 	// "hash" (DISTRIBUTED BY), "randomly" (DISTRIBUTED RANDOMLY),
 	// "replicated" (DISTRIBUTED REPLICATED).
 	SrcDistribution string
 	DstDistribution string
-	// SrcHashKeys/DstHashKeys — ключи распределения (имена колонок в порядке
-	// объявления; пустые для randomly/replicated).
+	// SrcHashKeys/DstHashKeys — distribution keys (column names in declaration
+	// order; empty for randomly/replicated).
 	SrcHashKeys []string
 	DstHashKeys []string
-	// GPMajorEqual — мажорные версии ядра src/dest совпадают (hash-функция
-	// non-legacy JCH одинакова внутри одной мажорной ветки).
+	// GPMajorEqual — src/dest kernel major versions match (the hash function
+	// non-legacy JCH is the same within one major branch).
 	GPMajorEqual bool
 }
 
-// EqualKeys — ключи распределения равны (порядок значим: cdbhash обходит
-// атрибуты по порядку; имена сравниваются без учёта регистра, т.к. GPDB
-// складывает некавычируемые идентификаторы в нижний регистр).
+// EqualKeys — distribution keys are equal (order matters: cdbhash walks
+// attributes in order; names are compared case-insensitively, since GPDB
+// folds unquoted identifiers to lowercase).
 func EqualKeys(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -81,7 +81,7 @@ func EqualKeys(a, b []string) bool {
 	return true
 }
 
-// ResolveMode — определяет режим маршрутизации (M2).
+// ResolveMode — determines the routing mode (M2).
 func ResolveMode(in ModeInput) (ModeResult, error) {
 	if in.SrcSegments <= 0 {
 		return ModeResult{}, fmt.Errorf("route: src segments %d must be > 0", in.SrcSegments)
@@ -95,7 +95,7 @@ func ResolveMode(in ModeInput) (ModeResult, error) {
 			return ModeResult{}, fmt.Errorf("route: dst distribution=hash but no hash keys")
 		}
 	case "randomly", "replicated":
-	// для randomly/replicated ключи не нужны
+	// keys are not needed for randomly/replicated
 	default:
 		return ModeResult{}, fmt.Errorf("route: unknown dst distribution %q", in.DstDistribution)
 	}
@@ -107,8 +107,8 @@ func ResolveMode(in ModeInput) (ModeResult, error) {
 
 	g := gcd32(uint32(in.SrcSegments), uint32(in.DstSegments))
 
-	// direct_1to1: только когда оба кластера hash-распределены с РАВНЫМИ
-	// ключами, S==D и одна мажорная версия (одинаковый JCH). Тогда s==d.
+	// direct_1to1: only when both clusters are hash-distributed with EQUAL
+	// keys, S==D and one major version (same JCH). Then s==d.
 	if in.SrcSegments == in.DstSegments &&
 		in.SrcDistribution == "hash" && in.DstDistribution == "hash" &&
 		len(in.SrcHashKeys) > 0 && EqualKeys(in.SrcHashKeys, in.DstHashKeys) &&
@@ -120,9 +120,9 @@ func ResolveMode(in ModeInput) (ModeResult, error) {
 		return ModeResult{Mode: Direct1to1, Pairs: pairs, G: g}, nil
 	}
 
-	// Во всех остальных случаях — router_full: per-row hash по K_dest
-	// (или без hash, если dest randomly/replicated — реальный приём определяет
-	// план; eligible-сужение = ВСЕ S×D пар, т.к. JCH не даёт конгруэнции).
+	// In all other cases — router_full: per-row hash over K_dest
+	// (or without hash, if dest is randomly/replicated — actual acceptance is
+	// determined by the plan; eligible narrowing = ALL S×D pairs, since JCH gives no congruence).
 	pairs := make([]Pair, 0, in.SrcSegments*in.DstSegments)
 	for s := int32(0); s < in.SrcSegments; s++ {
 		for d := int32(0); d < in.DstSegments; d++ {

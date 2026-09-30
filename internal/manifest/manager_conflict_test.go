@@ -67,8 +67,8 @@ func TestManagerResolve(t *testing.T) {
 		action                config.ConflictAction
 		inPlace, trun, verify bool
 	}{
-		{config.Stop, false, false, true},         // stopped upstream; default path
-		{config.Overwrite, false, false, true},    // staging + swap
+		{config.Stop, false, false, true},      // stopped upstream; default path
+		{config.Overwrite, false, false, true}, // staging + swap
 		{config.Truncate, true, true, true},
 	}
 	for _, c := range cases {

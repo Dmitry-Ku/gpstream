@@ -45,7 +45,7 @@ func TestBuildTimeoutPartialFragment(t *testing.T) {
 
 // TestBuildTimeoutGenuineFailureIsNil verifies that a non-timeout failure
 // (context not cancelled) still returns nil, not a partial fragment — a real
-// failure must not be masked as a completed fragment (CР-7).
+// failure must not be masked as a completed fragment (CR-7).
 func TestBuildTimeoutGenuineFailureIsNil(t *testing.T) {
 	cfg := config.Default()
 	cfg.Timeout = 5 * time.Second

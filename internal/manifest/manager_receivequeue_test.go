@@ -14,7 +14,7 @@ import (
 // builds the limiter with a receive-write-latency supplier fed by the shared
 // recorder, and framedPipe installs the recorder's hook on every unit's
 // transport. Recording a slow drain then makes the limiter reduce the pair
-// rate with the dest-receive-queue cause (the in-process «метрики COPY»).
+// rate with the dest-receive-queue cause (the in-process "COPY metrics").
 func TestManagerWiresReceiveQueueLimiter(t *testing.T) {
 	cfg := config.Default()
 	cfg.RateLimit = 100 // Gbps ceiling → limiter + pacer + recorder built

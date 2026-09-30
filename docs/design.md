@@ -1,12 +1,12 @@
 # Design: dependencies and stack (FR-08)
 
-FR-08: «Статическая сборка; зависимости только из stdlib + небольшой набор
-свободных, проверенных библиотек. Каждый внешний пакет — с фиксированной
-версией и обоснованием в `docs/design.md`. Запрет: C-библиотеки с
-runtime-зависимостью, проприетарные компоненты, телеметрия. Приёмка:
-бинарник работает на двух хостах с разными дистрибутивами/glibc без
-установки зависимостей; `go mod verify` проходит; список зависимостей < 10
-пакетов.»
+FR-08: "Static build; dependencies only from stdlib plus a small set of
+free, vetted libraries. Each external package - pinned version with a
+justification in `docs/design.md`. Forbidden: C libraries with a
+runtime dependency, proprietary components, telemetry. Acceptance:
+the binary runs on two hosts with different distros/glibc with no
+dependency installation; `go mod verify` passes; the dependency list is < 10
+packages."
 
 ## Direct dependencies (4 — well under the <10 limit)
 
@@ -40,7 +40,7 @@ runtime dependency; the binary is statically linked
 - **libpq / C drivers** — forbidden by FR-08 (C runtime dependency).
 - **stdlib `compress/zlib`** — insufficient throughput for the 100 GbE target
   (see klauspost/compress above); kept as the documented degradation floor
-  (`--compression none` / auto-disable for small tables, FR-12).
+  (`--compress none` / auto-disable for small tables, FR-12).
 - **ORMs / query builders** — gpstream issues a small, stable set of catalog
   and COPY statements directly; a layer in between would obscure the exact
   SQL that must remain 9.4-compatible (GP6 kernel).

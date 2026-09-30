@@ -469,7 +469,7 @@ func cmdDryRun(args []string) error {
 }
 
 // cmdDoctor runs the self-diagnostic (FR-05). It binds the §5 contract and
-// connects live; on failure it still surfaces FAIL/WARN findings (CР-7).
+// connects live; on failure it still surfaces FAIL/WARN findings (CR-7).
 func cmdDoctor(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
@@ -495,7 +495,7 @@ func cmdDoctor(args []string) error {
 
 // diagnoseConn opens a live connection for the diagnostic, or — on failure — a
 // fake whose Ping reports the error so the doctor can still emit a FAIL/WARN
-// (CР-7). Unlike openOrFake it NEVER returns a healthy fake for a missing
+// (CR-7). Unlike openOrFake it NEVER returns a healthy fake for a missing
 // connstring: an unconfigured cluster is a reachability FAIL, not a silent PASS
 // (CR-7: the doctor must not mask seeded faults). Used by cmdDoctor.
 func diagnoseConn(ctx context.Context, cfg config.Config, side string) pg.Querier {
@@ -520,7 +520,7 @@ func diagnoseConn(ctx context.Context, cfg config.Config, side string) pg.Querie
 }
 
 // openOrFake tries a live connection; on failure it returns a fake whose Ping
-// reports the error so the doctor can still emit a FAIL/WARN (CР-7). When no
+// reports the error so the doctor can still emit a FAIL/WARN (CR-7). When no
 // connstring is given (CI/exercise mode) a healthy fake is returned so the
 // doctor/dry-run can be demonstrated.
 func openOrFake(ctx context.Context, cfg config.Config, side string) pg.Querier {
@@ -541,7 +541,7 @@ func openOrFake(ctx context.Context, cfg config.Config, side string) pg.Querier 
 }
 
 // healthyFake returns a fake with a clean baseline (availability + a small
-// object graph for the dry-run planner). Fault injection for CР-7 is done in
+// object graph for the dry-run planner). Fault injection for CR-7 is done in
 // tests, not here.
 func healthyFake() pg.Querier {
 	f := pg.NewFakeConn()
@@ -638,8 +638,8 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	}
 	// F-11 metadata phase: non-table objects (views, materialized views,
 	// functions) in scope are reported — the data copy does not carry them by
-	// itself, so the operator sees what is detected (F-11 «по опции —
-	// views/functions»).
+	// itself, so the operator sees what is detected (F-11 "optional —
+	// views/functions").
 	if oo := p.OtherObjects; len(oo.Views) > 0 || len(oo.MatViews) > 0 || oo.Functions > 0 {
 		fmt.Printf("other objects: %d view(s), %d materialized view(s), %d function(s) detected (F-11 metadata) — not carried by the data copy\n",
 			len(oo.Views), len(oo.MatViews), oo.Functions)
@@ -687,7 +687,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	}
 	fmt.Printf("confidence:    %s\n", confidenceNote(p))
 	if p.Hash != "" {
-		fmt.Printf("plan hash:     %s (deterministic, CР-4)\n", p.Hash)
+		fmt.Printf("plan hash:     %s (deterministic, CR-4)\n", p.Hash)
 	} else if p.Partial {
 		fmt.Printf("plan hash:     — (partial plan; no deterministic hash)\n")
 	}

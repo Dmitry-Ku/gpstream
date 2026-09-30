@@ -83,10 +83,8 @@ never touch the filesystem as data. Compatibility is checked by
 
 | Check | Flag | What it looks at |
 |-------|------|------------------|
-| Collation | `--collation-check` | `LC_COLLATE` / collation differences (warn) |
-| Locale | `--locale-check` | locale differences (warn) |
-| Distribution | `--distribution-check` | distribution-key / policy differences |
-| Redistribution plan | `--redistribution-plan` | pre-computed redistribution plan |
+| Collation / locale | `--locale-check` | `LC_COLLATE` / locale / encoding differences (warn, F-16) |
+| Distribution / skew | `--skew-threshold` (default `0.05`) | distribution-key / fill skew; `--no-redistribute` to suppress accounting |
 
 A **distribution** difference may require redistribution on the destination.
 `gpstream` can account for this with `--no-redistribute` and
@@ -125,9 +123,7 @@ systemctl status gpstream
 ## 6. Log rotation
 
 Reference: `packaging/logrotate.conf`. Rotate the job log / mirror journal
-to keep them bounded on long-running copies. The log level is controlled by
-`--log-level` (default `info`), with `--quiet` and `--debug` for the
-extremes.
+to keep them bounded on long-running copies.
 
 ---
 
@@ -137,15 +133,15 @@ The administrator's job is to keep **secrets out of argv and out of logs**.
 
 | Secret | How it is supplied | Never via |
 |--------|--------------------|-----------|
-| Connection string (source/dest) | `--source`/`--dest`, or `GPSTREAM_SOURCE`/`GPSTREAM_DEST` | argv in a committed file |
+| Connection string (source/dest) | `--source`/`--dest` or the `source`/`dest` config keys (no `GPSTREAM_SOURCE`/`DEST` env) | argv in a committed file |
 | TLS cert | `--ssl-cert` / `GPSTREAM_SSL_CERT` (file path) | argv |
 | TLS key | `--ssl-key` / `GPSTREAM_SSL_KEY` | argv |
 | TLS CA | `--ssl-ca` / `GPSTREAM_SSL_CA` | argv |
 | Min TLS version | `--ssl-min-tls` / `GPSTREAM_SSL_MIN_TLS` (default `1.2`) | — |
 
-`--tls` asserts an encrypted connection; TLS is **always enforced** by the
-connection builder with a minimum of **TLS 1.2**. See `SECURITY.md` for the
-full model and `security-check`.
+The pg data plane is encrypted by default (`sslmode=verify-full`, minimum
+**TLS 1.2** unless `--ssl-min-tls` is lowered). See `SECURITY.md` for the
+full model.
 
 Precedence for every setting: **CLI > env (GPSTREAM_*) > YAML (--config) >
 defaults**.
@@ -156,30 +152,29 @@ defaults**.
 
 | Knob | Flag / env | Default | Notes |
 |------|-----------|---------|-------|
-| Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | 0 (no ceiling) | accepts `bps`/`mbit`/`gbit` suffixes |
-| Adaptive limiter | `--adaptive-rate-limit` | off | reduce on bottleneck, recover when it frees |
-| Workers per pair | `--workers-per-pair N` (`GPSTREAM_WORKERS_PER_PAIR`) | 2 | |
-| Data port range | `--data-port-range a-b` | — | MPP parallel load ports |
+| Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | 0 (no ceiling) | adaptive AIMD is always active (F-14) |
+| Workers | `--workers N` (`GPSTREAM_WORKERS_PER_PAIR`) | 2 | parallel workers per host-pair |
 | Compression | `--compress` (`GPSTREAM_COMPRESS`) | `zstd` | `none`/`zlib`/`zstd[:level]` |
-| zstd level | (part of `--compress`) | 3 | 1–19 |
-| Metrics | `--metrics` / `--metrics-addr` (`GPSTREAM_METRICS`) | off | Prometheus `/metrics` + `/health` |
+| zstd level | `--zstd-level N` (or `--compress zstd:N`) | 3 | 1–19 |
+| Metrics | `--metrics-addr <A>` | off | Prometheus `/metrics` served during `run` |
 
 ---
 
 ## 9. Upgrade path
 
+There is **no `upgrade-check` or `package-info` subcommand**. Check the
+installed version with `gpstream version`, and upgrade the RPM/deb package
+with the normal package manager:
+
 ```
-gpstream upgrade-check --target <version>
-gpstream package-info
+gpstream version
+rpm -q gpstream            # or: dpkg -s gpstream
 ```
 
-`upgrade-check` compares the installed version against a target and reports
-whether an upgrade is warranted; `package-info` reports the installed
-package metadata. Before upgrading a running deployment:
+Before upgrading a running deployment:
 
 1. Confirm `dry-run` still produces a sensible plan on the new version.
-2. Confirm `--checksum-algorithm` (default `sha256`, or `blake3`) and
-   `--verify` behavior are unchanged.
+2. Confirm the `--verify` behavior is unchanged.
 3. If a prior copy is mid-flight, prefer `resume` over a restart (see
    `FAILOVER.md`); a unit in terminal success state
    (`StateSwapped`) is **skipped** on resume.
@@ -195,7 +190,7 @@ package metadata. Before upgrading a running deployment:
 - [ ] Secrets supplied via env / EnvironmentFile, **not** argv.
 - [ ] TLS enabled; `--ssl-min-tls >= 1.2`.
 - [ ] logrotate installed; log level sane.
-- [ ] `upgrade-check` run before/after an upgrade.
+- [ ] `gpstream version` checked before/after an upgrade.
 - [ ] Metrics endpoint reachable if used (see `METRICS.md`).
 
 ---

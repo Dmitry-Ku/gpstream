@@ -14,8 +14,8 @@ import (
 	"github.com/gpstream/gpstream/internal/manifest"
 )
 
-// TestSequencePostLoadSync — F-11: «последовательности (значения
-// синхронизируются post-load)».
+// TestSequencePostLoadSync — F-11: "sequences (values are synchronized
+// post-load)".
 //
 // A source table with a serial primary key (id serial -> a real sequence
 // public.seq_t_id_seq) is copied end-to-end. The destination table is

@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// TestReduceOnReceiveQueue verifies F-14 «рост очереди приёма»: when the
+// TestReduceOnReceiveQueue verifies F-14 "receive-queue growth": when the
 // destination's receive queue grows (data-path write latency rises, the
-// in-process «метрики COPY»), the limiter reduces the pair rate with the
+// in-process "COPY metrics"), the limiter reduces the pair rate with the
 // dest-receive-queue cause.
 func TestReduceOnReceiveQueue(t *testing.T) {
 	p := &fakeProvider{m: Metrics{}} // healthy host metrics

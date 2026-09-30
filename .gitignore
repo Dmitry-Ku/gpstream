@@ -11,7 +11,7 @@ poc/postgresql-9.4.26/
 poc/pg9426.tar
 poc/pg9426.tar.bz2
 
-# артефакты сборки пакетов (.deb/.rpm)
+# packaging build artifacts (.deb/.rpm)
 /dist/
 
 # build artifacts

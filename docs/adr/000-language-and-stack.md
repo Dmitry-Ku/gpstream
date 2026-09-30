@@ -61,6 +61,6 @@ ADR records the choice so it can be revisited only via a new ADR.
     `crypto/sha256`).
 - `GOPROXY=https://proxy.golang.org,direct` — `proxy.golang.org` intermittently
   403s `klauspost/compress`; the `direct` (git clone) fallback resolves it.
-- `go test -cover ./...` gate: core packages ≥ 70% (FR-09/CР-8).
+- `go test -cover ./...` gate: core packages >= 70% (FR-09/CR-8).
 - Build matrix: `GOOS=linux GOARCH=amd64|arm64 go build -o gpstream ./cmd/gpstream`.
 - Secrets never appear in argv (FR-08): only 0600 files or `GPSTREAM_*` env.

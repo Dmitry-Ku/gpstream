@@ -13,7 +13,7 @@ Source0:     gpstream-%{version}.tar.gz
 # bundles; TLS/zlib are in-process, zstd is pure-Go (klauspost, BSD).
 BuildRequires: go
 
-# %unitdir: путь для systemd-юнитов (стандартный для CentOS 7/8/9 и Fedora)
+# %unitdir: path for systemd units (standard on CentOS 7/8/9 and Fedora)
 %define unitdir /usr/lib/systemd/system
 
 %description

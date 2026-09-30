@@ -7,7 +7,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// TestDoctorChaosBench is the CР-7 acceptance criterion: seed the FULL fault
+// TestDoctorChaosBench is the CR-7 acceptance criterion: seed the FULL fault
 // matrix across source AND destination and assert the doctor detects every one
 // (no fault is silently PASSed). Each check category must surface a FAIL/WARN.
 func TestDoctorChaosBench(t *testing.T) {
@@ -61,7 +61,7 @@ func TestDoctorChaosBench(t *testing.T) {
 
 // TestDoctorChaosSourceSide mirrors the chaos bench but faults the SOURCE side
 // (version/segments/permissions/disk) to prove both sides are checked — a
-// one-sided checker would miss source-side faults (CР-7).
+// one-sided checker would miss source-side faults (CR-7).
 func TestDoctorChaosSourceSide(t *testing.T) {
 	src := pg.NewFakeConn()
 	dst := pg.NewFakeConn()
@@ -94,7 +94,7 @@ func TestDoctorChaosSourceSide(t *testing.T) {
 }
 
 // TestDoctorCleanBench is the control: a fault-free bench must report healthy
-// with zero FAILs, proving the checker does not false-positive (CР-7).
+// with zero FAILs, proving the checker does not false-positive (CR-7).
 func TestDoctorCleanBench(t *testing.T) {
 	src := pg.NewFakeConn()
 	dst := pg.NewFakeConn()

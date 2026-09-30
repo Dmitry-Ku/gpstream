@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// M2 acceptance (ТЗ §11): «F-02/F-06/F-07 на 20+ таблицах». These three tests
+// M2 acceptance (spec §11): "F-02/F-06/F-07 on 20+ tables". These three tests
 // run the live manager over 24 tables on real PG 9.4.26 clusters — one scale
 // scenario per mandatory feature:
 //
@@ -33,7 +33,7 @@ import (
 // Table names t00..t23 sort before t_big, so the big table is unit 24 in the
 // deterministic (schema, name) plan order.
 
-const nScaleTables = 24 // >= 20 per ТЗ
+const nScaleTables = 24 // >= 20 per spec
 
 // scaleTableName renders the i-th of the small 24 tables: t00 .. t23.
 func scaleTableName(i int) string {

@@ -35,7 +35,7 @@ type Column struct {
 
 // Distribution is a source table's Greenplum distribution policy, read from
 // gp_distribution_policy and reproduced in the destination DDL (F-11:
-// metadata phase — «ДДЛ таблиц (типы, распределение, AO-параметры)»). Without
+// metadata phase — 'table DDL (types, distribution, AO parameters)'). Without
 // it the destination would default to the first column (DISTRIBUTED BY on the
 // leading column), silently changing the segment layout of multi-key tables
 // (lab e2e, 27.09: source (a, b) -> dest (a)).
@@ -45,7 +45,7 @@ type Distribution struct {
 	Kind string
 	// Keys: distribution column names for Kind == "hash", in distkey order.
 	Keys []string
-	// Reopts: the source table's storage options (F-11 metadata «AO-параметры»):
+	// Reopts: the source table's storage options (F-11 metadata 'AO parameters'):
 	// appendonly, orientation, blocksize, compress, fillfactor, ... read from
 	// pg_class.reloptions. Empty for a plain heap table or a non-Greenplum
 	// source. Without them the destination would recreate an AO (append-only)
@@ -76,7 +76,7 @@ func (d Distribution) SQLClause() string {
 }
 
 // storageOptionKeys is the whitelist of pg_class.reloptions keys that are safe
-// to reproduce in a CREATE TABLE (F-11 metadata «AO-параметры»). Anything else
+// to reproduce in a CREATE TABLE (F-11 metadata 'AO parameters'). Anything else
 // (autovacuum tuning, user-defined keys, ...) is dropped: a storage option the
 // destination does not know would fail the CREATE and sink the unit.
 var storageOptionKeys = map[string]bool{
@@ -90,7 +90,7 @@ var storageOptionKeys = map[string]bool{
 }
 
 // StorageOptionsSQL renders the source table's storage options as a
-// "WITH (k = v, ...)" clause for a CREATE TABLE (F-11 metadata «AO-параметры»).
+// "WITH (k = v, ...)" clause for a CREATE TABLE (F-11 metadata 'AO parameters').
 // Only whitelisted keys with safe values are emitted; an empty/unparseable
 // input yields "" (the destination applies its own default). The options are
 // catalog data from the source, so they are re-validated here instead of
@@ -180,8 +180,8 @@ type IndexDef struct {
 
 // ConstraintDef is one table-level constraint captured from the source and
 // ConstraintDef is one table-level constraint captured from the source and
-// restored on the destination (F-11 metadata phase: «по опции —
-// ограничения»). Only foreign keys (Kind "f") and user CHECK constraints
+// restored on the destination (F-11 metadata phase: 'per option —
+// constraints'). Only foreign keys (Kind "f") and user CHECK constraints
 // (Kind "c") are captured. Primary-key / unique constraints are NOT modeled
 // here: F-17 already restores them as unique indexes (this fork does not
 // support ALTER TABLE ... ADD CONSTRAINT ... USING INDEX). Partition

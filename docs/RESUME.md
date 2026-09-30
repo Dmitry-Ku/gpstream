@@ -160,11 +160,11 @@ Mitigations (in order of preference):
 3. **Prefer `relaxed`** — if a job must be resumable, relaxed re-reads
    only the tables that actually need it, so a resume's *fresh* snapshot
    is short-lived (it only has to cover the re-read set, not the whole DB).
-4. **Stop the job if the source's age trends up** — a `--max-snapshot-age`
-   cap is a DESIGN §7 risk-mitigation (a job that exceeds it is stopped
-   rather than allowed to bloat the source indefinitely); it is **not yet
-   implemented** in v0.1, so today the operator enforces the bound by
-   watching the source age and cancelling the run.
+4. **Stop the job if the source's age trends up** — a snapshot-age cap is a
+   DESIGN §7 risk-mitigation (a job that exceeds it is stopped rather than
+   allowed to bloat the source indefinitely); no such flag is implemented in
+   v0.1, so today the operator enforces the bound by watching the source age
+   and killing the run (resume re-queues the incomplete units).
 
 The design point: the snapshot is **per-database and per-run**, and a
 resume's snapshot covers only the re-read set — so the vacuum pressure of

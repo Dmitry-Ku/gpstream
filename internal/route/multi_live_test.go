@@ -1,16 +1,16 @@
 package route
 
-// M1 (T4b-подготовка): валидация GP-hash MULTI-ATTR + NULL на живом GPDB 6.30.1.
+// M1 (T4b prep): validation of GP-hash MULTI-ATTR + NULL on a live GPDB 6.30.1.
 //
-// Данные: testdata/t02_multi.txt — 10000 строк 'a|b|seg' из живого кластера A
+// Data: testdata/t02_multi.txt — 10000 rows of 'a|b|seg' from the live cluster A
 // (vm1:5432): t02_multi (a int, b text) DISTRIBUTED BY (a, b), 2 primary.
-// Генерация детерминирована: i=0..9999, a=NULL при i%10==5 (иначе i),
-// b=NULL при i%10==0 (иначе 'v'||i) — ~10% NULL в каждой колонке.
-// Формат: NULL -> пустое поле (в данных нет пустых строк, b всегда 'v'+i).
+// Generation is deterministic: i=0..9999, a=NULL when i%10==5 (else i),
+// b=NULL when i%10==0 (else 'v'||i) — ~10% NULL in each column.
+// Format: NULL -> empty field (no empty rows in the data, b is always 'v'+i).
 //
-// T0-2 покрывал только single-attr (int4, text); этот тест закрывает
-// комбинирование нескольких атрибутов и NULL-атрибуты (cdbhash.c:
-// rotl1 + XOR только для не-NULL).
+// T0-2 covered only single-attr (int4, text); this test covers
+// combining multiple attributes and NULL attributes (cdbhash.c:
+// rotl1 + XOR only for non-NULL).
 import (
 	"bufio"
 	"os"

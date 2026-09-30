@@ -61,7 +61,7 @@ func parseSize(s string) int64 {
 	return n * mult
 }
 
-// T7 (DESIGN §6): soak скорости — sustained-throughput characterization of
+// T7 (DESIGN §6): speed soak — sustained-throughput characterization of
 // the coordinator data path on real PG 9.4.26 clusters (the GP6 kernel).
 //
 // This is a CHARACTERIZATION test, not a 100 Gbit/s gate (that needs the GP6

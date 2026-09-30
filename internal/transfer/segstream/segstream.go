@@ -244,8 +244,8 @@ func (h *handshakeFilter) Accept() (net.Conn, error) {
 	}
 }
 
-func (h *handshakeFilter) Addr() net.Addr  { return h.l.Addr() }
-func (h *handshakeFilter) Close() error    { return h.l.Close() }
+func (h *handshakeFilter) Addr() net.Addr { return h.l.Addr() }
+func (h *handshakeFilter) Close() error   { return h.l.Close() }
 
 // validListen accepts "host:port" with a 0<port<65536 (the only external
 // value embedded in the program string — see ProgramCommand).

@@ -1,7 +1,7 @@
 // EventLog is the operator's diagnostic event stream (spec F-04 / F-14):
-// "все диагностические события (снижение скорости, конфликты, ретраи) — в
-// отдельный лог events.jsonl" (F-04) and "каждый сдвиг лимита —
-// диагностическое сообщение в events.jsonl" (F-14). It appends one
+// "all diagnostic events (rate reductions, conflicts, retries) go to a
+// separate log events.jsonl" (F-04) and "every limit shift — a
+// diagnostic message in events.jsonl" (F-14). It appends one
 // JSON object per line (ts, kind, then the event's fields) so the file is
 // both human-readable and machine-consumable (jq -s, log tailers).
 //

@@ -38,27 +38,30 @@ throughput / rate-limit / error-rate signals, not as a growing temp folder.
 The safe sequence for any new copy is:
 
 ```bash
+# 0. Point at the two clusters (flags or the config file; no GPSTREAM_SOURCE/DEST env).
+SRC="host=prod-coordinator   port=5432 user=gpstream dbname=postgres"
+DST="host=preprod-coordinator  port=5432 user=gpstream dbname=postgres"
+
 # 1. Check the two clusters are reachable and healthy BEFORE you touch anything.
-gpstream doctor --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST"
+gpstream doctor --source "$SRC" --dest "$DST"
 
 # 2. See exactly what would happen, with no side effects.
-gpstream dry-run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
-  --db app --schema public --table orders,customers
+gpstream dry-run --source "$SRC" --dest "$DST" \
+  --dbs app --schemas app.public --tables app.public.orders,app.public.customers
 
 # 3. Produce a deterministic plan (hash-pinned) you can inspect / diff.
-gpstream dry-run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
-  --db app --plan-file plan.yaml
+gpstream dry-run --source "$SRC" --dest "$DST" \
+  --dbs app --plan-file plan.yaml
 
 # 4. Run the copy.
-gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
-  --plan-file plan.yaml
+gpstream run --source "$SRC" --dest "$DST" \
+  --dbs app --operation-id my-copy
 
 # 5. Watch progress and final outcome.
-gpstream status --job <jobid>
-gpstream report --job <jobid> --report-json run.json
+gpstream status --operation-id my-copy
 ```
 
-`dry-run` and `plan` exist so you never surprise a production source. The plan
+`dry-run` exists so you never surprise a production source. The plan
 is **deterministic** (it carries a hash), so the same inputs produce the same
 plan — diff two plans to review a change before you run it.
 
@@ -70,11 +73,10 @@ Selection is the first decision on any run:
 
 | Goal | Flag |
 |------|------|
-| Copy a whole database | `--full` |
-| Copy specific DBs | `--db app --db billing` (repeatable) |
-| Copy specific schemas | `--schema app.public` (repeatable) |
-| Copy specific tables | `--table app.public.orders` (repeatable) |
-| Exclude a set | `--exclude app.public.tmp_*` (repeatable) |
+| Copy specific DBs | `--dbs app,billing` (comma-separated) |
+| Copy specific schemas | `--schemas app.public` (comma-separated) |
+| Copy specific tables | `--tables app.public.orders,app.public.customers` (comma-separated) |
+| Exclude a set | `--exclude app.public.tmp_*` (comma-separated) |
 
 Scope the **metadata** and **data** independently:
 
@@ -96,33 +98,24 @@ touch them: a conflict stops the run** (FR-10 §8). Nothing is clobbered and
 nothing is silently skipped — the copy halts with a conflict error so the
 operator decides deliberately.
 
-| Setting | Default | Meaning |
-|---------|---------|---------|
-| *(default)* | **strict** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
-| `--skip-conflicts` (alias `--skip-existing`) | — | Skip conflicting objects and continue (the old "safe skip" — now an explicit opt-in). |
-| `--overwrite` | — | Replace the destination object (staging + atomic rename, verified before the swap). |
-| `--truncate` | — | Truncate then reload. |
-| `--append` | — | Append rows to the destination object. |
-| `--conflict-action` | — | Pick one of the above explicitly. |
+| `--resolve-conflicts` | Default | Meaning |
+|----------------------|---------|---------|
+| `stop` | **default** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
+| `skip` | — | Skip conflicting objects and continue; they are reported in `conflicts.jsonl`. |
+| `overwrite` | — | Replace the destination object (staging + atomic swap, verified before the swap). |
+| `truncate` | — | Truncate then reload (in-place). |
 
-The **default `ConflictAction` is `SkipExisting` with `--skip-conflicts` OFF**,
-so a bare `gpstream run` **stops on the first conflict** rather than silently
-skipping or overwriting. To proceed you opt in: `--skip-conflicts` to keep what's
-already there, or `--overwrite`/`--truncate`/`--append` to replace it.
+`--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
+policy. The **default is `stop`**, so a bare `gpstream run` **stops on the
+first conflict** rather than silently skipping or overwriting.
 
-Two further controls protect you from silent clobbering:
+Also, `--map-db src=dst`, `--map-schema src=dst`, and `--map-table src=dst`
+(all `src=dst` form) remap names into the destination so a run never lands on
+a live name it should not touch.
 
-- `--skip-conflicts` — **off by default (strict)**. When off, conflicts **stop
-  the run**. When on, they are skipped and reported in `conflicts.jsonl`.
-- `--overwrite-only-conflicts` — only overwrite the objects that actually conflict.
-
-Also, `--rename-db src=dst`, `--rename-schema src=dst`, and
-`--rename-table src=dst` (all `KV` form) remap names into the destination so a
-run never lands on a live name it should not touch.
-
-> Rule of thumb: in production, run strict (leave `--skip-conflicts` off), let
-> the run stop on the first conflict, review `conflicts.jsonl`, and only then
-> re-run with an explicit policy.
+> Rule of thumb: in production, run strict (leave the default `stop`), let the
+> run stop on the first conflict, review `conflicts.jsonl`, and only then
+> re-run with an explicit `--resolve-conflicts` policy.
 
 ---
 
@@ -155,16 +148,14 @@ Consistency options let you copy an object atomically:
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `--rate-limit` | `0` (no ceiling) | Total throughput ceiling in Gbps (accepts `bps`/`mbit`/`gbit` units). |
-| `--adaptive-rate-limit` | off | Let gpstream reduce the rate on host overload (see §7). |
-| `--workers-per-pair` | `2` | Concurrent units per host-pair. |
-| `--data-port-range` | — | Restrict the data plane to a port range, e.g. `1000-2000`. |
+| `--workers` | `2` | Concurrent workers per host-pair. |
 | `--compress` | `zstd` | `none` / `zlib` / `zstd`. |
 | `--compress zstd:9` | level 3 | zstd level **1–19** (validated). |
 
-Default compression is **`zstd` at level 3**. A higher level compresses more but
-uses more CPU — with `--adaptive-rate-limit` on, gpstream will *degrade* the
-compression level when the host is CPU-saturated, and that change is observable
-as a metric (see §8).
+Default compression is **`zstd` at level 3**. A higher level compresses more
+but uses more CPU — the adaptive limiter (F-14, always active) will *degrade*
+the rate / compression level when the host is CPU-saturated, and that change
+is observable as a metric (see §8).
 
 ---
 
@@ -174,11 +165,12 @@ The stream uses **back-pressure**: the source agent blocks when the destination
 cannot keep up, so gpstream never buffers the whole table in RAM — only small
 in-memory buffers. There is no intermediate disk.
 
-With `--adaptive-rate-limit`, one limiter runs per host-pair. It samples
+The adaptive limiter (F-14) is always active: one limiter runs per host-pair.
+It samples
 **source** host load (CPU iowait, disk await/utilisation, TCP retransmits)
 **and the destination's receive queue** — the data path is an unbuffered
 pipe, so the average time a source-side frame write takes to drain into the
-destination (the in-process «метрики COPY», the destination host's own /proc
+destination (the in-process COPY metrics, the destination host's own /proc
 is not readable from the controller) — and:
 
 - **reduces** the rate by a step (~25%, floor ~1 Gbps) on sustained overload;
@@ -202,11 +194,13 @@ gauge.
 Run the metrics server alongside a long job:
 
 ```bash
-gpstream dry-run --plan-file plan.yaml --metrics --metrics-addr :9090
+gpstream run --source "$SRC" --dest "$DST" --dbs app \
+  --operation-id my-copy --metrics-addr :9090
 ```
 
-The metrics package serves a Prometheus textformat endpoint (`/metrics`) via the
-address you pass to `--metrics-addr`. The exposed series include:
+There is **no separate `metrics` subcommand** — the Prometheus textformat
+endpoint (`/metrics`) is served *during* `run` via the address you pass to
+`--metrics-addr`. The exposed series include:
 
 | Metric | Type | Meaning |
 |--------|------|---------|
@@ -219,9 +213,9 @@ address you pass to `--metrics-addr`. The exposed series include:
 | `gpstream_compression_level` | gauge | Current zstd level. |
 | `gpstream_compression_mode` | gauge | Current mode (`none`/`zlib`/`zstd`). |
 
-`gpstream status --job <jobid>` shows the live job state, and
-`gpstream report --job <jobid> --report-json run.json` (or `--report-csv` /
-`--report-text`) gives a final report you can archive.
+`gpstream status --operation-id <id>` shows the live operation state (per-unit
+state, rows, ETA). The final summary is printed on completion and the durable
+record is the journal under `<state-dir>/<operation-id>/`.
 
 **Segment balance (F-15, live).** On a Greenplum destination, after each
 table is swapped to its final name the run measures the per-segment fill of
@@ -238,8 +232,8 @@ segment balance (F-15, live, per destination segment):
 The counts are the per-segment row counts in `gp_segment_id` order; `max/avg`
 is the fill-balance ratio (1.0 = perfectly even). A table whose `max/avg`
 exceeds `--segment-balance-threshold` (default `1.5`) emits a `WARNING` line
-and a `warning: true` `segment_balance` event (spec F-15: «предупреждение при
-превышении порога»). The measurement is non-fatal and Greenplum-only: a plain
+and a `warning: true` `segment_balance` event (spec F-15: "warning on
+threshold exceeded"). The measurement is non-fatal and Greenplum-only: a plain
 PostgreSQL destination has no segments and the section is omitted.
 
 ### The diagnostic event log (`events.jsonl`)
@@ -253,7 +247,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 |--------|------|-----------|
 | `rate_limit_shift` | every adaptive rate-limit change (F-14) | `from_gbps`, `to_gbps`, `reason` (cpu %, disk latency, queue) |
 | `compression_off` | a small table is copied with compression off (F-12 auto-disable) | `table`, `bytes` (estimated size), `threshold` (`--small-table-threshold`), `reason` |
-| `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (strict default) or `skip` (`--skip-conflicts`) |
+| `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (default) / `skip` / `overwrite` / `truncate` |
 | `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
 | `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
@@ -269,7 +263,7 @@ log is a no-op. Consume it with `jq -c . events.jsonl` or any JSONL tooling.
 
 In parallel, every operator action on the operation is appended to
 `<state-dir>/<operation-id>/audit.log` (0600) — one JSON object per line:
-`{"ts", "action", ...fields}` (spec F-13 «аудит-лог действий»):
+`{"ts", "action", ...fields}` (spec F-13 "audit log of actions"):
 
 | `action` | When | Key fields |
 |----------|------|-----------|
@@ -289,17 +283,16 @@ Both are best-effort (a write failure never fails the action).
 
 | Command | When to use |
 |---------|-------------|
-| `gpstream resume --job <jobid>` | A run stopped or crashed; resume only the incomplete units. |
-| `gpstream cancel --job <jobid>` | Stop an in-flight run cleanly. |
-| `gpstream rollback --job <jobid>` | Roll back a partially-swapped staging table after a bad run. |
-| `gpstream cleanup --job <jobid>` | Clear the run's service files after it is done. |
+| `gpstream resume --operation-id <id>` | A run stopped or crashed; resume only the incomplete units. |
+| `kill <pid>` (no `cancel` subcommand) | Stop an in-flight run; `resume` re-queues the incomplete units. |
+| `gpstream cleanup --operation-id <id> --yes` | Clear the operation's state after it is done. |
+| `gpstream cleanup --operation-id <id> --mode drop --dest <conn> --yes` | Also discard the destination objects the run created. |
 
 Resume is bounded by `--auto-resume N`. **`N = 0` means no auto-resume**
 (the default). On resume, gpstream replays the journal and restarts every unit
 not in a terminal state; units already in a terminal state are skipped. A worker
 dying **does not abort the whole job** — the manager reassigns the dead
-worker's units to a live one. `--auto-cleanup` removes service files
-automatically on success.
+worker's units to a live one.
 
 What happens to the REST of the job when a unit fails is `--on-unit-failure`
 (spec F-06): the default `continue` records the failed unit (journal +
@@ -319,7 +312,8 @@ whether a finished run actually **succeeded**:
 | State | Meaning |
 |-------|---------|
 | `pending` | Not yet started. |
-| `running` | In progress. |
+| `copying` | In progress. |
+| `verifying` | Awaiting checksum verification. |
 | `completed` | Data + checksum verified. |
 | **`swapped`** | Completed unit atomically renamed to its final name — **terminal success**. |
 | **`failed`** | Unit exhausted its retries — **terminal failure**. |
@@ -336,14 +330,13 @@ Indexes are handled separately from the data copy:
 
 | Flag | Meaning |
 |------|---------|
-| `--background-indexes` | Rebuild indexes in the background as units land. |
-| `--index-workers` | Number of background index workers. |
-| `--no-indexes` | Skip index work for this run. |
-| `--index-priority` | Index priority (e.g. `manual`, `size`). |
+| `--index-workers N` | Number of background index-build workers (F-17, on by default). |
+| `--no-indexes` | Skip index creation entirely for this run. |
+| `--index-priority size\|manual\|background` | Index build order. |
 
-A common pattern is `--metadata-only` first (to land the objects), then a
-separate `gpstream indexes` / background-index run so index builds do not
-contend with the bulk copy.
+Indexes are rebuilt in the **background** as units land (F-17) by default, so
+index builds do not contend with the bulk copy. There is **no separate
+`indexes` subcommand** — index work is part of `run`.
 
 ---
 

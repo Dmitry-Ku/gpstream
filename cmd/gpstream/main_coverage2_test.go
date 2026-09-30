@@ -50,8 +50,8 @@ func richPlan() *plan.Plan {
 			{DB: "db", Encoding: "SQL_ASCII -> UTF8"},
 		},
 		OtherObjects: plan.OtherObjects{
-			Views:    []string{"s.v1", "s.v2"},
-			MatViews: []string{"s.mv1"},
+			Views:     []string{"s.v1", "s.v2"},
+			MatViews:  []string{"s.mv1"},
 			Functions: 3,
 		},
 		MissingExtensions: []string{"postgis", "madlib"},
@@ -86,7 +86,7 @@ func TestPrintPlanSummaryMinimal(t *testing.T) {
 		Units:           []plan.Table{{Schema: "s", Name: "t", DstSchema: "s", DstName: "t"}},
 		EstimatedVolume: 10,
 		Route:           plan.RouteSummary{}, // not resolved
-		Partial:         true,                 // forecast labels
+		Partial:         true,                // forecast labels
 	}
 	if err := printPlanSummarySafe(p, cfg); err != nil {
 		t.Fatalf("printPlanSummary (minimal/partial): %v", err)

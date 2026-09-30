@@ -5,8 +5,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # Heavy tests (TASK-SPEC F-09: "тяжёлые/scale-тесты — по тегам и
-  # расписанию"): full-domain pair-map brute force (2^32 sweep) runs here,
+  # Heavy tests (TASK-SPEC F-09: "heavy/scale tests — by tag and
+  # schedule"): full-domain pair-map brute force (2^32 sweep) runs here,
   # not in the default pass, so CI's `go test -cover` stays fast and green.
   schedule:
     - cron: '30 3 * * 1' # Mondays 03:30 UTC
@@ -34,6 +34,9 @@ jobs:
             exit 1
           fi
 
+      - name: English-only guard (no Cyrillic in git content)
+        run: bash scripts/check-english.sh
+
       - name: vet
         run: go vet ./...
 
@@ -45,7 +48,7 @@ jobs:
       - name: test + coverage
         run: |
           go test -cover -coverprofile=coverage.out ./...
-          # gate: core packages must be >= 70% (CР-8); reported below
+          # gate: core packages must be >= 70% (CR-8); reported below
           go tool cover -func=coverage.out | tail -1
 
       - name: upload coverage
@@ -74,7 +77,7 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-  # Smoke: doctor + selftest must run (CР-7 / FR-05).
+  # Smoke: doctor + selftest must run (CR-7 / FR-05).
   smoke:
     runs-on: ubuntu-latest
     steps:
@@ -88,8 +91,8 @@ jobs:
       - name: doctor (no cluster, healthy baseline)
         run: ./bin/gpstream doctor
 
-  # Heavy/scale tests behind the `heavy` build tag (TASK-SPEC F-09: "тяжёлые/
-  # scale-тесты — по тегам и расписанию"). Runs on the schedule above (and on
+  # Heavy/scale tests behind the `heavy` build tag (TASK-SPEC F-09: "heavy/
+  # scale tests — by tag and schedule"). Runs on the schedule above (and on
   # manual dispatch) so the default CI pass stays fast; -cover is NOT used
   # here because the full-domain pair-map sweep is already slow under it
   # (231–328 s observed vs ~36 s plain — see pairmap_heavy_test.go).
@@ -106,7 +109,7 @@ jobs:
         run: go test -tags heavy -count=1 -timeout 50m ./internal/route/
 
   # Integration tests on the self-hosted lab runner (TASK-SPEC §9:
-  # "integration на self-hosted runner с тестовыми GP6-кластерами"). The job
+  # "integration on a self-hosted runner with test GP6 clusters"). The job
   # is scheduled ONLY for runners labeled `gp6`; until such a runner exists
   # the job stays queued (does not fail the build). Live tests need a real
   # PG 9.4.26 toolchain (GPTEST_PGBIN) — on the testbed vm1 it is

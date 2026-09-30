@@ -22,8 +22,8 @@
 //	  - already swapped                     -> keep (point in time = swap moment)
 //	strict:
 //	  - re-read EVERY table that has journal records under the fresh
-//	    snapshot, unconditionally (DESIGN §2.2: «перечитать ВСЕ слайсы
-//	    под S'» / «перечитать и пере-обновить» — the whole database must
+//	    snapshot, unconditionally (DESIGN §2.2: "re-read ALL slices
+//	    under S'" / "re-read and re-update" — the whole database must
 //	    be one point in time, at the cost of a full re-read; sensible for
 //	    small DBs)
 //

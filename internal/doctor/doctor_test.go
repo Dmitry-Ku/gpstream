@@ -69,7 +69,7 @@ func TestDoctorPlainPGMode(t *testing.T) {
 	}
 }
 
-// TestDoctorDetectsFaults is the CР-7 criterion: the doctor must detect every
+// TestDoctorDetectsFaults is the CR-7 criterion: the doctor must detect every
 // seeded fault. We inject distinct faults across source/dest and assert each
 // is surfaced (no fault is silently passed).
 func TestDoctorDetectsFaults(t *testing.T) {

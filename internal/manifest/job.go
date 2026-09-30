@@ -218,7 +218,7 @@ func (l *AuditLog) Close() {
 }
 
 // WriteConflicts persists the plan's conflict diagnosis to conflicts.jsonl
-// (F-10 §8: «все конфликты логируются (conflicts.jsonl + manifest)») so an
+// (F-10 §8: "all conflicts are logged (conflicts.jsonl + manifest)") so an
 // operator can audit what would collide — and with which action — without
 // parsing stdout. A nil/empty conflict set still writes the file (an empty
 // array): the file's presence proves the preflight ran.

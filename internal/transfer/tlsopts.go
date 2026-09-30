@@ -30,8 +30,8 @@ func TLSEnabled(cert, key, ca string) bool {
 // the protocol floor (default 1.2). The hostname check is the client's job
 // (ClientTLSConfig sets ServerName); the server never validates the peer's
 // name. A wrong/missing certificate or key is a hard, diagnosed error — a
-// silently-downgraded TLS config would defeat the guarantee (F-13: «при
-// неверном сертификате — отказ с диагностикой»).
+// silently-downgraded TLS config would defeat the guarantee (F-13: 'on a bad
+// certificate — refusal with diagnostics').
 func ServerTLSConfig(cert, key, ca, minTLS string) (*tls.Config, error) {
 	if cert == "" || key == "" {
 		return nil, fmt.Errorf("data-plane TLS: --ssl-cert and --ssl-key are both required for the serving side (got cert=%q key=%q)", cert, key)

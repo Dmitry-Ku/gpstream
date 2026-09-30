@@ -49,7 +49,7 @@ func TestCreateStaging(t *testing.T) {
 }
 
 // TestCreateStagingDistribution reproduces the source distribution policy in
-// the DDL (F-11 metadata: «типы, распределение») — lab e2e, 27.09: a
+// the DDL (F-11 metadata: 'types, distribution') — lab e2e, 27.09: a
 // multi-key source (a, b) must not silently become (a) on the destination.
 func TestCreateStagingDistribution(t *testing.T) {
 	f := pg.NewFakeConn()
@@ -391,7 +391,7 @@ func TestCreateSequence(t *testing.T) {
 }
 
 // TestSetSequenceValue resynchronises a destination sequence to the source
-// last_value (F-11: «значения синхронизируются post-load»). The sequence is
+// last_value (F-11: 'values are synchronised post-load'). The sequence is
 // passed as a regclass parameter (a bare schema-qualified identifier is not
 // a valid regclass argument).
 func TestSetSequenceValue(t *testing.T) {

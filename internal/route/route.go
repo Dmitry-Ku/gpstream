@@ -1,23 +1,23 @@
-// Package route — воспроизведение GPDB 6.x hash-распределения (T0-2).
+// Package route — a reproduction of GPDB 6.x hash distribution (T0-2).
 //
-// Валидировано на живом GPDB 6.30.1 (open-gpdb/Yandex): 2000/2000 строк
-// int4 DISTRIBUTED BY (id), 2 primary — 0 расхождений (T0-SPIKE-REPORT
+// Validated on a live GPDB 6.30.1 (open-gpdb/Yandex): 2000/2000 rows of
+// int4 DISTRIBUTED BY (id), 2 primary — 0 mismatches (T0-SPIKE-REPORT
 // 2026-09-27, §T0-2).
 //
-// Алгоритм (non-legacy, дефолт свежего кластера):
+// Algorithm (non-legacy, the default for a fresh cluster):
 //  1. hash = 0
-//  2. на каждый атрибут ключа в порядке: hash = rotl1(hash);
-//     hash ^= HashPGAny(datumBytes)  (NULL — без XOR)
+//  2. for each key attribute in order: hash = rotl1(hash);
+//     hash ^= HashPGAny(datumBytes)  (NULL — no XOR)
 //  3. segment = JumpConsistentHash(hash, numSegments)
 //
-// Направление rotl1 критично только для multi-attr (для одного атрибута
-// rot(0)=0) — cdbhash.c:191 (open-gpdb 6.30.1), см. multi.go.
+// The rotl1 direction only matters for multi-attr (for a single attribute
+// rot(0)=0) — cdbhash.c:191 (open-gpdb 6.30.1), see multi.go.
 //
 // Result = content (0..numSegments-1).
 package route
 
 // HashPGAny — PostgreSQL hash_any (src/backend/access/hash/hashfunc.c),
-// little-endian. a=b=c=0x9e3779b9+len+3923095, word-мешание, final-mix.
+// little-endian. a=b=c=0x9e3779b9+len+3****95, word mixing, final-mix.
 func HashPGAny(k []byte) uint32 {
 	var a, b, c, l = uint32(0x9e3779b9) + uint32(len(k)) + 3923095,
 		uint32(0x9e3779b9) + uint32(len(k)) + 3923095,
@@ -69,7 +69,7 @@ func HashPGAny(k []byte) uint32 {
 	return c
 }
 
-// HashUint32 — hash_uint32, эквивалент HashPGAny(&k,4) без аллокаций.
+// HashUint32 — hash_uint32, equivalent to HashPGAny(&k,4) without allocations.
 func HashUint32(k uint32) uint32 {
 	const s = uint32(0x9e3779b9) + 4 + 3923095
 	a, b, c := s, s, s
@@ -78,7 +78,7 @@ func HashUint32(k uint32) uint32 {
 	return c
 }
 
-// HashInt4 — cdbhash для одного int4-атрибута (non-legacy).
+// HashInt4 — cdbhash for a single int4 attribute (non-legacy).
 func HashInt4(v int32) uint32 {
 	var h uint32 // rotr1(0) = 0
 	return h ^ HashUint32(uint32(v))
@@ -98,8 +98,8 @@ func HashInt8(v int64) uint32 {
 	return h ^ HashUint32(lo)
 }
 
-// JumpConsistentHash — jump consistent hash (arXiv:1406.2294), как в
-// GPDB cdbhash.c. numSegments = число primary (policy->numsegments).
+// JumpConsistentHash — jump consistent hash (arXiv:1406.2294), as in
+// GPDB cdbhash.c. numSegments = the number of primaries (policy->numsegments).
 //
 // NOTE: the C source computes `j = (b+1) * ((double)(1<<31) / (double)((key>>33)+1))`
 // with the multiplication done in DOUBLE and the truncation to int64 applied
@@ -116,7 +116,7 @@ func JumpConsistentHash(key uint64, numSegments int32) int32 {
 	return int32(b)
 }
 
-// RouteInt4 — полный пайплайн: int4-ключ → content.
+// RouteInt4 — the full pipeline: int4 key → content.
 func RouteInt4(v int32, numSegments int32) int32 {
 	return JumpConsistentHash(uint64(HashInt4(v)), numSegments)
 }

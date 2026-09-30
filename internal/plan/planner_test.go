@@ -10,7 +10,7 @@ import (
 )
 
 // twoIdenticalPlans returns two plans built from the same topology and asserts
-// they are byte-identical (CР-4: two --dry-run on unchanged topology).
+// they are byte-identical (CR-4: two --dry-run on unchanged topology).
 func twoIdenticalPlans(t *testing.T, cfg *config.Config, mk func() pg.Querier) {
 	t.Helper()
 	ctx := context.Background()

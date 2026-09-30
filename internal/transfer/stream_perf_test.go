@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TestStreamThroughput is the performance validation for CР-2 (use >= 80% of the
+// TestStreamThroughput is the performance validation for CR-2 (use >= 80% of the
 // 100 Gbit/s channel, i.e. >= 80 Gbps). It streams a realistic volume of frames
 // over an in-memory pipe (no real network) and reports the achieved throughput
 // in Mbit/s. Because the framing/CRC/transport is the only CPU-bound work in
@@ -36,7 +36,7 @@ func TestStreamThroughput(t *testing.T) {
 	}
 
 	if mbits < floor {
-		t.Errorf("throughput %.0f Mbit/s < %.0f even after %d retries (engine is the bottleneck, violates CР-2)",
+		t.Errorf("throughput %.0f Mbit/s < %.0f even after %d retries (engine is the bottleneck, violates CR-2)",
 			mbits, floor, maxRetries)
 	}
 }
@@ -80,7 +80,7 @@ func measureThroughput(t *testing.T) float64 {
 
 	mbits := float64(total*8) / (dur.Seconds() * 1_000_000)
 	mibps := float64(total) / (dur.Seconds() * 1024 * 1024)
-	t.Logf("streamed %d MiB in %s => %.0f Mbit/s (%.1f MiB/s); target CР-2 = 80000 Mbit/s",
+	t.Logf("streamed %d MiB in %s => %.0f Mbit/s (%.1f MiB/s); target CR-2 = 80000 Mbit/s",
 		int(total/(1024*1024)), dur, mbits, mibps)
 	return mbits
 }

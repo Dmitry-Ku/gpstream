@@ -1,22 +1,22 @@
 package route
 
-// M3: точная таблица пар (s → {d}) и мгновенный superset-бюнд.
+// M3: the exact pair table (s → {d}) and the instant superset bound.
 //
-// Ключевые факты (эмпирика 27.09):
-//  1. JCH из cdbhash.c НЕ монотонен по h (перенос uint64-произведения) —
-//     «интервальный» метод невозможен; точная таблица = перебор домена.
-//  2. Свойство consistency (arXiv:1406.2294): D>S ⇒ d>=s, D<S ⇒ d<=s,
-//     S==D ⇒ d=s — проверено перебором ВСЕГО домена для {2,4,6,8}^2.
-//  3. Пары РЕДКИ: (4,6) — только 10 из 24 достижимы; точная таблица даёт
-//     реальное сужение (экономия пайпов), а не просто конгруэнцию.
+// Key facts (empirics 27.09):
+//  1. JCH from cdbhash.c is NOT monotonic in h (uint64 product carry) —
+//     the "interval" method is impossible; exact table = domain sweep.
+//  2. The consistency property (arXiv:1406.2294): D>S ⇒ d>=s, D<S ⇒ d<=s,
+//     S==D ⇒ d=s — verified by sweeping the ENTIRE domain for {2,4,6,8}^2.
+//  3. Pairs are RARE: (4,6) — only 10 out of 24 are reachable; the exact table gives
+//     real narrowing (pipe savings), not just congruence.
 
 import (
 	"testing"
 )
 
-// JCH не монотонен по h — фиксируем факт (опровергает интервальный метод).
+// JCH is not monotonic in h — we pin the fact (disproves the interval method).
 func TestJCHNotMonotonic(t *testing.T) {
-	// n=2: h=6 -> 1, h=7 -> 0 (проверено; также n=2 h=0..20: 0 0 0 0 1 1 1 0 ...)
+	// n=2: h=6 -> 1, h=7 -> 0 (verified; also n=2 h=0..20: 0 0 0 0 1 1 1 0 ...)
 	if JumpConsistentHash(6, 2) != 1 {
 		t.Fatal("JCH(6,2) changed")
 	}
@@ -54,7 +54,7 @@ func TestPairMapIdentityWhenEqual(t *testing.T) {
 	}
 }
 
-// Consistency-свойство на ВСЕХ точных таблицах (встроенные + brute force):
+// The consistency property over ALL exact tables (built-in + brute force):
 // D>S => d>=s; D<S => d<=s.
 func TestPairMapConsistency(t *testing.T) {
 	counts := []int32{2, 4, 6, 8}
@@ -84,7 +84,7 @@ func TestPairMapConsistency(t *testing.T) {
 	}
 }
 
-// PairBounds — допустимая оценка: каждая точная пара внутри [lo, hi].
+// PairBounds — admissible bound: every exact pair lies within [lo, hi].
 func TestPairMapWithinBounds(t *testing.T) {
 	counts := []int32{2, 4, 6, 8}
 	for _, S := range counts {
@@ -106,8 +106,8 @@ func TestPairMapWithinBounds(t *testing.T) {
 	}
 }
 
-// Точная таблица РЕЖЕ, чем superset: для (4,6) — 10 пар из 24
-// (полный перебор домена, 27.09).
+// The exact table is SPARSER than the superset: for (4,6) — 10 pairs out of 24
+// (full domain sweep, 27.09).
 func TestPairMapSparsity(t *testing.T) {
 	m := PairMap(4, 6)
 	total := 0

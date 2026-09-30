@@ -21,7 +21,7 @@ not a file on disk. The security concerns are therefore:
 | Overwriting live data by accident | **Non-destructive default** (§4) |
 | Corrupted / truncated copy | Checksum + verify (§5) |
 | Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
-| Wrong cluster / wrong target | `security-check` + `doctor` (§7) |
+| Wrong cluster / wrong target | `doctor` (§7) |
 | Undocumented operator action | **Audit log** (`audit.log`, §10) |
 
 ---
@@ -34,8 +34,8 @@ captured log line.
 
 | Secret | Supply via | **Never** via |
 |--------|-----------|---------------|
-| Source connection string | `--source` or `GPSTREAM_SOURCE` | committed file / shared history |
-| Dest connection string | `--dest` or `GPSTREAM_DEST` | argv |
+| Source connection string | `--source <connstring>` flag (or the config file) | argv beyond the flag / committed file / shared history |
+| Dest connection string | `--dest <connstring>` flag (or the config file) | argv beyond the flag |
 | TLS cert | `--ssl-cert <file>` / `GPSTREAM_SSL_CERT` | argv |
 | TLS key | `--ssl-key <file>` / `GPSTREAM_SSL_KEY` | argv |
 | TLS CA | `--ssl-ca <file>` / `GPSTREAM_SSL_CA` | argv |
@@ -60,8 +60,9 @@ command line; the env and file layers keep it off argv.
 - `--ssl-key`  / `GPSTREAM_SSL_KEY`  — client key (file path)
 - `--ssl-ca`   / `GPSTREAM_SSL_CA`   — CA bundle (file path)
 - `--ssl-min-tls` / `GPSTREAM_SSL_MIN_TLS` — minimum TLS version (default `1.2`)
-- `--tls` — explicitly **assert** the encrypted connection (a no-op if TLS is
-  already enforced; useful to make the intent auditable)
+The pg data plane is **encrypted by default** (`sslmode=verify-full` is
+enforced unless the connstring sets an explicit `sslmode`); there is no bare
+`--tls` flag to assert it — the connection string carries the mode.
 
 A copy over an unencrypted link is refused. There is no
 `InsecureSkipVerify` path in the shipped configuration.
@@ -74,7 +75,7 @@ server's certificate is validated **and** its hostname is checked against the
 connection host: `buildTLS` sets the TLS `ServerName` from the DSN host, so a
 certificate that does not cover the host is a hard, diagnosed failure
 (`x509: certificate is valid for X, not <host>`) — the F-13 acceptance
-«при неверном сертификате — отказ с диагностикой». An IP-literal host has no
+"on a wrong certificate — a diagnosed refusal". An IP-literal host has no
 verifiable name and degrades to chain verification (verify-ca). A
 `--ssl-ca` bundle is loaded into the root store for chain validation; a
 missing or certificate-less bundle (or a malformed client keypair) is a
@@ -89,21 +90,20 @@ guarantee.
 
 | Default | Meaning |
 |---------|---------|
-| `ConflictAction = SkipExisting` | an existing target is **skipped**, not overwritten |
-| `--skip-conflicts` (default **off** = strict) | when off, a conflict is treated strictly |
+| `ConflictAction = stop` | an existing target **stops the run** — nothing overwritten, nothing skipped |
 
-To change behavior you must opt in:
+To change behavior you opt in with a single flag:
 
 | Flag | Effect |
 |------|--------|
-| `--overwrite` | overwrite an existing target |
-| `--overwrite-only-conflicts` | overwrite **only** when there is a conflict |
-| `--truncate` | truncate before load |
-| `--append` | append to the target |
-| `--skip-existing` | skip anything that already exists |
-| `--conflict-action <a>` | explicit conflict policy |
+| `--resolve-conflicts stop` | **default** — a conflict stops the run |
+| `--resolve-conflicts skip` | skip conflicting objects (reported in `conflicts.jsonl`) |
+| `--resolve-conflicts overwrite` | replace the target (staging + atomic swap, verified) |
+| `--resolve-conflicts truncate` | truncate then reload (in-place) |
+| `--overwrite` / `--truncate` | shorthand opt-ins for the matching policy |
 
-`--overwrite` is **not** the default; the safe default is `SkipExisting`.
+`--overwrite` / `--truncate` are **not** the default; the safe default is
+`stop`.
 
 ---
 
@@ -111,13 +111,13 @@ To change behavior you must opt in:
 
 | Knob | Values | Default |
 |------|--------|---------|
-| `--checksum-algorithm` | `sha256` \| `blake3` | `sha256` |
-| `--dedup` | dedupe by checksum / skip-if-same-checksum | off |
 | `--verify` | `full` \| `sample` \| `off` | `sample` |
 
-`--verify sample` checks a sample of rows; `full` checks every row; `off`
-disables verification. A checksum mismatch surfaces as a frame / transfer
-error on the metrics endpoint (see `METRICS.md`: `FrameErrors`, `Errors`).
+Each unit's content checksum is re-derived on both sides and compared before
+the atomic swap; a unit cannot be marked completed without one. `--verify
+sample` checks a sample of units, `full` checks every unit, `off` disables
+verification. A checksum mismatch sets the unit to `failed` and drops the
+staging table — no partially-correct data is ever swapped in.
 
 ---
 
@@ -136,29 +136,25 @@ accidental destructive operation.
 
 ---
 
-## 7. Pre-flight: `security-check` and `doctor`
+## 7. Pre-flight: `doctor`
+
+There is **no separate `security-check` subcommand** — TLS findings are part
+of `doctor` (the `tls` check), which prints a severity table:
 
 ```
-gpstream security-check
 gpstream doctor
-```
-
-`security-check` runs the diagnostic report with the configured
-`MinTLS` (`--ssl-min-tls`) and prints a severity table:
-
-```
-gpstream security-check
-=====================
-  [FAIL ] source    reach    ...
-  [WARN ] dest    collation ...
-security: N FAIL finding(s)
+===============
+  [PASS] src->dst    route        route-mode: src=2 dst=2 segments ...
+  [WARN] source      on_segment   segment-direct capability degraded: ...
+  [PASS] network     tls          min TLS 1.2 required (full cert validation in M2)
+overall: PASS (no FAIL)
 ```
 
 - A **missing connection string is a reachability FAIL** (not a silent pass).
 - **0 up-segments is a FAIL** (not a pass).
-- `security-check` returns non-zero if there are any FAIL findings.
+- `doctor` returns non-zero if there are any FAIL findings.
 
-Use `security-check` before a copy and after any change to credentials or TLS
+Use `doctor` before a copy and after any change to credentials or TLS
 material.
 
 ---
@@ -166,7 +162,7 @@ material.
 ## 8. Least privilege
 
 - Use the **minimum** privilege connection strings required for the copy.
-- Restrict the `--data-port-range` to the ports the copy actually uses.
+- Keep `--workers` bounded so the copy cannot saturate the shared NIC.
 - Keep the metrics endpoint (`--metrics-addr`) on a private interface; it
   exposes counters but is not an admin API.
 - Do not run a copy as a more-privileged user than the data requires.
@@ -178,11 +174,10 @@ material.
 - [ ] Secrets via env / EnvironmentFile, **not** argv (FR-08).
 - [ ] TLS enforced; `--ssl-min-tls >= 1.2`.
 - [ ] Server certificate covers the DSN host (`verify-full` hostname check).
-- [ ] `security-check` returns **PASS** against the real clusters.
-- [ ] `ConflictAction = SkipExisting` (non-destructive) unless a specific
-      copy intentionally opts into overwrite.
+- [ ] `doctor` returns **PASS** against the real clusters.
+- [ ] `ConflictAction = stop` (non-destructive) unless a specific copy
+      intentionally opts into `overwrite`/`truncate` via `--resolve-conflicts`.
 - [ ] `--verify` is `sample` or `full` for critical copies.
-- [ ] `--checksum-algorithm` set (`sha256` or `blake3`).
 - [ ] Destructive commands invoked only with `--yes`, deliberately.
 - [ ] `audit.log` retained / reviewed per the operation's retention policy.
 - [ ] Metrics endpoint on a private interface.
@@ -195,7 +190,7 @@ material.
 Every operator action on an operation is recorded in
 `<state-dir>/<operation-id>/audit.log` (mode **0600**, alongside
 `journal.jsonl` / `events.jsonl` / `conflicts.jsonl`) — one JSON object per
-line: `{"ts", "action", ...fields}` (F-13 «аудит-лог действий»).
+line: `{"ts", "action", ...fields}` (F-13 "audit log of actions").
 
 | action | When | Fields |
 |--------|------|--------|
@@ -216,4 +211,4 @@ never fails the action.
 - `CONFIGURATION.md` — config fields, defaults, precedence, validation.
 - `ADMIN_GUIDE.md` — deployment, systemd, logrotate, upgrade.
 - `METRICS.md` — the counters (including `Errors`/`FrameErrors`).
-- `TROUBLESHOOTING.md` — diagnosing a failed `security-check`/`doctor`.
+- `TROUBLESHOOTING.md` — diagnosing a failed `doctor` run.

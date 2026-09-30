@@ -57,7 +57,6 @@ const (
 	VerifyOff    VerifyMode = "off"
 )
 
-
 // CopyMode selects the source data-path transport (DESIGN §1.3 / T-B). The
 // operator can override the doctor-detected capability with --copy-mode.
 type CopyMode string
@@ -545,7 +544,7 @@ func dsnHasPassword(dsn string) bool {
 //   - a DSN carrying a password that came from the config FILE (credentials
 //     belong in env/.pgpass, not plaintext config) — F-13,
 //   - the config file is world/group-readable (wider than 0600) — F-13
-//     «конфиг ... права 0600».
+//     "config file ... mode 0600".
 func (c Config) SecurityWarnings() []string {
 	var out []string
 	if c.ConfigFile != "" {
@@ -655,4 +654,3 @@ func assignConfigString(c *Config, key, v string) {
 		c.LocaleCheck = v == "true" || v == "1"
 	}
 }
-

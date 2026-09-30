@@ -8,10 +8,10 @@
 // This file covers the parts of T7 that can be exercised on the local
 // toolchain:
 //
-//   - FR-02 "обязательный тест": a writer loop hammering the SOURCE during
+//   - FR-02 "mandatory test": a writer loop hammering the SOURCE during
 //     the copy; the result must equal one consistent point in time — the
 //     concurrent writes must NOT reach the destination.
-//   - retry-сценарий (DESIGN §6): a unit whose destination rejects the data
+//   - retry scenario (DESIGN §6): a unit whose destination rejects the data
 //     stream mid-copy must (a) not deadlock the run (the source must
 //     unblock when the destination stops reading the pipe), (b) be journaled
 //     as failed, and (c) be re-copied to success by a resume re-run.
@@ -96,9 +96,9 @@ func runWithTimeout(t *testing.T, mgr *manifest.Manager, p *plan.Plan, timeout t
 
 // --- FR-02 mandatory consistency test ------------------------------------
 
-// TestConsistentSnapshotWriterLoop is the TASK-SPEC v4 FR-02 "обязательный
-// тест": конкурентные изменения на источнике во время копирования не должны
-// попасть в результат. A writer loop inserts into the source continuously
+// TestConsistentSnapshotWriterLoop is the TASK-SPEC v4 FR-02 "mandatory
+// test": concurrent changes on the source during the copy must not reach the
+// result. A writer loop inserts into the source continuously
 // while the manager copies under a REPEATABLE READ snapshot; the destination
 // must contain exactly the pre-copy rows (one consistent point in time), and
 // the source must show the writer DID write (so the test is not vacuous).

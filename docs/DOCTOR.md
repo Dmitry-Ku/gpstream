@@ -24,7 +24,7 @@ Grounded in `internal/doctor/doctor.go` and
 | 6 | `disk` | dest | disk probe (sentinel in the test bench; live = free space on the dest) | Probe failed / no data | — |
 | 7 | `permissions` | source, dest | `has_database_privilege(current_database(), 'CREATE')` / `'CONNECT'` | — | Role lacks CREATE/CONNECT — `GRANT CREATE, CONNECT ON DATABASE` |
 | 8 | `collation` | network | `datcollate` source vs dest | — | `LC_COLLATE` differs — affects routing; review before start (FR-10) |
-| 9 | `tls` | network | configured minimum TLS version | — | Always informational in v0.1 — provide `--tls-ca` / `--ssl-cert` for mTLS (FR-13) |
+| 9 | `tls` | network | configured minimum TLS version | — | Always informational in v0.1 — provide `--ssl-ca` (CA bundle), and `--ssl-cert`/`--ssl-key` for mTLS (FR-13) |
 | 10 | `extensions` | network | `pg_extension` set: source vs dest | — | A source extension is missing in the destination (MADlib/PostGIS/orafce or any other) — install it in the receiver before the data load (FR-05/FR-11) |
 | 11 | `column-collation` | network | distinct explicit `COLLATE` names (public schema) source vs `pg_collation` dest | — | An explicit column collation on the source is not installed in the destination — `CREATE COLLATION` in the receiver (or accept the DB default) before the data load (FR-16) |
 
@@ -120,7 +120,9 @@ is green.
 ## 3. How to read a doctor run
 
 ```
-$ gpstream doctor --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
+$ gpstream doctor \
+    --source "host=prod-coordinator   port=5432 user=gpstream dbname=postgres" \
+    --dest   "host=preprod-coordinator  port=5432 user=gpstream dbname=postgres" \
     --seg-binary /opt/gpstream/gpstream-segreceiver
 ```
 
@@ -147,7 +149,7 @@ $ gpstream doctor --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
 - `disk` on a live dest is a probe of dest free space; the test bench
   seeds it as a sentinel (CR-7: the doctor must detect a no-space fault).
 - `tls` in v0.1 reports the configured minimum and defers full
-  certificate-chain validation; provide `--tls-ca` / `--ssl-cert` for
-  mTLS (FR-13).
+  certificate-chain validation; provide `--ssl-ca` (CA bundle), and
+  `--ssl-cert`/`--ssl-key` for mTLS (FR-13).
 - The doctor never mutates the clusters — every probe is a read or a
   no-op program (`true`, `--check`).

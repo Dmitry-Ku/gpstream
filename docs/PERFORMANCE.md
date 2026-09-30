@@ -106,27 +106,29 @@ the pacer slows the data flow; when load subsides, it recovers. It never
 throttles to 0 (a ~1 byte/s floor avoids a permanent stall) and honours
 context cancellation.
 
-`--adaptive-rate-limit` enables/tunes the adaptive behaviour; without a
-rate-limit the limiter is not built at all.
+The adaptive behaviour is **always active** (F-14) — there is no
+`--adaptive-rate-limit` flag; without a rate-limit the limiter still
+builds, it simply has no ceiling to enforce and only manages back-pressure
+and the diagnostic rate-shift events.
 
 ## Workers per pair
 
-`--workers-per-pair N` controls the **bounded worker pool** (FR-03).
+`--workers N` controls the **bounded worker pool** (FR-03).
 `Manager.Run` dispatches `N` workers over a channel of units; `N` is
 validated (a value `< 1` is clamped to `1`). When a rate-limit is set,
 **all workers share one pacer**, so the *total* flow across the pool
 stays under the ceiling (FR-14) rather than each worker racing to it.
 
-A higher `--workers-per-pair` spreads more tables across the connection
+A higher `--workers` spreads more tables across the connection
 pool (useful for the "many small tables" case); a lower value limits
 concurrency on a constrained link. A dead worker's units are re-assigned
 to live workers (FR-06).
 
-## Data port range
+## Data ports
 
-`--data-port-range a-b` sets the **range of data ports** the stream uses,
-in the gpcopy option model. Combined with `--workers-per-pair`, it bounds
-the many **host-pair** connections (source-host → destination-host).
+There is **no `--data-port-range` flag** — the stream manages its own data
+ports per **host-pair** connection (source-host → destination-host)
+internally, bounded by the worker pool (`--workers`).
 
 **Status:** two data paths are **implemented and live-verified** on the
 lab (E1/E2), plus one backlog item:
@@ -203,9 +205,9 @@ clusters; **do not cite the perf suite as evidence for the target.**
 
 | Goal                                   | Knobs |
 |----------------------------------------|-------------------------------------------|
-| Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` + `--adaptive-rate-limit` |
+| Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` (the limiter auto-degrades, F-14) |
 | Push a fast link, let it adapt         | `--rate-limit` high, let the limiter auto-degrade |
-| Many small tables / more concurrency   | `--workers-per-pair N` up |
+| Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | *partially live* — source-direct read via `--copy-mode on_segment` (T-B, ~2× on the source side); dest-segment write = backlog R5 |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
 | Protect integrity during the push     | `--verify full` for small/critical, `sample` default |

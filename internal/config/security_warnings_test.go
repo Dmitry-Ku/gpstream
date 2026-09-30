@@ -11,11 +11,11 @@ import (
 // password spellings and stays quiet on a clean DSN.
 func TestDSNHasPassword(t *testing.T) {
 	cases := map[string]bool{
-		"":                                     false,
-		"postgres://user@host/db":              false, // user, no password
-		"postgres://user:secret@host/db":       true,  // URL userinfo
-		"host=h user=u password=pw":            true,  // libpq keyword
-		"postgres://user@h/db?password=pw":     true,  // query param
+		"":                                 false,
+		"postgres://user@host/db":          false, // user, no password
+		"postgres://user:secret@host/db":   true,  // URL userinfo
+		"host=h user=u password=pw":        true,  // libpq keyword
+		"postgres://user@h/db?password=pw": true,  // query param
 		"postgres://gpadmin@10.0.0.11:5432/postgres?sslmode=disable": false,
 	}
 	for dsn, want := range cases {
@@ -60,7 +60,7 @@ func TestSecurityWarningsPasswordFromFile(t *testing.T) {
 	}
 }
 
-// TestSecurityWarningsConfigFileMode (F-13 «конфиг ... права 0600»): a
+// TestSecurityWarningsConfigFileMode (F-13 "config file ... mode 0600"): a
 // config file wider than 0600 is flagged, a 0600 one is not.
 func TestSecurityWarningsConfigFileMode(t *testing.T) {
 	dir := t.TempDir()

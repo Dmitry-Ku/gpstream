@@ -26,7 +26,7 @@ func TestManagerPartitionGuardFailsEarly(t *testing.T) {
 
 	p := &plan.Plan{Units: []plan.Table{{
 		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
-		Bytes: 100,
+		Bytes:          100,
 		PartitionGuard: "public.events is partitioned by a string key with no DEFAULT partition and the destination collation differs",
 	}}}
 	err := m.Run(context.Background(), p)
@@ -63,7 +63,7 @@ func TestManagerPartitionSpecInStagingDDL(t *testing.T) {
 		`PARTITION BY RANGE (day) (PARTITION a START ('01') INCLUSIVE END ('02') EXCLUSIVE, DEFAULT PARTITION z )`)
 	p := &plan.Plan{Units: []plan.Table{{
 		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
-		Bytes: 100,
+		Bytes:     100,
 		Partition: spec,
 	}}}
 	if err := m.Run(context.Background(), p); err != nil {
@@ -103,7 +103,7 @@ func TestManagerPartitionedUnitReadsParent(t *testing.T) {
 		`PARTITION BY RANGE (day) (PARTITION a START ('01') INCLUSIVE END ('02') EXCLUSIVE, DEFAULT PARTITION z )`)
 	p := &plan.Plan{Units: []plan.Table{{
 		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
-		Bytes: 100,
+		Bytes:     100,
 		Partition: spec, // a partitioned parent (2 leaves a/z)
 	}}}
 	if err := m.Run(context.Background(), p); err != nil {
@@ -150,7 +150,7 @@ func TestManagerDirectModeDegradesPartitionedToCoordinator(t *testing.T) {
 		`PARTITION BY RANGE (day) (PARTITION a START ('01') INCLUSIVE END ('02') EXCLUSIVE, DEFAULT PARTITION z )`)
 	p := &plan.Plan{Units: []plan.Table{{
 		DB: "db", Schema: "public", Name: "events", DstSchema: "public", DstName: "events",
-		Bytes: 100,
+		Bytes:     100,
 		Partition: spec,
 	}}}
 	if err := m.Run(context.Background(), p); err != nil {

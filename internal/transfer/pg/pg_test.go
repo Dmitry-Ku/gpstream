@@ -246,8 +246,8 @@ func pemKey(key *ecdsa.PrivateKey) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
 
-// TestBuildTLSRejectsWrongHostname (F-13 acceptance: «при неверном
-// сертификате — отказ с диагностикой») exercises the REAL handshake: a TLS
+// TestBuildTLSRejectsWrongHostname (F-13 acceptance: 'on a bad
+// certificate — refusal with diagnostics') exercises the REAL handshake: a TLS
 // server presents a certificate valid for wrong.example.com (signed by a
 // test CA); a client built by buildTLS with a non-matching DSN host must
 // fail the handshake with a hostname diagnostic, and a matching host must

@@ -14,7 +14,7 @@ all: build
 build:
 	$(GO) build $(GOFLAGS) -o $(BIN) ./cmd/gpstream
 
-# Cross-compile the full matrix (CР-8).
+# Cross-compile the full matrix (CR-8).
 cross: amd64 arm64
 
 amd64:

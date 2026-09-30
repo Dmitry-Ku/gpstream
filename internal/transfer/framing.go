@@ -69,7 +69,7 @@ func (fp *FramedPipe) Reliable() *ReliablePipe { return fp.rpS }
 // each source-side transport write (FramedWriter.Flush → conn.Write). The
 // transport is an unbuffered pipe, so the write duration is the destination's
 // receive-queue depth as the controller observes it — the in-process
-// «метрики COPY» the FR-14 adaptive limiter consumes. nil clears the hook.
+// 'COPY metrics' the FR-14 adaptive limiter consumes. nil clears the hook.
 func (fp *FramedPipe) SetWriteLatencyHook(fn func(d time.Duration)) {
 	fp.write.latHook = fn
 }
@@ -79,7 +79,7 @@ func (fp *FramedPipe) SetWriteLatencyHook(fn func(d time.Duration)) {
 // framed) and logical bytes the read side served after decompression. The
 // manager aggregates them per unit so the /metrics endpoint reports real
 // transferred volume and compression in/out — not row counts (F-04:
-// «объём и скорость», «сжатие (вход/выход)»).
+// 'volume and speed', 'compression (in/out)').
 func (fp *FramedPipe) Stats() (wire, logical uint64) {
 	return atomic.LoadUint64(&fp.write.wire), atomic.LoadUint64(&fp.read.logical)
 }
@@ -161,7 +161,7 @@ type FramedWriter struct {
 	// latHook, when set, records the wall duration of each transport write
 	// (Flush → conn.Write). The transport is an unbuffered pipe, so that
 	// duration is the destination's receive-queue depth as the controller
-	// observes it (F-14 «очередь приёма … метрики COPY»).
+	// observes it (F-14 'receive queue … COPY metrics').
 	latHook func(d time.Duration)
 }
 

@@ -40,7 +40,7 @@ func StagingName(jobID string, unitID int64) string {
 
 // CreateStaging creates an empty staging table in schema with the same column
 // layout and — on a Greenplum source — the same distribution policy as src
-// (FR-02; F-11 metadata: «ДДЛ таблиц (типы, распределение, AO-параметры)»).
+// (FR-02; F-11 metadata: 'table DDL (types, distribution, AO parameters)').
 // It uses the column definitions read from the source cluster (via
 // source.Agent.Columns -> format_type) so the staging table is created
 // faithfully across clusters (a CREATE TABLE ... LIKE would not work across
@@ -75,7 +75,7 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 			sql += " NOT NULL"
 		}
 	}
-	// F-11 metadata «AO-параметры»: reproduce the source table's storage
+	// F-11 metadata 'AO parameters': reproduce the source table's storage
 	// options (appendonly, orientation, blocksize, compress, fillfactor, ...)
 	// so an AO table stays AO on the destination (a plain heap otherwise).
 	//
@@ -122,7 +122,7 @@ func (a *Agent) DropTable(ctx context.Context, schema, table string) error {
 }
 
 // DropSchemaIfEmpty removes a schema that gpstream created, but ONLY when it
-// holds no user objects left (FR-02 cleanup: "созданные схемы" are
+// holds no user objects left (FR-02 cleanup: 'created schemas' are
 // removable, pre-existing schemas with other data are never touched).
 // Idempotent: a non-empty or absent schema is a no-op, not an error.
 func (a *Agent) DropSchemaIfEmpty(ctx context.Context, schema string) error {
@@ -306,7 +306,7 @@ func (a *Agent) EnsureSchema(ctx context.Context, schema string) error {
 }
 
 // CreateSequence recreates a source sequence on the destination (F-11
-// metadata phase: «последовательности»). name is the sequence's
+// metadata phase: 'sequences'). name is the sequence's
 // schema-qualified source name; the destination table's serial column
 // default was copied verbatim (nextval('<name>'::regclass)), so the
 // sequence must be created under the SAME name for the default to resolve.
@@ -336,8 +336,8 @@ func (a *Agent) CreateSequence(ctx context.Context, name string) error {
 }
 
 // SetSequenceValue resynchronises a destination sequence to the value the
-// source sequence held at copy time (F-11: «значения синхронизируются
-// post-load»). setval(seq, last_value, true) makes the NEXT nextval
+// source sequence held at copy time (F-11: 'values are synchronised
+// post-load'). setval(seq, last_value, true) makes the NEXT nextval
 // return last_value+1 — matching the source's state after a load. It runs
 // AFTER the table swap, so it never touches a staging table, and it is
 // idempotent (a resume re-applies the same value).

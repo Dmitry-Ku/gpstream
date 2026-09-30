@@ -167,7 +167,7 @@ func TestManagerRunHonoursDistribution(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	// The destination CREATE TABLE for the staging table must carry the
-	// distribution clause (F-11 metadata phase: «типы, распределение»).
+	// distribution clause (F-11 metadata phase: "types, distribution").
 	sawDist := false
 	for _, sql := range dst.Queried() {
 		if strings.Contains(sql, "CREATE TABLE IF NOT EXISTS") &&

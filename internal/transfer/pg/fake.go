@@ -2,7 +2,7 @@
 //
 // FakeConn is an in-memory Querier used by unit tests and by the doctor when a
 // live cluster is unavailable: it lets doctor/selftest produce meaningful
-// PASS/FAIL/WARN output (CР-7) and deterministic test fixtures without a
+// PASS/FAIL/WARN output (CR-7) and deterministic test fixtures without a
 // running Greenplum.
 package pg
 
@@ -51,7 +51,7 @@ func (f *FakeConn) On(substr string, rows [][]any) *FakeConn {
 }
 
 // Off removes a registration so a subsequent query returns an error (models a
-// "cannot determine" fault). Used by tests to inject faults (CР-7).
+// "cannot determine" fault). Used by tests to inject faults (CR-7).
 func (f *FakeConn) Off(substr string) *FakeConn {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -23,6 +23,6 @@ in the journal/audit/events, and how it degrades on failure. One paragraph,
 concrete.
 
 **Acceptance:** how you would verify it (command + expected output), in the
-style of the F-xx «Приёмка» lines.
+style of the F-xx acceptance criteria lines.
 
 **Out of scope (explicit):** what you are NOT asking for.

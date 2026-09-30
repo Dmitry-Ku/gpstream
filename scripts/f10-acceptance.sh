@@ -1,7 +1,7 @@
 #!/bin/bash
 # F-10 acceptance (live, A:5432 EL7 -> C:7432 EL8):
-#   «3 БД, 2 схемы, 1 таблица под другим именем, без данных ⇒ в приёмнике
-#    ровно заданные объекты; повторный прогон идемпотентен.»
+#   "3 DBs, 2 schemas, 1 table under a different name, no data => the
+#    destination holds exactly the specified objects; a re-run is idempotent.
 #
 # Layout on source A (3 DBs x 2 schemas x 2 EMPTY tables):
 #   f10_db1: s1.t1, s2.t2
@@ -14,7 +14,7 @@
 #  (2) run per DB (3 runs, one source DB -> one dest DB)
 #  (3) dest holds EXACTLY the specified objects: 2 schemas, 2 tables each,
 #      t4_renamed present & t4 absent, no staging leftovers (*_gpstream*),
-#      all tables empty (без данных)
+#      all tables empty (no data)
 #  (4) idempotent re-run: re-run the same operation with --overwrite ->
 #      exit 0, tables checksum-skip, same object set, no duplicates
 source /usr/local/gpdb/greenplum_path.sh
@@ -83,7 +83,7 @@ STG=$($C -d f10_dst1 -Atc "SELECT count(*) FROM pg_class WHERE relname LIKE '\_g
 STG2=$($C -d f10_dst2 -Atc "SELECT count(*) FROM pg_class WHERE relname LIKE '\_gs\_%' OR relname LIKE 'staging%';")
 [ "$STG" = "0" ] && [ "$STG2" = "0" ] && ok "no staging (_gs_*) leftovers on dest" || bad "staging leftovers: $STG/$STG2"
 EMPTY=$($C -d f10_dst1 -Atc "SELECT (SELECT count(*) FROM s1.t1) + (SELECT count(*) FROM s2.t2);")
-[ "$EMPTY" = "0" ] && ok "dest tables empty (без данных)" || bad "dest rows=$EMPTY"
+[ "$EMPTY" = "0" ] && ok "dest tables empty (no data)" || bad "dest rows=$EMPTY"
 
 echo "########## 6. idempotent re-run (--overwrite, checksum-skip) ##########"
 $BIN run --source "${SRCD}f10_db1?sslmode=disable" --dest "${DSTH}f10_dst1?sslmode=disable" --dbs f10_db1 \

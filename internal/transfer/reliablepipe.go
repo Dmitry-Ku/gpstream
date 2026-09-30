@@ -1,5 +1,5 @@
 // reliablepipe.go — frame-level ACK and RST-resume (DESIGN §4.6, Tier-1,
-// утверждено 2026-09-16, решение R2).
+// approved 2026-09-16, decision R2).
 //
 // ReliablePipe is the frame-aware, reliable transport over data-path "B"
 // (agent<->agent). Today B is an in-memory full-duplex pipe (the coordinator

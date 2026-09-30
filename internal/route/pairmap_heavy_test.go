@@ -2,8 +2,8 @@
 
 package route
 
-// Heavy (non-CI-by-default) pair-map tests, per TASK-SPEC F-09: "тяжёлые/
-// scale-тесты — по тегам и расписанию". The default `go test` / CI run must
+// Heavy (non-CI-by-default) pair-map tests, per TASK-SPEC F-09: "heavy/
+// scale tests — by tags and on a schedule". The default `go test` / CI run must
 // not pay for a full 2^32-domain brute force.
 
 import (
@@ -38,7 +38,7 @@ func TestPairMapBruteForceNonGolden(t *testing.T) {
 			}
 		}
 	}
-	// хотя бы по одной паре на s
+	// at least one pair per s
 	for s := int32(0); s < 3; s++ {
 		if len(m[s]) == 0 {
 			t.Fatalf("s=%d has no pairs", s)

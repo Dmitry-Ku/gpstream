@@ -201,7 +201,7 @@ func RowStr(ctx context.Context, q Querier, sql string, args ...any) string {
 // connection MUST validate the server's hostname: host (the DSN host) is
 // set as the TLS ServerName so crypto/tls checks the certificate's
 // SAN/CN against it — a wrong certificate is a hard, diagnosed failure
-// (F-13 acceptance: «при неверном сертификате — отказ с диагностикой»).
+// (F-13 acceptance: 'on a bad certificate — refusal with diagnostics').
 // An IP-literal host cannot carry a verifiable name, so ServerName stays
 // empty there (verify-full degrades to verify-ca; the hostname check
 // applies to named hosts). A supplied CA bundle is loaded into RootCAs

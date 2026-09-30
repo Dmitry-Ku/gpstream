@@ -22,33 +22,33 @@ type Metrics struct {
 	start        time.Time
 	Bytes        uint64  // bytes transferred (compressed on the wire)
 	BytesDecoded uint64  // bytes after decompression (logical)
-	Rows         uint64  // rows copied (FR-04 «строки»)
+	Rows         uint64  // rows copied (FR-04 "rows")
 	Errors       uint64  // frame / transfer errors
 	FrameErrors  uint64  // CRC-mismatch / framing errors
-	ChecksumErrs uint64  // content-checksum mismatches in the verify phase (FR-04 «ошибки чексумм»)
-	AutoRecovery uint64  // auto-recovery actions: resume re-reads + failed-unit retries (FR-04 «события авто-восстановления»)
+	ChecksumErrs uint64  // content-checksum mismatches in the verify phase (FR-04 "checksum errors")
+	AutoRecovery uint64  // auto-recovery actions: resume re-reads + failed-unit retries (FR-04 "auto-recovery events")
 	RateLimit    float64 // current Gbps (from the limiter)
 	// ReceiveWriteMs is the average data-path frame-write latency (ms) over
 	// the last second — the destination's receive-queue depth as the
-	// controller observes it (FR-14 «очередь приёма», FR-04 gauge).
+	// controller observes it (FR-14 "receive queue", FR-04 gauge).
 	ReceiveWriteMs float64
 	CompressLevel  int    // current zstd level (degrades on CPU saturation)
 	CompressMode   string // none / zlib / zstd
 	IndexQueue     int    // pending background index builds (FR-17/FR-04)
 	IndexDone      int    // finished background index builds (FR-17/FR-04)
 	// ActiveFlows is the number of units currently in the copying state
-	// (FR-04 «число активных потоков»).
+	// (FR-04 "number of active flows").
 	ActiveFlows int
 	// TotalBytes is the planned logical volume from the plan (for the ETA:
 	// remaining = TotalBytes - BytesDecoded). Zero when unknown.
 	TotalBytes uint64
-	// Pair is the host pair label (FR-04 «по паре хостов»): source ->
+	// Pair is the host pair label (FR-04 "per host pair"): source ->
 	// destination host:port. Empty when not set.
 	Pair string
-	// tablesByStatus aggregates the unit states (FR-04 «счётчики таблиц по
-	// статусам»).
+	// tablesByStatus aggregates the unit states (FR-04 "table counters by
+	// status").
 	tablesByStatus map[string]int
-	// perTable holds the per-table counters (FR-04 «по таблице»): rows, wire
+	// perTable holds the per-table counters (FR-04 "per table"): rows, wire
 	// bytes and logical bytes, plus the current state for the live table.
 	perTable map[string]*tableMetric
 	// Frame-ack observability (DESIGN §4.6 / FR-04): retransmitted frames,
@@ -60,7 +60,7 @@ type Metrics struct {
 	rateHistory   []sample // for throughput window
 }
 
-// tableMetric is one row of the per-table breakdown (FR-04 «по таблице»).
+// tableMetric is one row of the per-table breakdown (FR-04 "per table").
 type tableMetric struct {
 	Rows    uint64
 	Wire    uint64
@@ -104,7 +104,7 @@ func (m *Metrics) RecordError() {
 	m.Errors++
 }
 
-// RecordRows records the rows copied by a finished unit (FR-04 «строки»).
+// RecordRows records the rows copied by a finished unit (FR-04 "rows").
 // table (a "db.schema.name" or "schema.name" key) may be empty for
 // non-table work; rows are always added to the aggregate.
 func (m *Metrics) RecordRows(table string, rows int64) {
@@ -123,7 +123,7 @@ func (m *Metrics) RecordRows(table string, rows int64) {
 }
 
 // RecordBytes records a unit's wire (compressed) and logical (decoded) byte
-// counts (FR-04 «объём», «сжатие вход/выход»), both aggregate and per-table.
+// counts (FR-04 "volume", "input/output compression"), both aggregate and per-table.
 func (m *Metrics) RecordBytes(table string, wire, logical uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -154,15 +154,15 @@ func (m *Metrics) SetTotalBytes(total int64) {
 }
 
 // SetPair labels the collector with the source->destination host pair
-// (FR-04 «по паре хостов»).
+// (FR-04 "per host pair").
 func (m *Metrics) SetPair(pair string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Pair = pair
 }
 
-// SetUnitState records a unit's state transition (FR-04 «счётчики таблиц по
-// статусам» + «число активных потоков»). It is a state-move gauge: the unit
+// SetUnitState records a unit's state transition (FR-04 "table counters by
+// status" + "number of active flows"). It is a state-move gauge: the unit
 // leaves its previous state and enters the new one, so the per-status counts
 // always sum to the number of known units. table is the per-table key
 // ("schema.name" or "db.schema.name"); it may be empty for non-table work.
@@ -201,7 +201,7 @@ func (m *Metrics) SetUnitState(table, state string) {
 }
 
 // RecordChecksumError records a content-checksum mismatch in the verify phase
-// (FR-04 «ошибки чексумм»).
+// (FR-04 "checksum errors").
 func (m *Metrics) RecordChecksumError() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,7 +209,7 @@ func (m *Metrics) RecordChecksumError() {
 }
 
 // RecordAutoRecovery records an auto-recovery action (a resume re-read or a
-// retried failed unit) (FR-04 «события авто-восстановления»).
+// retried failed unit) (FR-04 "auto-recovery events").
 func (m *Metrics) RecordAutoRecovery() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -281,7 +281,7 @@ func (m *Metrics) SetRateLimit(gbps float64) {
 }
 
 // SetReceiveWriteMs records the average data-path frame-write latency (ms)
-// (FR-14 «очередь приёма» / FR-04 gauge). Called by the limiter sampler each
+// (FR-14 "receive queue" / FR-04 gauge). Called by the limiter sampler each
 // tick so the /metrics endpoint exposes the receive-queue depth the
 // controller observes.
 func (m *Metrics) SetReceiveWriteMs(ms float64) {
@@ -467,7 +467,7 @@ func (s snapshot) render(throughput float64) string {
 	out = append(out, "# TYPE gpstream_index_done_total counter")
 	out = append(out, fmt.Sprintf("gpstream_index_done_total %d", s.indexDone))
 
-	out = append(out, "# HELP gpstream_active_flows Units currently copying (FR-04 «число активных потоков»).")
+	out = append(out, "# HELP gpstream_active_flows Units currently copying (FR-04 “number of active flows”).")
 	out = append(out, "# TYPE gpstream_active_flows gauge")
 	out = append(out, fmt.Sprintf("gpstream_active_flows %d", s.activeFlows))
 
@@ -483,7 +483,7 @@ func (s snapshot) render(throughput float64) string {
 	out = append(out, "# TYPE gpstream_ack_lag_max_seconds gauge")
 	out = append(out, fmt.Sprintf("gpstream_ack_lag_max_seconds %f", s.ackLag.Seconds()))
 
-	// Tables by status (FR-04 «счётчики таблиц по статусам»). HELP/TYPE come
+	// Tables by status (FR-04 "table counters by status"). HELP/TYPE come
 	// before the samples, in deterministic order.
 	if len(s.byStatus) > 0 {
 		out = append(out, "# HELP gpstream_tables_by_status Units by state (FR-04).")
@@ -502,7 +502,7 @@ func (s snapshot) render(throughput float64) string {
 		}
 	}
 
-	// Per-table breakdown (FR-04 «по таблице»). Deterministic order.
+	// Per-table breakdown (FR-04 "per table"). Deterministic order.
 	if len(s.perTable) > 0 {
 		keys := make([]string, 0, len(s.perTable))
 		for k := range s.perTable {
@@ -533,7 +533,7 @@ func (s snapshot) render(throughput float64) string {
 		}
 	}
 
-	// Host pair (FR-04 «по паре хостов»).
+	// Host pair (FR-04 "per host pair").
 	if s.pair != "" {
 		out = append(out, "# HELP gpstream_pair_up Host pair of the running copy (1 = up) (FR-04).")
 		out = append(out, "# TYPE gpstream_pair_up gauge")
@@ -562,8 +562,8 @@ func (m *Metrics) Handler() http.Handler {
 	})
 }
 
-// TableRow is one row of the live per-table table (FR-04 «live-таблица по
-// таблицам» for `gpstream status`).
+// TableRow is one row of the live per-table table (FR-04 "live table by
+// tables" for `gpstream status`).
 type TableRow struct {
 	Table   string
 	Rows    uint64

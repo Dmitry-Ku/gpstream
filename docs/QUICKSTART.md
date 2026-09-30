@@ -2,19 +2,19 @@
 
 `gpstream` streams logical data between two Greenplum 6 clusters over a direct
 high-speed network, **without any intermediate storage**. This guide is the
-minimal path to a copy: configure the endpoints, choose a scope, dry-run first,
-run, monitor, and recover if needed.
+minimal path to a copy: set the endpoints, choose a scope, dry-run first, run,
+monitor, and recover if needed.
 
-> **Safety default:** conflicts **stop the run** (FR-10 §8). By default gpstream
+> **Safety default:** conflicts **stop the run** (F-10). By default gpstream
 > **never overwrites and never skips silently** — if a table already exists on
-> the destination, the copy halts with a conflict error and nothing is clobbered.
-> To proceed you must opt in explicitly: `--skip-conflicts` (skip conflicting
-> units), or `--overwrite` / `--truncate` / `--append` (replace / truncate+load /
-> append).
+> the destination, the copy halts with a conflict and nothing is clobbered.
+> To proceed you must opt in explicitly: `--resolve-conflicts skip` (skip
+> conflicting units and continue), or `--resolve-conflicts overwrite` /
+> `truncate` (replace / truncate+load).
 
-> **Cluster requirement:** `--help`, `dry-run`, and `plan` run against a
-> built-in fake and need no live cluster. **`copy` (and `doctor`) require a
-> reachable source and destination cluster.**
+> **Cluster requirement:** `--help` and `selftest` need no cluster. **`run`,
+> `dry-run`, and `doctor` require a reachable source and destination cluster**
+> (a dry-run plans against the live topology).
 
 ---
 
@@ -22,13 +22,14 @@ run, monitor, and recover if needed.
 
 A copy has six steps:
 
-1. **Set the endpoints** — `--source` / `--dest` connstrings (or the
-   `GPSTREAM_SOURCE` / `GPSTREAM_DEST` environment variables).
-2. **Select the scope** — `--full`, `--db`, `--schema`, `--table`, or `--exclude-*`.
+1. **Set the endpoints** — `--source` / `--dest` connstrings (or the `source` /
+   `dest` keys in the config file).
+2. **Select the scope** — `--dbs`, `--schemas`, `--tables`, or `--exclude`.
 3. **Dry-run first** — `gpstream dry-run ...` to preview the deterministic plan.
 4. **Run** — `gpstream run ...` to execute the copy.
-5. **Monitor** — `gpstream status` and `gpstream metrics`.
-6. **Recover** — `gpstream resume --mirror F` / `gpstream rollback --mirror F`.
+5. **Monitor** — `gpstream status --operation-id <id>` and the `/metrics`
+   endpoint (serve it with `--metrics-addr`).
+6. **Recover** — `gpstream resume --operation-id <id>` (or `cleanup`).
 
 ---
 
@@ -42,43 +43,47 @@ the `GPSTREAM_*` environment variables:
 gpstream run --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
               --dest   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
 
-# Option B: environment variables (GPSTREAM_SOURCE / GPSTREAM_DEST)
-export GPSTREAM_SOURCE="host=prod-coordinator port=5432 user=gpstream dbname=postgres"
-export GPSTREAM_DEST="host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
-gpstream run
+# Option B: the config file (lowest precedence; a CLI flag still wins)
+cat > /etc/gpstream/gpstream.toml <<'EOF'
+source = "host=prod-coordinator port=5432 user=gpstream dbname=postgres"
+dest   = "host=preprod-coordinator port=5432 user=gpstream dbname=postgres"
+EOF
+gpstream run --config /etc/gpstream/gpstream.toml
 ```
 
 Precedence is **CLI > env (`GPSTREAM_*`) > `--config` file > defaults**, so a
-flag always wins over an env var, which wins over a config file.
+flag always wins over an env var, which wins over a config file. The endpoints
+themselves (`source`/`dest`) come from the CLI flags or the config file — there
+is no `GPSTREAM_SOURCE`/`GPSTREAM_DEST` env var.
 
-TLS/secret material is never taken from argv: pass SSL cert / key / CA via
-`GPSTREAM_SSL_CERT` / `GPSTREAM_SSL_KEY` / `GPSTREAM_SSL_CA` (or a `0600`
-config file), not as command-line flags.
+TLS: the pg data plane uses `sslmode=verify-full` by default (enforced unless
+the connstring sets an explicit `sslmode`). Supply the CA bundle with `--ssl-ca
+F` (or the `GPSTREAM_SSL_CA` env / a `0600` config file) — never as a raw secret
+in argv.
 
 ---
 
 ## 3. Select the scope
 
-Choose what to copy. These are mutually consistent selection flags; pick the
-granularity you need:
+Choose what to copy. Selection flags take **comma-separated lists**:
 
 | Flag | Scope |
 | --- | --- |
-| `--full` | Copy the entire cluster (all databases). |
-| `--db <name>` | One or more databases (repeatable). |
-| `--schema <name>` | One or more schemas (repeatable). |
-| `--table <name>` | One or more tables (repeatable). |
-| `--exclude <name>` | Exclude a database/schema/table (repeatable). |
+| `--dbs db1,db2` | One or more databases. |
+| `--schemas db.schema[,...]` | One or more schemas. |
+| `--tables db.schema.table[,...]` | One or more tables. |
+| `--exclude <name>[,...]` | Exclude a database/schema/table. |
 
 Additional metadata/data flags: `--metadata-only` and `--data-only`
-(mutually exclusive). You can also rename targets with
-`--rename-db src=dst` and `--rename-schema src=dst`.
+(mutually exclusive), and `--include metadata,data` to bound the object classes.
+You can also rename targets with `--map-db`, `--map-schema`, `--map-table`.
 
 Example — copy the `orders` database, excluding an audit schema:
 
 ```bash
-gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
-              --db orders --exclude "public.audit"
+gpstream run --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
+              --dest   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres" \
+              --dbs orders --exclude "public.audit"
 ```
 
 ---
@@ -86,22 +91,21 @@ gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
 ## 4. Dry-run first
 
 Always dry-run before running. `dry-run` builds and prints the **fully
-deterministic plan** without executing anything (no cluster is required — it
-uses a built-in fake when connstrings are absent). It shows the units, volume,
+deterministic plan** without executing the copy. It shows the units, volume,
 ETA, conflicts (with the action that would apply), redistribution accounting,
 and the plan hash:
 
 ```bash
 gpstream dry-run \
-  --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" \
-  --db orders
+  --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
+  --dest   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres" \
+  --dbs orders
 ```
 
 You can persist the plan to a file with `--plan-file` (e.g.
-`gpstream dry-run --plan-file /tmp/plan.json --db orders`). `gpstream
-plan` is the equivalent command that emits the plan as JSON (`--plan-file` or
-stdout). The **plan hash is deterministic**, so two dry-runs of the same scope
-produce the same hash — use it to confirm a plan has not changed between runs.
+`gpstream dry-run --plan-file /tmp/plan.json --dbs orders`). Two dry-runs of
+the same scope produce the same **plan hash** — use it to confirm a plan has
+not changed between runs.
 
 ---
 
@@ -110,133 +114,114 @@ produce the same hash — use it to confirm a plan has not changed between runs.
 Once the dry-run looks right, run the copy:
 
 ```bash
-gpstream run --source "$GPSTREAM_SOURCE" --dest "$GPSTREAM_DEST" --db orders
+gpstream run --source "host=prod-coordinator port=5432 user=gpstream dbname=postgres" \
+              --dest   "host=preprod-coordinator port=5432 user=gpstream dbname=postgres" \
+              --dbs orders
 ```
 
 What happens:
 
 - gpstream connects to **both** clusters (a real copy requires real streaming
   connections; it never falls back to a fake data plane).
-- It builds the plan, runs the **Job Manager** (`source -> stream -> dest`)
-  with **no intermediate storage**, and journals every transition (to the
-  dest-DB journal plus a local file mirror) — so the job is crash-recoverable.
-- Each unit is verified (default `verify: sample`), indexes are rebuilt in the
-  **background**, and the staging table is **atomically swapped** to its final
-  name. A metrics endpoint is served when you pass `--metrics-addr`.
+- It builds the plan, runs the **transfer engine** (`source -> stream -> dest`)
+  with **no intermediate storage**, and records every transition in the
+  operation manifest — so the operation is crash-recoverable.
+- Each unit is verified (default `--verify sample`), indexes are rebuilt in the
+  **background** (F-17), and the staging table is **atomically swapped** to its
+  final name. A Prometheus `/metrics` endpoint is served when you pass
+  `--metrics-addr`.
 
-Example output (a unit prints the **journal mirror path** if any unit is
-skipped or failed, so you can resume or inspect it):
-
-```
-gpstream run
-=============
-units:          3
-volume:         1.5 GB
-conflicts:      none
-plan hash:      <hash>
-
-copy: 3 unit(s) completed, N rows transferred, 0 skipped, 0 failed
-```
+The operation identity is `--operation-id <id>` (default: a generated id). Use
+the same id for `status` / `resume` / `cleanup`.
 
 ---
 
 ## 6. Monitor
 
-While (or after) a copy runs, use `status` and `metrics`.
+While (or after) a copy runs, use `status` and the `/metrics` endpoint.
 
 ### 6.1 `gpstream status`
 
-Reports the state of a job's journal. `--mirror` is required (point it at the
-journal mirror produced by the copy); each unit is printed with its `unit id`,
-`state`, `kind`, `db.schema.table`, and bytes transferred. Filter to a single
-job with `--job <id>`:
+Reports the state of an operation by its id; each unit is printed with its
+state, kind, `db.schema.table`, and rows/bytes transferred:
 
 ```bash
-gpstream status --mirror /tmp/gpstream_<hash>.mirror
+gpstream status --operation-id <id>
 ```
 
-### 6.2 `gpstream metrics`
+### 6.2 The `/metrics` endpoint
 
-Prints the live metrics snapshot (throughput, latency, error rate). Without an
-endpoint it prints the current process counters; with one it points at the
-Prometheus endpoint. Serve it during a copy with `--metrics-addr`:
+There is no separate `metrics` subcommand — the Prometheus endpoint is served
+**during a run** when you pass `--metrics-addr`:
 
 ```bash
-gpstream metrics --metrics-addr http://localhost:9100
-gpstream run --metrics-addr http://localhost:9100 --db orders
+gpstream run --dbs orders --metrics-addr http://localhost:9100
+curl -s http://localhost:9100/metrics
 ```
 
-### 6.3 Other observability commands
-
-- `gpstream logs --mirror F` — human-readable operation journal (one line per unit transition).
-- `gpstream indexes --mirror F [--rebuild]` — report / rebuild indexes after a copy.
+`gpstream status --operation-id <id>` also prints a live table with rows,
+throughput, and ETA.
 
 ---
 
 ## 7. Recover
 
-If a copy is interrupted, resume or roll back using the journal mirror (`F`).
-Both `resume` and `rollback` (and `cancel`) are **destructive** and require
-`--yes`; `resume` is the safe path to re-queue unfinished units.
+If a copy is interrupted, resume it or clean it up by operation id.
 
-### 7.1 Resume an interrupted job
+### 7.1 Resume an interrupted operation
 
-`resume` reopens the operation journal (file mirror, optionally the live
-dest-DB journal) and restarts every unit not in a terminal state:
+`resume` reopens the operation manifest and restarts every unit not in a
+terminal state:
 
 ```bash
-gpstream resume --mirror /tmp/gpstream_<hash>.mirror
-gpstream resume --mirror /tmp/gpstream_<hash>.mirror --auto-resume 3
+gpstream resume --operation-id <id>
+gpstream resume --operation-id <id> --auto-resume 3
 ```
 
-It prints how many units were re-queued (and, with `--auto-resume N`, the
-attempt count / max). If all units are already terminal it prints
-`resume: all units terminal — nothing to resume`.
+It reports how many units were re-queued. If all units are already terminal it
+prints `resume: all units terminal — nothing to resume`. You can also set
+`--auto-resume N` on the copy itself, so the operation auto-resumes up to `N`
+times from the checkpoint if a unit does not reach a terminal state. Resume
+re-read behaviour is controlled by `--resume-consistency relaxed|strict`
+(default `relaxed`).
 
-You can also set `--auto-resume N` on the copy itself, so the job auto-resumes up
-to `N` times from the checkpoint if a unit does not reach a terminal state.
+### 7.2 Clean up
 
-### 7.2 Roll back a job
-
-`rollback` runs the crash-recovery sequence: any unit not in a terminal state
-(i.e. not verified / swapped) is rolled back to `pending` so it is re-copied, and
-completed-but-not-swapped staging objects are rolled back:
+`cleanup` removes an operation's state and (optionally) its destination
+objects:
 
 ```bash
-gpstream rollback --mirror /tmp/gpstream_<hash>.mirror --yes
+gpstream cleanup --operation-id <id>
+# remove all incomplete operations
+gpstream cleanup --all-incomplete
+# also drop the destination objects the operation created
+gpstream cleanup --operation-id <id> --mode drop --dest "$DST"
 ```
-
-### 7.3 Cancel / cleanup
-
-- `gpstream cancel --mirror F --yes` — mark non-terminal units failed (terminal units preserved).
-- `gpstream cleanup --mirror F --yes [--auto-cleanup]` — remove a job's journal and staging objects.
 
 ---
 
 ## 8. Conflict handling (conflicts stop the run)
 
 When a unit's target table **already exists** on the destination, gpstream must
-decide what to do. **By default it refuses and stops the run** (FR-10 §8): the
-copy halts with a conflict error and **nothing is clobbered and nothing is
-silently skipped**. You must opt in to a policy explicitly.
+decide what to do. **By default it refuses and stops the run** (F-10): the copy
+halts with a conflict and **nothing is clobbered and nothing is silently
+skipped**. You opt in to a policy with `--resolve-conflicts`:
 
-| Flag | Behaviour |
+| `--resolve-conflicts` | Behaviour |
 | --- | --- |
-| *(default)* | **Strict** — a conflict **stops the run** (skip-existing with `--skip-conflicts` OFF). Nothing is overwritten, nothing is skipped. |
-| `--skip-conflicts` | Skip conflicting units and continue (the old "safe skip" behaviour — now an explicit opt-in). |
-| `--overwrite` | Replace existing data (staging + atomic rename; verified before the swap). |
-| `--overwrite-only-conflicts` | Overwrite **only** the tables that have a conflict (v2 refinement; more conservative than `--overwrite`). |
-| `--truncate` | Truncate the target, then load into it. |
-| `--append` | Append to the existing target. |
+| `stop` (default) | **A conflict stops the run.** Nothing is overwritten, nothing is skipped. |
+| `skip` | Skip conflicting units and continue. |
+| `overwrite` | Replace existing data (staging + atomic swap; verified before the swap). |
+| `truncate` | Truncate the target, then load into it (in-place). |
 
-The dry-run lists any conflicts and the **verdict that would apply** (stop /
-skip / overwrite / truncate / append), so you can see the impact — and, for the
-default, exactly which run would stop — before you run.
+`--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
+policy. The dry-run lists any conflicts and the **verdict that would apply**
+(stop / skip / overwrite / truncate), so you can see the impact before you run.
 
 > **Choosing:** for a first copy of a fresh destination there are no conflicts
 > and the run proceeds. When re-copying into a cluster that already holds data,
-> decide deliberately: `--skip-conflicts` to keep what's there, or
-> `--overwrite`/`--truncate`/`--append` to replace it.
+> decide deliberately: `--resolve-conflicts skip` to keep what's there, or
+> `overwrite` / `truncate` to replace it.
 
 ---
 
@@ -245,34 +230,32 @@ default, exactly which run would stop — before you run.
 A realistic end-to-end first copy of a single database:
 
 ```bash
-# 1. Point at the two clusters
-export GPSTREAM_SOURCE="host=prod-coordinator   port=5432 user=gpstream dbname=postgres"
-export GPSTREAM_DEST="host=preprod-coordinator  port=5432 user=gpstream dbname=postgres"
+# 1. Point at the two clusters (flags or the config file; there is no
+#    GPSTREAM_SOURCE/DEST env var)
+SRC="host=prod-coordinator   port=5432 user=gpstream dbname=postgres"
+DST="host=preprod-coordinator  port=5432 user=gpstream dbname=postgres"
 
-# (Optional) TLS secrets come from the environment, never argv
-# export GPSTREAM_SSL_CERT=/etc/gpstream/tls/client.crt
-# export GPSTREAM_SSL_KEY=/etc/gpstream/tls/client.key      # mode 0600
+# (Optional) TLS CA for the pg plane comes from env/file, never argv
 # export GPSTREAM_SSL_CA=/etc/gpstream/tls/ca.crt
 
 # 2. Dry-run first — preview the deterministic plan
-gpstream dry-run --dbs orders
+gpstream dry-run --source "$SRC" --dest "$DST" --dbs orders
 #   (add --plan-file /tmp/plan.json to persist it)
 
 # 3. Inspect: units, volume, ETA, conflicts (default verdict = stop), redistribution, plan hash
 
 # 4. Run the copy. On a fresh destination there are no conflicts, so the run
 #    proceeds. If a target table already exists, the run STOPS by default —
-#    re-run with --skip-conflicts (keep what's there) or --overwrite
-#    (replace it) to proceed deliberately.
-gpstream run --db orders --metrics-addr http://localhost:9100
+#    re-run with --resolve-conflicts skip (keep what's there) or
+#    --resolve-conflicts overwrite (replace it) to proceed deliberately.
+gpstream run --source "$SRC" --dest "$DST" --dbs orders --operation-id first-copy --metrics-addr http://localhost:9100
 
 # 5. Monitor
-gpstream status  --mirror /tmp/gpstream_<hash>.mirror
-gpstream metrics --metrics-addr http://localhost:9100
+gpstream status --operation-id first-copy
+curl -s http://localhost:9100/metrics
 
-# 6. If interrupted, resume (or rollback) from the journal mirror
-gpstream resume  --mirror /tmp/gpstream_<hash>.mirror
-gpstream rollback --mirror /tmp/gpstream_<hash>.mirror --yes
+# 6. If interrupted, resume from the same operation id
+gpstream resume --operation-id first-copy
 ```
 
 For a maintenance-window-wide, cluster-consistent copy, use `--consistent-cluster`
@@ -285,16 +268,20 @@ instead of the default `--consistent-db`.
 | Category | Flags |
 | --- | --- |
 | Endpoints | `--source`, `--dest` |
-| Scope | `--full`, `--db`, `--schema`, `--table`, `--exclude`, `--metadata-only`, `--data-only` |
-| Conflict | *(default: conflicts stop the run)* — `--skip-conflicts` (alias `--skip-existing`) to skip, or `--overwrite` / `--overwrite-only-conflicts` / `--truncate` / `--append` to proceed |
-| Performance | `--compress none|zlib|zstd[:1-19]`, `--rate-limit <Gbps>`, `--workers-per-pair N`, `--data-port-range a-b` |
-| Resilience | `--auto-resume N`, `--verify full|sample|off` |
-| Consistency | `--consistent-db`, `--consistent-cluster`, `--consistent-tables` |
-| Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size|manual`, `--background-indexes` |
-| Redistribution | `--no-redistribute`, `--skew-threshold X`, `--redistribution-plan`, `--distribution-check` |
-| TLS | `--ssl-cert`, `--ssl-key`, `--ssl-ca`, `--ssl-min-tls` (secrets from env/file, never argv) |
+| Scope | `--dbs`, `--schemas`, `--tables`, `--exclude`, `--include`, `--metadata-only`, `--data-only` |
+| Rename | `--map-db`, `--map-schema`, `--map-table` |
+| Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
+| Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
+| Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen`, `--seg-binary` |
+| Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
+| Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
+| Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables`, `--resume-consistency` |
+| Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|foreign\|random` (F-17, on by default) |
+| Redistribution | `--no-redistribute`, `--skew-threshold X`, `--segment-balance-threshold X` |
+| TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |
 | Planning | `--dry-run`, `--timeout S`, `--plan-file F` |
-| Observability | `--metrics`, `--metrics-addr A`, `--report-json/-csv/-text F` |
+| Observability | `--metrics-addr A` (serves `/metrics` during a run) |
+| Operation | `--operation-id <id>`, `--state-dir DIR` |
 | Config | `--config <file>` |
 
 Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.
@@ -308,5 +295,6 @@ Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.
 - **`CLI_REFERENCE`** — the full flag surface for every subcommand.
 - **`CONFIGURATION`** — the `gpstream.toml` config file, env variables, and precedence.
 - **`docs/INSTALL.md`** — building, cross-compiling, packaging, systemd, and logrotate.
+- **`docs/METRICS.md`** — the Prometheus metric names and semantics.
 - **`gpstream man`** / `man/gpstream.8` — the man page.
 - **`gpstream --help`** — commands and flags.

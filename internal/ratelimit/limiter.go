@@ -7,7 +7,7 @@
 // Each change is a diagnostic message carrying the metric values (FR-14), so
 // the degradation is observable (FR-04). The limiter is decoupled from
 // /proc: it takes a Metrics provider so it is unit-testable without a live
-// host (CР-2/FR-14).
+// host (CR-2/FR-14).
 package ratelimit
 
 import (
@@ -28,11 +28,11 @@ type Metrics struct {
 	// Retransmits is the TCP retransmit rate (per second); 0 if unknown.
 	Retransmits float64
 	// ReceiveWriteLatencyMs is the average data-path frame-write latency
-	// (ms) over the last second (FR-14 «рост очереди приёма — данные
-	// воркера приёмника из /proc и метрик COPY»). The data path is an
+	// (ms) over the last second (FR-14 "receive-queue growth — receiver
+	// worker data from /proc and COPY metrics"). The data path is an
 	// unbuffered pipe: a frame write only completes once the destination
 	// has drained the bytes, so the average write latency is the receive
-	// queue as the controller observes it — the in-process «метрики COPY»
+	// queue as the controller observes it — the in-process "COPY metrics"
 	// the spec names. 0 = no data moved, or the destination drained
 	// instantly.
 	ReceiveWriteLatencyMs float64
@@ -42,8 +42,8 @@ type Metrics struct {
 // thresholds with hysteresis: reduce when the average data-path write
 // latency exceeds the upper bound (the receiver is falling behind), recover
 // only when it drops below the lower bound, so a borderline receiver does
-// not flap the rate up and down every sample (FR-14 AIMD: медленный рост,
-// быстрое снижение).
+// not flap the rate up and down every sample (FR-14 AIMD: slow increase,
+// fast decrease).
 const (
 	receiveWriteReduceMs  = 50.0
 	receiveWriteRecoverMs = 20.0
@@ -105,8 +105,8 @@ func (l *Limiter) SetOnChange(fn func(from, to Gbps, reason string)) {
 }
 
 // SetReceiveWriteLatency registers a supplier of the destination
-// receive-queue write-latency in milliseconds (F-14: «рост очереди приёма —
-// данные воркера приёмника из /proc и метрик COPY»). It is sampled in
+// receive-queue write-latency in milliseconds (F-14: "receive-queue growth —
+// receiver worker data from /proc and COPY metrics"). It is sampled in
 // Update() alongside the host metrics; when the supplier is nil the
 // receive-queue signal is simply absent (the limiter behaves as before). The
 // supplier must not block.
@@ -168,7 +168,7 @@ func (l *Limiter) Update() {
 
 // reduceLocked reduces the current rate by the step (floor-limited). It must
 // be called with l.mu held. The reason is enriched with the triggering
-// metric value (FR-14: «причина: cpu %, disk latency, очередь»).
+// metric value (FR-14: "cause: cpu %, disk latency, queue").
 func (l *Limiter) reduceLocked(cause string, m Metrics) string {
 	if l.current <= l.floor {
 		return "" // already at the floor

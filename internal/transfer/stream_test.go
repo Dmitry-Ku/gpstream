@@ -45,7 +45,7 @@ func TestFrameBadMagic(t *testing.T) {
 }
 
 // TestSessionOverPipe verifies a frame sent over a pipe is received and
-// CRC-verified on the other side (no network required, CР-2). The send and
+// CRC-verified on the other side (no network required, CR-2). The send and
 // receive run concurrently because the transport is synchronous, mirroring a
 // real (async) net.Conn where a write does not block on the read.
 func TestSessionOverPipe(t *testing.T) {

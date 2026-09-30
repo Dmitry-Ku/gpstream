@@ -29,52 +29,66 @@ fully deterministic `--dry-run` plan.
 
 | ID | Requirement |
 |---|---|
-| FR-01 | Copy over the network, no intermediate storage |
-| FR-02 | Snapshot consistency + cleanup of orphaned data |
-| FR-03 | Performance independent of DB architecture (100 000 small AO/CO tables) |
-| FR-04 | Monitoring and metrics |
-| FR-05 | Packaging, self-diagnostic, man, documentation |
-| FR-06 | Resilience, `--auto-resume N` |
-| FR-07 | Crash-recovery: integrity check, minimal rollback |
-| FR-08 | Minimal dependencies, free licenses only |
-| FR-09 | Automated tests |
-| FR-10 | `--dry-run`: availability, volume/time estimate, conflicts, plan |
-| FR-11 | Selection, data safety, rename |
-| FR-12 | zlib / zstd compression |
-| FR-13 | TLS, certificates |
-| FR-14 | Rate limits, bottleneck auto-detection |
-| FR-15 | Redistribution accounting |
-| FR-16 | Different OS/kernel/glibc, COLLATION |
-| FR-17 | Background index rebuild |
-| FR-18 | Project name `gpstream` |
+| F-01 | Copy over the network, no intermediate storage |
+| F-02 | Snapshot consistency + cleanup of orphaned data |
+| F-03 | Performance independent of DB architecture (100 000 small AO/CO tables) |
+| F-04 | Monitoring and metrics |
+| F-05 | Packaging, self-diagnostic, man, documentation |
+| F-06 | Resilience, `--auto-resume N` |
+| F-07 | Crash-recovery: integrity check, minimal rollback |
+| F-08 | Minimal dependencies, free licenses only |
+| F-09 | Automated tests |
+| F-10 | `--dry-run`: availability, volume/time estimate, conflicts, plan |
+| F-11 | Selection, data safety, rename |
+| F-12 | zlib / zstd compression |
+| F-13 | TLS, certificates |
+| F-14 | Rate limits, bottleneck auto-detection |
+| F-15 | Redistribution accounting |
+| F-16 | Different OS/kernel/glibc, COLLATION |
+| F-17 | Background index rebuild |
+| F-18 | Project name `gpstream` |
 
-## CLI contract (§5)
+## CLI contract (§8)
 
 ```
 gpstream run
   --source "<connstr>" --dest "<connstr>"
-  (--full | --dbs D... | --schemas D.S... | --tables D.S.T...) [--exclude ...]
-  [--metadata-only | --data-only]
-  [--skip-existing | --overwrite | --truncate | --append]      # default: skip-existing
-  [--skip-conflicts | --conflict-action skip|fail]
+  (--dbs D... | --schemas D.S... | --tables D.S.T...) [--exclude ...]
+  [--include metadata,data]
+  [--resolve-conflicts stop|skip|overwrite|truncate]   # default: stop
+  [--overwrite | --truncate]                           # explicit opt-ins
   [--map-db src=dst] [--map-schema src=dst] [--map-table src=dst]
-  [--compression none|zlib|zstd[:level]] [--zstd-level N]
-  [--max-bw <Gbps>] [--workers-per-pair N] [--data-port-range a-b]
-  [--auto-resume N] [--verify full|sample|off]
-  [--index-workers N | --no-indexes] [--index-priority size|manual]
-  [--no-redistribute | --skew-threshold X]
-  [--tls] [--ssl-cert F --ssl-key F --ssl-ca F --ssl-min-tls V]
+  [--compress none|zlib|zstd[:level]] [--zstd-level N]
+  [--small-table-threshold SIZE]                       # F-12, default 1MiB
+  [--copy-mode coordinator|on_segment|direct]
+  [--seg-listen HOST:PORT] [--seg-binary PATH]
+  [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
+  [--workers N] [--rate-limit <Gbps>]
+  [--auto-resume N] [--resume-consistency relaxed|strict]
+  [--on-unit-failure continue|abort]
+  [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
+  [--max-reconnects N] [--retransmit-buffer-max SIZE]
+  [--verify full|sample|off]                           # default: sample
+  [--index-workers N | --no-indexes] [--index-priority size|foreign|random]
+  [--no-redistribute | --skew-threshold X | --segment-balance-threshold X]
+  [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
+  [--operation-id <id>] [--state-dir DIR]
   [--timeout S] [--plan-file F]
-  [--config file.toml] [--state-dir D] [--log-level debug|info|warn|error] [--quiet | --debug]
+  [--config file.toml]
 
 gpstream dry-run  [--timeout S] [--plan-file F]   # same selection flags as run
 gpstream status   --operation-id <id>
 gpstream resume   --operation-id <id>
-gpstream cleanup  <operation-id> [--all-incomplete] [--mode drop]
+gpstream cleanup  --operation-id <id> [--all-incomplete] [--mode drop] [--dest <conn>]
 gpstream doctor   [--source ...] [--dest ...]
 gpstream selftest
+gpstream version
 gpstream man [topic]
 ```
+
+Priority: CLI flag > environment > config file > default. Config file:
+`/etc/gpstream/gpstream.toml`; state: `/var/lib/gpstream/<operation-id>/`.
+The full flag reference is in [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
 
 ## Build
 
@@ -99,23 +113,30 @@ go test -cover ./...
 
 ```
 gpstream/
-├── cmd/gpstream/            # main, subcommands
+├── cmd/gpstream/            # main, subcommands, flag parsing, help
 ├── internal/
-│   ├── planner/             # plan, volume estimate, collation, conflicts, idempotent
-│   ├── job/                 # journal, checkpoint, swap, cleanup, auto-resume
-│   ├── stream/              # host-pair workers, framing, crc
-│   ├── source/              # agents, COPY TO, gp_segment_connect, checksum
-│   ├── dest/                # agents, COPY FROM staging, verify
-│   ├── indexer/             # background index builder
-│   ├── limiter/             # adaptive rate limit, /proc metrics
-│   ├── metrics/             # metrics, /metrics, json/csv
+│   ├── plan/                # plan, volume estimate, routing, collation, conflicts
+│   ├── route/               # copy-mode routing (coordinator/on_segment/direct)
+│   ├── topology/            # cluster/segment discovery
+│   ├── transfer/            # framing, reliable pipe, stream engine
+│   │   ├── pg/              # COPY TO/FROM, schema DDL, conn pool
+│   │   ├── source/          # source-side read path
+│   │   ├── dest/            # dest-side write path, segment balance
+│   │   ├── segstream/       # segment-direct data plane (on_segment/direct)
+│   │   └── compress/        # zstd/zlib
+│   ├── manifest/            # operation manifest, dest objects, resume
+│   ├── monitor/             # metrics, events, /metrics
+│   ├── ratelimit/           # adaptive rate limit (AIMD), /proc metrics
+│   ├── index/               # background index builder
 │   ├── doctor/              # self-diagnostic
-│   ├── config/  pg/  selftest/  conn/
+│   ├── config/              # config file + env + defaults
+│   ├── pgtest/              # live-PG test harness
+│   └── selftest/            # internal sanity checks
 ├── man/gpstream.8
-├── docs/  (README, architecture, user/admin guide, ADR/, FAQ)
-├── packaging/ (systemd, rpm/deb, logrotate, examples)
-├── tests/ (unit, integration [docker 2×GP6], chaos, perf)
-└── .github/workflows/
+├── docs/                    # CLI reference, metrics, quickstart, guides
+├── packaging/               # systemd, rpm/deb, logrotate, examples
+├── tests/                   # unit, integration, chaos, perf
+└── .github/workflows/       # CI
 ```
 
 ## License
