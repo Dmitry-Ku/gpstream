@@ -140,10 +140,6 @@ type Config struct {
 	// the run at the first failure (in-flight units finish, none new starts).
 	OnUnitFailure string     // continue (default) | abort
 	Verify        VerifyMode // default sample
-	// ResumeConsistency selects the resume re-read semantics (T5, DESIGN
-	// §2.2): "relaxed" (default) keeps a table verified in one snapshot
-	// epoch; "strict" re-reads every table verified under an older snapshot.
-	ResumeConsistency string // relaxed|strict, default relaxed
 
 	// Indexes (FR-17).
 	IndexWorkers  int
@@ -284,11 +280,6 @@ func (c *Config) Validate() error {
 	case "", "size", "fifo":
 	default:
 		return fmt.Errorf("unknown index-priority %q (want size|fifo)", c.IndexPriority)
-	}
-	switch c.ResumeConsistency {
-	case "", "relaxed", "strict":
-	default:
-		return fmt.Errorf("unknown resume consistency %q (relaxed|strict)", c.ResumeConsistency)
 	}
 	if c.MetadataOnly && c.DataOnly {
 		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
@@ -675,8 +666,6 @@ func assignConfigString(c *Config, key, v string) {
 		c.OnUnitFailure = v
 	case "consistent_tables":
 		c.ConsistentTables = v == "true" || v == "1"
-	case "resume_consistency":
-		c.ResumeConsistency = v
 	case "verify":
 		c.Verify = VerifyMode(v)
 	case "ssl_cert":

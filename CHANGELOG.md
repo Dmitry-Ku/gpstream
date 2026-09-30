@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed `--resume-consistency` (flag + file key); relaxed is now the only resume re-read rule
+
+the maintainer: the strict mode (re-read the ENTIRE database on every resume) was a
+rare, very expensive choice; F-02 already gives one-point-in-time within a
+run, and relaxed re-reads exactly the tables that are not guaranteed to come
+from a single snapshot (non-terminal or mixed-epoch). The flag, the
+`resume_consistency` file key, the `JobMeta.ResumeCons` field and the
+`gpstream_jobs.resume_cons` column were removed; `reReadTables` now takes no
+mode. `status` no longer prints the mode. Tests: the strict cases were
+removed/converted (epoch rule table, t7 resume run 3 now asserts idempotent
+relaxed resume). Docs, man, CHANGELOG updated.
+
 ### Removed `--segment-balance-threshold` (flag, file key, env var)
 
 the maintainer: the knob did not earn its place. The F-15 live segment-fill metric

@@ -165,7 +165,6 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.WorkersPerPair = 0 }, "workers=0")
 	fail(func(c *Config) { c.AutoResume = -1 }, "auto-resume<0")
 	fail(func(c *Config) { c.OnUnitFailure = "stop" }, "on-unit-failure")
-	fail(func(c *Config) { c.ResumeConsistency = "loose" }, "resume-consistency")
 	fail(func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }, "metadata+data")
 	fail(func(c *Config) { c.ConsistentDB, c.ConsistentCluster = true, true }, "db+cluster")
 	fail(func(c *Config) { c.ConsistentTables, c.ConsistentCluster = true, true }, "tables+cluster")
@@ -242,7 +241,6 @@ small_table_threshold = "1024"
 auto_resume = "1"
 on_unit_failure = "abort"
 consistent_tables = "true"
-resume_consistency = "strict"
 verify = "sample"
 log_level = "warn"
 ssl_cert = "/a"
@@ -281,7 +279,6 @@ small_table_threshold: "1024"
 auto_resume: "1"
 on_unit_failure: "abort"
 consistent_tables: "true"
-resume_consistency: "strict"
 verify: "sample"
 log_level: "warn"
 ssl_cert: "/a"
@@ -324,7 +321,7 @@ report_text: "/t"
 		if c.Source != "postgres://s" || c.Dest != "postgres://d" || c.RateLimit != 7.5 ||
 			c.WorkersPerPair != 4 || c.Compression != "none" || c.ZstdLevel != 9 ||
 			c.SmallTableThreshold != 1024 || c.AutoResume != 1 || c.OnUnitFailure != "abort" ||
-			!c.ConsistentTables || c.ResumeConsistency != "strict" || c.Verify != "sample" ||
+			!c.ConsistentTables || c.Verify != "sample" ||
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
 			c.SegTLSCA != "/sc" || c.SkewThreshold != 0.8 ||

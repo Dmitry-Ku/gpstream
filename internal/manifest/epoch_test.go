@@ -50,83 +50,55 @@ func TestReReadTablesRuleTable(t *testing.T) {
 		return &Unit{DB: "db", Schema: "s", Table: "t2", State: state, Epoch: epoch}
 	}
 	tests := []struct {
-		name    string
-		mode    string
-		current int64
-		units   []*Unit
-		wantRR  map[string]bool // expected re-read set
+		name   string
+		units  []*Unit
+		wantRR map[string]bool // expected re-read set
 	}{
 		{
-			name: "relaxed: one epoch completed -> keep",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: one epoch completed -> keep",
 			units:  []*Unit{mk(StateCompleted, 1)},
 			wantRR: map[string]bool{},
 		},
 		{
-			name: "relaxed: swapped -> keep (swap moment)",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: swapped -> keep (swap moment)",
 			units:  []*Unit{mk(StateSwapped, 1)},
 			wantRR: map[string]bool{},
 		},
 		{
-			name: "relaxed: swapped + completed same epoch -> keep",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: swapped + completed same epoch -> keep",
 			units:  []*Unit{mk(StateSwapped, 1), mkOther(StateCompleted, 1)},
 			wantRR: map[string]bool{},
 		},
 		{
-			name: "relaxed: two units of one table, mixed epochs -> re-read",
-			mode: "relaxed", current: 3,
+			name:   "relaxed: two units of one table, mixed epochs -> re-read",
 			units:  []*Unit{mk(StateCompleted, 1), mkSame(StateCompleted, 2)},
 			wantRR: map[string]bool{"db|s|t": true},
 		},
 		{
-			name: "relaxed: two units of one table, one epoch -> keep",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: two units of one table, one epoch -> keep",
 			units:  []*Unit{mk(StateCompleted, 1), mkSame(StateCompleted, 1)},
 			wantRR: map[string]bool{},
 		},
 		{
-			name: "relaxed: streaming unit -> re-read",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: streaming unit -> re-read",
 			units:  []*Unit{mk(StateCopying, 1), mkOther(StateCompleted, 1)},
 			wantRR: map[string]bool{"db|s|t": true},
 		},
 		{
-			name: "relaxed: failed unit -> re-read",
-			mode: "relaxed", current: 2,
+			name:   "relaxed: failed unit -> re-read",
 			units:  []*Unit{mk(StateFailed, 1)},
 			wantRR: map[string]bool{"db|s|t": true},
 		},
 		{
 			name: "relaxed: other table untouched",
-			mode: "relaxed", current: 3,
 			units: []*Unit{mk(StateCompleted, 1), mkSame(StateCompleted, 2),
 				{DB: "db", Schema: "s", Table: "t3", State: StateCompleted, Epoch: 2}},
-			wantRR: map[string]bool{"db|s|t": true},
-		},
-		{
-			name: "strict: completed older epoch -> re-read",
-			mode: "strict", current: 3,
-			units:  []*Unit{mk(StateCompleted, 1)},
-			wantRR: map[string]bool{"db|s|t": true},
-		},
-		{
-			name: "strict: even current-epoch completed -> re-read (full DB point in time)",
-			mode: "strict", current: 3,
-			units:  []*Unit{mk(StateCompleted, 3)},
-			wantRR: map[string]bool{"db|s|t": true},
-		},
-		{
-			name: "strict: swapped -> re-read and re-swap (DESIGN §2.2)",
-			mode: "strict", current: 3,
-			units:  []*Unit{mk(StateSwapped, 1)},
 			wantRR: map[string]bool{"db|s|t": true},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reReadTables(tc.mode, tc.current, tc.units)
+			got := reReadTables(tc.units)
 			if len(got) != len(tc.wantRR) {
 				t.Fatalf("re-read set = %v, want %v", got, tc.wantRR)
 			}
@@ -144,7 +116,7 @@ func TestReReadTablesRuleTable(t *testing.T) {
 func TestJobMetaMirrorRoundTrip(t *testing.T) {
 	mirror := t.TempDir() + "/journal.jsonl"
 	j := NewJournal(nil, mirror)
-	if err := j.SaveMeta("op1", &JobMeta{JobID: "op1", SnapEpoch: 4, CopyMode: "on_segment", ResumeCons: "strict"}); err != nil {
+	if err := j.SaveMeta("op1", &JobMeta{JobID: "op1", SnapEpoch: 4, CopyMode: "on_segment"}); err != nil {
 		t.Fatalf("save meta: %v", err)
 	}
 	j2 := NewJournal(nil, mirror)
@@ -152,8 +124,8 @@ func TestJobMetaMirrorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load meta: %v", err)
 	}
-	if meta == nil || meta.SnapEpoch != 4 || meta.CopyMode != "on_segment" || meta.ResumeCons != "strict" {
-		t.Fatalf("meta = %+v, want epoch=4 on_segment strict", meta)
+	if meta == nil || meta.SnapEpoch != 4 || meta.CopyMode != "on_segment" {
+		t.Fatalf("meta = %+v, want epoch=4 on_segment", meta)
 	}
 	// No metadata yet (fresh operation): nil, no error.
 	j3 := NewJournal(nil, t.TempDir()+"/journal.jsonl")
@@ -258,37 +230,6 @@ func TestResumeMixedEpochsReReadsTable(t *testing.T) {
 	}
 	if u2.State != StateSwapped || u2.Epoch != 2 {
 		t.Fatalf("run2 orders2: state=%s epoch=%d, want swapped/2 (re-read)", u2.State, u2.Epoch)
-	}
-}
-
-// TestResumeStrictReReadsOldEpoch: with --resume-consistency strict, a table
-// verified under an OLDER snapshot epoch is re-read under the fresh snapshot
-// even though relaxed would keep it.
-func TestResumeStrictReReadsOldEpoch(t *testing.T) {
-	cfg := config.Default()
-	mirror := t.TempDir() + "/journal.jsonl"
-
-	// Run 1 (relaxed): both tables completed, epoch 1.
-	m1, _, _ := runT5(t, mirror, cfg)
-	if m1.Units != 2 {
-		t.Fatalf("run1: units=%d, want 2", m1.Units)
-	}
-
-	// Run 2 (strict): the fresh snapshot is epoch 2; both tables were
-	// verified under epoch 1 -> strict re-reads them.
-	cfg2 := config.Default()
-	cfg2.ResumeConsistency = "strict"
-	m2, _, dst2 := runT5(t, mirror, cfg2)
-	if m2.Units != 2 || m2.Skipped != 0 {
-		t.Fatalf("run2 strict: units=%d skipped=%d, want 2/0 (re-read all)", m2.Units, m2.Skipped)
-	}
-	if len(dst2.WrittenCopy("FROM STDIN")) == 0 {
-		t.Fatalf("run2 strict copied no data, want both tables re-read")
-	}
-	for _, u := range m2.journal.Units() {
-		if u.State != StateSwapped || u.Epoch != 2 {
-			t.Fatalf("run2 unit %d: state=%s epoch=%d, want swapped/2", u.UnitID, u.State, u.Epoch)
-		}
 	}
 }
 

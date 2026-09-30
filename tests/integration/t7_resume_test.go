@@ -78,7 +78,7 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 
 	// --- Run 2 (relaxed, default): keep t_keep, re-read t_reread. ---
 	srcP2, dstP2 := poolsFor(t, srcCl, dstCl)
-	cfg2 := base // ResumeConsistency = "" -> relaxed
+	cfg2 := base
 	p2 := buildPlan(t, cfg2, srcP2, dstP2)
 	j2 := manifest.NewJournal(dstP2, stateDir+"/journal.jsonl")
 	m2 := manifest.NewManager(&cfg2, srcP2, dstP2, j2)
@@ -103,27 +103,29 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 	srcP2.Close()
 	dstP2.Close()
 
-	// --- Run 3 (strict): re-read EVERY table under the fresh snapshot;
-	// counts must stay exact. ---
+	// --- Run 3 (relaxed resume again): both tables are now completed in a
+	// single epoch (t_keep@1, t_reread@2), so nothing is re-read — the
+	// resume is idempotent: counts stay exact and epochs are untouched. ---
 	srcP3, dstP3 := poolsFor(t, srcCl, dstCl)
 	cfg3 := base
-	cfg3.ResumeConsistency = "strict"
 	p3 := buildPlan(t, cfg3, srcP3, dstP3)
 	j3 := manifest.NewJournal(dstP3, stateDir+"/journal.jsonl")
 	m3 := manifest.NewManager(&cfg3, srcP3, dstP3, j3)
 	if err := runWithTimeout(t, m3, p3, 300*time.Second); err != nil {
-		t.Fatalf("run 3 (strict resume): %v", err)
+		t.Fatalf("run 3 (relaxed resume): %v", err)
 	}
 	if got := mustCount(t, dstP3, `SELECT count(*) FROM public.t_keep`); got != nKeep {
-		t.Fatalf("strict resume: t_keep has %d rows, want %d (duplicates or missing)", got, nKeep)
+		t.Fatalf("run 3: t_keep has %d rows, want %d (duplicates or missing)", got, nKeep)
 	}
 	if got := mustCount(t, dstP3, `SELECT count(*) FROM public.t_reread`); got != nReRead {
-		t.Fatalf("strict resume: t_reread has %d rows, want %d (duplicates or missing)", got, nReRead)
+		t.Fatalf("run 3: t_reread has %d rows, want %d (duplicates or missing)", got, nReRead)
 	}
-	// strict re-reads every table: t_keep's unit must now carry run 3's
-	// epoch (3), not run 1's.
-	if u := j3.Get(1); u == nil || u.Epoch != 3 {
-		t.Fatalf("strict resume: t_keep unit epoch=%v, want 3 (strict re-read everything)", u)
+	// Both tables are kept: epochs are unchanged from run 2 (1 and 2).
+	if u := j3.Get(1); u == nil || u.Epoch != 1 {
+		t.Fatalf("run 3: t_keep unit epoch=%v, want 1 (kept, not re-copied)", u)
+	}
+	if u := j3.Get(2); u == nil || u.Epoch != 2 {
+		t.Fatalf("run 3: t_reread unit epoch=%v, want 2 (kept, not re-copied)", u)
 	}
 }
 

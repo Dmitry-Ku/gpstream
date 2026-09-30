@@ -63,7 +63,7 @@ gpstream run
   [--seg-listen HOST:PORT] [--seg-binary PATH]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
   [--workers N] [--rate-limit <Gbps>]
-  [--auto-resume N] [--resume-consistency relaxed|strict]
+  [--auto-resume N]
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
   [--max-reconnects N] [--retransmit-buffer-max SIZE]

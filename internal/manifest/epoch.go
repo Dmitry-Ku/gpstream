@@ -12,27 +12,20 @@
 //   - every unit that reaches a verified state (Unit.Epoch, gpstream_units.epoch),
 //
 // so a later resume can tell which snapshot each unit's verified data came
-// from. The re-read decision at resume time follows the DESIGN §2.2 table
-// (mode --resume-consistency relaxed|strict, default relaxed):
+// from. The re-read decision at resume time follows the DESIGN §2.2 rule
+// (a table is kept only if it was verified under one snapshot epoch):
 //
-//	relaxed:
-//	  - table completed in ONE epoch       -> keep (verify aggregate -> swap)
-//	  - table completed in DIFFERENT epochs -> re-read the whole table
-//	  - table has a non-completed unit      -> re-read the whole table
-//	  - already swapped                     -> keep (point in time = swap moment)
-//	strict:
-//	  - re-read EVERY table that has journal records under the fresh
-//	    snapshot, unconditionally (DESIGN §2.2: "re-read ALL slices
-//	    under S'" / "re-read and re-update" — the whole database must
-//	    be one point in time, at the cost of a full re-read; sensible for
-//	    small DBs)
+//   - table completed in ONE epoch       -> keep (verify aggregate -> swap)
+//   - table completed in DIFFERENT epochs -> re-read the whole table
+//   - table has a non-completed unit      -> re-read the whole table
+//   - already swapped                     -> keep (point in time = swap moment)
 //
-// The invariant relaxed preserves: table integrity — every unit of a table is
+// The invariant preserved: table integrity — every unit of a table is
 // verified under one snapshot. Cross-table consistency after a crash is
-// broken in any case, so relaxed is the default (a 1 PB re-read per failure
-// is unacceptable); strict gives full "database = one point in time" at the
-// cost of a full re-read. Within a single run without a failure both modes
-// coincide — one snapshot for everything.
+// broken in any case, so re-reading only the affected tables (not the whole
+// database) is the rule (a 1 PB re-read per failure is unacceptable).
+// Within a single run without a failure there is one snapshot for
+// everything.
 package manifest
 
 import (
@@ -50,11 +43,10 @@ import (
 // service DB; the file mirror (jobmeta.json next to journal.jsonl) is the
 // durable fallback when the destination DB is unreachable (FR-07).
 type JobMeta struct {
-	JobID      string `json:"job_id"`
-	SnapEpoch  int64  `json:"snap_epoch"`
-	SnapID     string `json:"snap_id,omitempty"`
-	CopyMode   string `json:"copy_mode,omitempty"`
-	ResumeCons string `json:"resume_consistency,omitempty"` // relaxed|strict
+	JobID     string `json:"job_id"`
+	SnapEpoch int64  `json:"snap_epoch"`
+	SnapID    string `json:"snap_id,omitempty"`
+	CopyMode  string `json:"copy_mode,omitempty"`
 }
 
 // metaFileName is the file-mirror name of JobMeta (next to journal.jsonl).
@@ -137,18 +129,16 @@ func (j *Journal) SaveMeta(jobID string, m *JobMeta) error {
 			    job_id      text PRIMARY KEY,
 			    snap_epoch  bigint NOT NULL,
 			    snap_id     text,
-			    copy_mode   text,
-			    resume_cons text
+			    copy_mode   text
 			)`)
 		_, _ = j.q.Exec(context.Background(),
-			`INSERT INTO gpstream_jobs (job_id, snap_epoch, snap_id, copy_mode, resume_cons)
-			 VALUES ($1,$2,$3,$4,$5)
+			`INSERT INTO gpstream_jobs (job_id, snap_epoch, snap_id, copy_mode)
+			 VALUES ($1,$2,$3,$4)
 			 ON CONFLICT (job_id) DO UPDATE SET
-			    snap_epoch  = EXCLUDED.snap_epoch,
-			    snap_id     = EXCLUDED.snap_id,
-			    copy_mode   = EXCLUDED.copy_mode,
-			    resume_cons = EXCLUDED.resume_cons`,
-			jobID, m.SnapEpoch, m.SnapID, m.CopyMode, m.ResumeCons)
+			    snap_epoch = EXCLUDED.snap_epoch,
+			    snap_id    = EXCLUDED.snap_id,
+			    copy_mode  = EXCLUDED.copy_mode`,
+			jobID, m.SnapEpoch, m.SnapID, m.CopyMode)
 	}
 	return nil
 }
@@ -193,19 +183,14 @@ func (m *Manager) establishEpoch() (int64, bool, error) {
 	}
 	epoch := last + 1
 	isResume := last > 0 || journalHasRecords(m.journal)
-	mode := m.cfg.ResumeConsistency
-	if mode == "" {
-		mode = "relaxed"
-	}
 	cm := string(m.cfg.CopyMode)
 	if cm == "" {
 		cm = "coordinator"
 	}
 	if err := m.journal.SaveMeta(m.jobID, &JobMeta{
-		JobID:      m.jobID,
-		SnapEpoch:  epoch,
-		CopyMode:   cm,
-		ResumeCons: mode,
+		JobID:     m.jobID,
+		SnapEpoch: epoch,
+		CopyMode:  cm,
 	}); err != nil {
 		return 0, false, fmt.Errorf("save job meta: %w", err)
 	}
@@ -220,26 +205,18 @@ func journalHasRecords(j *Journal) bool {
 }
 
 // reReadTables computes the DESIGN §2.2 re-read decision at resume time. It
-// groups the journal's units by logical table (db|schema|table) and applies
-// the mode's rule to each group that has records:
-//
-//	relaxed: keep iff every unit of the group is terminal (completed or
-//	         swapped) and the group's completed units all carry the SAME
-//	         epoch (one snapshot owns the table). Swapped units do not
-//	         participate in the epoch set (point in time = swap moment).
-//	         Otherwise the whole table is re-read under the fresh snapshot.
-//	strict:  re-read the group under the fresh snapshot UNCONDITIONALLY
-//	         (DESIGN §2.2: the whole database must be one point in time,
-//	         swapped tables included — at the cost of a full re-read).
-//
-// Groups without records (never copied) are simply copied — neither a
-// re-read nor a keep. The returned set holds the table keys that must be
-// re-copied under the fresh snapshot; for the staging path runUnit starts
-// from a clean staging table (a surviving one is truncated, a56be8b), so a
-// re-read replaces rather than appends.
-func reReadTables(mode string, currentEpoch int64, units []*Unit) map[string]bool {
+// groups the journal's units by logical table (db|schema|table) and keeps a
+// table iff every unit of the group is terminal (completed or swapped) and
+// the group's completed units all carry the SAME epoch (one snapshot owns
+// the table). Swapped units do not participate in the epoch set (point in
+// time = swap moment). Otherwise the whole table is re-read under the fresh
+// snapshot. Groups without records (never copied) are simply copied — neither
+// a re-read nor a keep. The returned set holds the table keys that must be
+// re-copied under the fresh snapshot; for the staging path runUnit starts from
+// a clean staging table (a surviving one is truncated, a56be8b), so a re-read
+// replaces rather than appends.
+func reReadTables(units []*Unit) map[string]bool {
 	reRead := map[string]bool{}
-	_ = currentEpoch // strict ignores epochs: it re-reads everything
 	type groupState struct {
 		epochs  map[int64]bool // epochs of the completed (non-swapped) units
 		allTerm bool           // every unit of the group is completed/swapped
@@ -254,7 +231,7 @@ func reReadTables(mode string, currentEpoch int64, units []*Unit) map[string]boo
 		}
 		switch u.State {
 		case StateSwapped:
-			// Terminal (kept in relaxed; re-copied in strict).
+			// Terminal: kept (point in time = swap moment).
 		case StateCompleted:
 			g.epochs[u.Epoch] = true
 		default:
@@ -263,13 +240,6 @@ func reReadTables(mode string, currentEpoch int64, units []*Unit) map[string]boo
 		}
 	}
 	for key, g := range groups {
-		if mode == "strict" {
-			// DESIGN §2.2: strict re-reads every table under the fresh
-			// snapshot (any state, any epoch, swapped included).
-			reRead[key] = true
-			continue
-		}
-		// relaxed
 		if !g.allTerm {
 			reRead[key] = true
 			continue

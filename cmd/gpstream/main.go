@@ -205,12 +205,6 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--verify":
 			i++
 			cfg.Verify = config.VerifyMode(args[i])
-		case "--resume-consistency":
-			// T5 (DESIGN §2.2): relaxed (default) keeps a table verified in
-			// one snapshot epoch; strict re-reads everything under the
-			// fresh snapshot.
-			i++
-			cfg.ResumeConsistency = args[i]
 		case "--on-unit-failure":
 			// spec F-06: continue (default) = a failed unit is recorded and
 			// the run keeps going; abort = stop at the first failure.
@@ -965,16 +959,11 @@ func cmdStatus(args []string) error {
 	// jobmeta.json mirror) — which generation of the source snapshot the job
 	// is on, the transport, and the resume re-read mode.
 	if meta, err := j.LoadMeta(opID); err == nil && meta != nil {
-		mode := meta.ResumeCons
-		if mode == "" {
-			mode = "relaxed"
-		}
 		cm := meta.CopyMode
 		if cm == "" {
 			cm = "coordinator"
 		}
-		fmt.Printf("snap-epoch:   %d (resume-consistency=%s, copy-mode=%s)\n",
-			meta.SnapEpoch, mode, cm)
+		fmt.Printf("snap-epoch:   %d (copy-mode=%s)\n", meta.SnapEpoch, cm)
 	}
 	if len(units) == 0 {
 		fmt.Println("units:        none recorded")
@@ -1547,7 +1536,6 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --workers N                      parallel workers per host-pair
   --rate-limit <Gbps>              total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
-  --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
   --consistent-tables              FR-02 fallback: each table under its own short
                                    snapshot (per-table discrepancy documented);
                                    off by default (--consistent-db is the default)

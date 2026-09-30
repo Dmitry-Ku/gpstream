@@ -37,7 +37,7 @@ in.
 
 At resume time, gpstream recomputes, per table, whether the table's units
 were all completed under the **fresh snapshot** or under an older one.
-The mode is `--resume-consistency relaxed|strict` (default **relaxed**).
+The re-read rule is fixed: a table is kept only if it was verified under one snapshot epoch (DESIGN §2.2); otherwise the whole table is re-read.
 
 ### `relaxed` (default)
 
@@ -119,7 +119,7 @@ gpstream resume --operation-id <id>
 
 # 3. For cross-table point-in-time consistency, choose strict before
 #    resuming (it is a run-level flag):
-gpstream resume --operation-id <id> --resume-consistency strict
+gpstream resume --operation-id <id>
 ```
 
 ### Auto-resume (no operator in the loop)

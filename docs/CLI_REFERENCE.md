@@ -103,7 +103,7 @@ subset of flags (listed per-command below) and ignore the rest.
   non-terminal unit under the next snapshot epoch; the action is recorded to
   `audit.log` (F-13). **Flags:** `--operation-id <id>` (required),
   `--state-dir <dir>`, `--auto-resume <N>` (cap on resume attempts),
-  `--resume-consistency relaxed|strict`.
+  the re-read rule keeps a table only if it was verified under one snapshot epoch.
 - **`cleanup`** — removes an operation's state directory (v4 §8 "State").
   `--all-incomplete` removes every operation directory that still has
   non-terminal units (no `--operation-id` needed); `--mode drop` ADDITIONALLY
@@ -206,7 +206,6 @@ Conflict policy semantics:
 |------|--------------|---------|
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
 | `--verify full\|sample\|off` | `Verify` | `sample` |
-| `--resume-consistency relaxed\|strict` | `ResumeConsistency` | `""` → relaxed (T5, DESIGN §2.2) |
 | `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Transport / frame-ack (T-B, §4.6)
@@ -310,7 +309,7 @@ bespoke and shared:
 | Command | Flags |
 |---------|-------|
 | `status` | `--operation-id <id>` (required), `--state-dir <dir>` |
-| `resume` | `--operation-id <id>` (required), `--state-dir <dir>`, `--auto-resume <N>`, `--resume-consistency relaxed\|strict` |
+| `resume` | `--operation-id <id>` (required), `--state-dir <dir>`, `--auto-resume <N>` |
 | `cleanup` | `--operation-id <id>` (or `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest <connstring>`, `--ssl-ca` |
 
 `--operation-id <id>` names the operation directly; the state is resolved at

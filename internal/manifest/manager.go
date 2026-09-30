@@ -293,17 +293,13 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	m.epoch = epoch
 
 	// T5 (DESIGN §2.2): the resume re-read decision. Only tables whose
-	// completed units span more than one snapshot epoch (relaxed) — or were
-	// verified in an older epoch (strict) — are re-copied under the fresh
-	// snapshot; a table completed in a single epoch is kept (its data is
-	// verified under one consistent snapshot). Fresh runs decide nothing.
+	// completed units span more than one snapshot epoch — or that have a
+	// non-terminal unit — are re-copied under the fresh snapshot; a table
+	// completed in a single epoch is kept (its data is verified under one
+	// consistent snapshot). Fresh runs decide nothing.
 	m.reRead = map[string]bool{}
 	if isResume {
-		mode := m.cfg.ResumeConsistency
-		if mode == "" {
-			mode = "relaxed"
-		}
-		m.reRead = reReadTables(mode, epoch, m.journal.Units())
+		m.reRead = reReadTables(m.journal.Units())
 	}
 
 	// FR-02 consistency: establish the source read snapshot BEFORE any unit is

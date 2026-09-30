@@ -121,7 +121,6 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--rate-limit", "100",
 		"--workers", "8",
 		"--verify", "sample",
-		"--resume-consistency", "strict",
 		"--on-unit-failure", "abort",
 		"--frame-ack", "off",
 		"--ack-timeout", "30s",
@@ -158,8 +157,8 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	if c.WorkersPerPair != 8 {
 		t.Errorf("workers = %d, want 8", c.WorkersPerPair)
 	}
-	if c.ResumeConsistency != "strict" || c.OnUnitFailure != "abort" {
-		t.Errorf("resume/on-unit-failure = %q/%q", c.ResumeConsistency, c.OnUnitFailure)
+	if c.OnUnitFailure != "abort" {
+		t.Errorf("on-unit-failure = %q", c.OnUnitFailure)
 	}
 	if c.FrameAck != "off" || c.AckTimeout != "30s" || c.MaxReconnects != 5 {
 		t.Errorf("frame-ack trio = %q/%q/%d", c.FrameAck, c.AckTimeout, c.MaxReconnects)

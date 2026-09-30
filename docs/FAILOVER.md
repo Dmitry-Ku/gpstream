@@ -94,7 +94,7 @@ resume: all units terminal — nothing to resume
 
 `--operation-id <id>` is **required** for `resume`. `--auto-resume N` bounds
 how many times the same operation may be re-queued. The re-read semantics are
-controlled by `--resume-consistency relaxed|strict` (default `relaxed`).
+fixed: a table is kept only if it was verified under one snapshot epoch (DESIGN §2.2).
 
 ## Cleanup
 

@@ -183,7 +183,7 @@ It reports how many units were re-queued. If all units are already terminal it
 prints `resume: all units terminal — nothing to resume`. You can also set
 `--auto-resume N` on the copy itself, so the operation auto-resumes up to `N`
 times from the checkpoint if a unit does not reach a terminal state. Resume
-re-read behaviour is controlled by `--resume-consistency relaxed|strict`
+re-read behaviour is fixed (a table is kept only if it was verified under one snapshot epoch)
 (default `relaxed`).
 
 ### 7.2 Clean up
@@ -277,7 +277,7 @@ instead of the default `--consistent-db`.
 | Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen`, `--seg-binary` |
 | Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
-| Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables`, `--resume-consistency` |
+| Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables` |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
 | Redistribution | `--no-redistribute`, `--skew-threshold X` (segment-fill balance is measured always, fixed 1.5 gate) |
 | TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |

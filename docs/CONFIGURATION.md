@@ -69,7 +69,6 @@ from the flags or the file.
 | `AutoResume` | int | **`0`** | `--auto-resume` / env / file | `N ≥ 0`; `0` = manual only. |
 | `OnUnitFailure` | string | `""` → `continue` | `--on-unit-failure` / env / file | `continue` (default) \| `abort` (F-06). |
 | `Verify` | `VerifyMode` | **`sample`** | `--verify` / file | `full`/`sample`/`off`. |
-| `ResumeConsistency` | string | `""` → `relaxed` | `--resume-consistency` / env / file | `relaxed` (default) \| `strict` (T5). |
 
 ### 1.8 Indexes (F-17)
 | Field | Type | Default | Source | Notes |
@@ -225,7 +224,6 @@ covers a different, session-level subset).
 | `auto_resume` | `AutoResume` | parsed as int |
 | `on_unit_failure` | `OnUnitFailure` | `continue`/`abort` |
 | `consistent_tables` | `ConsistentTables` | `true`/`1` |
-| `resume_consistency` | `ResumeConsistency` | `relaxed`/`strict` |
 | `verify` | `Verify` | `full`/`sample`/`off` |
 | `ssl_cert` | `SSLCert` | **secret** |
 | `ssl_key` | `SSLKey` | **secret** |
