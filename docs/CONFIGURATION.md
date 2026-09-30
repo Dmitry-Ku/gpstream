@@ -120,7 +120,7 @@ from the flags or the file.
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `DryRun` | bool | `false` | `--dry-run` | Plan only, do not execute. |
-| `Timeout` | time.Duration | **`60s`** | `--timeout` / file | Bounds plan formation. |
+| `Timeout` | time.Duration | **`120s`** | `--timeout` / file | Bounds plan formation (F-10 §6 default). |
 | `PlanFile` | string | `""` | `--plan-file` | Persist the plan JSON. |
 
 ### 1.15 Observability (F-04)
@@ -162,7 +162,7 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `ZstdLevel` | `3` |
 | `AutoResume` | `0` |
 | `Verify` | `sample` |
-| `Timeout` | `60s` |
+| `Timeout` | `120s` |
 | `SkewThreshold` | `0.05` |
 | `SegmentBalanceThreshold` | `1.5` |
 | `ConsistentDB` | `true` |
@@ -215,7 +215,7 @@ covers a different, session-level subset).
 | `workers_per_pair` | `WorkersPerPair` | parsed as int |
 | `compress` | `Compression` | `none`/`zlib`/`zstd` |
 | `zstd_level` | `ZstdLevel` | parsed as int (1–19) |
-| `small_table_threshold` | `SmallTableThreshold` | parsed as int64 bytes |
+| `small_table_threshold` | `SmallTableThreshold` | int64 bytes, or a size with a `K`/`M`/`G`/`T` suffix (same notation as the CLI) |
 | `auto_resume` | `AutoResume` | parsed as int |
 | `on_unit_failure` | `OnUnitFailure` | `continue`/`abort` |
 | `consistent_tables` | `ConsistentTables` | `true`/`1` |

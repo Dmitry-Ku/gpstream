@@ -36,8 +36,8 @@ func TestDefault(t *testing.T) {
 	if c.Compression != CompZstd {
 		t.Errorf("default compression = %v, want zstd", c.Compression)
 	}
-	if c.Timeout != 60*time.Second {
-		t.Errorf("default timeout = %v, want 60s", c.Timeout)
+	if c.Timeout != 120*time.Second {
+		t.Errorf("default timeout = %v, want 120s (F-10 §6)", c.Timeout)
 	}
 	if !c.ConsistentDB {
 		t.Errorf("default consistency should be db")
@@ -100,5 +100,41 @@ func TestApplyEnvConsistentTables(t *testing.T) {
 	c.ApplyEnv()
 	if !c.ConsistentTables {
 		t.Errorf("consistent-tables = false, want true from env")
+	}
+}
+
+// TestValidateNoRedistributeDoesNotSkipChecks: the old early `return nil`
+// made --no-redistribute bypass every later validation (verify/copy-mode/
+// frame-ack values went unvalidated). A bad value must still error.
+func TestValidateNoRedistributeDoesNotSkipChecks(t *testing.T) {
+	c := Default()
+	c.NoRedistribute = true
+	c.SkewThreshold = -1 // the sentinel --no-redistribute sets
+	c.Verify = "bogus"
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate: want error for verify=bogus with --no-redistribute (early return regression)")
+	}
+}
+
+// TestParseSizeValue: the file accepts the same size notation as the CLI.
+func TestParseSizeValue(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"1048576", 1048576},
+		{"1M", 1 << 20},
+		{"512K", 512 << 10},
+		{"2G", 2 << 30},
+		{"1T", 1 << 40},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		if got, err := parseSizeValue(tc.in); err != nil || got != tc.want {
+			t.Errorf("parseSizeValue(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
+		}
+	}
+	if _, err := parseSizeValue("abc"); err == nil {
+		t.Error("parseSizeValue(abc): want error")
 	}
 }

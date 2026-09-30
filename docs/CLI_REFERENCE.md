@@ -282,7 +282,7 @@ fallback and is off by default.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--dry-run` | `DryRun` | `false` (plan only, do not execute) |
-| `--timeout <S>` | `Timeout` | `60s` (bounds the plan-formation phase) |
+| `--timeout <S>` | `Timeout` | `120s` (bounds the plan-formation phase; F-10 §6) |
 | `--plan-file <F>` | `PlanFile` | `""` (persist the plan JSON to F; both `dry-run` and `run` write it — a plan artifact, NOT the journal; the journal always lives at `<state-dir>/<operation-id>/journal.jsonl`) |
 
 ### Operation identity / state (v4 §8 "State")

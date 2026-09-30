@@ -250,7 +250,7 @@ func Default() Config {
 		ZstdLevel:               3,
 		AutoResume:              0,
 		Verify:                  VerifySample,
-		Timeout:                 60 * time.Second,
+		Timeout:                 120 * time.Second, // F-10 §6: default 120 s
 		SkewThreshold:           0.05,
 		SegmentBalanceThreshold: 1.5,
 		ConsistentDB:            true,
@@ -308,9 +308,9 @@ func (c *Config) Validate() error {
 	if c.ConsistentTables && c.ConsistentDB {
 		return fmt.Errorf("--consistent-tables and --consistent-db are mutually exclusive")
 	}
-	if c.NoRedistribute && c.SkewThreshold < 0 {
-		return nil // fine
-	}
+	// (NoRedistribute sets the skew sentinel -1 by itself; a negative
+	// skew threshold is valid on its own, so there is nothing to special-
+	// case here — do NOT return early, the checks below still apply.)
 	// F-15: the segment-balance threshold is a ratio (max/avg); only the
 	// negative sentinel (gate off) is a special value, anything >= 0 is a
 	// valid ratio. Reject NaN so a mistyped value cannot silently disable
@@ -609,6 +609,39 @@ func (c Config) AdvisoryWarnings() []string {
 	return out
 }
 
+// parseSizeValue parses a plain byte count or a suffixed size ("1M", "512K",
+// "2G", "1T", "1024") so the config FILE accepts the same values as the CLI's
+// --small-table-threshold (parseBytes). It mirrors parseBytes: a trailing
+// k/m/g/t unit letter is a multiplier, empty yields 0.
+func parseSizeValue(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	mult := int64(1)
+	if len(s) > 1 {
+		switch strings.ToLower(string(s[len(s)-1])) {
+		case "k":
+			mult = 1 << 10
+			s = s[:len(s)-1]
+		case "m":
+			mult = 1 << 20
+			s = s[:len(s)-1]
+		case "g":
+			mult = 1 << 30
+			s = s[:len(s)-1]
+		case "t":
+			mult = 1 << 40
+			s = s[:len(s)-1]
+		}
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n * mult, nil
+}
+
 // leafString renders a scalar config leaf (string/number/bool) into string
 // form. Tables and arrays are not honoured (unknown-key tolerance).
 func leafString(v any) (string, bool) {
@@ -649,7 +682,7 @@ func assignConfigString(c *Config, key, v string) {
 			c.ZstdLevel = n
 		}
 	case "small_table_threshold":
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if n, err := parseSizeValue(v); err == nil {
 			c.SmallTableThreshold = n
 		}
 	case "auto_resume":

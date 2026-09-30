@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Bug fixes found by the config-file semantic audit
+
+- `--no-redistribute` no longer short-circuits `Validate()`: an early
+  `return nil` made every later check (verify mode, copy mode, frame-ack
+  values) unvalidated whenever the flag was present.
+- Default `--timeout` is now **120s**, matching the spec (F-10 §6
+  "--timeout (default 120 s)"); it was 60s.
+- Config FILE `small_table_threshold` now accepts the same size notation as
+  the CLI (`1M`, `512K`, `2G`, `1T`, or plain bytes) instead of plain bytes
+  only.
+- `--consistent-tables` / `GPSTREAM_CONSISTENT_TABLES` still error against
+  the default DB scope (documented mutual exclusion kept); this remains a
+  known sharp edge (see docs/CONFIGURATION.md).
+
 ### Renamed `--workers` to `--workers-per-pair`
 
 The CLI flag is now named exactly like its config-file key
