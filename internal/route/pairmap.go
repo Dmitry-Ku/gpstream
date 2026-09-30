@@ -123,17 +123,33 @@ func pairMapBruteForce(S, D int32) map[int32][]int32 {
 		wg.Add(1)
 		go func(wk int, lo, hi uint64) {
 			defer wg.Done()
-			seen := local[wk]
-			for h := lo; h < hi; h++ {
-				seen[JumpConsistentHash(h, S)][JumpConsistentHash(h, D)] = true
-			}
+			sweepPairDomain(lo, hi, S, D, local[wk])
 		}(wk, lo, hi)
 	}
 	wg.Wait()
 
-	// слияние OR
+	m := mergeSeen(local, S, D)
+	pairMapMu.Lock()
+	pairMapM[key] = m
+	pairMapMu.Unlock()
+	return m
+}
+
+// sweepPairDomain — one worker's share of the h-domain [lo, hi): marks the
+// (s,d) pairs it sees. Split out of pairMapBruteForce so the sweep and the
+// merge are unit-testable on small domains (the full 2^32 sweep stays in
+// the `heavy` tag).
+func sweepPairDomain(lo, hi uint64, S, D int32, seen [][]bool) {
+	for h := lo; h < hi; h++ {
+		seen[JumpConsistentHash(h, S)][JumpConsistentHash(h, D)] = true
+	}
+}
+
+// mergeSeen — OR-merge of the per-worker seen tables into the final
+// (s -> sorted [d...]) map.
+func mergeSeen(local [][][]bool, S, D int32) map[int32][]int32 {
 	seen := local[0]
-	for w := 1; w < workers; w++ {
+	for w := 1; w < len(local); w++ {
 		for s := int32(0); s < S; s++ {
 			for d := int32(0); d < D; d++ {
 				if local[w][s][d] {
@@ -142,7 +158,6 @@ func pairMapBruteForce(S, D int32) map[int32][]int32 {
 			}
 		}
 	}
-
 	m := make(map[int32][]int32, S)
 	for s := int32(0); s < S; s++ {
 		for d := int32(0); d < D; d++ {
@@ -152,8 +167,5 @@ func pairMapBruteForce(S, D int32) map[int32][]int32 {
 		}
 		sort.Slice(m[s], func(i, j int) bool { return m[s][i] < m[s][j] })
 	}
-	pairMapMu.Lock()
-	pairMapM[key] = m
-	pairMapMu.Unlock()
 	return m
 }
