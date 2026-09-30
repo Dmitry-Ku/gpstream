@@ -1464,7 +1464,7 @@ func printHelp() error {
 Usage:
   gpstream <command> [flags]
 
-Commands (v4 §8):
+Commands:
   doctor    self-diagnose source/dest clusters
   dry-run   plan the copy without executing
   run       execute the copy (streams source -> dest, no intermediate storage)
@@ -1493,7 +1493,7 @@ Selection:
   --metadata-only                    structure only (DDL + sequences, no data)
   --data-only                        data only, into the existing structure
 
-Conflicts (F-10):
+Conflicts:
   --resolve-conflicts stop|skip|overwrite|truncate   policy (default stop)
   --overwrite, --truncate          shorthand opt-ins that set the policy
 
@@ -1507,13 +1507,13 @@ Performance:
   --index-workers N                background index-build workers (default 2)
   --index-priority size|fifo       index build order (default size: largest first)
   --no-indexes                     skip index creation entirely
-  --no-constraints                 skip the FK/CHECK constraint-restore pass (F-11)
+  --no-constraints                 skip the FK/CHECK constraint-restore pass
 
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the segment hosts
-  --seg-tls-cert F                 TLS serving cert for the segment-direct hop (F-13)
+  --seg-tls-cert F                 TLS serving cert for the segment-direct hop
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop
   --frame-ack on|off               frame-level ACK + RST-resume (default on)
@@ -1525,7 +1525,7 @@ Integrity / consistency:
   --verify full|sample|off         verification depth (default sample)
   --consistent-db                  snapshot scope: whole DB (default)
   --consistent-cluster             snapshot scope: whole cluster
-  --consistent-tables              snapshot scope: per-table (FR-02 fallback)
+  --consistent-tables              snapshot scope: per-table
   --auto-resume N                  auto-resume attempts after the run (default 0)
   --on-unit-failure continue|abort on a failed unit (default continue)
 
@@ -1539,7 +1539,7 @@ Planning / operation:
   --metrics-addr addr              serve Prometheus /metrics during run
   --config file                    config file (TOML or YAML)
 
-TLS (FR-13):
+TLS:
   --ssl-cert, --ssl-key            mTLS client cert/key
   --ssl-ca F                       TLS CA bundle
   --ssl-min-tls V                  minimum TLS version (default 1.2)

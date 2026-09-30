@@ -17,7 +17,7 @@ plan.
 .SH COMMANDS
 .TP
 .B run
-Execute the copy: stream source to dest with no intermediate storage (v4 §8).
+Execute the copy: stream source to dest with no intermediate storage.
 .TP
 .B dry-run
 Plan the copy without executing (\fB--timeout\fR S bounds the plan; \fB--plan-file\fR F emits it).
@@ -37,7 +37,7 @@ drop
 .BR --dest
 <connstring> also drops the destination objects this operation created
 (surviving staging, renamed-in or created final tables, renamed-in schemas)
-to restore the pre-operation state (F-02).
+to restore the pre-operation state.
 .TP
 .B doctor
 Self-diagnose source/dest clusters; output PASS/FAIL/WARN.
@@ -50,7 +50,7 @@ Print the binary version.
 .TP
 .B man
 Print this man page.
-.SH OPTIONS (run / dry-run, §8)
+.SH OPTIONS (run / dry-run)
 .SS Selection
 .TP
 .BR --source
@@ -98,7 +98,7 @@ are mutually exclusive; with neither flag both are copied (the default).
 .BR --map-db | --map-schema | --map-table
 src=dst
 Create the destination object under another name.
-.SS Conflicts (F-10)
+.SS Conflicts
 .TP
 .BR --resolve-conflicts
 stop|skip|overwrite|truncate
@@ -134,11 +134,11 @@ Workers per host-pair (default 2).
 .TP
 .BR --small-table-threshold
 size
-Tables smaller than this (default 1MiB) copy with compression off (F-12; 0 disables).
+Tables smaller than this (default 1MiB) copy with compression off (0 disables).
 .TP
 .BR --index-workers
 N
-Background index-build workers (F-17; default 2 when the index build is on).
+Background index-build workers (default 2 when the index build is on).
 .TP
 .B --no-indexes
 Skip index creation entirely (master switch:
@@ -156,7 +156,7 @@ Index build order; default
 runs jobs in enqueue order.
 .TP
 .B --no-constraints
-Skip the FK/CHECK constraint-restore pass on the destination (F-11).
+Skip the FK/CHECK constraint-restore pass on the destination.
 .SS Transport / resilience
 .TP
 .BR --copy-mode
@@ -173,11 +173,11 @@ on_segment).
 PATH
 gpstream-segreceiver path on the SOURCE segment hosts (required with
 .B --copy-mode
-on_segment; install one file per segment host, F-15).
+on_segment; install one file per segment host).
 .TP
 .B --seg-tls-cert
 F
-Controller serving certificate for the segment-direct hop (F-13). Deliberately separate from
+Controller serving certificate for the segment-direct hop. Deliberately separate from
 .BR --ssl-*
 (the PG connection): the segment stream can be encrypted while the PG connections are not.
 .TP
@@ -220,7 +220,7 @@ exclusive).
 .BR --auto-resume
 N
 If units did not reach a terminal state after the run, resume and re-run up
-to N times automatically (F-07). Default 0 = manual: gpstream does not
+to N times automatically. Default 0 = manual: gpstream does not
 retry; the operator runs
 .BR "gpstream resume --operation-id"
  id
@@ -270,7 +270,7 @@ Serve the Prometheus /metrics endpoint during run.
 .BR --config
 file
 Config file (TOML or YAML).
-.SH TLS (FR-13)
+.SH TLS
 .TP
 .BR --ssl-cert | --ssl-key | --ssl-ca | --ssl-min-tls
 mTLS client cert/key, CA bundle, minimum TLS version (default 1.2).
@@ -283,8 +283,8 @@ Secrets are taken
 from 0600 files or
 .B GPSTREAM_*
 environment variables,
-.B "never from argv"
-(FR-08). There is
+.B "never from argv".
+There is
 .B no
 GPSTREAM_SOURCE/DEST variable; endpoints come from --source/--dest or the
 config file. Recognised variables (all prefixed GPSTREAM_):
@@ -317,7 +317,7 @@ each swap and reported; a fixed 1.5 gate emits the WARNING line (the former
 .B --segment-balance-threshold
 knob was removed).
 
-The FR-15 redistribution accounting (raw segment skew + layout verdict) is
+The redistribution accounting (raw segment skew + layout verdict) is
 always computed and reported in the
 .B --dry-run
 output; there is no gate flag — the operator reads the number and decides.

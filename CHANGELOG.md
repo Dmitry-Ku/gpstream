@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Docs: removed internal spec references from man page and `gpstream help`
+
+Per the maintainer: user-facing output should not cite internal spec items. Removed
+all `F-xx`/`FR-xx`/`v4 §N` references from `man/gpstream.8` (13 places) and
+`printHelp` (6 places) — the descriptions now stand on their own.
+
 ### Fix: man seg-flags + full `gpstream help` (help/man vs code consistency)
 
 `gpstream help` was stale: it omitted ~22 flags the CLI actually accepts
