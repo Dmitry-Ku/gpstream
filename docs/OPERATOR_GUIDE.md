@@ -148,7 +148,7 @@ Consistency options let you copy an object atomically:
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `--rate-limit` | `0` (no ceiling) | Total throughput ceiling in Gbps (accepts `bps`/`mbit`/`gbit` units). |
-| `--workers-per-pair` | `2` | Concurrent workers per host-pair. |
+| `--workers` | `2` | Concurrent workers per host-pair. |
 | `--compress` | `zstd` | `none` / `zlib` / `zstd`. |
 | `--compress zstd:9` | level 3 | zstd level **1–19** (validated). |
 

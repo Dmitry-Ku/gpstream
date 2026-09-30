@@ -31,7 +31,7 @@ func TestParseConfigFull(t *testing.T) {
 		"--map-db", "old=New", "--map-schema", "o=n",
 		"--compress", "zstd:9",
 		"--rate-limit", "80gbit",
-		"--workers-per-pair", "4",
+		"--workers", "4",
 		"--auto-resume", "2",
 		"--verify", "full",
 		"--consistent-db",
@@ -163,9 +163,9 @@ func TestParseConfigValidationErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--compress", "zstd:25"}); err == nil {
 		t.Fatal("expected error for --compress zstd:25 (level out of range)")
 	}
-	// --workers-per-pair 0 fails the >= 1 check.
-	if _, err := parseConfig([]string{"--workers-per-pair", "0"}); err == nil {
-		t.Fatal("expected error for --workers-per-pair 0")
+	// --workers 0 fails the >= 1 check.
+	if _, err := parseConfig([]string{"--workers", "0"}); err == nil {
+		t.Fatal("expected error for --workers 0")
 	}
 	// unknown flags must be rejected (no silent no-ops).
 	if _, err := parseConfig([]string{"--no-such-flag"}); err == nil {

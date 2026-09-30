@@ -140,7 +140,7 @@ zstd level 1-19 (default 3).
 rate
 Total throughput ceiling; accepts bps/mbit/gbit (default: none).
 .TP
-.BR --workers-per-pair
+.BR --workers
 N
 Workers per host-pair (default 2).
 .TP
@@ -255,7 +255,7 @@ environment variables,
 GPSTREAM_SOURCE/DEST variable; endpoints come from --source/--dest or the
 config file. Recognised variables (all prefixed GPSTREAM_):
 .RI RATE_LIMIT ,
-.RI WORKERS_PER_PAIR ,
+.RI WORKERS ,
 .RI COMPRESS ,
 .RI AUTO_RESUME ,
 .RI ON_UNIT_FAILURE ,

@@ -20,20 +20,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the default DB scope (documented mutual exclusion kept); this remains a
   known sharp edge (see docs/CONFIGURATION.md).
 
-### Renamed `--workers` to `--workers-per-pair`
+### Aligned the config-file key and env var to the documented CLI name
 
-The CLI flag is now named exactly like its config-file key
-(`workers_per_pair`, dashes→underscores) and env var
-(`GPSTREAM_WORKERS_PER_PAIR`), per the naming rule: *the name in the docs
-without the leading `--` is the file key*. No alias for `--workers` (pre-1.0
-rename; docs, man page, tests and examples updated).
+The CLI flag stays `--workers` (as documented). Per the naming rule
+(*the doc name without the leading `--` is the file key*), the
+config-file key was renamed `workers_per_pair` → `workers` and the env
+var `GPSTREAM_WORKERS_PER_PAIR` → `GPSTREAM_WORKERS`, so all three
+layers carry one name: `--workers` / `workers` / `GPSTREAM_WORKERS`.
 
 
 ### Added
 
 - `run` CLI contract per v4 §8: `--metadata-only` / `--data-only` (F-11;
   no `--include` flag — it duplicated the two shorthands and the default),
-  `--zstd-level` (1–19), `--no-redistribute`, `--streams` / `--workers-per-pair`.
+  `--zstd-level` (1–19), `--no-redistribute`, `--streams` / `--workers`.
 - TOML configuration file support (`--config file.toml`, F-05) alongside YAML;
   precedence CLI > env > file > defaults.
 - `doctor` self-diagnosis (F-16) with precise problem list.

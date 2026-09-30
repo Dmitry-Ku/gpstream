@@ -275,7 +275,7 @@ instead of the default `--consistent-db`.
 | Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
 | Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen`, `--seg-binary` |
-| Performance | `--workers-per-pair N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
+| Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables`, `--resume-consistency` |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |

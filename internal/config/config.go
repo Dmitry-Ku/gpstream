@@ -276,7 +276,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("small-table-threshold must be >= 0 (0 disables auto-disable), got %d", c.SmallTableThreshold)
 	}
 	if c.WorkersPerPair < 1 {
-		return fmt.Errorf("workers-per-pair must be >= 1, got %d", c.WorkersPerPair)
+		return fmt.Errorf("workers must be >= 1, got %d", c.WorkersPerPair)
 	}
 	if c.AutoResume < 0 {
 		return fmt.Errorf("auto-resume must be >= 0")
@@ -396,7 +396,7 @@ func (c *Config) ApplyEnv() {
 			c.RateLimit = f
 		}
 	}
-	if v, ok := get("WORKERS_PER_PAIR"); ok {
+	if v, ok := get("WORKERS"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.WorkersPerPair = n
 		}
@@ -671,7 +671,7 @@ func assignConfigString(c *Config, key, v string) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.RateLimit = f
 		}
-	case "workers_per_pair":
+	case "workers":
 		if n, err := strconv.Atoi(v); err == nil {
 			c.WorkersPerPair = n
 		}

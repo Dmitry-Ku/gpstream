@@ -119,7 +119,7 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--resolve-conflicts", "truncate",
 		"--compress", "zlib",
 		"--rate-limit", "100",
-		"--workers-per-pair", "8",
+		"--workers", "8",
 		"--verify", "sample",
 		"--resume-consistency", "strict",
 		"--on-unit-failure", "abort",

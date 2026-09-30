@@ -88,7 +88,7 @@ func TestReliablePipeConfig(t *testing.T) {
 // (value left untouched).
 func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "42.5")
-	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "3")
+	t.Setenv("GPSTREAM_WORKERS", "3")
 	t.Setenv("GPSTREAM_COMPRESS", "none")
 	t.Setenv("GPSTREAM_SMALL_TABLE_THRESHOLD", "2097152")
 	t.Setenv("GPSTREAM_AUTO_RESUME", "2")
@@ -131,7 +131,7 @@ func TestApplyEnvSweep(t *testing.T) {
 // TestApplyEnvInvalidValues: unparseable numbers must leave the field as-is.
 func TestApplyEnvInvalidValues(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "not-a-float")
-	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "not-an-int")
+	t.Setenv("GPSTREAM_WORKERS", "not-an-int")
 	t.Setenv("GPSTREAM_AUTO_RESUME", "junk")
 	t.Setenv("GPSTREAM_MAX_RECONNECTS", "junk")
 	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "false")
@@ -237,7 +237,7 @@ func TestLoadFileAssignsEveryStringKey(t *testing.T) {
 source = "postgres://s"
 dest = "postgres://d"
 rate_limit = "7.5"
-workers_per_pair = "4"
+workers = "4"
 compress = "none"
 zstd_level = "9"
 small_table_threshold = "1024"
@@ -277,7 +277,7 @@ report_text = "/t"
 source: "postgres://s"
 dest: "postgres://d"
 rate_limit: "7.5"
-workers_per_pair: "4"
+workers: "4"
 compress: "none"
 zstd_level: "9"
 small_table_threshold: "1024"
@@ -344,7 +344,7 @@ report_text: "/t"
 func TestLoadFileBadNumbersAreTolerant(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "bad.yaml")
-	src := "rate_limit: \"not-a-float\"\nworkers_per_pair: \"nope\"\nzstd_level: \"x\"\nskew_threshold: \"zz\"\ntimeout: \"junk\"\n"
+	src := "rate_limit: \"not-a-float\"\nworkers: \"nope\"\nzstd_level: \"x\"\nskew_threshold: \"zz\"\ntimeout: \"junk\"\n"
 	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}

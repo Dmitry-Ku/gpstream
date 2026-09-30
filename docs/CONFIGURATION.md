@@ -61,7 +61,7 @@ from the flags or the file.
 | `ZstdLevel` | int | **`3`** | `--zstd-level` / `--compress zstd:N` / file | Must be **1–19** (validate). |
 | `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env / file | F-12: a table whose estimated size is below this copies with compression **off**. `0` disables the auto-disable. |
 | `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling; adaptive AIMD (F-14) is always active. |
-| `WorkersPerPair` | int | **`2`** | `--workers-per-pair` / env / file | Must be **≥ 1** (validate). |
+| `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
 
 ### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |
@@ -201,8 +201,8 @@ are honoured (non-scalar nodes are skipped). The accepted keys (all lowercase)
 are:
 
 **Naming rule:** a file key is the CLI flag name with dashes turned into
-underscores — `--skew-threshold` ↔ `skew_threshold`, `--workers-per-pair` ↔
-`workers_per_pair`. The 24 keys below are 1:1 with 24 CLI flags, so the name
+underscores — `--skew-threshold` ↔ `skew_threshold`, `--workers` ↔
+`workers`. The 24 keys below are 1:1 with 24 CLI flags, so the name
 in the docs without the leading `--` is exactly the file key. Env vars are the
 same names uppercased under the `GPSTREAM_` prefix where they exist (env
 covers a different, session-level subset).
@@ -212,7 +212,7 @@ covers a different, session-level subset).
 | `source` | `Source` | |
 | `dest` | `Dest` | |
 | `rate_limit` | `RateLimit` | parsed as float |
-| `workers_per_pair` | `WorkersPerPair` | parsed as int |
+| `workers` | `WorkersPerPair` | parsed as int |
 | `compress` | `Compression` | `none`/`zlib`/`zstd` |
 | `zstd_level` | `ZstdLevel` | parsed as int (1–19) |
 | `small_table_threshold` | `SmallTableThreshold` | int64 bytes, or a size with a `K`/`M`/`G`/`T` suffix (same notation as the CLI) |
@@ -242,7 +242,7 @@ dest   = "host=dst port=5432 dbname=app"
 compress = "zstd"
 zstd_level = 3
 rate_limit = 10
-workers_per_pair = 2
+workers = 2
 verify = "sample"
 ssl_ca   = "/secrets/ca.pem"
 skew_threshold = 0.05
@@ -255,7 +255,7 @@ skew_threshold = 0.05
 | Env var | Field | Parsing |
 |---------|-------|---------|
 | `GPSTREAM_RATE_LIMIT` | `RateLimit` | float |
-| `GPSTREAM_WORKERS_PER_PAIR` | `WorkersPerPair` | int |
+| `GPSTREAM_WORKERS` | `WorkersPerPair` | int |
 | `GPSTREAM_COMPRESS` | `Compression` | string |
 | `GPSTREAM_SMALL_TABLE_THRESHOLD` | `SmallTableThreshold` | int64 bytes |
 | `GPSTREAM_AUTO_RESUME` | `AutoResume` | int |
@@ -293,7 +293,7 @@ failed validation aborts the command.
 |------|-----------|-------|
 | zstd level range | `ZstdLevel` must be **1–19** | `zstd level must be 1-19, got N` |
 | small-table threshold | `SmallTableThreshold` must be **≥ 0** | `small-table-threshold must be >= 0 …` |
-| workers | `WorkersPerPair` must be **≥ 1** | `workers-per-pair must be >= 1, got N` |
+| workers | `WorkersPerPair` must be **≥ 1** | `workers must be >= 1, got N` |
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
 | on-unit-failure | must be `continue`/`abort` (or empty) | `unknown on-unit-failure "…" (want continue\|abort)` |
 | resume consistency | must be `relaxed`/`strict` (or empty) | `unknown resume consistency "…" (relaxed\|strict)` |
@@ -340,9 +340,9 @@ default `1.2`) may be passed as `--ssl-min-tls` or via the `ssl_min_tls` key.
 Given `config.Default()`, a file, environment, and CLI, the final value of
 `WorkersPerPair` resolves as:
 
-- CLI `--workers-per-pair 4` → **4** (wins).
-- else env `GPSTREAM_WORKERS_PER_PAIR=3` → **3**.
-- else file `workers_per_pair = 2` → **2**.
+- CLI `--workers 4` → **4** (wins).
+- else env `GPSTREAM_WORKERS=3` → **3**.
+- else file `workers = 2` → **2**.
 - else default → **2** (default).
 
 The same last-wins ordering applies to every field: **CLI > env > file >

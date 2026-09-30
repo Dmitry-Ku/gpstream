@@ -153,7 +153,7 @@ defaults**.
 | Knob | Flag / env | Default | Notes |
 |------|-----------|---------|-------|
 | Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | 0 (no ceiling) | adaptive AIMD is always active (F-14) |
-| Workers | `--workers-per-pair N` (`GPSTREAM_WORKERS_PER_PAIR`) | 2 | parallel workers per host-pair |
+| Workers | `--workers N` (`GPSTREAM_WORKERS`) | 2 | parallel workers per host-pair |
 | Compression | `--compress` (`GPSTREAM_COMPRESS`) | `zstd` | `none`/`zlib`/`zstd[:level]` |
 | zstd level | `--zstd-level N` (or `--compress zstd:N`) | 3 | 1–19 |
 | Metrics | `--metrics-addr <A>` | off | Prometheus `/metrics` served during `run` |

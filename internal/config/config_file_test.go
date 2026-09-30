@@ -53,7 +53,7 @@ func TestLoadFileTOML(t *testing.T) {
 source = "host=src.example.com"
 dest = "host=dst.example.com"
 rate_limit = 12.5
-workers_per_pair = 4
+workers = 4
 compress = "zstd"
 zstd_level = 9
 auto_resume = 2
@@ -106,7 +106,7 @@ func TestLoadFileOverlay(t *testing.T) {
 source: host=src.example.com
 dest: host=dst.example.com
 rate_limit: "12.5"
-workers_per_pair: "4"
+workers: "4"
 compress: zlib
 zstd_level: "7"
 auto_resume: "2"
@@ -187,7 +187,7 @@ func TestAssignConfigStringBadNumbers(t *testing.T) {
 	c.RateLimit = 9.0
 	c.WorkersPerPair = 5
 	assignConfigString(&c, "rate_limit", "not-a-float")
-	assignConfigString(&c, "workers_per_pair", "not-an-int")
+	assignConfigString(&c, "workers", "not-an-int")
 	if c.RateLimit != 9.0 {
 		t.Errorf("rate limit = %v, want 9.0 (bad float ignored)", c.RateLimit)
 	}
@@ -223,7 +223,7 @@ func TestApplyEnvSecrets(t *testing.T) {
 // field keeps its default), not set to zero/garbage.
 func TestApplyEnvBadNumbersIgnored(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "not-a-float")
-	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "not-an-int")
+	t.Setenv("GPSTREAM_WORKERS", "not-an-int")
 	c := Default()
 	c.ApplyEnv()
 	// Defaults: rate limit 0 (Default leaves it 0), workers 2.

@@ -79,7 +79,7 @@ func TestValidateErrors(t *testing.T) {
 
 func TestApplyEnv(t *testing.T) {
 	t.Setenv("GPSTREAM_RATE_LIMIT", "50")
-	t.Setenv("GPSTREAM_WORKERS_PER_PAIR", "8")
+	t.Setenv("GPSTREAM_WORKERS", "8")
 	t.Setenv("GPSTREAM_COMPRESS", "zlib")
 	c := Default()
 	c.ApplyEnv()

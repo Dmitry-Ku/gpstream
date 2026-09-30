@@ -194,7 +194,7 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--rate-limit":
 			i++
 			cfg.RateLimit = parseRateLimit(args[i])
-		case "--workers-per-pair":
+		case "--workers":
 			i++
 			cfg.WorkersPerPair = atoi(args[i])
 
@@ -1281,7 +1281,7 @@ func cmdMan(args []string) error {
 //
 //	gpstream run --source ... --dest ... --dbs sales,hr \
 //	             --overwrite \
-//	             --compress zstd --workers-per-pair 32 --rate-limit 60 \
+//	             --compress zstd --workers 32 --rate-limit 60 \
 //	             --auto-resume 3 --index-workers 8 --ssl-ca /etc/gpstream/ca.pem
 //
 // It plans (bounded by --timeout), streams every unit source -> dest with no
@@ -1547,7 +1547,7 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
                                    when a table can't be routed)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the segment hosts
-  --workers-per-pair N                      parallel workers per host-pair
+  --workers N                      parallel workers per host-pair
   --rate-limit <Gbps>              total bandwidth ceiling
   --auto-resume N                  resume attempts on failure
   --resume-consistency MODE        resume re-read mode: relaxed (default) | strict (T5)
