@@ -9,7 +9,7 @@ fully deterministic `--dry-run` plan.
 
 > **Milestone status (this build):** M1 core **verified**. `run` now performs a
 > real transfer — it is wired into the job Manager (source → stream → dest) and
-> proven against live PostgreSQL clusters by `cmd/e2e` and the `integration`
+> proven against live PostgreSQL clusters by the `tests/integration`
 > suite (build tag `integration`). `doctor` reports real reachability failures
 > (no silent fake fallback). Greenplum-specific paths (segment fan-out,
 > `gp_segment_connect`) and live-cluster chaos (`kill -9` resume, 100 Gbit/s

@@ -110,10 +110,9 @@ type Manager struct {
 	Stats
 }
 
-// Stats is the observed result of a Manager run (used for reporting and for
-// the integration test to assert that bytes were actually transferred).
+// Stats is the observed result of a Manager run (used for reporting; wire
+// bytes are exposed via Metrics(), not here).
 type Stats struct {
-	Bytes    int64 // rows streamed (FR-01)
 	Rows     int64 // rows copied (FR-02)
 	Units    int   // units processed
 	Comps    int   // units with a verified checksum match (FR-02)
@@ -1040,7 +1039,6 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	u.RowCount = rows
 	m.statMu.Lock()
 	m.Rows += rows
-	m.Bytes += rows
 	m.statMu.Unlock()
 	// FR-04: rows and REAL byte volume (wire/logical from the copy path —
 	// not row counts, which the old code mis-recorded as bytes).

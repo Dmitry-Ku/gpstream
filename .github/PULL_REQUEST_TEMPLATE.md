@@ -11,7 +11,7 @@ Gate (must all be green locally before review):
   gofmt -l <touched files>   # must print nothing
   go test -race -count=1 ./...
   go test -race -count=1 -tags integration ./...   # slow; run at least the
-  # packages you touched plus ./integration/ if you touched data paths
+  # packages you touched plus ./tests/integration/ if you touched data paths
 CI also runs govulncheck (TASK-SPEC §9) — do not add a dependency without
 recording it in docs/design.md (F-08: fixed version + justification per
 external package).
@@ -30,7 +30,7 @@ in the same PR.
 model, swap, or checksums: state explicitly which F-xx guarantees
 (snapshot consistency, byte-for-byte data, idempotent resume, atomic swap)
 are affected and add or update the live test that proves them
-(`integration/*_test.go`).
+(`tests/integration/*_test.go`).
 
 **Tests added / changed:** file list. New data-path behavior needs a live
 test, not only a unit test.
