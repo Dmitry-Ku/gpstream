@@ -336,11 +336,29 @@ systemd: when the copy finishes, the process exits and the service stops.
 `Restart=on-failure` restarts it only on a non-zero exit — it does not keep
 the process alive.
 
-The design is safe for that reason: without an explicit `--operation-id`, the
-operation id is the **deterministic plan hash**, so a restarted run finds the
-existing journal, skips units already in a terminal state (verified by
-checksum), and re-copies only the non-terminal ones under a fresh snapshot
-epoch. A `run` after a crash is a correct continuation, not a fresh job.
+The operation id is what makes a crash recoverable, so it must be **stable
+across restarts**. Without an explicit `--operation-id`, `run` re-plans
+against the live source and uses the **deterministic plan hash** as the id
+(the journal lives at `<state-dir>/<id>/`). The hash is a pure function of the
+source's **physical** state (table count, per-table `pg_total_relation_size`,
+layout) with no time or randomness — so it is stable **only while the source
+is unchanged** (a quiesced source, the normal migration case): a restarted run
+recomputes the same id, finds the existing journal, skips terminal units
+(checksum-verified), and re-copies only the non-terminal ones under a fresh
+snapshot epoch.
+
+If the source has **changed** since the crash — a table created/dropped, a
+table grown, a layout change — the hash differs, a new operation-id and a
+fresh state dir are produced, and the old journal is **not** found. The
+restart is then a *fresh* job, and tables already swapped on the destination
+surface as conflicts (default action = stop). Note that `DELETE` + `VACUUM`
+does not restore the hash: `pg_total_relation_size` tracks the physical file,
+which only `VACUUM FULL`/`CLUSTER` shrinks.
+
+**For the service, pin an explicit `--operation-id` in `ExecStart`** (it is a
+CLI flag only — not a config-file key or env var). That makes the id, and
+therefore the journal, stable across restarts regardless of source changes.
+The plan-hash id is a convenience for a one-shot copy of a static source.
 
 **Use the service when:**
 
