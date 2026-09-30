@@ -150,6 +150,43 @@ binary using the deb packaging flow, then install with your package manager
 the example config, and the man page. The binary is static, so it installs
 cleanly on a wide range of Debian/Ubuntu hosts with a Linux 6.1+ kernel.
 
+## 6.3 Deployment model: what goes where
+
+gpstream ships **two** binaries; the destination cluster never needs any of
+them.
+
+| Where | What | When |
+| --- | --- | --- |
+| **Controller host** (the machine the operator runs gpstream from — it does *not* have to be a cluster host; any host with network access to both coordinators) | the `gpstream` package (main CLI) | always |
+| **Source segment hosts** (every host in the source segment topology) | `gpstream-segreceiver` | only for `--copy-mode on_segment` |
+| **Destination hosts** | *nothing* | never — the destination is written over plain PostgreSQL protocol (`COPY FROM STDIN`); no gpstream code executes there |
+
+**Recommended:** install the full `gpstream` package on the controller host
+*and* on every source segment host (for `on_segment`). The package places
+`gpstream-segreceiver` at `/usr/bin/gpstream-segreceiver`, giving one canonical
+path for `--seg-binary` and one version-control surface (`rpm -qa gpstream` /
+`dnf upgrade gpstream` on every host) — today there is no version handshake
+between controller and segreceivers, so the package is the only practical way
+to keep the two in lockstep.
+
+**Minimal-footprint alternative:** copy the single static
+`gpstream-segreceiver` file to every source segment host (one file, unprivileged,
+no root) and point `--seg-binary` at that path. This is the F-15 "install =
+copy one file" mode; use it only if you deliberately want no package on the
+segment hosts.
+
+```bash
+# controller
+rpm -i gpstream-<ver>-amd64.rpm            # or .deb
+# on_segment: also on every source segment host
+rpm -i gpstream-<ver>-amd64.rpm
+gpstream doctor --config /etc/gpstream/gpstream.toml --seg-binary /usr/bin/gpstream-segreceiver
+```
+
+`doctor` probes the segreceiver on **every** segment host
+(`--check` via `COPY ... TO PROGRAM ... ON SEGMENT`) and reports a WARN naming
+the hosts where it is missing.
+
 ---
 
 ## 7. systemd service

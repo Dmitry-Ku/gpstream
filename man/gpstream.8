@@ -176,7 +176,8 @@ on_segment).
 PATH
 gpstream-segreceiver path on the SOURCE segment hosts (required with
 .B --copy-mode
-on_segment; install one file per segment host).
+on_segment; install the gpstream package on every segment host, or copy the
+single static file; the package places it at /usr/bin/gpstream-segreceiver).
 .TP
 .B --seg-tls-cert
 F

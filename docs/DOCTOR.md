@@ -97,7 +97,7 @@ message:
 |--------------|-------|---------------------------|
 | **1. GUC** | `current_setting('ycmdb.yc_allow_copy_to_program')` == `on` | `forbidden to COPY to or from an external program` — set the GUC in `postgresql.conf` of **all** data dirs (master + segments) and restart the cluster (`gpstop -ar`). Required on the open-gpdb 6.x fork; it is a `PGC_POSTMASTER` superuser GUC. |
 | **2. Dispatch** | `COPY (SELECT 1) TO PROGRAM 'true <SEGID>' ON SEGMENT` (no-op program) | Any dispatch error — the kernel path `CdbDispatchUtilityStatement` → primary-only gang is broken (permissions, segment state). |
-| **3. Binary** | `COPY (SELECT 1) TO PROGRAM '<seg-binary> --check --content <SEGID>' ON SEGMENT` — `gpstream-segreceiver --check` must exit 0 on **every primary segment host** | The binary is missing/not executable on one or more segment hosts — install the same static `gpstream-segreceiver` on every host in the segment topology. |
+| **3. Binary** | `COPY (SELECT 1) TO PROGRAM '<seg-binary> --check --content <SEGID>' ON SEGMENT` — `gpstream-segreceiver --check` must exit 0 on **every primary segment host** | The binary is missing/not executable on one or more segment hosts — install the `gpstream` package (recommended: same version as the controller, so `rpm -qa`/`dnf upgrade` keep hosts in lockstep) or copy the single static `gpstream-segreceiver` file to every host in the segment topology. |
 
 All three OK → `on_segment` PASS and `--copy-mode on_segment` is
 available (~2× throughput on the source side, T0-4). Any one missing →
@@ -123,7 +123,7 @@ is green.
 $ gpstream doctor \
     --source "host=prod-coordinator   port=5432 user=gpstream dbname=postgres" \
     --dest   "host=preprod-coordinator  port=5432 user=gpstream dbname=postgres" \
-    --seg-binary /opt/gpstream/gpstream-segreceiver
+    --seg-binary /usr/bin/gpstream-segreceiver
 ```
 
 - **Any FAIL** → fix before running. The recommendation string names the

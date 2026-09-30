@@ -15,6 +15,12 @@ monitor, and recover if needed.
 > **Cluster requirement:** `--help` and `selftest` need no cluster. **`run`,
 > `dry-run`, and `doctor` require a reachable source and destination cluster**
 > (a dry-run plans against the live topology).
+>
+> **Where it installs:** the `gpstream` package goes on the **controller
+> host** (the machine you run it from — it does not have to be a cluster
+> host). For `--copy-mode on_segment` it also goes on **every source segment
+> host** (it supplies `gpstream-segreceiver`). The **destination** never runs
+> any gpstream code. Details: [INSTALL.md](INSTALL.md#63-deployment-model-what-goes-where).
 
 ---
 

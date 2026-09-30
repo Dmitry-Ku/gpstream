@@ -1495,7 +1495,7 @@ Performance:
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
-  --seg-binary PATH                gpstream-segreceiver path on the segment hosts
+  --seg-binary PATH                gpstream-segreceiver path on the SOURCE segment hosts (package or copied file; required with --copy-mode on_segment)
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop
