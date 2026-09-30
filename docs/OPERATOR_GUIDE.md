@@ -328,7 +328,48 @@ re-copied — `status` counts all three as terminal.
 
 ---
 
-## 11. Indexes
+## 11. When to use the gpstream service
+
+The `gpstream.service` unit is **not a daemon**. Its `ExecStart` is a single
+`gpstream run --config /etc/gpstream/gpstream.toml` invocation supervised by
+systemd: when the copy finishes, the process exits and the service stops.
+`Restart=on-failure` restarts it only on a non-zero exit — it does not keep
+the process alive.
+
+The design is safe for that reason: without an explicit `--operation-id`, the
+operation id is the **deterministic plan hash**, so a restarted run finds the
+existing journal, skips units already in a terminal state (verified by
+checksum), and re-copies only the non-terminal ones under a fresh snapshot
+epoch. A `run` after a crash is a correct continuation, not a fresh job.
+
+**Use the service when:**
+
+- the copy is **long and unattended** (hours to days) — logs in the journal,
+  automatic restart on crash, logrotate, monitoring via `status` / Prometheus;
+- the copy is **periodic** (a DW replica refresh, a catch-up after the initial
+  load) — the service plus a `systemd-timer` on a schedule;
+- the copy must **survive a crash or a controller reboot** without operator
+  action — `Restart=on-failure` plus the journal self-resume described above.
+
+**Do not use it when:**
+
+- the copy is short and interactive (seconds to minutes) — a plain
+  `gpstream run --config ...` in a terminal;
+- each run needs **different parameters** — the service is pinned to
+  `/etc/gpstream/gpstream.toml`; per-run flags (`--operation-id`,
+  `--resolve-conflicts`, a different scope) are only available from a manual
+  run;
+- the operator is present for a one-off migration — terminal + `status` +
+  Prometheus is enough.
+
+**Recommended pattern:** initial load with a manual `run` (or the service if
+it is long), check `status`, then `systemctl disable gpstream`. For periodic
+refresh, `systemctl enable gpstream` plus a timer. Per-operation flags are
+never done through the service.
+
+---
+
+## 12. Indexes
 
 Indexes are handled separately from the data copy:
 
@@ -344,7 +385,7 @@ index builds do not contend with the bulk copy. There is **no separate
 
 ---
 
-## 12. Honest caveats (live stand)
+## 13. Honest caveats (live stand)
 
 gpstream's unit tests exercise the **fake** SQL/data path. Criteria that need a
 **real** Greenplum cluster are **not verified without a live stand**:
