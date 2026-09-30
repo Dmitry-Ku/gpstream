@@ -75,13 +75,21 @@ func (a *Agent) CreateStaging(ctx context.Context, schema string, cols []pg.Colu
 			sql += " NOT NULL"
 		}
 	}
-	sql += ")" + dist.SQLClause()
 	// F-11 metadata «AO-параметры»: reproduce the source table's storage
 	// options (appendonly, orientation, blocksize, compress, fillfactor, ...)
 	// so an AO table stays AO on the destination (a plain heap otherwise).
+	//
+	// ORDER MATTERS (live GP6, 29.09 M5 e2e): WITH (...) must PRECEDE
+	// DISTRIBUTED BY — the kernel rejects "DISTRIBUTED BY (id) WITH (...)"
+	// with a syntax error at "WITH". Same rule as PARTITION BY (Fix 1):
+	// CREATE TABLE (cols) WITH (...) DISTRIBUTED BY (...) PARTITION BY (...).
+	// A fake-conn test cannot catch this (it records, does not parse), so a
+	// DDL-order assertion guards it below.
+	sql += ")"
 	if clause := pg.StorageOptionsSQL(dist.Reopts); clause != "" {
 		sql += " " + clause
 	}
+	sql += dist.SQLClause()
 	if part.Spec != "" {
 		sql += " " + part.Spec
 	}

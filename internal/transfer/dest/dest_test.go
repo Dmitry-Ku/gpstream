@@ -77,6 +77,40 @@ func TestCreateStagingDistribution(t *testing.T) {
 	}
 }
 
+// TestCreateStagingAOOptionsOrder guards the CREATE TABLE clause order for a
+// table that carries BOTH AO storage options and a distribution policy
+// (live GP6, 29.09 M5 e2e): the kernel requires
+//
+//	CREATE TABLE (cols) WITH (...) DISTRIBUTED BY (...)
+//
+// and rejects the reverse order with a syntax error at "WITH". A fake-conn
+// test records rather than parses, so it cannot catch a wrong order — this
+// assertion is the guard.
+func TestCreateStagingAOOptionsOrder(t *testing.T) {
+	f := pg.NewFakeConn()
+	a := mkAgent(f)
+	cols := []pg.Column{{Name: "id", Type: "integer"}}
+	dist := pg.Distribution{Kind: "hash", Keys: []string{"id"},
+		Reopts: []string{"appendonly=true", "orientation=row", "blocksize=32768"}}
+	if err := a.CreateStaging(context.Background(), "public", cols, "_gs_j1_ao", dist, pg.PartitionSpec{}); err != nil {
+		t.Fatalf("create staging: %v", err)
+	}
+	last := f.Queried()[len(f.Queried())-1]
+	withIdx := strings.Index(last, "WITH (")
+	distIdx := strings.Index(last, "DISTRIBUTED BY")
+	if withIdx < 0 || distIdx < 0 {
+		t.Fatalf("expected both WITH (...) and DISTRIBUTED BY clauses, got %q", last)
+	}
+	if withIdx > distIdx {
+		t.Fatalf("WITH must precede DISTRIBUTED BY (kernel order), got %q", last)
+	}
+	// The closing paren of the column list must come before WITH.
+	colClose := strings.Index(last, ")")
+	if colClose < 0 || colClose > withIdx {
+		t.Fatalf("expected column-list ')' before WITH, got %q", last)
+	}
+}
+
 // TestDropStaging issues DROP TABLE IF EXISTS (FR-02/FR-07).
 func TestDropStaging(t *testing.T) {
 	f := pg.NewFakeConn()
