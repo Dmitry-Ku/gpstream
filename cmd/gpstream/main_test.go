@@ -165,13 +165,6 @@ func TestCleanupNeedsYes(t *testing.T) {
 	}
 }
 
-// TestManNoFile: with no man file present it prints the built-in summary.
-func TestManNoFile(t *testing.T) {
-	if err := run([]string{"man"}); err != nil {
-		t.Fatalf("man: %v", err)
-	}
-}
-
 // TestCopyNoCluster: copy must fail cleanly (no live cluster) rather than
 // fabricate a result (FR-01/CR-7). An empty connstring cannot connect.
 func TestCopyNoCluster(t *testing.T) {

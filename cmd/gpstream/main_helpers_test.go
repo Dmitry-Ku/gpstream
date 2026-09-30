@@ -214,9 +214,6 @@ func TestCmdVersionMan(t *testing.T) {
 	if err := run([]string{"version"}); err != nil {
 		t.Errorf("version: %v", err)
 	}
-	if err := run([]string{"man"}); err != nil {
-		t.Errorf("man: %v", err)
-	}
 	if err := run([]string{"help"}); err != nil {
 		t.Errorf("help: %v", err)
 	}

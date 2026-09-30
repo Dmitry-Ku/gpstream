@@ -328,7 +328,4 @@ func TestCmdVersionAndMan(t *testing.T) {
 	if err := cmdVersion(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdMan(nil); err != nil {
-		t.Fatal(err)
-	}
 }

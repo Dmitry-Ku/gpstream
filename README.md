@@ -81,7 +81,7 @@ gpstream cleanup  --operation-id <id> [--all-incomplete] [--mode drop] [--dest <
 gpstream doctor   [--source ...] [--dest ...]
 gpstream selftest
 gpstream version
-gpstream man [topic]
+man gpstream
 ```
 
 Priority: CLI flag > environment > config file > default. Config file:

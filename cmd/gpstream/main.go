@@ -65,12 +65,10 @@ func run(args []string) error {
 		return cmdSelftest(rest)
 	case "version":
 		return cmdVersion(rest)
-	case "man":
-		return cmdMan(rest)
 	case "-h", "--help", "help":
 		return printHelp()
 	default:
-		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, status, resume, cleanup, selftest, version, man, help)", cmd)
+		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, status, resume, cleanup, selftest, version, help)", cmd)
 	}
 }
 
@@ -1217,20 +1215,6 @@ func cmdVersion(args []string) error {
 	return nil
 }
 
-// cmdMan prints the built-in man page. It reads man/gpstream.8 when present,
-// otherwise a short built-in summary.
-func cmdMan(args []string) error {
-	for _, p := range []string{"man/gpstream.8", "./man/gpstream.8"} {
-		if data, err := os.ReadFile(p); err == nil {
-			fmt.Print(string(data))
-			return nil
-		}
-	}
-	fmt.Println("gpstream(8) — high-throughput data copy between Greenplum 6 clusters")
-	fmt.Println("\nSee docs/ for the full guide, or `gpstream --help` for commands.")
-	return nil
-}
-
 // cmdRun executes a copy between two Greenplum 6 clusters (v4 §8):
 //
 //	gpstream run --source ... --dest ... --dbs sales,hr \
@@ -1476,7 +1460,6 @@ Commands:
 Service:
   selftest  internal sanity checks
   version   print the build version
-  man       print the built-in man page
   help      this help (also: --help / -h)
 
 Flags (CLI > env > file > defaults):

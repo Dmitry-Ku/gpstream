@@ -1,7 +1,7 @@
 package main
 
 // F-09 coverage (item 11), second pass: the remaining cheap cmd/gpstream
-// branches — cmdSelftest (OK path), cmdMan (man page found), cmdCleanup
+// branches — cmdSelftest (OK path), cmdCleanup
 // --mode drop with an unreachable --dest (connect-fail path + the TLS/dest
 // flag parsing), cmdStatus with a valid runstats.json (live table: pair,
 // progress, throughput, by_status, per-table) plus jobmeta.json (snap-epoch
@@ -26,14 +26,6 @@ import (
 func TestCmdSelftest(t *testing.T) {
 	if err := run([]string{"selftest"}); err != nil {
 		t.Fatalf("selftest: %v", err)
-	}
-}
-
-// TestCmdManFound runs `gpstream man` from the repo root, where
-// ./man/gpstream.8 exists — the found branch prints the page.
-func TestCmdManFound(t *testing.T) {
-	if err := run([]string{"man"}); err != nil {
-		t.Fatalf("man: %v", err)
 	}
 }
 

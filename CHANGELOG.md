@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed the `man` subcommand (redundant)
+
+Per the maintainer: the `gpstream man` subcommand is redundant — the man page is
+installed to /usr/share/man/man8 by the package (standard `man gpstream`).
+The subcommand also had a real bug: it read man/gpstream.8 relative to the
+current working directory, so an installed binary printed a two-line
+stub instead of the page. Removed from main.go (case + cmdMan), help,
+the man COMMANDS section, the man-family generator (no gpstream-man.8),
+tests, and docs (README, QUICKSTART now point at `man gpstream`).
+
 ### Docs: removed internal spec references from man page and `gpstream help`
 
 Per the maintainer: user-facing output should not cite internal spec items. Removed

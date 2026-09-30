@@ -300,5 +300,5 @@ Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.
 - **`CONFIGURATION`** — the `gpstream.toml` config file, env variables, and precedence.
 - **`docs/INSTALL.md`** — building, cross-compiling, packaging, systemd, and logrotate.
 - **`docs/METRICS.md`** — the Prometheus metric names and semantics.
-- **`gpstream man`** / `man/gpstream.8` — the man page.
+- **`man gpstream`** — the man page (installed to /usr/share/man/man8 by the package).
 - **`gpstream --help`** — commands and flags.
