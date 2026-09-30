@@ -20,28 +20,16 @@ plan.
 Execute the copy: stream source to dest with no intermediate storage (v4 §8).
 .TP
 .B dry-run
-Plan the copy without executing
-(BR (--timeout
-S bounds the plan;
-.BR --plan-file
-F emits it).
+Plan the copy without executing (\fB--timeout\fR S bounds the plan; \fB--plan-file\fR F emits it).
 .TP
 .B status
-Report operation state
-(BR (--operation-id
-id).
+Report operation state (\fB--operation-id\fR id).
 .TP
 .B resume
-Resume an interrupted operation
-(BR (--operation-id
-id); re-queues non-terminal units, skips completed/swapped/failed.
+Resume an interrupted operation (\fB--operation-id\fR id); re-queues non-terminal units, skips completed/swapped/failed.
 .TP
 .B cleanup
-Remove operation state
-(BR (--operation-id
-id,
-.BR --yes
-required).
+Remove operation state (\fB--operation-id\fR id, \fB--yes\fR required).
 .B --all-incomplete
 removes every operation dir with non-terminal units.
 .BR --mode
