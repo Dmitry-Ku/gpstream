@@ -69,7 +69,7 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	cmd := exec.Command(bin, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-		"--workers", "1")
+		"--workers-per-pair", "1")
 	var runErr strings.Builder
 	cmd.Stderr = &runErr
 	if err := cmd.Start(); err != nil {

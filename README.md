@@ -62,7 +62,7 @@ gpstream run
   [--copy-mode coordinator|on_segment|direct]
   [--seg-listen HOST:PORT] [--seg-binary PATH]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
-  [--workers N] [--rate-limit <Gbps>]
+  [--workers-per-pair N] [--rate-limit <Gbps>]
   [--auto-resume N] [--resume-consistency relaxed|strict]
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]

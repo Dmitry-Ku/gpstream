@@ -61,7 +61,7 @@ that died — resume is the correct mechanism.
 | Knob | Flag / env | What it does |
 |------|-----------|--------------|
 | Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | caps throughput (accepts `bps`/`mbit`/`gbit`) |
-| Workers | `--workers N` (default `2`) | parallelism per host-pair |
+| Workers | `--workers-per-pair N` (default `2`) | parallelism per host-pair |
 | Compression | `--compress` (default `zstd`, level 3) | reduces wire bytes |
 
 The adaptive limiter (F-14) is **always active**: it samples source host

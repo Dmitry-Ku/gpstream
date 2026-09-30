@@ -61,7 +61,7 @@ from the flags or the file.
 | `ZstdLevel` | int | **`3`** | `--zstd-level` / `--compress zstd:N` / file | Must be **1–19** (validate). |
 | `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env / file | F-12: a table whose estimated size is below this copies with compression **off**. `0` disables the auto-disable. |
 | `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling; adaptive AIMD (F-14) is always active. |
-| `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
+| `WorkersPerPair` | int | **`2`** | `--workers-per-pair` / env / file | Must be **≥ 1** (validate). |
 
 ### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |
@@ -200,6 +200,13 @@ overlays known scalar leaves via `assignConfigString`. Only **scalar leaves**
 are honoured (non-scalar nodes are skipped). The accepted keys (all lowercase)
 are:
 
+**Naming rule:** a file key is the CLI flag name with dashes turned into
+underscores — `--skew-threshold` ↔ `skew_threshold`, `--workers-per-pair` ↔
+`workers_per_pair`. The 24 keys below are 1:1 with 24 CLI flags, so the name
+in the docs without the leading `--` is exactly the file key. Env vars are the
+same names uppercased under the `GPSTREAM_` prefix where they exist (env
+covers a different, session-level subset).
+
 | File key | Field | Notes |
 |----------|-------|-------|
 | `source` | `Source` | |
@@ -333,7 +340,7 @@ default `1.2`) may be passed as `--ssl-min-tls` or via the `ssl_min_tls` key.
 Given `config.Default()`, a file, environment, and CLI, the final value of
 `WorkersPerPair` resolves as:
 
-- CLI `--workers 4` → **4** (wins).
+- CLI `--workers-per-pair 4` → **4** (wins).
 - else env `GPSTREAM_WORKERS_PER_PAIR=3` → **3**.
 - else file `workers_per_pair = 2` → **2**.
 - else default → **2** (default).

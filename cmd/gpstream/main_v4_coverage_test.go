@@ -264,7 +264,7 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--state-dir", dir,
 		"--config", f,
 		"--rate-limit", "2",
-		"--workers", "3",
+		"--workers-per-pair", "3",
 		"--zstd-level", "3",
 		"--verify", "full",
 		"--overwrite",

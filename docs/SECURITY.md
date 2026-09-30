@@ -162,7 +162,7 @@ material.
 ## 8. Least privilege
 
 - Use the **minimum** privilege connection strings required for the copy.
-- Keep `--workers` bounded so the copy cannot saturate the shared NIC.
+- Keep `--workers-per-pair` bounded so the copy cannot saturate the shared NIC.
 - Keep the metrics endpoint (`--metrics-addr`) on a private interface; it
   exposes counters but is not an admin API.
 - Do not run a copy as a more-privileged user than the data requires.

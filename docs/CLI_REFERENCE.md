@@ -199,7 +199,7 @@ Conflict policy semantics:
 | `--zstd-level <1-19>` | `ZstdLevel` | `3` |
 | `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
 | `--rate-limit <rate>` | `RateLimit` | `0` (no ceiling; accepts `40`, `40gbps`, `400mbps`, …) |
-| `--workers <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
+| `--workers-per-pair <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
 
 ### Resilience (F-06/F-07)
 | Flag | Config field | Default |
