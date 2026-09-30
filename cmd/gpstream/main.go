@@ -70,7 +70,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		return printHelp()
 	default:
-		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, status, resume, cleanup)", cmd)
+		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, status, resume, cleanup, selftest, version, man, help)", cmd)
 	}
 }
 
@@ -1477,7 +1477,7 @@ Service:
   selftest  internal sanity checks
   version   print the build version
   man       print the built-in man page
-  --help    this help
+  help      this help (also: --help / -h)
 
 Flags (CLI > env > file > defaults):
 
