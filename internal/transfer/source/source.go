@@ -147,35 +147,57 @@ func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distr
 
 // reoptionsList normalises a pg_class.reloptions value (text[]) into its
 // "key=value" elements. The driver may hand it back as a Go []string, a
-// []byte, or a "{a,b}"-styled string; all are handled. nil yields nil.
+// []byte, a []any (pgx v5 decodes text[] into []interface{} — the M5 live
+// e2e case), or a "{a,b}"/"[a b c]"-styled string; all are handled. nil
+// yields nil.
 func reoptionsList(v any) []string {
+	var out []string
 	switch x := v.(type) {
 	case nil:
 		return nil
 	case []string:
-		return x
+		out = x
 	case []byte:
-		return splitReopts(string(x))
+		out = splitReopts(string(x))
+	case []any:
+		// pgx v5: a text[] column arrives as []interface{} of strings.
+		for _, e := range x {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
 	case string:
-		return splitReopts(x)
+		out = splitReopts(x)
 	default:
-		return splitReopts(fmt.Sprint(x))
+		out = splitReopts(fmt.Sprint(x))
 	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
-// splitReopts parses a pg_class.reloptions array ("{a,b,c}" or "a,b,c") into
-// its "key=value" elements (F-11 AO-parameters). Empty/nil input yields nil.
+// splitReopts parses a pg_class.reloptions array ("{a,b,c}", "[a b c]" or
+// "a,b,c") into its "key=value" elements (F-11 AO-parameters). Empty/nil
+// input yields nil. It strips the catalog's {…} braces and the [ … ]
+// brackets that fmt.Sprint produces for a []string fallback, then splits on
+// commas AND whitespace (reloptions values never contain spaces), so a
+// mis-decoded array still parses instead of silently yielding zero options
+// (live M5 e2e, 29.09: an AO table would otherwise arrive on the destination
+// as a heap).
 func splitReopts(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
-	if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+	if (strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}")) ||
+		(strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]")) {
 		s = s[1 : len(s)-1]
 	}
 	var out []string
-	for _, e := range strings.Split(s, ",") {
-		if e = strings.TrimSpace(e); e != "" {
+	for _, e := range strings.FieldsFunc(s,
+		func(r rune) bool { return r == ',' || r == ' ' || r == '	' }) {
+		if e != "" {
 			out = append(out, e)
 		}
 	}
