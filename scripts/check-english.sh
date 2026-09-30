@@ -11,14 +11,21 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-# Allowlist: file:line patterns that may contain Cyrillic DELIBERATELY.
-# Each entry: <file> <fixed-string the line must contain>  (the string proves
-# the Cyrillic is functional data, e.g. a collation fixture, not text).
-# Format, one rule per line:  FILE<TAB>MUST-CONTAIN
+# Allowlist: content that may contain Cyrillic DELIBERATELY.
+# Two forms, one rule per line:  FILE<TAB>MUST-CONTAIN
+#   - MUST-CONTAIN == "*"  -> the WHOLE file is exempt (operational state,
+#     not project prose).
+#   - MUST-CONTAIN <string> -> only lines containing that string are exempt
+#     (proves the Cyrillic is functional data, e.g. a collation fixture).
 ALLOWLIST="$(mktemp)"
 trap 'rm -f "$ALLOWLIST"' EXIT
 cat > "$ALLOWLIST" <<'EOF'
 scripts/f16-acceptance.sh	cyrillic
+# Autonomous-cron operational state (read/written by the gpstream-autonomy
+# cron every 30 min; its prompt is Russian, so this working-state file is).
+# It is agent scratch state, not project documentation, so it is exempt as a
+# whole file.
+STATE-CHECKPOINT-2026-09-16.md	*
 EOF
 
 fail=0
@@ -32,6 +39,10 @@ while IFS= read -r f; do
   fi
   [ "$is_text" = "1" ] || continue
   # find lines with Cyrillic
+  # (a) whole-file exemption: if the file is allowlisted with MUST-CONTAIN "*"
+  if grep -qP "^$f\t\*\s*$" "$ALLOWLIST"; then
+    continue
+  fi
   while IFS=: read -r ln rest; do
     # check allowlist for this file
     ok=0
