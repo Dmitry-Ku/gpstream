@@ -144,6 +144,10 @@ Total throughput ceiling; accepts bps/mbit/gbit (default: none).
 N
 Workers per host-pair (default 2).
 .TP
+.BR --small-table-threshold
+size
+Tables smaller than this (default 1MiB) copy with compression off (F-12; 0 disables).
+.TP
 .BR --index-workers
 N
 Background index-build workers (F-17; default 2 when the index build is on).
@@ -162,6 +166,26 @@ Index build order; default
 (largest tables first);
 .BR fifo
 runs jobs in enqueue order.
+.TP
+.B --no-constraints
+Skip the FK/CHECK constraint-restore pass on the destination (F-11).
+.TP
+.B --no-redistribute
+Suppress redistribution accounting (sets the skew gate off).
+.TP
+.BR --skew-threshold
+X
+Fraction (0..1) of source data that must move to a different segment for the
+plan to mark redistribution (F-15); default 0.05; negative = gate off.
+.TP
+.BR --segment-balance-threshold
+X
+Live destination segment-fill max/avg warning gate (F-15); default 1.5;
+negative = metric only (no warning); NaN is rejected.
+.TP
+.BR --resume-consistency
+relaxed|strict
+Resume re-read semantics (DESIGN section 2.2); default relaxed.
 .SS Transport / resilience
 .TP
 .BR --copy-mode
@@ -192,6 +216,10 @@ In-flight window per stream (default 64MiB).
 full|sample|off
 Verification depth (default sample).
 .TP
+.BR --locale-check
+Extra dry-run line counting locale (LC_TYPE) differences (F-16). Collation
+differences are reported in the dry-run always; this flag adds the locale
+count line.
 .BR --consistent-db | --consistent-cluster | --consistent-tables
 Snapshot scope (mutually exclusive; default --consistent-db).
 .TP
