@@ -100,6 +100,7 @@ func TestIsTerminal(t *testing.T) {
 		{manifest.StateCompleted, true},
 		{manifest.StateSwapped, true},
 		{manifest.StateFailed, true},
+		{manifest.StateSkipped, true},
 		{manifest.StatePending, false},
 		{manifest.StateCopying, false},
 		{manifest.StateVerifying, false},

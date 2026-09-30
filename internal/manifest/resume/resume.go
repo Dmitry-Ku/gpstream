@@ -81,7 +81,7 @@ func (m *Manager) CrashRecovery(_ context.Context) (int, error) {
 // isTerminal reports whether a unit state is a terminal (final) state.
 func isTerminal(s manifest.State) bool {
 	switch s {
-	case manifest.StateCompleted, manifest.StateSwapped, manifest.StateFailed:
+	case manifest.StateCompleted, manifest.StateSwapped, manifest.StateFailed, manifest.StateSkipped:
 		return true
 	}
 	return false

@@ -189,7 +189,7 @@ func TestManagerSkipConflict(t *testing.T) {
 	cfg := config.Default()
 	cfg.ConflictAction = config.Skip // --resolve-conflicts skip
 	payload := []byte("data")
-	m, _ := newManager(t, &cfg, payload, payload)
+	m, j := newManager(t, &cfg, payload, payload)
 
 	p := oneUnitPlan()
 	p.Units[0].HasConflict = true
@@ -202,6 +202,15 @@ func TestManagerSkipConflict(t *testing.T) {
 	}
 	if m.Units != 0 {
 		t.Errorf("units = %d, want 0 (nothing copied)", m.Units)
+	}
+	// The skipped unit must be TERMINAL in the journal (F-05 acceptance):
+	// `status` counts it as done and `resume` must not re-queue it.
+	units := j.Units()
+	if len(units) != 1 {
+		t.Fatalf("journal has %d units, want 1", len(units))
+	}
+	if units[0].State != StateSkipped {
+		t.Errorf("skipped unit state = %q, want %q (terminal)", units[0].State, StateSkipped)
 	}
 }
 

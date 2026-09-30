@@ -31,7 +31,10 @@ import (
 )
 
 // version is the gpstream build version reported by --help/version.
-const version = "0.1.0"
+// Overridable at build time: go build -ldflags "-X main.version=<ver>"
+// (the Makefile, scripts/package.sh and the release workflow set it from
+// the git tag).
+var version = "0.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -935,7 +938,8 @@ func cmdStatus(args []string) error {
 	}
 	terminal := 0
 	for _, u := range units {
-		if u.State == manifest.StateCompleted || u.State == manifest.StateSwapped || u.State == manifest.StateFailed {
+		switch u.State {
+		case manifest.StateCompleted, manifest.StateSwapped, manifest.StateFailed, manifest.StateSkipped:
 			terminal++
 		}
 		fmt.Printf("  unit %4d  %-8s  %-10s  %s.%s.%s  %s  epoch=%d\n",
@@ -953,7 +957,7 @@ func cmdStatus(args []string) error {
 			humanBytesU(uint64(rs.Throughput)), humanDurationSec(rs.ETASeconds), rs.ActiveFlows)
 		if len(rs.ByStatus) > 0 {
 			parts := make([]string, 0, len(rs.ByStatus))
-			for _, st := range []string{"pending", "copying", "verifying", "completed", "swapped", "failed"} {
+			for _, st := range []string{"pending", "copying", "verifying", "completed", "swapped", "failed", "skipped"} {
 				if n, ok := rs.ByStatus[st]; ok {
 					parts = append(parts, fmt.Sprintf("%s=%d", st, n))
 				}
@@ -1197,7 +1201,7 @@ func listIncompleteOperations(stateDir string) ([]string, error) {
 		}
 		for _, u := range j.Units() {
 			switch u.State {
-			case manifest.StateCompleted, manifest.StateSwapped, manifest.StateFailed:
+			case manifest.StateCompleted, manifest.StateSwapped, manifest.StateFailed, manifest.StateSkipped:
 			default:
 				out = append(out, e.Name())
 			}

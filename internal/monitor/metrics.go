@@ -546,12 +546,12 @@ func (s snapshot) render(throughput float64) string {
 // statusOrder renders the per-status gauges in a stable, operator-readable
 // order; knownStatus guards the defensive fallback loop.
 var statusOrder = []string{
-	"pending", "copying", "verifying", "completed", "swapped", "failed",
+	"pending", "copying", "verifying", "completed", "swapped", "failed", "skipped",
 }
 
 var knownStatus = map[string]bool{
 	"pending": true, "copying": true, "verifying": true,
-	"completed": true, "swapped": true, "failed": true,
+	"completed": true, "swapped": true, "failed": true, "skipped": true,
 }
 
 // Handler returns an http.Handler serving the metrics (FR-04).

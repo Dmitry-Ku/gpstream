@@ -317,10 +317,14 @@ whether a finished run actually **succeeded**:
 | `completed` | Data + checksum verified. |
 | **`swapped`** | Completed unit atomically renamed to its final name — **terminal success**. |
 | **`failed`** | Unit exhausted its retries — **terminal failure**. |
+| **`skipped`** | Unit deliberately not copied (a `--resolve-conflicts skip`, or an
+  `--overwrite` target whose data is already identical on the destination) —
+  **terminal, nothing to do**. |
 
-There is **no `done` state**. A job's terminal outcomes are `swapped` (success)
-and `failed` (failure). This matters for `resume`: a unit that is already
-`swapped` (or `failed`) will not be re-copied.
+There is **no `done` state**. A job's terminal outcomes are `swapped` (success),
+`failed` (failure), and `skipped` (deliberately not copied). This matters for
+`resume`: a unit already `swapped`, `failed`, or `skipped` will not be
+re-copied — `status` counts all three as terminal.
 
 ---
 

@@ -27,12 +27,13 @@ through the states in `internal/manifest/job.go`:
 | `completed`   | data + checksum verified (ADR-001 §4.4)        | **yes**   |
 | `swapped`     | completed unit atomically renamed to final     | **yes**   |
 | `failed`      | exhausted retries / a genuine fault            | **yes**   |
+| `skipped`     | deliberately not copied (conflict skip / identical overwrite) | **yes** |
 
 There is **no `StateDone`**. A unit is "done" only once it reaches
 `completed` (data + checksum) and then `swapped` (renamed to its final
 name). `failed` is the only terminal failure state. This matters for
 resume: **a unit is re-run only if it is not terminal**, and
-`completed` / `swapped` / `failed` are the terminal set
+`completed` / `swapped` / `failed` / `skipped` are the terminal set
 (`isTerminal` in `internal/manifest/resume/resume.go`).
 
 ## Two journal writers — the operation survives a lost destination

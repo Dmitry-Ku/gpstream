@@ -7,7 +7,7 @@ GOFLAGS ?= -mod=mod
 # fallback resolves it (ADR-000).
 export GOPROXY ?= https://proxy.golang.org,direct
 
-.PHONY: all build cross amd64 arm64 test cover vet fmt doctor selftest clean
+.PHONY: all build cross amd64 arm64 test cover vet fmt doctor selftest man-pages package dist clean
 
 all: build
 
@@ -44,5 +44,19 @@ doctor: build
 selftest: build
 	./$(BIN) selftest
 
+# F-05: regenerate the man-page family (subcommand .so aliases of gpstream.8).
+man-pages:
+	./scripts/gen-man-pages.sh
+
+# F-05: build the release artifacts (tar.gz + deb + rpm, amd64+arm64) into
+# dist/ via goreleaser. VERSION is taken from the git tag, or set
+# VERSION= explicitly, or --snapshot for a local dev build.
+#   make package            # snapshot build (no tag needed)
+#   VERSION=v0.2.0 make package
+package: man-pages
+	./scripts/package.sh $(VERSION)
+
+dist: package
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

@@ -37,6 +37,11 @@ const (
 	StateSwapped State = "swapped"
 	// StateFailed is a unit that exhausted its retries.
 	StateFailed State = "failed"
+	// StateSkipped is a unit the run deliberately did not copy (a
+	// --resolve-conflicts skip, or an --overwrite target whose data is
+	// already identical on the destination). It is terminal: `status`
+	// counts it as done and `resume` does not re-queue it.
+	StateSkipped State = "skipped"
 )
 
 // Unit is one journalable unit: a database/schema/table/partition/index.

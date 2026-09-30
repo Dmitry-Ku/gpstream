@@ -612,6 +612,8 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	if u.State == StateCompleted || u.State == StateSwapped {
 		if !m.reRead[tableKey(u)] {
 			m.addSkipped()
+			// The unit is terminal (a previous run verified it); keep the
+			// journal state as-is (completed/swapped).
 			return nil
 		}
 		u.State = StatePending
@@ -657,7 +659,9 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		switch {
 		case conflicted && m.cfg.ConflictAction == config.Skip:
 			m.addSkipped()
-			m.journal.CreateUnit(u, StatePending)
+			// Terminal state: the unit was deliberately not copied, so
+			// `status` counts it as done and `resume` does not re-queue it.
+			m.journal.CreateUnit(u, StateSkipped)
 			// F-04: conflict event (skipped) — the operator audit trail.
 			m.events.Log("conflict", "schema", u.DstSchema, "table", u.DstName,
 				"action", "skip")
@@ -685,7 +689,12 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.Overwrite &&
 		m.dst.Exists(ctx, u.DstSchema, u.DstName) && m.overwriteChecksumMatches(ctx, u) {
 		m.addSkipped()
-		m.journal.CreateUnit(u, StatePending)
+		// Terminal state: the destination already holds identical data, so
+		// the unit is done and must not be re-queued by `resume`.
+		m.journal.CreateUnit(u, StateSkipped)
+		// F-04: the operator audit trail (which table was checksum-identical).
+		m.events.Log("unit_skipped", "schema", u.DstSchema, "table", u.DstName,
+			"reason", "overwrite checksum identical")
 		return nil
 	}
 	if err := m.runUnit(ctx, u); err != nil {

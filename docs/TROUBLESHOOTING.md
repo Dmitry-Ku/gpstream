@@ -40,8 +40,8 @@ gpstream status  --operation-id <id>   # see where it stopped
 gpstream resume  --operation-id <id>   # resume the operation
 ```
 
-- A unit already in a **terminal state** (`completed`, `swapped`, or
-  `failed`) is **skipped** on resume — it is not re-copied.
+- A unit already in a **terminal state** (`completed`, `swapped`, `failed`,
+  or `skipped`) is left alone on resume — it is not re-copied.
 - `--auto-resume N` caps automatic resume attempts (default `0` = off).
 - To discard a run's destination objects: `gpstream cleanup --operation-id
   <id> --mode drop --dest <conn> --yes`.

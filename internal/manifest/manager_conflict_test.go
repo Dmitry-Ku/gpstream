@@ -13,7 +13,7 @@ import (
 // reports the target table EXISTS (so the in-place --truncate path
 // do not create it, matching a real conflicting table). The source and dest
 // serve the same binary COPY payload so a verify (when performed) matches.
-func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists bool) (*Manager, *pg.FakeConn) {
+func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists bool) (*Manager, *pg.FakeConn, *Journal) {
 	t.Helper()
 	src := pg.NewFakeConn()
 	src.On("format_type", [][]any{
@@ -31,7 +31,7 @@ func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists
 		dst.On("pg_class", [][]any{}) // target absent
 	}
 	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	return NewManager(cfg, src, dst, j), dst
+	return NewManager(cfg, src, dst, j), dst, j
 }
 
 // TestManagerTruncate verifies the --truncate policy (FR-11): the data is
@@ -40,7 +40,7 @@ func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists
 func TestManagerTruncate(t *testing.T) {
 	cfg := config.Default()
 	cfg.ConflictAction = config.Truncate
-	m, dst := conflictManager(t, &cfg, []byte("BATCH"), true)
+	m, dst, _ := conflictManager(t, &cfg, []byte("BATCH"), true)
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -102,7 +102,7 @@ func TestManagerOverwriteChecksumSkip(t *testing.T) {
 	cfg := config.Default()
 	cfg.ConflictAction = config.Overwrite
 	// Identical payload on both sides -> digests match -> skip.
-	m, dst := conflictManager(t, &cfg, []byte("SAME-BINARY-PAYLOAD"), true)
+	m, dst, j := conflictManager(t, &cfg, []byte("SAME-BINARY-PAYLOAD"), true)
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -122,5 +122,14 @@ func TestManagerOverwriteChecksumSkip(t *testing.T) {
 	}
 	if hasQuery(q, "RENAME TO") {
 		t.Errorf("a skipped unit must not swap, got %v", q)
+	}
+	// The skipped unit must be TERMINAL in the journal (F-05 acceptance):
+	// `status` counts it as done and `resume` must not re-queue it.
+	units := j.Units()
+	if len(units) != 1 {
+		t.Fatalf("journal has %d units, want 1", len(units))
+	}
+	if units[0].State != StateSkipped {
+		t.Errorf("skipped unit state = %q, want %q (terminal)", units[0].State, StateSkipped)
 	}
 }
