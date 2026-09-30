@@ -31,16 +31,6 @@ func writeJournal(t *testing.T, stateDir, op string, units []*manifest.Unit) str
 	return mirror
 }
 
-// includesClass reports whether the --include selector contains the class.
-func includesClass(classes []string, c string) bool {
-	for _, x := range classes {
-		if x == c {
-			return true
-		}
-	}
-	return false
-}
-
 func unit(u int64, state manifest.State, renamed bool) *manifest.Unit {
 	uu := &manifest.Unit{
 		JobID: "op", UnitID: u, DB: "db", Schema: "s",
@@ -271,7 +261,6 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--source", "postgres://src?host=localhost",
 		"--dest", "postgres://dst?host=localhost",
 		"--dbs", "db1,db2",
-		"--include", "metadata,data",
 		"--state-dir", dir,
 		"--config", f,
 		"--rate-limit", "2",
@@ -301,9 +290,6 @@ func TestParseConfigKitchenSink(t *testing.T) {
 	if cfg.MetadataOnly != true {
 		t.Fatal("MetadataOnly not set")
 	}
-	if !includesClass(cfg.Include, "metadata") || !includesClass(cfg.Include, "data") {
-		t.Fatalf("include = %v", cfg.Include)
-	}
 	if cfg.SkewThreshold >= 0 {
 		t.Fatal("expected negative skew with --no-redistribute")
 	}
@@ -327,9 +313,9 @@ func TestParseConfigKitchenSink(t *testing.T) {
 
 // TestParseConfigInvalidArgs covers the parse-error branches of parseConfig.
 func TestParseConfigInvalidArgs(t *testing.T) {
-	// bad include class
-	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--include", "bogus"}); err == nil {
-		t.Fatal("expected error for bogus include class")
+	// --include was removed (duplicated the -only shorthands): it must be an unknown flag
+	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--include", "metadata"}); err == nil {
+		t.Fatal("expected error for the removed --include flag")
 	}
 	// both metadata-only and data-only
 	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--metadata-only", "--data-only"}); err == nil {

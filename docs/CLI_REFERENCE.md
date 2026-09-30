@@ -159,12 +159,15 @@ bindings in `cmd/gpstream/main.go`.
 All are **comma-separated** lists. With none set, the full database is
 selected.
 
-### Object classes (v4 §8 / F-11)
+### Object classes (F-11)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--include metadata,data` | `Include` | `[]` (empty = both metadata and data) |
-| `--metadata-only` | `MetadataOnly` | `false` (mutually exclusive with `--data-only`) |
-| `--data-only` | `DataOnly` | `false` (mutually exclusive with `--metadata-only`) |
+| `--metadata-only` | `MetadataOnly` | `false` (structure only: DDL + sequences, no data; idempotent) |
+| `--data-only` | `DataOnly` | `false` (data only, into the existing structure: rows replaced — TRUNCATE + load + verify; the structure must already exist) |
+
+With neither flag both classes are copied. The two are mutually exclusive
+(Validate). There is no `--include` flag: it duplicated the two shorthands
+and the default, and was removed.
 
 ### Rename (v4 §8 canonical + F-11)
 | Flag | Config field | Default |
@@ -231,7 +234,11 @@ can't be routed. See [PERFORMANCE.md](PERFORMANCE.md).
 |------|--------------|---------|
 | `--index-workers <N>` | `IndexWorkers` | `0` (background index rebuild parallelism) |
 | `--no-indexes` | `NoIndexes` | `false` (set to `true`) |
-| `--index-priority size\|manual\|background` | `IndexPriority` | `size` |
+| `--index-priority size\|fifo` | `IndexPriority` | `size` |
+
+`--no-indexes` is a master switch: with it set, `--index-workers` and
+`--index-priority` are ignored (not an error — they are set on every run by
+default, `workers 2` / `size`). An advisory on stderr names the ignored flag(s).
 
 ### Constraints / consistency (F-02/F-11)
 | Flag | Config field | Default |

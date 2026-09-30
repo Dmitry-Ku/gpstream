@@ -127,7 +127,7 @@ func TestParseConfigFlagsB(t *testing.T) {
 		"--index-workers", "7",
 		"--no-indexes",
 		"--no-constraints",
-		"--index-priority", "background",
+		"--index-priority", "fifo",
 	})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
@@ -149,8 +149,8 @@ func TestParseConfigFlagsB(t *testing.T) {
 	if !c.NoIndexes || !c.NoConstraints {
 		t.Error("NoIndexes/NoConstraints not set")
 	}
-	if c.IndexPriority != "background" {
-		t.Errorf("IndexPriority = %q, want background", c.IndexPriority)
+	if c.IndexPriority != "fifo" {
+		t.Errorf("IndexPriority = %q, want fifo", c.IndexPriority)
 	}
 }
 

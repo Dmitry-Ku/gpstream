@@ -74,8 +74,9 @@ Choose what to copy. Selection flags take **comma-separated lists**:
 | `--tables db.schema.table[,...]` | One or more tables. |
 | `--exclude <name>[,...]` | Exclude a database/schema/table. |
 
-Additional metadata/data flags: `--metadata-only` and `--data-only`
-(mutually exclusive), and `--include metadata,data` to bound the object classes.
+Additional metadata/data flags: `--metadata-only` (structure only, no data)
+and `--data-only` (data only, into the existing structure — rows replaced, structure must already exist); they are mutually
+exclusive, and with neither flag both are copied (the default).
 You can also rename targets with `--map-db`, `--map-schema`, `--map-table`.
 
 Example — copy the `orders` database, excluding an audit schema:
@@ -268,7 +269,8 @@ instead of the default `--consistent-db`.
 | Category | Flags |
 | --- | --- |
 | Endpoints | `--source`, `--dest` |
-| Scope | `--dbs`, `--schemas`, `--tables`, `--exclude`, `--include`, `--metadata-only`, `--data-only` |
+| Scope | `--dbs`, `--schemas`, `--tables`, `--exclude` |
+| Object class | `--metadata-only`, `--data-only` (default: both) |
 | Rename | `--map-db`, `--map-schema`, `--map-table` |
 | Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
 | Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
@@ -276,7 +278,7 @@ instead of the default `--consistent-db`.
 | Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables`, `--resume-consistency` |
-| Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|foreign\|random` (F-17, on by default) |
+| Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
 | Redistribution | `--no-redistribute`, `--skew-threshold X`, `--segment-balance-threshold X` |
 | TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |
 | Planning | `--dry-run`, `--timeout S`, `--plan-file F` |

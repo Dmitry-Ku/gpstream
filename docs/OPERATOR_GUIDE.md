@@ -331,8 +331,8 @@ Indexes are handled separately from the data copy:
 | Flag | Meaning |
 |------|---------|
 | `--index-workers N` | Number of background index-build workers (F-17, on by default). |
-| `--no-indexes` | Skip index creation entirely for this run. |
-| `--index-priority size\|manual\|background` | Index build order. |
+| `--no-indexes` | Skip index creation entirely for this run (master switch: `--index-workers` / `--index-priority` are then ignored, with an advisory naming them). |
+| `--index-priority size\|fifo` | Index build order (`size` = largest first, the default; `fifo` = first-ready-first-built). |
 
 Indexes are rebuilt in the **background** as units land (F-17) by default, so
 index builds do not contend with the bulk copy. There is **no separate

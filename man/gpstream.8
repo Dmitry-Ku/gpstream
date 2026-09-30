@@ -91,12 +91,21 @@ One or more tables,
 csv
 Exclude a database/schema/table.
 .TP
-.BR --include
-metadata,data
-Object classes to copy (default: both).
+.BR --metadata-only
+Copy the structure only (table DDL and sequences, no data). Idempotent: a
+repeated run re-creates nothing that already exists.
 .TP
-.BR --metadata-only | --data-only
-Copy only metadata, or only data (mutually exclusive).
+.BR --data-only
+Copy data only, into the EXISTING destination structure (no DDL): the
+destination rows are replaced by the source rows (TRUNCATE, then load, then
+verify). The destination tables must already exist (create them with
+.BR --metadata-only
+or a full copy first); a missing structure is an error.
+.I
+--metadata-only
+and
+.B --data-only
+are mutually exclusive; with neither flag both are copied (the default).
 .TP
 .BR --map-db | --map-schema | --map-table
 src=dst
@@ -137,11 +146,22 @@ Workers per host-pair (default 2).
 .TP
 .BR --index-workers
 N
-Background index-build workers (F-17);
-.BR --no-indexes
-skips index creation entirely;
+Background index-build workers (F-17; default 2 when the index build is on).
+.TP
+.B --no-indexes
+Skip index creation entirely (master switch:
+.BR --index-workers
+and
 .BR --index-priority
-size|manual|background.
+are then ignored; an advisory names the ignored flag(s)).
+.TP
+.BR --index-priority
+size|fifo
+Index build order; default
+.B size
+(largest tables first);
+.BR fifo
+runs jobs in enqueue order.
 .SS Transport / resilience
 .TP
 .BR --copy-mode
@@ -232,24 +252,24 @@ environment variables,
 GPSTREAM_SOURCE/DEST variable; endpoints come from --source/--dest or the
 config file. Recognised variables (all prefixed GPSTREAM_):
 .RI RATE_LIMIT ,
-RI WORKERS_PER_PAIR ,
-RI COMPRESS ,
-RI AUTO_RESUME ,
-RI ON_UNIT_FAILURE ,
-RI FRAME_ACK ,
-RI ACK_TIMEOUT ,
-RI MAX_RECONNECTS ,
-RI RETRANSMIT_BUFFER_MAX ,
-RI SEGMENT_BALANCE_THRESHOLD ,
-RI SMALL_TABLE_THRESHOLD ,
-RI LOCALE_CHECK ,
-RI CONSISTENT_TABLES ,
-RI SSL_CERT ,
-RI SSL_KEY ,
-RI SSL_CA ,
-RI SEG_TLS_CERT ,
-RI SEG_TLS_KEY ,
-RI SEG_TLS_CA .
+.RI WORKERS_PER_PAIR ,
+.RI COMPRESS ,
+.RI AUTO_RESUME ,
+.RI ON_UNIT_FAILURE ,
+.RI FRAME_ACK ,
+.RI ACK_TIMEOUT ,
+.RI MAX_RECONNECTS ,
+.RI RETRANSMIT_BUFFER_MAX ,
+.RI SEGMENT_BALANCE_THRESHOLD ,
+.RI SMALL_TABLE_THRESHOLD ,
+.RI LOCALE_CHECK ,
+.RI CONSISTENT_TABLES ,
+.RI SSL_CERT ,
+.RI SSL_KEY ,
+.RI SSL_CA ,
+.RI SEG_TLS_CERT ,
+.RI SEG_TLS_KEY ,
+.RI SEG_TLS_CA .
 .SH SEE ALSO
 .BR gpstream(8) ,
 docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,

@@ -169,12 +169,6 @@ func parseConfig(args []string) (config.Config, error) {
 			k, v := splitKV(args[i])
 			cfg.RenameTable = setRename(cfg.RenameTable, k, v)
 
-		// Object classes (v4 §8): --include metadata,data. Empty = both.
-		case "--include":
-			i++
-			if err := includeClasses(args[i], &cfg); err != nil {
-				return cfg, err
-			}
 		// v4 F-11: --metadata-only (structure without data) / --data-only
 		// (into existing structure). Mutual exclusion is enforced in Validate.
 		case "--metadata-only":
@@ -371,6 +365,9 @@ func parseConfig(args []string) (config.Config, error) {
 	for _, w := range cfg.SecurityWarnings() {
 		fmt.Fprintf(os.Stderr, "gpstream: [config] %s\n", w)
 	}
+	for _, w := range cfg.AdvisoryWarnings() {
+		fmt.Fprintf(os.Stderr, "gpstream: [config] %s\n", w)
+	}
 	return cfg, nil
 }
 
@@ -384,22 +381,6 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
-}
-
-// includeClasses parses the v4 §8 --include metadata,data selector. Empty
-// (no flag) means both classes; the planner honours cfg.Include. An unknown
-// class is an error (typo guard — §8 fixes the two classes).
-func includeClasses(v string, cfg *config.Config) error {
-	for _, c := range splitCSV(v) {
-		c = strings.ToLower(c)
-		switch c {
-		case "metadata", "data":
-			cfg.Include = append(cfg.Include, c)
-		default:
-			return fmt.Errorf("unknown --include class %q (allowed: metadata, data)", c)
-		}
-	}
-	return nil
 }
 
 func compress(v string, c *config.Config) {
@@ -1299,7 +1280,7 @@ func cmdMan(args []string) error {
 // cmdRun executes a copy between two Greenplum 6 clusters (v4 §8):
 //
 //	gpstream run --source ... --dest ... --dbs sales,hr \
-//	             --overwrite --include metadata,data \
+//	             --overwrite \
 //	             --compress zstd --workers 32 --rate-limit 60 \
 //	             --auto-resume 3 --index-workers 8 --ssl-ca /etc/gpstream/ca.pem
 //
@@ -1544,7 +1525,8 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --map-db src=dst                 rename databases
   --map-schema src=dst             rename schemas
   --map-table src=dst              rename tables
-  --include metadata,data          object classes (empty = both)
+  --metadata-only                structure only (DDL + sequences, no data)
+  --data-only                    data only (into the existing structure)
   --resolve-conflicts stop|skip|overwrite|truncate
                                conflict policy (default stop)
   --overwrite, --truncate          conflict handling (explicit opt-ins)
@@ -1571,6 +1553,8 @@ Flags (v4 §8 canonical names; CLI > env > file > defaults):
   --max-reconnects N               reconnect budget (default 20; exhausted = unit failed)
   --retransmit-buffer-max SIZE     in-flight window per stream (default 64M; raise for long-haul WAN)
   --index-workers N                background index-build workers
+  --index-priority size|fifo   index build order (default size: largest first; fifo = enqueue order)
+  --no-indexes                 skip index creation entirely
   --ssl-ca F                       TLS CA bundle
   --operation-id <id>              operation identity (run/status/resume/cleanup)
   --state-dir DIR                  state root (default /var/lib/gpstream)

@@ -647,6 +647,17 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	//     matches, below).
 	if !reReading && u.Table != "" {
 		conflicted := u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)
+		// F-11 object classes: an existing destination table is EXPECTED for
+		// both single-class modes, so it is not a conflict for them. The
+		// planner's u.Conflict and the live m.dst.Exists signal are the SAME
+		// check (does the destination table exist), so both are suppressed.
+		// --metadata-only is idempotent by design (spec F-11 acceptance:
+		// "a repeated run is idempotent"); --data-only loads into the existing
+		// structure, which it does not create. Both classes (the default)
+		// keep the strict FR-10 policy.
+		if md, data := m.cfg.IncludeClasses(); md != data {
+			conflicted = false
+		}
 		switch {
 		case conflicted && m.cfg.ConflictAction == config.Skip:
 			m.addSkipped()
@@ -938,10 +949,55 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//     exist when the table is created.
 	m.createSequences(ctx, u)
 
+	// F-11 --metadata-only: the unit is the STRUCTURE
+	// phase — the table DDL (above) and the source sequences (3a) are all it
+	// does; no data is copied, verified, or swapped. Completing at
+	// StateCompleted (not StateSwapped) is deliberate: restoreConstraints /
+	// requeueIndexes skip non-swapped units, and a metadata-only table has no
+	// indexes to build. A repeated run is idempotent (spec F-11 acceptance):
+	// the conflict gate is lifted for structure runs (above) and the DDL is
+	// CREATE ... IF NOT EXISTS (dest.CreateTable), so re-creating an existing
+	// structure is a no-op.
+	if md, data := m.cfg.IncludeClasses(); md && !data {
+		// Create the structure from the source layout (idempotent: the DDL is
+		// CREATE ... IF NOT EXISTS, so a re-run over an existing structure is
+		// a no-op — spec F-11 acceptance "a repeated run is idempotent").
+		// The sequences were already created in step 3a, above, which is the
+		// required order (a serial default references the sequence).
+		if !m.dst.Exists(ctx, ds, dn) {
+			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist, u.Partition); err != nil {
+				return fmt.Errorf("create table (metadata-only): %w", err)
+			}
+		}
+		m.events.Log("metadata_only", "schema", ds, "table", dn)
+		if err := m.setUnitState(u, StateCompleted); err != nil {
+			return fmt.Errorf("journal completed (metadata-only): %w", err)
+		}
+		m.statMu.Lock()
+		m.Units++
+		m.statMu.Unlock()
+		return nil
+	}
+
 	// 3. Resolve the conflict policy (FR-11): the copy target is either a
 	//    staging table (default / --overwrite) or the final table in-place
 	//    (--truncate / --append). All destinations below use ds/dn.
 	inPlace, truncate, verify := m.resolve(u)
+	// F-11 --data-only: the destination structure ALREADY EXISTS and the data
+	// is loaded INTO it, replacing its rows (the unit's job is to make the
+	// destination's data equal the source's — an append would double rows on
+	// a resume/re-run). So regardless of the --resolve-conflicts policy the
+	// copy is in-place into the final table with a TRUNCATE first, then the
+	// checksum is verified against the source. The structure is NOT created:
+	// a missing destination table is a hard error (run --metadata-only or a
+	// full copy first), and no staging+swap is used.
+	if md, data := m.cfg.IncludeClasses(); !md && data {
+		if !m.dst.Exists(ctx, ds, dn) {
+			m.setUnitState(u, StateFailed)
+			return fmt.Errorf("--data-only: destination table %s.%s does not exist (create the structure first with --metadata-only or a full copy)", ds, dn)
+		}
+		inPlace, truncate = true, true
+	}
 	var target string
 	if inPlace {
 		// Copy into the final table directly. Create it from the source layout

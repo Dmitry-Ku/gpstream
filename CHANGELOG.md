@@ -9,12 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `run` CLI contract per v4 §8: `--include metadata,data`, `--ddl-only` /
-  `--data-only` / `--metadata-only` (F-11), `--zstd-level` (1–19),
-  `--no-redistribute`, `--streams` / `--workers`.
+- `run` CLI contract per v4 §8: `--metadata-only` / `--data-only` (F-11;
+  no `--include` flag — it duplicated the two shorthands and the default),
+  `--zstd-level` (1–19), `--no-redistribute`, `--streams` / `--workers`.
 - TOML configuration file support (`--config file.toml`, F-05) alongside YAML;
   precedence CLI > env > file > defaults.
-- Strict `--include` validation: unknown object classes are rejected as typos.
 - `doctor` self-diagnosis (F-16) with precise problem list.
 - `internal/topology` package: single source of truth for the Greenplum
   catalog (`gp_segment_configuration`, 8 columns). `IsGreenplum`/`Read`/

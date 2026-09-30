@@ -25,7 +25,6 @@ func TestSelftestCommand(t *testing.T) {
 func TestParseConfigFull(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--source", "source://s", "--dest", "dest://d",
-		"--include", "metadata,data",
 		"--dbs", "db1", "--schemas", "sch1", "--tables", "tab1",
 		"--exclude", "x.1",
 		"--overwrite",
@@ -55,9 +54,10 @@ func TestParseConfigFull(t *testing.T) {
 	if !c.DryRun {
 		t.Fatalf("dry-run not bound")
 	}
-	// v4 §8: object classes come from --include (v2 --full/--metadata-only gone).
-	if len(c.Include) != 2 || c.Include[0] != "metadata" || c.Include[1] != "data" {
-		t.Fatalf("include = %v, want [metadata data]", c.Include)
+	// v4 F-11: object classes come from --metadata-only/--data-only; with
+	// neither flag both classes are copied (the default).
+	if c.MetadataOnly || c.DataOnly {
+		t.Fatalf("object classes: default run must copy both (md=%v data=%v)", c.MetadataOnly, c.DataOnly)
 	}
 	if len(c.DBs) != 1 || c.DBs[0] != "db1" {
 		t.Fatalf("db = %v", c.DBs)
@@ -150,8 +150,7 @@ func TestParseCompressLevels(t *testing.T) {
 // TestParseConfigValidationErrors: the mutual-exclusion and range checks in
 // Validate() must surface as errors through parseConfig.
 func TestParseConfigValidationErrors(t *testing.T) {
-	// MetadataOnly + DataOnly are mutually exclusive (Validate rule; v4 §8
-	// reaches object classes via --include, so exercise Validate directly).
+	// MetadataOnly + DataOnly are mutually exclusive (Validate rule).
 	bad := config.Config{MetadataOnly: true, DataOnly: true}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected error for MetadataOnly + DataOnly")

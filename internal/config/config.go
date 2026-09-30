@@ -48,6 +48,19 @@ const (
 	Truncate  ConflictAction = "truncate"
 )
 
+// IncludeClasses resolves the effective object classes for a run (v4 F-11):
+// --metadata-only (structure without data) / --data-only (into the existing
+// structure); with neither flag both classes are copied.
+func (c *Config) IncludeClasses() (metadata, data bool) {
+	if c.MetadataOnly {
+		return true, false
+	}
+	if c.DataOnly {
+		return false, true
+	}
+	return true, true
+}
+
 // VerifyMode controls the verification depth (FR-02).
 type VerifyMode string
 
@@ -96,11 +109,6 @@ type Config struct {
 	Schemas []string // "db.schema"
 	Tables  []string // "db.schema.table"
 	Exclude []string // any exclude-* entries
-	// Include (v4 §8 --include metadata,data): restrict which object classes
-	// are copied — "metadata" (structure), "data" (rows), or both. Empty =
-	// both (the default).
-	Include []string
-
 	// Metadata/data (FR-11).
 	MetadataOnly bool
 	DataOnly     bool
@@ -140,7 +148,7 @@ type Config struct {
 	// Indexes (FR-17).
 	IndexWorkers  int
 	NoIndexes     bool
-	IndexPriority string // "size" | "manual"
+	IndexPriority string // "size" | "fifo"
 
 	// NoConstraints disables the F-11 constraint-restore pass (foreign keys
 	// and user CHECK constraints) on the destination. Off by default: the
@@ -277,6 +285,11 @@ func (c *Config) Validate() error {
 	case "", "continue", "abort":
 	default:
 		return fmt.Errorf("unknown on-unit-failure %q (want continue|abort)", c.OnUnitFailure)
+	}
+	switch c.IndexPriority {
+	case "", "size", "fifo":
+	default:
+		return fmt.Errorf("unknown index-priority %q (want size|fifo)", c.IndexPriority)
 	}
 	switch c.ResumeConsistency {
 	case "", "relaxed", "strict":
@@ -561,6 +574,37 @@ func (c Config) SecurityWarnings() []string {
 	}
 	if c.DestFromFile && dsnHasPassword(c.Dest) {
 		out = append(out, "dest DSN carries a password from the config file; F-13 prefers env/.pgpass over plaintext config")
+	}
+	return out
+}
+
+// AdvisoryWarnings reports non-security configuration notes (advisory only,
+// never an error). Unlike SecurityWarnings it covers operational clarity:
+//
+//   - --no-indexes with explicit --index-workers / --index-priority: the
+//     index build is OFF, so the tuning flags are ignored. They are NOT
+//     mutually exclusive (IndexWorkers defaults to 2 and IndexPriority to
+//     "size" on every run, so a hard error would break the default
+//     --no-indexes runbook), but silently-ignored tuning is worth surfacing
+//     so the operator sees it.
+func (c Config) AdvisoryWarnings() []string {
+	var out []string
+	if c.NoIndexes {
+		var tuned []string
+		if c.IndexWorkers > 0 {
+			tuned = append(tuned, "--index-workers")
+		}
+		if c.IndexPriority != "" && c.IndexPriority != "size" {
+			tuned = append(tuned, "--index-priority")
+		}
+		if len(tuned) > 0 {
+			part, pron := "is ignored", "remove it"
+			if len(tuned) > 1 {
+				part, pron = "are ignored", "remove them"
+			}
+			out = append(out, "--no-indexes is set, so index building is off; "+
+				strings.Join(tuned, " and ")+" "+part+" ("+pron+" or drop --no-indexes)")
+		}
 	}
 	return out
 }

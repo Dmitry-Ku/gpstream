@@ -115,7 +115,7 @@ func TestPoolSizePriority(t *testing.T) {
 	}
 }
 
-// TestPoolFIFO runs jobs in enqueue order with --index-priority=manual.
+// TestPoolFIFO runs jobs in enqueue order with --index-priority=fifo.
 func TestPoolFIFO(t *testing.T) {
 	f := pg.NewFakeConn()
 	p := NewPool(1, false, false)
@@ -128,7 +128,7 @@ func TestPoolFIFO(t *testing.T) {
 		t.Fatalf("pool done=%d err=%v, want 3/nil", p.Done(), p.Err())
 	}
 	if got := unitsInOrder(f); len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
-		t.Fatalf("manual order = %v, want [1 2 3]", got)
+		t.Fatalf("fifo order = %v, want [1 2 3]", got)
 	}
 }
 

@@ -133,7 +133,7 @@ so index builds do not contend with the bulk copy. There is **no separate
 |------|------|--------|
 | Workers | `--index-workers N` | parallelism of background index builds |
 | Skip | `--no-indexes` | do not create indexes for this run |
-| Priority | `--index-priority` (`size` / `manual` / `background`) | index build order |
+| Priority | `--index-priority` (`size` / `fifo`) | index build order |
 
 A `dry-run` shows the expected index work. If indexes are slow, raise
 `--index-workers` or let the background path continue independently of the

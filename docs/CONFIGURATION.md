@@ -35,7 +35,6 @@ from the flags or the file.
 | `Schemas` | []string | `[]` | `--schemas` (comma-separated, `db.schema`) |
 | `Tables` | []string | `[]` | `--tables` (comma-separated, `db.schema.table`) |
 | `Exclude` | []string | `[]` | `--exclude` (comma-separated) |
-| `Include` | []string | `[]` | `--include` (empty = both metadata and data) |
 
 ### 1.3 Metadata / data (F-11)
 | Field | Type | Default | Source |
@@ -77,7 +76,7 @@ from the flags or the file.
 |-------|------|---------|--------|-------|
 | `IndexWorkers` | int | `0` | `--index-workers` | Background index-build parallelism. |
 | `NoIndexes` | bool | `false` | `--no-indexes` | Set to `true` to skip index creation entirely. |
-| `IndexPriority` | string | **`size`** | `--index-priority` / file | `size` (default) \| `manual` \| `background`. |
+| `IndexPriority` | string | **`size`** | `--index-priority` / file | `size` (default) \| `fifo`. |
 
 ### 1.9 Constraints (F-11)
 | Field | Type | Default | Source | Notes |
@@ -224,7 +223,7 @@ are:
 | `seg_tls_ca` | `SegTLSCA` | **secret** |
 | `skew_threshold` | `SkewThreshold` | parsed as float |
 | `segment_balance_threshold` | `SegmentBalanceThreshold` | parsed as float |
-| `index_priority` | `IndexPriority` | `size`/`manual`/`background` |
+| `index_priority` | `IndexPriority` | `size`/`fifo` |
 | `timeout` | `Timeout` | parsed as duration |
 | `locale_check` | `LocaleCheck` | `true`/`1` |
 

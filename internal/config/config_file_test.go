@@ -116,7 +116,7 @@ ssl_key: /etc/key.pem
 ssl_ca: /etc/ca.pem
 ssl_min_tls: "1.3"
 skew_threshold: "0.1"
-index_priority: manual
+index_priority: fifo
 timeout: "5m"
 `)
 	if err := c.LoadFile(path); err != nil {
@@ -152,8 +152,8 @@ timeout: "5m"
 	if c.SkewThreshold != 0.1 {
 		t.Errorf("skew = %v, want 0.1", c.SkewThreshold)
 	}
-	if c.IndexPriority != "manual" {
-		t.Errorf("index priority = %q, want manual", c.IndexPriority)
+	if c.IndexPriority != "fifo" {
+		t.Errorf("index priority = %q, want fifo", c.IndexPriority)
 	}
 	if c.Timeout != 5*time.Minute {
 		t.Errorf("timeout = %v, want 5m", c.Timeout)

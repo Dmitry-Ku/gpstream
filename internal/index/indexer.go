@@ -61,7 +61,7 @@ func (b *Builder) Rebuild(ctx context.Context, q pg.StreamingQuerier, schema, ta
 //   - "size": the caller sets Priority to the (estimated) table size in
 //     bytes; the pool drains the largest tables first so the longest builds
 //     start earliest and the tail of the run is short.
-//   - "manual": Priority is ignored and jobs run in enqueue order (FIFO).
+//   - "fifo": Priority is ignored and jobs run in enqueue order.
 type Job struct {
 	UnitID    uint32
 	Dst       *dest.Agent
@@ -106,7 +106,7 @@ type Pool struct {
 // (--index-workers; 0 or negative defaults to 2 per F-17). noIndex is
 // --no-indexes: Enqueue then drops every job (skip, not error). bySize
 // selects --index-priority: "size" drains the largest tables first,
-// "manual" runs jobs in enqueue order.
+// "fifo" runs jobs in enqueue order.
 func NewPool(workers int, noIndex, bySize bool) *Pool {
 	if workers < 1 {
 		workers = 2
@@ -124,8 +124,8 @@ func (p *Pool) Enqueue(j Job) {
 	if p.closed || p.noIndex {
 		return
 	}
-	// bySize: binary search into a descending-by-priority order; manual:
-	// FIFO append.
+	// bySize: binary search into a descending-by-priority order; fifo:
+	// append (FIFO).
 	if p.bySize {
 		i := 0
 		for i < len(p.queue) && p.queue[i].Priority >= j.Priority {

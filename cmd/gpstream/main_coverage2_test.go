@@ -196,9 +196,9 @@ func TestParseConfigFlagErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--consistent-tables"}); err == nil {
 		t.Error("consistent-tables with default consistent-db: want validation error")
 	}
-	// --include with an unknown class is a typo guard.
+	// --include was removed (duplicated the -only shorthands): it is an unknown flag.
 	if _, err := parseConfig([]string{"--include", "bogus"}); err == nil {
-		t.Error("include bogus: want error")
+		t.Error("removed --include: want unknown-flag error")
 	}
 	// on_segment without the required pair is rejected by Validate.
 	if _, err := parseConfig([]string{"--copy-mode", "on_segment"}); err == nil {

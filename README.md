@@ -54,7 +54,6 @@ fully deterministic `--dry-run` plan.
 gpstream run
   --source "<connstr>" --dest "<connstr>"
   (--dbs D... | --schemas D.S... | --tables D.S.T...) [--exclude ...]
-  [--include metadata,data]
   [--resolve-conflicts stop|skip|overwrite|truncate]   # default: stop
   [--overwrite | --truncate]                           # explicit opt-ins
   [--map-db src=dst] [--map-schema src=dst] [--map-table src=dst]
@@ -69,7 +68,7 @@ gpstream run
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
   [--max-reconnects N] [--retransmit-buffer-max SIZE]
   [--verify full|sample|off]                           # default: sample
-  [--index-workers N | --no-indexes] [--index-priority size|foreign|random]
+  [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
   [--no-redistribute | --skew-threshold X | --segment-balance-threshold X]
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
   [--operation-id <id>] [--state-dir DIR]
