@@ -291,8 +291,13 @@ func Default() Config {
 }
 
 // Validate reports configuration errors that are independent of the live
-// clusters (e.g. mutually exclusive flags). It does not contact the DBs.
-func (c Config) Validate() error {
+// clusters (e.g. mutually exclusive flags) and NORMALISES the defaults
+// (ack-timeout, reconnect budget) in place. It does not contact the DBs.
+//
+// Pointer receiver (was value): the normalisations below must reach the
+// caller — parseConfig used to discard the normalised copy, silently
+// running frame-ack with a zero ack-timeout/reconnect budget.
+func (c *Config) Validate() error {
 	if c.ZstdLevel < 1 || c.ZstdLevel > 19 {
 		return fmt.Errorf("zstd level must be 1-19, got %d", c.ZstdLevel)
 	}

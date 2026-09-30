@@ -171,7 +171,8 @@ func TestParseCompressLevels(t *testing.T) {
 func TestParseConfigValidationErrors(t *testing.T) {
 	// MetadataOnly + DataOnly are mutually exclusive (Validate rule; v4 §8
 	// reaches object classes via --include, so exercise Validate directly).
-	if err := (config.Config{MetadataOnly: true, DataOnly: true}).Validate(); err == nil {
+	bad := config.Config{MetadataOnly: true, DataOnly: true}
+	if err := bad.Validate(); err == nil {
 		t.Fatal("expected error for MetadataOnly + DataOnly")
 	}
 	// --consistent-db and --consistent-cluster are mutually exclusive.
