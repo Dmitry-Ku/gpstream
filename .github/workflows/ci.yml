@@ -37,8 +37,10 @@ jobs:
       - name: vet
         run: go vet ./...
 
-      - name: build
-        run: go build -o bin/gpstream-$GOARCH ./cmd/gpstream
+      - name: build (static)
+        # TASK-SPEC §9: static linux-amd64 artifact. CGO_ENABLED=0 so the
+        # binary runs on clean hosts without local toolchain dependencies.
+        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags "-s -w" -o bin/gpstream-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/gpstream
 
       - name: test + coverage
         run: |
@@ -52,6 +54,26 @@ jobs:
           name: coverage-${{ matrix.goarch }}
           path: coverage.out
 
+      - name: upload static binary (linux-amd64 artifact)
+        if: matrix.goarch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpstream-linux-amd64
+          path: bin/gpstream-linux-amd64
+
+  # Vulnerability scan (TASK-SPEC §9: "govulncheck"). Scans the module's
+  # dependency graph against the Go vulnerability database; fails the
+  # build on a known-vulnerable dependency.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   # Smoke: doctor + selftest must run (CР-7 / FR-05).
   smoke:
     runs-on: ubuntu-latest
@@ -60,7 +82,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
-      - run: go build -o bin/gpstream ./cmd/gpstream
+      - run: CGO_ENABLED=0 go build -o bin/gpstream ./cmd/gpstream
       - name: selftest
         run: ./bin/gpstream selftest
       - name: doctor (no cluster, healthy baseline)
@@ -82,3 +104,33 @@ jobs:
           go-version: '1.27.1'
       - name: heavy tests (-tags heavy)
         run: go test -tags heavy -count=1 -timeout 50m ./internal/route/
+
+  # Integration tests on the self-hosted lab runner (TASK-SPEC §9:
+  # "integration на self-hosted runner с тестовыми GP6-кластерами"). The job
+  # is scheduled ONLY for runners labeled `gp6`; until such a runner exists
+  # the job stays queued (does not fail the build). Live tests need a real
+  # PG 9.4.26 toolchain (GPTEST_PGBIN) — on the testbed vm1 it is
+  # /opt/pg9426-vm/bin (see internal/pgtest).
+  integration-gp6:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, gp6]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: locate PG 9.4.26 toolchain
+        run: |
+          for d in /opt/pg9426-vm/bin  /opt/toolchain/pg9426/bin; do
+            if [ -x "$d/initdb" ]; then
+              echo "GPTEST_PGBIN=$d" >> "$GITHUB_ENV"
+              break
+            fi
+          done
+          [ -n "${GPTEST_PGBIN:-}" ] || { echo "no PG 9.4.26 toolchain found (GPTEST_PGBIN)"; exit 1; }
+          echo "using $GPTEST_PGBIN"
+      - name: integration tests (live PG 9.4.26, -tags integration)
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: go test -tags integration -count=1 -timeout 90m ./...
