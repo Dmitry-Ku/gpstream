@@ -1459,18 +1459,19 @@ func cmdResume(args []string) error {
 }
 
 func printHelp() error {
-	fmt.Println(`gpstream — high-throughput data copy between Greenplum 6 clusters
+	fmt.Println(`gpstream — high-throughput logical data copy between Greenplum 6 clusters
 
 Usage:
   gpstream <command> [flags]
 
 Commands (v4 §8):
   doctor    self-diagnose source/dest clusters
-  dry-run   plan the copy without executing (--timeout S bounds the plan)
+  dry-run   plan the copy without executing
   run       execute the copy (streams source -> dest, no intermediate storage)
   status    report operation state (--operation-id <id>)
   resume    resume an interrupted operation (--operation-id <id>)
-  cleanup   remove operation state + dest objects (--operation-id <id> [--all-incomplete] [--mode drop --dest <conn>])
+  cleanup   remove operation state + dest objects (--operation-id <id>
+            [--all-incomplete] [--mode drop --dest <conn>] [--yes])
 
 Service:
   selftest  internal sanity checks
@@ -1478,46 +1479,70 @@ Service:
   man       print the built-in man page
   --help    this help
 
-Flags (v4 §8 canonical names; CLI > env > file > defaults):
-  --source, --dest                 cluster connstrings
-  --dbs db1,db2                    databases to copy
-  --schemas db.schema[,...]        schemas to copy
-  --tables db.schema.table[,...]   tables to copy
-  --map-db src=dst                 rename databases
-  --map-schema src=dst             rename schemas
-  --map-table src=dst              rename tables
-  --metadata-only                structure only (DDL + sequences, no data)
-  --data-only                    data only (into the existing structure)
-  --resolve-conflicts stop|skip|overwrite|truncate
-                               conflict policy (default stop)
-  --overwrite, --truncate          conflict handling (explicit opt-ins)
-  --compress zstd[:level]          compression (none|zlib|zstd)
-  --small-table-threshold SIZE     F-12: tables smaller than SIZE copy with
-                                   compression off (default 1MiB; 0 disables)
-  --copy-mode on_segment           segment-direct fast path (Fallback B, T-B)
-  --copy-mode direct               fully segment-direct (R5): route rows to dest
-                                   segments directly, dest coordinator out of the
-                                   write path (degrades to coordinator per table
-                                   when a table can't be routed)
+Flags (CLI > env > file > defaults):
+
+Selection:
+  --source, --dest connstr           source/dest cluster connstrings
+  --dbs csv                          databases to copy
+  --schemas csv                      schemas to copy (db.schema)
+  --tables csv                       tables to copy (db.schema.table)
+  --exclude csv                      exclude a database/schema/table
+  --map-db src=dst                   rename a database at the dest
+  --map-schema src=dst               rename a schema at the dest
+  --map-table src=dst                rename a table at the dest
+  --metadata-only                    structure only (DDL + sequences, no data)
+  --data-only                        data only, into the existing structure
+
+Conflicts (F-10):
+  --resolve-conflicts stop|skip|overwrite|truncate   policy (default stop)
+  --overwrite, --truncate          shorthand opt-ins that set the policy
+
+Performance:
+  --compress none|zlib|zstd[:1-19]  stream compression (default zstd level 3)
+  --zstd-level N                   zstd level 1-19 (default 3)
+  --rate-limit rate                total bandwidth ceiling (bps/mbit/gbit)
+  --workers N                      parallel workers per host-pair (default 2)
+  --small-table-threshold size     tables smaller than this copy with compression
+                                   off (default 1MiB; 0 disables)
+  --index-workers N                background index-build workers (default 2)
+  --index-priority size|fifo       index build order (default size: largest first)
+  --no-indexes                     skip index creation entirely
+  --no-constraints                 skip the FK/CHECK constraint-restore pass (F-11)
+
+Transport / resilience:
+  --copy-mode coordinator|on_segment|direct   data path (default coordinator)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the segment hosts
-  --workers N                      parallel workers per host-pair
-  --rate-limit <Gbps>              total bandwidth ceiling
-  --auto-resume N                  resume attempts on failure
-  --consistent-tables              FR-02 fallback: each table under its own short
-                                   snapshot (per-table discrepancy documented);
-                                   off by default (--consistent-db is the default)
-  --on-unit-failure MODE           on a failed unit: continue (default) | abort (F-06)
-  --frame-ack on|off               frame-level ACK + RST-resume (default on, §4.6)
-  --ack-timeout 15s|30s|adaptive   blackhole detector (default 30s; adaptive = 3x median RTT)
-  --max-reconnects N               reconnect budget (default 20; exhausted = unit failed)
-  --retransmit-buffer-max SIZE     in-flight window per stream (default 64M; raise for long-haul WAN)
-  --index-workers N                background index-build workers
-  --index-priority size|fifo   index build order (default size: largest first; fifo = enqueue order)
-  --no-indexes                 skip index creation entirely
+  --seg-tls-cert F                 TLS serving cert for the segment-direct hop (F-13)
+  --seg-tls-key F                  TLS serving key for --seg-tls-cert
+  --seg-tls-ca F                   trusted CA; also enables mTLS for the hop
+  --frame-ack on|off               frame-level ACK + RST-resume (default on)
+  --ack-timeout 15s|30s|adaptive   ACK timeout (default 30s)
+  --max-reconnects N               reconnect budget (default 20)
+  --retransmit-buffer-max size     in-flight window per stream (default 64MiB)
+
+Integrity / consistency:
+  --verify full|sample|off         verification depth (default sample)
+  --consistent-db                  snapshot scope: whole DB (default)
+  --consistent-cluster             snapshot scope: whole cluster
+  --consistent-tables              snapshot scope: per-table (FR-02 fallback)
+  --auto-resume N                  auto-resume attempts after the run (default 0)
+  --on-unit-failure continue|abort on a failed unit (default continue)
+
+Planning / operation:
+  --dry-run                        plan the copy without executing (alias of
+                                   the dry-run command)
+  --timeout S                      bound plan formation (default 120s)
+  --plan-file F                    persist the plan JSON (dry-run and run)
+  --operation-id id                operation identity (run/status/resume/cleanup)
+  --state-dir dir                  state root (default /var/lib/gpstream)
+  --metrics-addr addr              serve Prometheus /metrics during run
+  --config file                    config file (TOML or YAML)
+
+TLS (FR-13):
+  --ssl-cert, --ssl-key            mTLS client cert/key
   --ssl-ca F                       TLS CA bundle
-  --operation-id <id>              operation identity (run/status/resume/cleanup)
-  --state-dir DIR                  state root (default /var/lib/gpstream)
+  --ssl-min-tls V                  minimum TLS version (default 1.2)
 
 Config file: /etc/gpstream/gpstream.toml; state: /var/lib/gpstream/<operation-id>/.
 See docs/ for the full guide.`)

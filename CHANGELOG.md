@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fix: man seg-flags + full `gpstream help` (help/man vs code consistency)
+
+`gpstream help` was stale: it omitted ~22 flags the CLI actually accepts
+(`--config`, `--metrics-addr`, `--no-constraints`, `--verify`,
+`--zstd-level`, `--exclude`, `--plan-file`, `--timeout`, `--dry-run`,
+`--consistent-db/cluster`, `--ssl-cert/key/min-tls`, `--seg-tls-*`,
+`--all-incomplete`, `--mode`, `--yes`, ...). `printHelp` is now rewritten
+against the real flag set (verified: every flag `parseConfig` accepts is
+present in the help text, no phantoms).
+
+The man page squashed the five segment-direct flags into one unnamed pipe
+line ("Segment-direct (on_segment) options"); they are now individual
+entries with descriptions (`--seg-listen`, `--seg-binary`,
+`--seg-tls-cert`, `--seg-tls-key`, `--seg-tls-ca`), rendered and verified
+with groff on the lab.
+
 ### F-05 release pipeline: goreleaser + man-page family + version stamp
 
 One-command release artifact build (tar.gz + RPM + DEB, amd64+arm64) via
