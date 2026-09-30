@@ -37,7 +37,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Spec: tar.gz+RPM+DEB, `/etc/gpstream/gpstream.toml`, `doctor` (all segments, versions, encoding match, collation, **extensions MADlib/PostGIS/orafce**, disk, TLS, ports, CPU), man pages, README/docs/LICENSE/CHANGELOG/SECURITY/CONTRIBUTING + **issue/PR templates**.
 - Evidence: `packaging/{rpm,deb,examples,systemd,logrotate.conf}`; `man/gpstream.8`; `config.go` TOML+YAML; `doctor.go:122-247` checks reachability/version/segments/disk/permissions/collation/**extensions**/TLS; `docs/` has QUICKSTART, INSTALL, OPERATOR_GUIDE, TROUBLESHOOTING, PERFORMANCE, SECURITY, CLI_REFERENCE, CONFIGURATION, ADMIN_GUIDE, FAILOVER, METRICS, adr; `LICENSE/CHANGELOG.md/SECURITY.md/CONTRIBUTING.md` present.
 - **Extension check DONE (29.09):** doctor diffs `pg_extension` source vs dest (WARN naming the missing extensions; never FAILs; query fault = WARN) — `checkExtensions` in `doctor.go`, tests `doctor_extensions_test.go` (missing/all-present/query-fault).
-- Gaps: **no `.github/ISSUE_TEMPLATE` / `PULL_REQUEST_TEMPLATE`** (`.github/` has only `workflows/`); **`docs/design.md` is absent** (required by F-08 for dependency justification); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
+- Gaps: **`.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` DONE 30.09** (bug/feature templates + PR gate template: build/vet/gofmt/test, docs+audit update rule, no-dep-without-design.md rule, journal backward-compat); **`docs/design.md` DONE 30.09** (F-08 dependency justification: 4 direct deps pinned + transitive + what-is-not-used + static build/verify/2-distro); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
 - **BLOCKED-INFRA**: RPM/DEB build host + clean-host acceptance.
 
 ### F-06 — Resilience + `--auto-resume N` — **DONE** (flag + abort mode closed 28.09)
@@ -210,8 +210,11 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
    (default 1.5, warning gate). Tests: balance_test.go (dest) +
    manager_balance_test.go (manifest, GP fake / plain-PG degrade).
 9. **F-16** — column-level (`attcollation`) collation comparison. [CLOSED 29.09: planner per-table + doctor `column-collation` pre-flight + DDL reproduces COLLATE + dry-run/final-report/events.jsonl; live test f16_collation]
-10. **F-08/F-05 docs** — add `docs/design.md` (dependency justification) +
-    `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` + govulncheck in CI.
+10. **F-08/F-05 docs** — [CLOSED 30.09] `docs/design.md` (commit 401d4fb) +
+    `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.md` +
+    `PULL_REQUEST_TEMPLATE.md` (commit this run); govulncheck in CI already
+    present (.github/workflows/ci.yml, TASK-SPEC §9). Remaining F-05: RPM/DEB
+    build + clean-host acceptance (BLOCKED-INFRA), man family.
 11. **F-09 coverage** — lift manifest (58%)/config (65%)/cmd/gpstream (68%)/
     source (75%)/route (72%)/segstream (77%)/transfer/pg (46%) to ≥80%.
 (Closed since the original list: F-17 background index pool, F-10
@@ -223,6 +226,5 @@ conflicts.jsonl, F-10 strict default, F-09 live iptables/RST fault injection.)
 - F-09: 2×GP6 integration, iptables fault injection, 100k scale, 100 Gbit soak (self-hosted runner).
 - F-13: wireshark encrypted-traffic verification (real network).
 - F-15: index-deferral 30% time demo + gp_segment_id distribution (real clusters).
-- F-16: two-distro/glibc static-binary run (build host).
 - F-05: RPM/DEB build + clean-host acceptance (build host).
 - Milestone M7: 100 TB → 1 PB pilot (≥50 Gbit/s).
