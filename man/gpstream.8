@@ -32,8 +32,8 @@ Report operation state (\-\-operation-id <id>).
 Resume an interrupted operation (\-\-operation-id <id>).
 .TP
 .BR cleanup
-.IR "<operation-id>
-Remove operation state (\-\-all-incomplete, \-\-mode drop).
+.IR <operation-id>
+Remove operation state (\-\-all-incomplete). With \-\-mode drop \-\-dest <connstring>, also drop the destination objects this operation created (surviving staging, renamed-in or created final tables, renamed-in schemas) to restore the pre-operation state (F-02). Destructive: requires \-\-yes.
 .TP
 .B doctor
 Self-diagnose source/dest clusters; output PASS/FAIL/WARN (this build).

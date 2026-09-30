@@ -1126,15 +1126,24 @@ func cmdStatus(args []string) error {
 
 // cmdCleanup removes the operation's journal and staging state (v4 §8):
 //
-//	gpstream cleanup --operation-id <id> [--all-incomplete] [--mode drop]
+//	gpstream cleanup --operation-id <id> [--all-incomplete] [--mode drop] [--dest <connstring>]
 //
 // --all-incomplete removes every operation directory that has non-terminal
-// units (no --operation-id needed); --mode drop additionally drops the
-// dest-side staging objects recorded in the journal before the journal is
-// deleted. Destructive: requires --yes.
+// units (no --operation-id needed); --mode drop ADDITIONALLY drops the
+// destination-side objects the operation created (staging tables, renamed-in
+// or gpstream-created final tables, renamed-in schemas — derived
+// conservatively from the journal; see manifest.CleanupDestObjects) BEFORE
+// the journal is deleted, restoring the destination to its pre-operation
+// state (FR-02 acceptance: kill -9 ⇒ cleanup leaves the receiver as it was).
+// --mode drop requires --dest (the destination connstring; --ssl-cert/key/ca
+// are honoured). Destructive: requires --yes.
 func cmdCleanup(args []string) error {
 	opID, stateDir, mirror := parseOperationArgs(args)
-	var allIncomplete, drop, yes bool
+	var (
+		allIncomplete, drop, yes        bool
+		destStr, sslCert, sslKey, sslCA string
+		minTLS                          = "1.2"
+	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--all-incomplete":
@@ -1144,6 +1153,21 @@ func cmdCleanup(args []string) error {
 			drop = args[i] == "drop"
 		case "--yes":
 			yes = true
+		case "--dest":
+			i++
+			destStr = args[i]
+		case "--ssl-cert":
+			i++
+			sslCert = args[i]
+		case "--ssl-key":
+			i++
+			sslKey = args[i]
+		case "--ssl-ca":
+			i++
+			sslCA = args[i]
+		case "--ssl-min-tls":
+			i++
+			minTLS = args[i]
 		}
 	}
 	if !yes {
@@ -1151,6 +1175,9 @@ func cmdCleanup(args []string) error {
 	}
 	if !allIncomplete && opID == "" && mirror == "" {
 		return fmt.Errorf("cleanup: --operation-id <id> is required (or --all-incomplete / legacy --mirror <path>)")
+	}
+	if drop && destStr == "" {
+		return fmt.Errorf("cleanup --mode drop requires --dest <connstring> to reach the destination cluster")
 	}
 
 	type target struct{ id, path string }
@@ -1164,7 +1191,20 @@ func cmdCleanup(args []string) error {
 			targets = append(targets, target{id, filepath.Join(stateDir, id, "journal.jsonl")})
 		}
 	} else {
-		targets = []target{{opID, resolveJournalPath(mirror, stateDir, opID)}}
+		targets = append(targets, target{opID, resolveJournalPath(mirror, stateDir, opID)})
+	}
+
+	var dropAgent *dest.Agent
+	var closeDest func()
+	if drop {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		q, err := pg.NewPool(ctx, destStr, sslCert, sslKey, sslCA, minTLS, 1)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("cleanup --mode drop: connect dest: %w", err)
+		}
+		dropAgent = dest.New(q)
+		closeDest = q.Close
 	}
 
 	for _, t := range targets {
@@ -1183,32 +1223,84 @@ func cmdCleanup(args []string) error {
 		if drop {
 			mode = "drop"
 		}
-		audit.Log("cleanup", "operation-id", t.id, "mode", mode, "units", len(j.Units()))
-		if drop {
-			// Staging objects: units whose destination name differs from the
-			// source name (renamed pre-swap) or already swapped to a final
-			// name — those are the dest-side objects a `--mode drop` removes.
-			n := 0
-			for _, u := range j.Units() {
-				if (u.DstSchema != "" && u.DstSchema != u.Schema) ||
-					(u.DstName != "" && u.DstName != u.Table) {
-					n++
-				}
+		dropped, err := dropDestObjects(context.Background(), dropAgent, t.id, j, audit)
+		if err != nil {
+			audit.Close()
+			if closeDest != nil {
+				closeDest()
 			}
-			if n > 0 {
-				fmt.Printf("cleanup: %s: %d dest staging object(s) recorded — drop them via the manager (requires a live dest connection)\n", t.id, n)
-			}
+			return fmt.Errorf("cleanup %s: drop dest objects: %w", t.id, err)
 		}
+		audit.Log("cleanup", "operation-id", t.id, "mode", mode,
+			"units", len(j.Units()), "dropped", dropped)
 		if err := os.RemoveAll(filepath.Dir(t.path)); err != nil {
 			return fmt.Errorf("cleanup %s: %w", t.id, err)
 		}
 		audit.Close()
+		if drop {
+			fmt.Printf("cleanup: %s: dropped %d destination object(s)\n", t.id, dropped)
+		}
 		fmt.Printf("cleanup: removed operation state %s\n", t.id)
+	}
+	if closeDest != nil {
+		closeDest()
 	}
 	if len(targets) == 0 {
 		fmt.Println("cleanup: no incomplete operations found")
 	}
 	return nil
+}
+
+// dropDestObjects removes the journal-derived destination objects of one
+// operation (FR-02) and records each removal in the audit log. Tables and
+// staging are dropped first, schemas last (DropSchemaIfEmpty is a no-op while
+// any object remains, so a failed table drop protects the schema).
+func dropDestObjects(ctx context.Context, a *dest.Agent, opID string, j *manifest.Journal, audit *manifest.AuditLog) (int, error) {
+	if a == nil {
+		return 0, nil
+	}
+	targets := manifest.CleanupDestObjects(j)
+	dropped := 0
+	var errs []string
+	for _, t := range targets {
+		if t.Kind == "schema" {
+			continue // schemas go last
+		}
+		var err error
+		if t.Kind == "staging" {
+			err = a.DropStaging(ctx, t.Schema, t.Name)
+		} else {
+			err = a.DropTable(ctx, t.Schema, t.Name)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s %s.%s: %v", t.Kind, t.Schema, t.Name, err))
+			audit.Log("cleanup_drop_failed", "operation-id", opID, "kind", t.Kind,
+				"schema", t.Schema, "object", t.Name, "error", err.Error())
+			continue
+		}
+		audit.Log("cleanup_drop", "operation-id", opID, "kind", t.Kind,
+			"schema", t.Schema, "object", t.Name, "reason", t.Reason)
+		fmt.Printf("cleanup: dropped %s %s.%s\n", t.Kind, t.Schema, t.Name)
+		dropped++
+	}
+	for _, t := range targets {
+		if t.Kind != "schema" {
+			continue
+		}
+		if err := a.DropSchemaIfEmpty(ctx, t.Schema); err != nil {
+			errs = append(errs, fmt.Sprintf("schema %s: %v", t.Schema, err))
+			audit.Log("cleanup_drop_failed", "operation-id", opID, "kind", "schema",
+				"schema", t.Schema, "error", err.Error())
+			continue
+		}
+		audit.Log("cleanup_drop", "operation-id", opID, "kind", "schema",
+			"schema", t.Schema, "reason", t.Reason)
+		dropped++
+	}
+	if len(errs) > 0 {
+		return dropped, fmt.Errorf("%d object(s) not dropped: %s", len(errs), strings.Join(errs, "; "))
+	}
+	return dropped, nil
 }
 
 // parseOperationArgs extracts --operation-id, --state-dir and legacy --mirror.
@@ -1525,7 +1617,7 @@ Commands (v4 §8):
   run       execute the copy (streams source -> dest, no intermediate storage)
   status    report operation state (--operation-id <id>)
   resume    resume an interrupted operation (--operation-id <id>)
-  cleanup   remove operation state (--operation-id <id> [--all-incomplete] [--mode drop])
+  cleanup   remove operation state + dest objects (--operation-id <id> [--all-incomplete] [--mode drop --dest <conn>])
 
 Service:
   selftest  internal sanity checks

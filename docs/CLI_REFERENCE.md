@@ -103,11 +103,18 @@ subset of flags (listed per-command below) and ignore the rest.
 - **`cleanup`** — removes an operation's journal directory and state (v4 §8
   "State"). **Destructive — requires `--yes`.** `--all-incomplete` removes
   every operation directory that still has non-terminal units (no
-  `--operation-id` needed); `--mode drop` additionally notes the dest-side
-  staging objects recorded in the journal. The destructive action is recorded
-  to `audit.log` **before** the state dir is removed (F-13). **Flags:** `--operation-id <id>`
-  (or `--all-incomplete` / legacy `--mirror <path>`), `--state-dir <dir>`,
-  `--mode drop`, `--yes` (required).
+  `--operation-id` needed); `--mode drop` ADDITIONALLY drops the
+  destination-side objects the operation created — surviving staging tables,
+  renamed-in or gpstream-created final tables, and renamed-in schemas —
+  derived conservatively from the journal (a pre-existing, conflicted
+  destination table is never touched), restoring the receiver to its
+  pre-operation state (F-02). `--mode drop` requires `--dest <connstring>`
+  (`--ssl-cert`/`--ssl-key`/`--ssl-ca`/`--ssl-min-tls` are honoured). Each
+  removal is recorded to `audit.log` **before** the state dir is removed
+  (F-13). **Flags:** `--operation-id <id>` (or `--all-incomplete` / legacy
+  `--mirror <path>`), `--state-dir <dir>`, `--mode drop`, `--dest
+  <connstring>`, `--ssl-cert/--ssl-key/--ssl-ca/--ssl-min-tls`, `--yes`
+  (required).
 - **`selftest`** — internal sanity checks; no flags, no cluster connection.
   Prints PASS/FAIL per case, exits non-zero on any failure.
 - **`version`** — prints the gpstream build version. No flags.

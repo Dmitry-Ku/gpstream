@@ -276,7 +276,9 @@ In parallel, every operator action on the operation is appended to
 | `run` | `gpstream run` starts (before any copy) | `operation-id`, `units`, `copy-mode`, `on-unit-failure`, `compression`, `consistent-db`/`consistent-cluster`/`consistent-tables` |
 | `run-finished` | `gpstream run` ends | `operation-id`, `units`, `rows`, `skipped`, `failed`, `error` (if any) |
 | `resume` | `gpstream resume` | `operation-id`, `requeued`, `attempt` (or `error`) |
-| `cleanup` | `gpstream cleanup` — logged **before** the state dir is removed | `operation-id`, `mode` (`state`/`drop`), `units` |
+| `cleanup` | `gpstream cleanup` — logged **before** the state dir is removed | `operation-id`, `mode` (`state`/`drop`), `units`, `dropped` (objects removed with `--mode drop`) |
+| `cleanup_drop` | each destination object removed by `cleanup --mode drop` (F-02) | `operation-id`, `kind` (`staging`/`table`/`schema`), `schema`, `object`, `reason` |
+| `cleanup_drop_failed` | a destination object that could NOT be dropped (reported, run continues) | `operation-id`, `kind`, `schema`, `object`, `error` |
 
 `events.jsonl` is what the run did; `audit.log` is what the operator did.
 Both are best-effort (a write failure never fails the action).

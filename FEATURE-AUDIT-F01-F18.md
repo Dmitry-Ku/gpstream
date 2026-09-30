@@ -14,11 +14,11 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Test: `internal/transfer` (90.5%), `internal/manifest` (81.2%).
 - **BLOCKED-INFRA**: the 100+ TB acceptance (free-space < 1 GB) needs real clusters.
 
-### F-02 — Source-state consistency + fragment cleanup — **PARTIAL**
+### F-02 — Source-state consistency + fragment cleanup — **DONE (30.09)**
 - Spec: per-DB `READ ONLY, REPEATABLE READ` snapshot; mandatory concurrent-write-during-copy test; per-table fallback flag; `cleanup --operation-id`/`--all-incomplete`.
-- Evidence: `manager.go:51-55` `snapshotMode`/`snapshotTx` — a real long-running read-only REPEATABLE READ transaction on the source, all unit COPYs read from it. `manager.go:160-215` releases snapshot after all units. Tests: `manifest/manager_snapshot_test.go:38,67,94` (DB/cluster/no-snapshot). `cmd/gpstream/main.go:880+` `cmdCleanup` is real (`--operation-id`, `--all-incomplete`, `--mode drop`, `--yes`).
-- Gaps: (a) **per-table fallback flag — DONE 28.09** (`--consistent-tables`, `Config.ConsistentTables`, mutually exclusive with the run-wide modes; per-table short snapshot via `pg.Pool.AcquireSnapshotConn` + `Manager.unitSource`/`perTableSnapshotConn`; the data COPY and the checksum read of one table share the unit's short REPEATABLE READ snapshot; the per-table discrepancy is documented in CLI_REFERENCE/CONFIGURATION/OPERATOR_GUIDE; live test `integration/f02_per_table_test.go` asserts t_a excludes post-snapshot writer rows while t_b includes pre-snapshot writer rows); (b) the **mandatory "concurrent source writes during copy are excluded" test EXISTS** (28.09 re-check): `integration/scale24_test.go TestScale24TablesConsistentSnapshot` — a writer loop hammers all 24 source tables during the copy, the destination must equal exactly the pre-copy rows, and the test asserts the writer DID write (live, M2, GREEN); (c) 2-DB concurrent-write + kill -9 acceptance needs real clusters (kill -9 on live GP6 done in E3).
-- Test: snapshot tests exist; concurrent-write exclusion test exists (scale24); per-table fallback live test exists (f02_per_table).
+- Evidence: `manager.go:51-55` `snapshotMode`/`snapshotTx` — a real long-running read-only REPEATABLE READ transaction on the source, all unit COPYs read from it. `manager.go:160-215` releases snapshot after all units. Tests: `manifest/manager_snapshot_test.go:38,67,94` (DB/cluster/no-snapshot). `cmd/gpstream/main.go` `cmdCleanup` is real (`--operation-id`, `--all-incomplete`, `--mode drop`, `--yes`).
+- Gaps: (a) **per-table fallback flag — DONE 28.09** (`--consistent-tables`, `Config.ConsistentTables`, mutually exclusive with the run-wide modes; per-table short snapshot via `pg.Pool.AcquireSnapshotConn` + `Manager.unitSource`/`perTableSnapshotConn`; the data COPY and the checksum read of one table share the unit's short REPEATABLE READ snapshot; the per-table discrepancy is documented in CLI_REFERENCE/CONFIGURATION/OPERATOR_GUIDE; live test `integration/f02_per_table_test.go` asserts t_a excludes post-snapshot writer rows while t_b includes pre-snapshot writer rows); (b) the **mandatory "concurrent source writes during copy are excluded" test EXISTS** (28.09 re-check): `integration/scale24_test.go TestScale24TablesConsistentSnapshot` — a writer loop hammers all 24 source tables during the copy, the destination must equal exactly the pre-copy rows, and the test asserts the writer DID write (live, M2, GREEN); (c) **kill -9 + 2-DB concurrent-write acceptance — DONE 30.09**: `cleanup --mode drop --dest` now ACTUALLY drops the destination objects the operation created (previously it only printed them) — conservative journal-derived ownership (`manifest.CleanupDestObjects`: surviving staging, renamed-in tables, no-conflict created tables, renamed-in schemas; conflicted pre-existing tables and `public` are never touched) + `dest.DropTable`/`dest.DropSchemaIfEmpty`; live acceptance `integration/f02_cleanup_test.go` — TestF02Kill9CleanupRestoresReceiver (real binary, kill -9 at the verifying phase: committed staging with ALL rows + final absent ⇒ cleanup --mode drop restores the pre-operation state, operator table survives, re-run completes with exact count) + TestF02TwoDBConcurrentSnapshot (two CONCURRENT operations = 2 databases, each with its own REPEATABLE READ snapshot, writers hammering both DBs; every destination table == exactly its snapshot point, non-vacuous).
+- Test: snapshot tests exist; concurrent-write exclusion test exists (scale24); per-table fallback live test exists (f02_per_table); kill-9 + 2-DB live acceptance exists (f02_cleanup).
 
 ### F-03 — Performance on small AO partitioned-table tail — **PARTIAL**
 - Spec: pipeline (read N+1 while writing N), batching of housekeeping, leaf-partition parallelism with a cap, ANALYZE/VACUUM post-job only.
@@ -158,7 +158,7 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | Feat | Status | One-line gap |
 |------|--------|--------------|
 | F-01 | DONE | (100TB acceptance infra-blocked) |
-| F-02 | PARTIAL | per-table fallback flag DONE 28.09 (`--consistent-tables`); (concurrent-write test EXISTS — scale24; per-table live test f02_per_table); 2-DB concurrent-write + kill -9 acceptance needs real clusters |
+| F-02 | DONE (30.09) | per-table fallback flag DONE 28.09 (`--consistent-tables`); concurrent-write test scale24 + per-table live test f02_per_table; **kill -9 + 2-DB concurrent-write acceptance DONE 30.09** — `cleanup --mode drop --dest` now actually drops gpstream-owned dest objects (journal-derived, conservative); live f02_cleanup_test.go |
 | F-03 | PARTIAL | no capped leaf-partition parallelism; no overhead batching |
 | F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
 | F-05 | PARTIAL | doctor extension check DONE (29.09); no issue/PR templates; no design.md |
@@ -219,7 +219,6 @@ conflicts.jsonl, F-10 strict default, F-09 live iptables/RST fault injection.)
 
 ## Blocked on infra (cannot finish in this environment)
 - F-01: 100+ TB no-disk acceptance (real GP6 clusters).
-- F-02: kill -9 + 2-DB concurrent-write acceptance (real clusters).
 - F-03: 100 000 × 1 MB ≤ 60 min acceptance (real clusters + scale gen).
 - F-09: 2×GP6 integration, iptables fault injection, 100k scale, 100 Gbit soak (self-hosted runner).
 - F-13: wireshark encrypted-traffic verification (real network).

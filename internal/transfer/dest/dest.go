@@ -112,6 +112,62 @@ func (a *Agent) DropStaging(ctx context.Context, schema, stagingName string) err
 	return err
 }
 
+// DropTable removes a final (non-staging) table from the destination
+// (FR-02 cleanup: a renamed-in or newly created table that gpstream owns
+// must be removable to restore the pre-operation state). Idempotent.
+func (a *Agent) DropTable(ctx context.Context, schema, table string) error {
+	_, err := a.q.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s`,
+		quoteIdent(schema), quoteIdent(table)))
+	return err
+}
+
+// DropSchemaIfEmpty removes a schema that gpstream created, but ONLY when it
+// holds no user objects left (FR-02 cleanup: "созданные схемы" are
+// removable, pre-existing schemas with other data are never touched).
+// Idempotent: a non-empty or absent schema is a no-op, not an error.
+func (a *Agent) DropSchemaIfEmpty(ctx context.Context, schema string) error {
+	if schema == "" || schema == "public" {
+		return nil // never drop public: it pre-exists on every cluster
+	}
+	rows, err := a.q.Query(ctx,
+		`SELECT count(*) FROM pg_class c
+		 JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = $1
+		   AND c.relkind IN ('r','p','v','m','S','i','f')`, schema)
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 && len(rows[0]) > 0 {
+		if n := asInt(rows[0][0]); n > 0 {
+			return nil // objects remain: leave the schema in place
+		}
+	}
+	_, err = a.q.Exec(ctx, `DROP SCHEMA IF EXISTS `+quoteIdent(schema))
+	return err
+}
+
+// asInt converts a pgx-decoded count cell (int64/uint64/...) to int.
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case int:
+		return n
+	case uint64:
+		return int(n)
+	case float64:
+		return int(n)
+	case []byte:
+		var m int
+		fmt.Sscanf(string(n), "%d", &m)
+		return m
+	default:
+		return 0
+	}
+}
+
 // Truncate empties the final table in place (FR-11 --truncate). Unlike Swap
 // (which renames a staging table over the final name), Truncate keeps the
 // table's identity and just clears its rows so the source data can be copied

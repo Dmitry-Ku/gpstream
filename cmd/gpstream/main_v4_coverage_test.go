@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,14 +166,28 @@ func TestCleanupAllIncomplete(t *testing.T) {
 	}
 }
 
-func TestCleanupModeDropReportsStaging(t *testing.T) {
+func TestCleanupModeDropRequiresDest(t *testing.T) {
 	dir := t.TempDir()
 	writeJournal(t, dir, "op-drop", []*manifest.Unit{
 		unit(1, manifest.StateCompleted, true),
 		unit(2, manifest.StateCompleted, false),
 	})
-	if err := run([]string{"cleanup", "--state-dir", dir, "--operation-id", "op-drop", "--mode", "drop", "--yes"}); err != nil {
-		t.Fatalf("cleanup --mode drop: %v", err)
+	// Without --dest there is no way to reach the destination cluster, so
+	// --mode drop must refuse (not silently skip the drops).
+	err := run([]string{"cleanup", "--state-dir", dir, "--operation-id", "op-drop", "--mode", "drop", "--yes"})
+	if err == nil {
+		t.Fatal("cleanup --mode drop without --dest must error")
+	}
+	if !strings.Contains(err.Error(), "--dest") {
+		t.Fatalf("error should mention --dest, got: %v", err)
+	}
+	// The operation state must survive the refused drop (nothing was done).
+	if _, err := os.Stat(filepath.Join(dir, "op-drop", "journal.jsonl")); err != nil {
+		t.Fatalf("state should survive a refused drop: %v", err)
+	}
+	// Plain state cleanup (no drop) still works without --dest.
+	if err := run([]string{"cleanup", "--state-dir", dir, "--operation-id", "op-drop", "--yes"}); err != nil {
+		t.Fatalf("cleanup (state only): %v", err)
 	}
 }
 
