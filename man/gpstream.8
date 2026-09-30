@@ -169,16 +169,6 @@ runs jobs in enqueue order.
 .TP
 .B --no-constraints
 Skip the FK/CHECK constraint-restore pass on the destination (F-11).
-
-The live destination segment-fill balance (max/avg) is always measured after
-each swap and reported; a fixed 1.5 gate emits the WARNING line (the former
-.B --segment-balance-threshold
-knob was removed).
-
-The FR-15 redistribution accounting (raw segment skew + layout verdict) is
-always computed and reported in the
-.B --dry-run
-output; there is no gate flag — the operator reads the number and decides.
 .SS Transport / resilience
 .TP
 .BR --copy-mode
@@ -297,6 +287,16 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,
 OPERATOR_GUIDE, DOCTOR, TROUBLESHOOTING), docs/adr/000, docs/adr/001.
 .SH NOTES
+The live destination segment-fill balance (max/avg) is always measured after
+each swap and reported; a fixed 1.5 gate emits the WARNING line (the former
+.B --segment-balance-threshold
+knob was removed).
+
+The FR-15 redistribution accounting (raw segment skew + layout verdict) is
+always computed and reported in the
+.B --dry-run
+output; there is no gate flag — the operator reads the number and decides.
+
 The journal (durable operation state) is ALWAYS
 .BR <state-dir>/<operation-id>/journal.jsonl
 , mirrored to the destination service DB (gpstream_units). Recovery is
