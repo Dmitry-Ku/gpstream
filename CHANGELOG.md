@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### F-05 release pipeline: goreleaser + man-page family + version stamp
+
+One-command release artifact build (tar.gz + RPM + DEB, amd64+arm64) via
+goreleaser (pinned v1.24.0), plus the subcommand man-page family the spec
+requires. `make package` / `scripts/package.sh` produce into `dist/`:
+`gpstream-<ver>-linux-{amd64,arm64}.tar.gz`,
+`gpstream-segreceiver-<ver>-linux-{amd64,arm64}.tar.gz`,
+`gpstream-<ver>-{amd64,arm64}.{deb,rpm}`.
+
+- **Version stamp**: `main.version` is now an `ldflags`-overridable `var`
+  (was a hard-coded `const`); the build stamps `{{ .Version }}` from the git
+  tag, so `gpstream version` reports the release version.
+- **Man family** (`scripts/gen-man-pages.sh`): the single source of truth is
+  `man/gpstream.8`; each subcommand page is a `.so` alias so `man
+  gpstream-run` etc. render the full manual under the subcommand name. The
+  family is packaged into `/usr/share/man/man8/`.
+- **`.goreleaser.yaml`**: two static builds (gpstream, gpstream-segreceiver),
+  archives, and deb+rpm nfpms carrying the binary, systemd unit, example
+  config, logrotate, and the man family; no runtime library dependency
+  (static, proven on EL7/glibc 2.17 + EL8/glibc 2.28, F-16).
+- **`release.yml`** workflow: on tag `v*`, builds and publishes artifacts to
+  the GitHub release (goreleaser with `GITHUB_TOKEN`).
+- **Packaging scripts** (`packaging/scripts/{postinstall,preremove,postremove}.sh`):
+  systemd unit reload/stop/cleanup hooks.
+
+**F-05 acceptance (clean host) verified on the lab (CentOS 7 / glibc
+2.17):** `rpm -i gpstream-<ver>-amd64.rpm` installs the binary, segreceiver,
+systemd unit, `/etc/gpstream/gpstream.toml`, logrotate, and the full man
+family (`man gpstream-run` works); `gpstream version`/`selftest` pass from the
+packaged binary; a second config file drives `doctor` (exact problem list on a
+deliberately broken environment) and `dry-run`/`run`/`status` complete a real
+operation. The spec's "clean host + package + 2 config files ⇒ working
+operation" and "doctor on a broken environment ⇒ exact list of problems"
+criteria are met.
+
+### Fix: `skipped` is now a terminal unit state
+
+A unit the run deliberately did not copy (a `--resolve-conflicts skip`, or an
+`--overwrite` target whose data is already identical on the destination) was
+counted as `skipped` in the run summary but left `state: pending` in the
+journal. Consequence: after a successful run `status` reported `0/N units
+terminal` (wrong), and `resume` would re-queue a unit the operator chose not
+to copy. Now the unit is journaled `skipped` (a new terminal state): `status`
+counts it as done, `resume`/`crash-recovery` leave it alone, and the
+`--overwrite` checksum-skip emits a `unit_skipped` event for the audit trail.
+`status`/`metrics`/`cleanup --all-incomplete` and the docs (OPERATOR_GUIDE,
+TROUBLESHOOTING, FAILOVER, man) all treat `skipped` as terminal.
+
 ### Added `GPSTREAM_CONSISTENT_DB`/`_CLUSTER` env vars + `consistent_db`/`consistent_cluster` file keys; fixed consistency-scope resolution
 
 the maintainer: the per-table env var had no sibling for the other two scopes

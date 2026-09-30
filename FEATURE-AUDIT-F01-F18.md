@@ -33,12 +33,14 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: **live ETA is not a metric** (only a "prediction (timed out)" dry-run string at `main.go:588`); `status` shows no live throughput/queue depth.
 - Test: `internal/monitor` 98.0%.
 
-### F-05 — Delivery, self-diagnosis, docs — **PARTIAL**
+### F-05 — Delivery, self-diagnosis, docs — **DONE (30.09)**
 - Spec: tar.gz+RPM+DEB, `/etc/gpstream/gpstream.toml`, `doctor` (all segments, versions, encoding match, collation, **extensions MADlib/PostGIS/orafce**, disk, TLS, ports, CPU), man pages, README/docs/LICENSE/CHANGELOG/SECURITY/CONTRIBUTING + **issue/PR templates**.
 - Evidence: `packaging/{rpm,deb,examples,systemd,logrotate.conf}`; `man/gpstream.8`; `config.go` TOML+YAML; `doctor.go:122-247` checks reachability/version/segments/disk/permissions/collation/**extensions**/TLS; `docs/` has QUICKSTART, INSTALL, OPERATOR_GUIDE, TROUBLESHOOTING, PERFORMANCE, SECURITY, CLI_REFERENCE, CONFIGURATION, ADMIN_GUIDE, FAILOVER, METRICS, adr; `LICENSE/CHANGELOG.md/SECURITY.md/CONTRIBUTING.md` present.
 - **Extension check DONE (29.09):** doctor diffs `pg_extension` source vs dest (WARN naming the missing extensions; never FAILs; query fault = WARN) — `checkExtensions` in `doctor.go`, tests `doctor_extensions_test.go` (missing/all-present/query-fault).
-- Gaps: **`.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` DONE 30.09** (bug/feature templates + PR gate template: build/vet/gofmt/test, docs+audit update rule, no-dep-without-design.md rule, journal backward-compat); **`docs/design.md` DONE 30.09** (F-08 dependency justification: 4 direct deps pinned + transitive + what-is-not-used + static build/verify/2-distro); man set is a single `gpstream.8`, not the full `gpstream-run/...` family.
-- **BLOCKED-INFRA**: RPM/DEB build host + clean-host acceptance.
+- **Release pipeline DONE (30.09):** `.goreleaser.yaml` (pinned goreleaser v1.24.0, config v1) builds both static binaries (gpstream, gpstream-segreceiver) for linux amd64+arm64 and packages tar.gz + deb + rpm (`nfpms`) carrying the systemd unit, example config, logrotate, and the man family; `scripts/package.sh` (auto-downloads goreleaser to `.tools/`) + `make package` are the one-command entry; `release.yml` publishes to the GitHub release on tag `v*` (`GITHUB_TOKEN`). Verified end-to-end: 8 artifacts in `dist/` (36 s), RPM installed on the lab (CentOS 7 / glibc 2.17) via `rpm -i`, packaged binary passes `selftest`, `version` is stamped from the tag via ldflags (`main.version` is now a `var`).
+- **Man family DONE (30.09):** `scripts/gen-man-pages.sh` generates `man/gpstream-<cmd>.8` as `.so` aliases of `gpstream.8` (one source of truth; `man gpstream-run` renders the full page — verified with groff on the testbed); the family is packaged into `/usr/share/man/man8/`.
+- **Clean-host acceptance DONE (30.09, lab, CentOS 7 / glibc 2.17):** RPM install ⇒ binary + segreceiver + systemd unit + `/etc/gpstream/gpstream.toml` + logrotate + man family; a second config file (`/tmp/accept.toml`) drives `doctor` (PASS on the live A→C pair; exact problem list on a deliberately broken environment: no-route source, refused dest port, segment/version failures each diagnosed), `dry-run` (plan hash `9a93c96b…` matches the direct binary), and a real `run`/`status` operation — the spec's "clean host + package + 2 config files ⇒ working operation" and "doctor on a broken environment ⇒ exact list of problems" criteria are met.
+- Earlier (30.09): `.github/ISSUE_TEMPLATE` + `PULL_REQUEST_TEMPLATE` (bug/feature + PR gate: build/vet/gofmt/test, docs+audit update rule, no-dep-without-design.md rule, journal backward-compat); `docs/design.md` (F-08 dependency justification: 4 direct deps pinned + transitive + what-is-not-used + static build/verify/2-distro).
 
 ### F-06 — Resilience + `--auto-resume N` — **DONE** (flag + abort mode closed 28.09)
 - Spec: auto-resume a failed chunk ≤ N times; `--on-unit-failure=continue|abort` (default continue); failed unit re-queued by `resume`; controller re-attach from manifest+state.
@@ -52,10 +54,10 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Gaps: the literal "kill in the middle of a chunk ⇒ no half tables + full row+checksum reconciliation" acceptance is not an in-repo automated test (needs real clusters).
 - Mechanism is real; acceptance is **BLOCKED-INFRA**.
 
-### F-08 — Minimal dependencies, free components — **PARTIAL**
+### F-08 — Minimal dependencies, free components — **DONE (30.09)**
 - Spec: static build; stdlib + small set of vetted free libs; <10 deps; each external dep justified in `docs/design.md`; no telemetry.
 - Evidence: `go.mod` has 5 direct deps (BurntSushi/toml, embedded-postgres [test-only], jackc/pgx/v5, klauspost/compress, yaml.v3) — well under 10, all pure Go, no telemetry.
-- Gaps: **`docs/design.md` (dependency justification) is missing**; static-build flag not confirmed in `Makefile`.
+- **Gaps CLOSED (30.09):** `docs/design.md` written (4 direct deps pinned + transitive + what-is-not-used + static build/verify/2-distro); static build confirmed — goreleaser builds with `CGO_ENABLED=0` + `-trimpath` (`.goreleaser.yaml`), `ldd` = "not a dynamic executable", runs on CentOS 7 (glibc 2.17).
 - **BLOCKED-INFRA**: ~~two-distro/glibc run acceptance.~~ **CLOSED 30.09 (live):** static binary (CGO_ENABLED=0, built on the agent host Fedora 44/glibc 2.40, `ldd` = "not a dynamic executable") runs WITHOUT ERRORS on CentOS 7 (glibc 2.17, `version`+`selftest` OK) and drives a cross-distro copy to CentOS 8 (glibc 2.28) segments; source DB `f16_src` (LC_COLLATE='C') → dest `f16_dst` (en_US.utf8): doctor `[WARN] collation LC_COLLATE differs: source="C" dest="en_US.utf8"` + behavioral probe, dry-run `C -> en_US.utf8 (and different glibc sort behavior)`, run exit 0, data byte-correct (md5 src==dst, 7 rows incl. cyrillic/accented). Script  /tmp/gs-work/vms/f16-e2e.sh, result F16_E2E_PASSED 7/0.
 
 ### F-09 — Automated tests — **PARTIAL**
@@ -161,10 +163,10 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-02 | DONE (30.09) | per-table fallback flag DONE 28.09 (`--consistent-tables`); concurrent-write test scale24 + per-table live test f02_per_table; **kill -9 + 2-DB concurrent-write acceptance DONE 30.09** — `cleanup --mode drop --dest` now actually drops gpstream-owned dest objects (journal-derived, conservative); live f02_cleanup_test.go |
 | F-03 | DROPPED (30.09) | user decision: not doing AO-tail parallelism/batching; acceptance 100k×1MB ≤60min is out of scope |
 | F-04 | PARTIAL | events.jsonl DONE (28.09: rate-shift/conflict/failed/re-read); no live ETA/queue metrics in status |
-| F-05 | PARTIAL | doctor extension check DONE (29.09); no issue/PR templates; no design.md |
+| F-05 | DONE (30.09) | release pipeline (goreleaser v1.24.0: tar.gz+deb+rpm amd64/arm64, `make package`, `release.yml`), man-page family (`man gpstream-run`…), version ldflags-stamp; clean-host + broken-env doctor acceptance on GP6 (CentOS7/glibc2.17); issue/PR templates + design.md done earlier |
 | F-06 | DONE | --on-unit-failure continue/abort implemented (28.09); 50-fault serial acceptance infra-blocked |
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
-| F-08 | PARTIAL | docs/design.md missing; static build unconfirmed |
+| F-08 | DONE (30.09) | design.md (dep justification) + static build confirmed (CGO_ENABLED=0, runs on glibc 2.17) |
 | F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant); **live "3 DB/2 schemas/1 renamed, idempotent re-run" acceptance CLOSED 30.09 (F10_E2E_PASSED 12/0)** |
 | F-11 | PARTIAL | sequences synced post-load (29.09); extension check DONE (29.09) |
