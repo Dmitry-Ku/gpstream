@@ -1,153 +1,265 @@
-.TH GPSTREAM 8 "2026-09-14" "gpstream 0.1.0" "User Commands"
+.TH GPSTREAM 8 "2026-09-30" "gpstream 0.1.0" "User Commands"
 .SH NAME
 gpstream \- high-throughput logical copy of data between Greenplum 6 clusters
-
 .SH SYNOPSIS
 .B gpstream
 .I command
-.RI "[ " flags "] "
-
+.RI " [ flags ]"
 .SH DESCRIPTION
 .B gpstream
 copies logical data between two Greenplum 6 clusters over a direct high-speed
 network (source -> destination)
 .B "without any intermediate storage"
-, with snapshot consistency, crash-recovery, background index rebuild,
+, with snapshot consistency, crash recovery, background index rebuild,
 redistribution accounting, and a fully deterministic
-.BR \-\-dry-run
+.BR --dry-run
 plan.
-
 .SH COMMANDS
 .TP
 .B run
 Execute the copy: stream source to dest with no intermediate storage (v4 §8).
 .TP
 .B dry-run
-Plan the copy without executing (\-\-timeout S bounds the plan; \-\-plan-file F emits it).
+Plan the copy without executing
+(BR (--timeout
+S bounds the plan;
+.BR --plan-file
+F emits it).
 .TP
 .B status
-Report operation state (\-\-operation-id <id>).
+Report operation state
+(BR (--operation-id
+id).
 .TP
 .B resume
-Resume an interrupted operation (\-\-operation-id <id>).
+Resume an interrupted operation
+(BR (--operation-id
+id); re-queues non-terminal units, skips completed/swapped/failed.
 .TP
-.BR cleanup
-.IR <operation-id>
-Remove operation state (\-\-all-incomplete). With \-\-mode drop \-\-dest <connstring>, also drop the destination objects this operation created (surviving staging, renamed-in or created final tables, renamed-in schemas) to restore the pre-operation state (F-02). Destructive: requires \-\-yes.
+.B cleanup
+Remove operation state
+(BR (--operation-id
+id,
+.BR --yes
+required).
+.B --all-incomplete
+removes every operation dir with non-terminal units.
+.BR --mode
+drop
+.BR --dest
+<connstring> also drops the destination objects this operation created
+(surviving staging, renamed-in or created final tables, renamed-in schemas)
+to restore the pre-operation state (F-02).
 .TP
 .B doctor
-Self-diagnose source/dest clusters; output PASS/FAIL/WARN (this build).
+Self-diagnose source/dest clusters; output PASS/FAIL/WARN.
 .TP
 .B selftest
-Internal sanity checks: schema, checksums, limiter, plan determinism, framing (this build).
+Internal sanity checks: schema, checksums, limiter, plan determinism, framing.
 .TP
-.BR man
-.IR "[ topic ] "
-Print the built-in man page (M4).
-
+.B version
+Print the binary version.
+.TP
+.B man
+Print this man page.
 .SH OPTIONS (run / dry-run, §8)
+.SS Selection
 .TP
-.BR \-source
-.RI "[ " connstr " ] "
-source cluster connection string.
+.BR --source
+connstr
+Source cluster connection string.
 .TP
-.BR \-dest
-.RI "[ " connstr " ] "
-destination cluster connection string.
+.BR --dest
+connstr
+Destination cluster connection string.
 .TP
-.BR \-full | \-db D | \-schema D.S | \-table D.S.T
-Selection; combinable.
+.BR --dbs
+csv
+One or more databases (comma-separated).
 .TP
-.BR \-metadata\-only | \-data\-only
-Copy only metadata, or only data (default: both).
+.BR --schemas
+csv
+One or more schemas,
+.IR db.schema .
 .TP
-.BR \-skip\-conflicts " (alias " \-skip\-existing ")
-Skip conflicting tables and continue.
-.BR \-overwrite | \-truncate | \-append
-Replace / truncate-then-load / append the destination object.
-Default (none of the above): a conflict
-.B "stops the run"
-(nothing overwritten, nothing skipped).
+.BR --tables
+csv
+One or more tables,
+.IR db.schema.table .
 .TP
-.BR \-rename\-db
-.IR "src=dst"
-Create the destination database under another name.
+.BR --exclude
+csv
+Exclude a database/schema/table.
 .TP
-.BR \-rename\-schema
-.IR "src=dst"
-Create the destination schema under another name.
+.BR --include
+metadata,data
+Object classes to copy (default: both).
 .TP
-.BR \-compress
-.I "none|zlib|zstd[:1-19]"
-Stream compression; recommended
-.BR zstd .
+.BR --metadata-only | --data-only
+Copy only metadata, or only data (mutually exclusive).
 .TP
-.BR \-rate\-limit
-.I "Gbps"
-Total and per-pair rate limit.
+.BR --map-db | --map-schema | --map-table
+src=dst
+Create the destination object under another name.
+.SS Conflicts (F-10)
 .TP
-.BR \-workers\-per\-pair
-.I N
-Workers per host-pair.
+.BR --resolve-conflicts
+stop|skip|overwrite|truncate
+Conflict policy. Default
+.B stop
+: the first conflict stops the run (nothing overwritten, nothing skipped).
+.B skip
+skips conflicting units (logged to conflicts.jsonl);
+.B overwrite
+= staging + verify + atomic swap;
+.B truncate
+= in-place after TRUNCATE.
 .TP
-.BR \-data\-port\-range
-.I "a-b"
-Range of data ports.
+.BR --overwrite | --truncate
+Shorthand opt-ins that set the matching policy.
+.SS Performance
 .TP
-.BR \-auto\-resume
-.I N
-Auto-resume after failure (N >= 0; default 0 = manual).
+.BR --compress
+none|zlib|zstd[:1-19]
+Stream compression (default zstd, level 3).
 .TP
-.BR \-verify
-.I "full|sample|off"
-Verification depth; default sample.
+.BR --zstd-level
+N
+zstd level 1-19 (default 3).
 .TP
-.BR \-index\-workers
-.I N
-Index builder workers (default: half host CPU);
-.BR \-no\-indexes
-defer indexes.
+.BR --rate-limit
+rate
+Total throughput ceiling; accepts bps/mbit/gbit (default: none).
 .TP
-.BR \-no\-redistribute | \-skew\-threshold X
-Skip redistribution, or set the skew threshold.
+.BR --workers
+N
+Workers per host-pair (default 2).
 .TP
-.BR \-ssl\-cert \-ssl\-key \-ssl\-ca \-ssl\-min\-tls
-TLS configuration (mTLS + chain validation).
+.BR --index-workers
+N
+Background index-build workers (F-17);
+.BR --no-indexes
+skips index creation entirely;
+.BR --index-priority
+size|manual|background.
+.SS Transport / resilience
 .TP
-.BR \-dry\-run | \-timeout S | \-plan\-file F
-Planning options.
+.BR --copy-mode
+coordinator|on_segment|direct
+Data path (default coordinator).
 .TP
-.BR \-config F | \-log\-level L | \-quiet | \-debug
-Configuration and logging.
-
+.BR --seg-listen | --seg-binary | --seg-tls-cert | --seg-tls-key | --seg-tls-ca
+Segment-direct (on_segment) options.
+.TP
+.BR --frame-ack
+on|off
+Frame-level ACK + retransmit (default on).
+.TP
+.BR --ack-timeout
+15s|30s|adaptive
+ACK timeout (default 30s).
+.TP
+.BR --max-reconnects
+N
+Reconnect budget (default 20).
+.TP
+.BR --retransmit-buffer-max
+size
+In-flight window per stream (default 64MiB).
+.SS Integrity / consistency
+.TP
+.BR --verify
+full|sample|off
+Verification depth (default sample).
+.TP
+.BR --consistent-db | --consistent-cluster | --consistent-tables
+Snapshot scope (mutually exclusive; default --consistent-db).
+.TP
+.BR --auto-resume
+N
+If units did not reach a terminal state after the run, resume and re-run up
+to N times automatically (F-07). Default 0 = manual: gpstream does not
+retry; the operator runs
+.BR "gpstream resume --operation-id"
+ id
+explicitly.
+.TP
+.BR --on-unit-failure
+continue|abort
+continue (default) finishes the rest after a failed unit; abort stops the run.
+.SS Planning / operation
+.TP
+.BR --timeout
+S
+Bounds plan formation (default 60s).
+.TP
+.BR --plan-file
+F
+Persist the plan JSON.
+.TP
+.BR --operation-id
+id
+Operation identity (default: generated); state lives at
+.BR <state-dir>/<operation-id>/ .
+.TP
+.BR --state-dir
+dir
+Operation state directory (default /var/lib/gpstream).
+.TP
+.BR --metrics-addr
+addr
+Serve the Prometheus /metrics endpoint during run.
+.TP
+.BR --config
+file
+Config file (TOML or YAML).
+.SH TLS (FR-13)
+.TP
+.BR --ssl-cert | --ssl-key | --ssl-ca | --ssl-min-tls
+mTLS client cert/key, CA bundle, minimum TLS version (default 1.2).
+The pg data plane is encrypted by default (sslmode=verify-full is enforced
+unless the connstring sets an explicit sslmode).
 .SH ENVIRONMENT
-Configuration precedence: CLI > environment > config file (TOML) > defaults. Secrets are
-taken
-.B "only"
+Configuration precedence: CLI > environment > config file > defaults.
+Secrets are taken
+.B only
 from 0600 files or
 .B GPSTREAM_*
 environment variables,
 .B "never from argv"
-(FR-08). Recognised variables include
-.BR GPSTREAM_RATE_LIMIT ,
-.BR GPSTREAM_WORKERS_PER_PAIR ,
-.BR GPSTREAM_COMPRESS ,
-.BR GPSTREAM_LOG_LEVEL ,
-.BR GPSTREAM_AUTO_RESUME ,
-.BR GPSTREAM_SSL_CERT ,
-.BR GPSTREAM_SSL_KEY ,
-.BR GPSTREAM_SSL_CA .
-
+(FR-08). There is
+.B no
+GPSTREAM_SOURCE/DEST variable; endpoints come from --source/--dest or the
+config file. Recognised variables (all prefixed GPSTREAM_):
+.RI RATE_LIMIT ,
+RI WORKERS_PER_PAIR ,
+RI COMPRESS ,
+RI AUTO_RESUME ,
+RI ON_UNIT_FAILURE ,
+RI FRAME_ACK ,
+RI ACK_TIMEOUT ,
+RI MAX_RECONNECTS ,
+RI RETRANSMIT_BUFFER_MAX ,
+RI SEGMENT_BALANCE_THRESHOLD ,
+RI SMALL_TABLE_THRESHOLD ,
+RI LOCALE_CHECK ,
+RI CONSISTENT_TABLES ,
+RI SSL_CERT ,
+RI SSL_KEY ,
+RI SSL_CA ,
+RI SEG_TLS_CERT ,
+RI SEG_TLS_KEY ,
+RI SEG_TLS_CA .
 .SH SEE ALSO
-.RI [ .TH gpstream]
-man
-.BR "gpstream(8)" ,
-.RI [ .TP ]
-docs/architecture, docs/adr/000, docs/adr/001.
-
+.BR gpstream(8) ,
+docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,
+OPERATOR_GUIDE, DOCTOR, TROUBLESHOOTING), docs/adr/000, docs/adr/001.
 .SH NOTES
-M0 provides
-.BR doctor
-and
-.BR selftest
-as working commands; run/status/resume/cleanup execute real transfers.
+The journal (durable operation state) is ALWAYS
+.BR <state-dir>/<operation-id>/journal.jsonl
+, mirrored to the destination service DB (gpstream_units). Recovery is
+journal-driven:
+.BR "gpstream resume"
+re-queues non-terminal units;
+.BR "gpstream cleanup"
+removes operation state.
