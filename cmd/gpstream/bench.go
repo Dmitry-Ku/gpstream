@@ -73,7 +73,7 @@ func cmdBench(args []string) error {
 	fmt.Println("gpstream bench")
 	fmt.Println("==============")
 	fmt.Println("mode:           input stream only (source read -> frame -> compress -> discard; no destination)")
-	fmt.Printf("units:          %d table(s), estimated %s\n", len(units), plan.BenchSummaryLine(units))
+	fmt.Printf("units:          %s\n", plan.BenchSummaryLine(units))
 	fmt.Printf("workers:        %d\n", cfg.WorkersPerPair)
 	fmt.Printf("compression:    %s\n", comp)
 	fmt.Printf("rate-limit:     %s\n", limiter)
