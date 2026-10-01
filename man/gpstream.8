@@ -20,7 +20,7 @@ plan.
 Execute the copy: stream source to dest with no intermediate storage.
 .TP
 .B dry-run
-Plan the copy without executing (\fB--timeout\fR S bounds the plan; \fB--plan-file\fR F emits it).
+Plan the copy without executing (\fB--timeout\fR S bounds the plan; the plan JSON is always persisted to \fB<state-dir>/<operation-id>/plan.json\fR).
 .TP
 .B bench
 Measure the input stream: stream the selected source tables through the real
@@ -257,29 +257,22 @@ S
 \fBbench\fR: the benchmark wall-time limit, unlimited when not passed
 (a benchmark capped by default would truncate the number it reports).
 .TP
-.BR --plan-file
-F
-Persist the plan JSON to F (dry-run and run both write it). This is a
-plan artifact, not the journal: the operation journal always lives at
-.BR <state-dir>/<operation-id>/journal.jsonl
-so status/resume/cleanup find it regardless of --plan-file.
-.TP
 .BR --operation-id
 id
 Operation identity; state lives at
 .BR <state-dir>/<operation-id>/ .
-When omitted,
-.B run
-generates the id as the deterministic plan hash (the same value the
-.BR --dry-run
-prints as
-.BR "plan hash:"
-) — the same plan yields the same id, so an unchanged plan resumes the
-same operation; an explicit id names the operation for
-.BR status ,
-.BR resume
-and
-.BR cleanup .
+\fBrun\fR: any readable name, or omitted — then a timestamp id
+(\fBYYYYMMDDTHHMMSSZ\fR UTC, e.g. \fB20261001T153000Z\fR; a \fB-2\fR
+suffix is appended on a same-second collision) is generated, so the state
+dir is a chronological history of runs and the newest operation is the last
+entry. \fBstatus\fR/\fBresume\fR/\fBcleanup\fR: a name, or the magic
+value \fBlatest\fR, which resolves to the newest operation folder (by
+timestamp name, falling back to mtime for operator-chosen names). The
+deterministic plan (CR-4) is always persisted to
+.BR <state-dir>/<operation-id>/plan.json
+alongside the journal. Note: a timestamp default means a re-run of the same
+plan is a \emph{new} operation; to resume an earlier one pass its id (or
+\fBlatest\fR).
 .TP
 .BR --state-dir
 dir

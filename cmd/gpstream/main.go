@@ -312,9 +312,6 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--timeout":
 			i++
 			cfg.MarkTimeoutExplicit(parseDuration(args[i]))
-		case "--plan-file":
-			i++
-			cfg.PlanFile = args[i]
 
 		// Operation identity / state (v4 §8 "State").
 		case "--operation-id":
@@ -420,13 +417,6 @@ func cmdDryRun(args []string) error {
 	fmt.Println("===============")
 	printPlanSummary(p, cfg)
 
-	if cfg.PlanFile != "" {
-		data, _ := json.MarshalIndent(p, "", "  ")
-		if err := os.WriteFile(cfg.PlanFile, data, 0o644); err != nil {
-			return fmt.Errorf("write plan-file: %w", err)
-		}
-		fmt.Printf("plan written: %s\n", cfg.PlanFile)
-	}
 	return nil
 }
 
@@ -908,7 +898,10 @@ func humanDuration(sec int) string {
 // State lives under --state-dir (default /var/lib/gpstream) as
 // <state-dir>/<operation-id>/journal.jsonl — the durable operation journal.
 func cmdStatus(args []string) error {
-	opID, stateDir := parseOperationArgs(args)
+	opID, stateDir, err := parseOperationArgs(args)
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
 	if opID == "" {
 		return fmt.Errorf("status: --operation-id <id> is required")
 	}
@@ -990,7 +983,10 @@ func cmdStatus(args []string) error {
 // --mode drop requires --dest (the destination connstring; --ssl-cert/key/ca
 // are honoured). Destructive: requires --yes.
 func cmdCleanup(args []string) error {
-	opID, stateDir := parseOperationArgs(args)
+	opID, stateDir, err := parseOperationArgs(args)
+	if err != nil {
+		return fmt.Errorf("cleanup: %w", err)
+	}
 	var (
 		allIncomplete, drop, yes        bool
 		destStr, sslCert, sslKey, sslCA string
@@ -1156,7 +1152,11 @@ func dropDestObjects(ctx context.Context, a *dest.Agent, opID string, j *manifes
 }
 
 // parseOperationArgs extracts --operation-id and --state-dir.
-func parseOperationArgs(args []string) (opID, stateDir string) {
+// parseOperationArgs extracts --operation-id and --state-dir. The value
+// "latest" is resolved here (shared by status/resume/cleanup) to the newest
+// operation folder under --state-dir, so `gpstream status --operation-id
+// latest` always reports the most recent run.
+func parseOperationArgs(args []string) (opID, stateDir string, err error) {
 	stateDir = config.Default().StateDir
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1168,7 +1168,32 @@ func parseOperationArgs(args []string) (opID, stateDir string) {
 			stateDir = args[i]
 		}
 	}
-	return opID, stateDir
+	if opID == LatestOperationID {
+		resolved, lerr := latestOperationID(stateDir)
+		if lerr != nil {
+			return "", stateDir, lerr
+		}
+		opID = resolved
+	}
+	return opID, stateDir, nil
+}
+
+// persistPlan writes the deterministic plan (CR-4) to
+// <state-dir>/<operation-id>/plan.json and returns the path. The plan is a
+// pure function of the topology (same plan -> same hash), so persisting it
+// alongside the journal makes every operation self-describing: the operator
+// can diff two operations' plans, or audit what a completed run copied,
+// without re-planning.
+func persistPlan(stateDir, opID string, p *plan.Plan) (string, error) {
+	planPath := filepath.Join(stateDir, opID, "plan.json")
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		return "", fmt.Errorf("plan dir %s: %w", filepath.Dir(planPath), err)
+	}
+	data, _ := json.MarshalIndent(p, "", "  ")
+	if err := os.WriteFile(planPath, data, 0o644); err != nil {
+		return "", fmt.Errorf("write plan %s: %w", planPath, err)
+	}
+	return planPath, nil
 }
 
 // resolveJournalPath returns the durable journal path:
@@ -1283,25 +1308,33 @@ func cmdRun(args []string) error {
 
 	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
 	// <state-dir>/<operation-id>/journal.jsonl so status/resume/cleanup
-	// (which take only --operation-id/--state-dir) find it. --plan-file is a
-	// separate concern: it persists the plan JSON (same as dry-run), not the
-	// journal.
-	if cfg.OperationID == "" {
-		cfg.OperationID = p.Hash
+	// (which take only --operation-id/--state-dir) find it. When the operator
+	// did not pass --operation-id, a timestamp id is generated (UTC,
+	// chronologically sorted, collision-safe) so the state dir is a readable
+	// history of runs; "latest" is resolved on the read-side commands.
+	var idNote string
+	cfg.OperationID, idNote, err = resolveOperationID(cfg.OperationID, cfg.StateDir, true)
+	if err != nil {
+		return fmt.Errorf("run: %w", err)
 	}
 	journalPath := filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
 	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
 		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(journalPath), err)
 	}
-	if cfg.PlanFile != "" {
-		data, _ := json.MarshalIndent(p, "", "  ")
-		if err := os.WriteFile(cfg.PlanFile, data, 0o644); err != nil {
-			return fmt.Errorf("run: write plan-file: %w", err)
-		}
-		fmt.Printf("plan written:   %s\n", cfg.PlanFile)
+	// The deterministic plan (CR-4) is persisted alongside the journal so it
+	// is always findable with the operation that produced it; the on-screen
+	// "plan hash:" line is the same value.
+	planPath, err := persistPlan(cfg.StateDir, cfg.OperationID, p)
+	if err != nil {
+		return fmt.Errorf("run: %w", err)
 	}
-	fmt.Printf("operation-id:   %s\n", cfg.OperationID)
+	if idNote != "" {
+		fmt.Println(idNote)
+	} else {
+		fmt.Printf("operation-id:   %s\n", cfg.OperationID)
+	}
 	fmt.Printf("state:          %s\n", journalPath)
+	fmt.Printf("plan:           %s\n", planPath)
 
 	j := manifest.NewJournal(dstQ, journalPath)
 
@@ -1407,7 +1440,10 @@ func cmdRun(args []string) error {
 // It reopens the durable operation journal and restarts every unit not in a
 // terminal state.
 func cmdResume(args []string) error {
-	opID, stateDir := parseOperationArgs(args)
+	opID, stateDir, err := parseOperationArgs(args)
+	if err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
 	maxResume := 0
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--auto-resume" && i+1 < len(args) {
@@ -1523,8 +1559,13 @@ Planning / operation:
   --timeout S                      run/dry-run: bound plan formation (default
                                    120s); bench: the benchmark wall-time limit
                                    (default unlimited)
-  --plan-file F                    persist the plan JSON (dry-run and run)
-  --operation-id id                operation identity (run/status/resume/cleanup)
+  --operation-id id                operation identity (run/status/resume/cleanup).
+                                   run: a name, or omitted = a timestamp id
+                                   (YYYYMMDDTHHMMSSZ UTC) so the state dir is a
+                                   chronological history; status/resume/cleanup:
+                                   a name or 'latest' (the newest operation).
+                                   The plan JSON is always persisted to
+                                   <state-dir>/<operation-id>/plan.json.
   --state-dir dir                  state root (default /var/lib/gpstream)
   --metrics-addr addr              serve Prometheus /metrics during run
   --config file                    config file (TOML or YAML)

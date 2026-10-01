@@ -109,10 +109,10 @@ gpstream dry-run \
   --dbs orders
 ```
 
-You can persist the plan to a file with `--plan-file` (e.g.
-`gpstream dry-run --plan-file /tmp/plan.json --dbs orders`). Two dry-runs of
-the same scope produce the same **plan hash** — use it to confirm a plan has
-not changed between runs.
+Every operation persists its deterministic plan to
+`<state-dir>/<operation-id>/plan.json`. Two dry-runs of the same scope produce
+the same **plan hash** (printed on screen and stored in the plan JSON) — use it
+to confirm a plan has not changed between runs.
 
 ---
 
@@ -249,7 +249,6 @@ DST="host=preprod-coordinator  port=5432 user=gpstream dbname=postgres"
 
 # 2. Dry-run first — preview the deterministic plan
 gpstream dry-run --source "$SRC" --dest "$DST" --dbs orders
-#   (add --plan-file /tmp/plan.json to persist it)
 
 # 3. Inspect: units, volume, ETA, conflicts (default verdict = stop), redistribution, plan hash
 
@@ -289,9 +288,9 @@ instead of the default `--consistent-db`.
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
 | Redistribution | (built into `dry-run`: raw skew + layout verdict; segment-fill balance is measured always, fixed 1.5 gate) |
 | TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |
-| Planning | `--dry-run`, `--timeout S`, `--plan-file F` |
+| Planning | `--dry-run`, `--timeout S` |
 | Observability | `--metrics-addr A` (serves `/metrics` during a run) |
-| Operation | `--operation-id <id>`, `--state-dir DIR` |
+| Operation | `--operation-id <id\|latest>` (run: a name, or omitted = timestamp id), `--state-dir DIR` |
 | Config | `--config <file>` |
 
 Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.

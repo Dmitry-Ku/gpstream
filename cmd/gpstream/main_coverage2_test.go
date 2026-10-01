@@ -452,23 +452,29 @@ func TestStatusRunStatsTable(t *testing.T) {
 	}
 }
 
-// TestDryRunPlanFile covers cmdDryRun's --plan-file write (the deterministic
-// plan is serialised next to the operator's files).
-func TestDryRunPlanFile(t *testing.T) {
+// TestPersistPlan covers the CR-4 plan artifact: the deterministic plan is
+// persisted to <state-dir>/<operation-id>/plan.json (both by run and on
+// demand) and round-trips with its hash.
+func TestPersistPlan(t *testing.T) {
 	dir := t.TempDir()
-	pf := filepath.Join(dir, "plan.json")
-	if err := run([]string{"dry-run", "--plan-file", pf}); err != nil {
-		t.Fatalf("dry-run --plan-file: %v", err)
+	p := &plan.Plan{Units: []plan.Table{{Schema: "s", Name: "t", Bytes: 10}}, Hash: "abc123"}
+	got, err := persistPlan(dir, "op1", p)
+	if err != nil {
+		t.Fatalf("persistPlan: %v", err)
 	}
-	b, err := os.ReadFile(pf)
+	want := filepath.Join(dir, "op1", "plan.json")
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	b, err := os.ReadFile(want)
 	if err != nil {
 		t.Fatalf("plan file not written: %v", err)
 	}
-	var p plan.Plan
-	if err := json.Unmarshal(b, &p); err != nil {
+	var p2 plan.Plan
+	if err := json.Unmarshal(b, &p2); err != nil {
 		t.Fatalf("plan file is not valid JSON: %v", err)
 	}
-	if p.Hash == "" {
-		t.Error("plan file has no hash (a complete plan is deterministic)")
+	if p2.Hash != "abc123" {
+		t.Errorf("hash = %q, want abc123", p2.Hash)
 	}
 }

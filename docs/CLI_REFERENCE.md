@@ -86,8 +86,9 @@ subset of flags (listed per-command below) and ignore the rest.
 - **`dry-run`** — plans **without executing** (F-10); full contract. Renders
   the deterministic plan summary (units, volume, conflicts, redistribution,
   plan hash); on `--timeout` prints the collected fragment as a
-  prediction/forecast. Writes the plan JSON to `--plan-file` if set. `dry-run`
-  is the command that used to be called `plan`.
+  prediction/forecast. `run` always persists the plan JSON to
+  `<state-dir>/<operation-id>/plan.json`. `dry-run` is the command that used to
+  be called `plan`.
 - **`doctor`** — self-diagnoses src/dest clusters (F-05); full contract. Uses
   a live connection that **never** fabricates a healthy fake for a
   missing/unreachable cluster (CR-7); a missing connstring is a reachability
@@ -291,7 +292,7 @@ operator reads the number and decides. The `--locale-check` flag was removed
 |------|--------------|---------|
 | `--dry-run` | `DryRun` | `false` (plan only, do not execute) |
 | `--timeout <S>` | `Timeout` | `120s` (bounds the plan-formation phase; F-10 §6) |
-| `--plan-file <F>` | `PlanFile` | `""` (persist the plan JSON to F; both `dry-run` and `run` write it — a plan artifact, NOT the journal; the journal always lives at `<state-dir>/<operation-id>/journal.jsonl`) |
+| `--operation-id <id\|latest>` | `OperationID` | `""` (operation identity. `run`: a name, or omitted = a generated timestamp id `YYYYMMDDTHHMMSSZ` UTC, collision-suffixed `-2`…; the state dir is then a chronological history. `status`/`resume`/`cleanup`: a name or `latest` = the newest operation. The plan JSON is always persisted to `<state-dir>/<operation-id>/plan.json`) |
 
 ### Operation identity / state (v4 §8 "State")
 | Flag | Config field | Default |

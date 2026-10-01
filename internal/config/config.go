@@ -177,7 +177,6 @@ type Config struct {
 	// their plan-phase default. Not mapped from file/env (CLI-only, like
 	// --consistent-db's explicit marker).
 	benchTimeoutExplicit bool
-	PlanFile             string
 
 	// Observability (FR-04). When set, copy serves Prometheus metrics here.
 	MetricsAddr string

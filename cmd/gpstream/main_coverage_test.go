@@ -42,7 +42,6 @@ func TestParseConfigFull(t *testing.T) {
 		"--ssl-ca", "/ca.pem", "--ssl-min-tls", "TLS12",
 		"--dry-run",
 		"--timeout", "60s",
-		"--plan-file", "/tmp/plan.json",
 		"--metrics-addr", "127.0.0.1:9090",
 	})
 	if err != nil {
@@ -97,9 +96,6 @@ func TestParseConfigFull(t *testing.T) {
 	}
 	if c.SSLCert != "/c.pem" || c.SSLKey != "/k.pem" || c.SSLCA != "/ca.pem" || c.SSLMinTLS != "TLS12" {
 		t.Fatalf("ssl not bound: %+v", c)
-	}
-	if c.PlanFile != "/tmp/plan.json" {
-		t.Fatalf("plan-file = %q", c.PlanFile)
 	}
 	if c.MetricsAddr != "127.0.0.1:9090" {
 		t.Fatalf("metrics-addr = %q", c.MetricsAddr)

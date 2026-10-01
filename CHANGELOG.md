@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed: operation identity is a timestamp by default; `--plan-file` removed
+
+`--operation-id` is no longer defaulted to the deterministic plan hash. When
+omitted on `run`, a **timestamp** id is generated (UTC,
+`YYYYMMDDTHHMMSSZ`, e.g. `20261001T153000Z`; a `-2`, `-3`, … suffix on a
+same-second collision), so the state directory is a **chronological history**
+of runs — "find the latest run" is just the newest folder.
+
+- `--operation-id latest` on `status`/`resume`/`cleanup` resolves to the
+  newest operation (by timestamp folder name; mtime for operator-chosen
+  names).
+- Explicit human-readable ids are unchanged (first-class, not just
+  timestamps).
+- `--plan-file` is removed. The deterministic plan (CR-4) is now **always**
+  persisted to `<state-dir>/<operation-id>/plan.json`, next to the journal,
+  so every operation is self-describing.
+- The plan hash is still computed and printed (and still used as the durable
+  `job_id` in the destination journal tables); it is no longer the default
+  folder name. A re-run of the same plan with no explicit id is therefore a
+  **new** operation — pass the id (or `latest`) to resume an earlier one.
+
+Unit tests: TestDefaultOperationIDFormat / TestResolveOperationID* /
+TestLatestOperationID* / TestParseOperationArgsLatest / TestFolderTimestamp /
+TestPersistPlan.
+
 ### Added: `gpstream bench` — input-stream benchmark (F-14)
 
 A new `bench` command measures the source's production rate *before* the

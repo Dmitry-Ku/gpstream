@@ -229,12 +229,8 @@ func TestCmdVersionMan(t *testing.T) {
 // the healthy fake (openOrFake) and renders the full plan summary — covering
 // cmdDryRun, printPlanSummary and the note helpers end-to-end.
 func TestCmdDryRunFake(t *testing.T) {
-	planFile := filepath.Join(t.TempDir(), "plan.json")
-	if err := run([]string{"dry-run", "--plan-file", planFile}); err != nil {
+	if err := run([]string{"dry-run"}); err != nil {
 		t.Fatalf("dry-run (fake): %v", err)
-	}
-	if _, err := os.Stat(planFile); err != nil {
-		t.Errorf("plan-file not written: %v", err)
 	}
 
 	// --map-db / --map-schema flag parsing (splitKV/setRename in parseConfig).

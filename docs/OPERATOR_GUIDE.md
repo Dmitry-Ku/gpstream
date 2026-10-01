@@ -50,8 +50,9 @@ gpstream dry-run --source "$SRC" --dest "$DST" \
   --dbs app --schemas app.public --tables app.public.orders,app.public.customers
 
 # 3. Produce a deterministic plan (hash-pinned) you can inspect / diff.
+#    The plan is always persisted to <state-dir>/<operation-id>/plan.json.
 gpstream dry-run --source "$SRC" --dest "$DST" \
-  --dbs app --plan-file plan.yaml
+  --dbs app
 
 # 4. Run the copy.
 gpstream run --source "$SRC" --dest "$DST" \
