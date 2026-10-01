@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -845,6 +846,48 @@ func orDash(s string) string {
 }
 
 // humanDurationSec renders a second count as a compact human duration.
+// runPairsLine renders the run header's "pairs:" line with the real
+// source/destination host:port (from the connection strings) instead of the
+// plan's canonical placeholder. Falls back to the plan label when a DSN
+// cannot be parsed. Display only — the plan hash (and job identity) still
+// uses the plan's Pairs.
+func runPairsLine(cfg config.Config, fallback []string) string {
+	src, dst := dsnHostPortLabel(cfg.Source), dsnHostPortLabel(cfg.Dest)
+	if src == "" || dst == "" {
+		return strings.Join(fallback, ", ")
+	}
+	return src + " -> " + dst
+}
+
+// dsnHostPortLabel extracts "host:port" from a Postgres DSN (URL or
+// key=value form) without exposing credentials.
+func dsnHostPortLabel(dsn string) string {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return ""
+	}
+	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
+		return u.Host
+	}
+	host, port := "", "5432"
+	for _, kv := range strings.Fields(dsn) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "host":
+			host = v
+		case "port":
+			port = v
+		}
+	}
+	if host == "" {
+		return ""
+	}
+	return host + ":" + port
+}
+
 func humanDurationSec(sec int) string {
 	if sec <= 0 {
 		return "-"
@@ -942,12 +985,21 @@ func cmdStatus(args []string) error {
 	// from the run's runstats.json, present while the copy is running (and on
 	// the final snapshot after it stops).
 	if rs, err := loadRunStats(journalPath); err == nil && rs != nil {
-		fmt.Println("live:           (runstats.json)")
-		fmt.Printf("  pair:         %s\n", orDash(rs.Pair))
-		fmt.Printf("  progress:     %s / %s  (%d rows)\n",
-			humanBytesU(rs.Decoded), humanBytesU(rs.Bytes), rs.Rows)
-		fmt.Printf("  throughput:   %s/s  eta: %s  active-flows: %d\n",
-			humanBytesU(uint64(rs.Throughput)), humanDurationSec(rs.ETASeconds), rs.ActiveFlows)
+		if terminal == len(units) {
+			// Finished: the last runstats snapshot's live counters (throughput,
+			// ETA, active-flows) are stale, so render the totals only.
+			fmt.Println("final:          (runstats.json)")
+			fmt.Printf("  pair:         %s\n", orDash(rs.Pair))
+			fmt.Printf("  progress:     %s / %s  (%d rows)\n",
+				humanBytesU(rs.Decoded), humanBytesU(rs.Bytes), rs.Rows)
+		} else {
+			fmt.Println("live:           (runstats.json)")
+			fmt.Printf("  pair:         %s\n", orDash(rs.Pair))
+			fmt.Printf("  progress:     %s / %s  (%d rows)\n",
+				humanBytesU(rs.Decoded), humanBytesU(rs.Bytes), rs.Rows)
+			fmt.Printf("  throughput:   %s/s  eta: %s  active-flows: %d\n",
+				humanBytesU(uint64(rs.Throughput)), humanDurationSec(rs.ETASeconds), rs.ActiveFlows)
+		}
 		if len(rs.ByStatus) > 0 {
 			parts := make([]string, 0, len(rs.ByStatus))
 			for _, st := range []string{"pending", "copying", "verifying", "completed", "swapped", "failed", "skipped"} {
@@ -1294,7 +1346,7 @@ func cmdRun(args []string) error {
 	fmt.Println("=============")
 	fmt.Printf("units:          %d\n", len(p.Units))
 	fmt.Printf("volume:         %s\n", humanBytes(p.EstimatedVolume))
-	fmt.Printf("pairs:          %s\n", strings.Join(p.Pairs, ", "))
+	fmt.Printf("pairs:          %s\n", runPairsLine(cfg, p.Pairs))
 	if len(p.Conflicts) > 0 {
 		fmt.Printf("conflicts:      %d (action=%s)\n", len(p.Conflicts), cfg.ConflictAction)
 	} else {

@@ -227,18 +227,23 @@ func (m *Metrics) table(key string) *tableMetric {
 }
 
 // etaLocked computes the remaining-seconds estimate; the caller MUST hold m.mu.
-// Progress and throughput are both measured in wire bytes (the rate limiter
-// constrains the wire), so remaining = TotalBytes - BytesTransmitted.
+// Both the planned volume (TotalBytes) and the transferred volume (BytesDecoded)
+// are logical bytes, so remaining = TotalBytes - BytesDecoded and the
+// throughput is logical too — subtracting wire/compressed bytes from a logical
+// total understates progress (the run would look far from done).
 func (m *Metrics) etaLocked() int {
-	remaining := m.TotalBytes - m.Bytes
-	if remaining == 0 || m.TotalBytes == 0 {
+	if m.TotalBytes == 0 {
+		return 0
+	}
+	remaining := int64(m.TotalBytes) - int64(m.BytesDecoded)
+	if remaining <= 0 {
 		return 0
 	}
 	elapsed := time.Since(m.start).Seconds()
 	if elapsed <= 0 {
 		return 0
 	}
-	tp := float64(m.Bytes) / elapsed
+	tp := float64(m.BytesDecoded) / elapsed
 	if tp <= 0 {
 		return 0
 	}

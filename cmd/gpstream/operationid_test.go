@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/gpstream/gpstream/internal/config"
 )
 
 var tsIDRe = regexp.MustCompile(`^\d{8}T\d{6}Z(-\d+)?$`)
@@ -149,5 +151,38 @@ func TestFolderTimestamp(t *testing.T) {
 	}
 	if _, ok := folderTimestamp("t30-main"); ok {
 		t.Error("operator name should not be a timestamp")
+	}
+}
+
+// --- run header pairs line (real host:port from DSNs) ---
+
+func TestDSNHostPortLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"postgres://gpadmin@127.0.0.1:6432/t30_src?sslmode=disable", "127.0.0.1:6432"},
+		{"postgres://gpadmin@10.0.0.14:7432/t30_dst?sslmode=disable", "10.0.0.14:7432"},
+		{"host=127.0.0.1 port=6432 user=gpadmin", "127.0.0.1:6432"},
+		{"host=db1 user=gp", "db1:5432"}, // default port
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := dsnHostPortLabel(c.in); got != c.want {
+			t.Errorf("dsnHostPortLabel(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRunPairsLine(t *testing.T) {
+	cfg := config.Config{
+		Source: "postgres://gpadmin@127.0.0.1:6432/t30_src?sslmode=disable",
+		Dest:   "postgres://gpadmin@10.0.0.14:7432/t30_dst?sslmode=disable",
+	}
+	if got := runPairsLine(cfg, []string{"placeholder"}); got != "127.0.0.1:6432 -> 10.0.0.14:7432" {
+		t.Errorf("runPairsLine = %q", got)
+	}
+	// Unparseable DSN falls back to the plan label.
+	cfg2 := cfg
+	cfg2.Dest = "not-a-dsn"
+	if got := runPairsLine(cfg2, []string{"fallback-pair"}); got != "fallback-pair" {
+		t.Errorf("runPairsLine fallback = %q", got)
 	}
 }
