@@ -50,6 +50,17 @@ func NewRowSplitter(r io.Reader) *RowSplitter {
 // NextRow returns the next complete row's wire bytes (int16 fieldCount +
 // fields), or io.EOF after the end-of-stream marker. A malformed stream
 // returns ErrBadCopyStream (or the underlying read error).
+//
+// It parses from the already-buffered data before pulling more from the
+// reader. This is what keeps the buffer bounded: readChunk reads up to the
+// whole free capacity each time it is called, so reading on every NextRow
+// would leave the buffer nearly full after each single-row commit and trip
+// the "nearly full → double capacity" growth on every call, ratcheting the
+// allocation up (512KB → 1MB → … → 512MB) until the runtime OOMs on a
+// multi-GB direct copy (R1-8, 01.10: a 3.2GB table OOM'd a 7.6G host). By
+// only reading when the buffered data no longer holds a complete row, the
+// buffer stays at ~one read chunk plus the in-flight row; the readChunk
+// growth path is then exercised only for a genuinely oversized single row.
 func (rs *RowSplitter) NextRow() ([]byte, error) {
 	for {
 		if rs.err != nil {
@@ -72,30 +83,26 @@ func (rs *RowSplitter) NextRow() ([]byte, error) {
 			rs.err = fmt.Errorf("%w: unexpected bytes after end-of-stream marker", ErrBadCopyStream)
 			return nil, rs.err
 		}
-		// Pull bytes and parse until a complete row is committed, or the
-		// stream ends.
-		err := rs.readChunk()
-		if err == io.EOF {
-			rs.eofSeen = true
-			rs.parse()
-			if rs.rowCommit {
-				return rs.takeRow(), nil
-			}
-			if rs.mode != modeDone {
-				// EOF without the end-of-stream marker: truncated (a
-				// well-formed stream always ends with the marker).
-				rs.err = fmt.Errorf("%w: stream ended without end-of-stream marker (truncated)", ErrBadCopyStream)
-				return nil, rs.err
-			}
-			return nil, io.EOF
-		}
-		if err != nil {
-			rs.err = err
-			return nil, err
-		}
+		// Parse a row from what is already buffered before pulling more.
 		rs.parse()
 		if rs.rowCommit {
 			return rs.takeRow(), nil
+		}
+		// No complete row buffered: the stream is exhausted (no marker seen)
+		// or we must pull more data.
+		if rs.eofSeen {
+			// EOF without the end-of-stream marker: truncated (a well-formed
+			// stream always ends with the marker).
+			rs.err = fmt.Errorf("%w: stream ended without end-of-stream marker (truncated)", ErrBadCopyStream)
+			return nil, rs.err
+		}
+		if err := rs.readChunk(); err != nil {
+			if err == io.EOF {
+				rs.eofSeen = true
+				continue
+			}
+			rs.err = err
+			return nil, err
 		}
 	}
 }
