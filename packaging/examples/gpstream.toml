@@ -15,7 +15,7 @@ workers = 8
 
 # Resilience (F-06/F-07)
 auto_resume = 0                # 0 = manual only; N >= 1 = auto from checkpoint
-verify      = "sample"         # full | sample | off
+verify      = "off"            # on | off (post-copy content verification)
 
 # Indexes (F-17)
 index_priority = "size"        # size | fifo

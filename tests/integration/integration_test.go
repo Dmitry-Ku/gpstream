@@ -118,7 +118,7 @@ func TestCopyChecksumMismatch(t *testing.T) {
 	mustExec(t, src, `INSERT INTO public.events VALUES (1,'a'),(2,'b')`)
 
 	cfg := config.Default()
-	cfg.Verify = config.VerifyFull
+	cfg.Verify = config.VerifyOn
 	p, err := plan.Build(ctx, &cfg, src, dst)
 	if err != nil {
 		t.Fatalf("plan.Build: %v", err)

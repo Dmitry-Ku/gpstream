@@ -40,6 +40,7 @@ func conflictManager(t *testing.T, cfg *config.Config, payload []byte, dstExists
 func TestManagerTruncate(t *testing.T) {
 	cfg := config.Default()
 	cfg.ConflictAction = config.Truncate
+	cfg.Verify = config.VerifyOn
 	m, dst, _ := conflictManager(t, &cfg, []byte("BATCH"), true)
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
@@ -63,22 +64,29 @@ func TestManagerTruncate(t *testing.T) {
 // TestManagerResolve locks the --resolve-conflicts resolution (FR-11): each
 // selects the right (inPlace, truncate, verify) combination.
 func TestManagerResolve(t *testing.T) {
+	// verify follows --verify (default off): the post-copy content check is
+	// opt-in, independent of the conflict policy.
 	cases := []struct {
 		action                config.ConflictAction
-		inPlace, trun, verify bool
+		verify                config.VerifyMode
+		inPlace, trun, expV   bool
 	}{
-		{config.Stop, false, false, true},      // stopped upstream; default path
-		{config.Overwrite, false, false, true}, // staging + swap
-		{config.Truncate, true, true, true},
+		{config.Stop, config.VerifyOff, false, false, false},   // default: no verify
+		{config.Stop, config.VerifyOn, false, false, true},     // verify on
+		{config.Overwrite, config.VerifyOff, false, false, false}, // staging + swap
+		{config.Overwrite, config.VerifyOn, false, false, true},
+		{config.Truncate, config.VerifyOff, true, true, false},
+		{config.Truncate, config.VerifyOn, true, true, true},
 	}
 	for _, c := range cases {
 		cfg := config.Default()
 		cfg.ConflictAction = c.action
+		cfg.Verify = c.verify
 		m := NewManager(&cfg, pg.NewFakeConn(), pg.NewFakeConn(), NewJournal(nil, ""))
 		ip, tr, v := m.resolve(&Unit{Schema: "public", Table: "orders"})
-		if ip != c.inPlace || tr != c.trun || v != c.verify {
-			t.Errorf("%s: got (inPlace=%v truncate=%v verify=%v), want (%v,%v,%v)",
-				c.action, ip, tr, v, c.inPlace, c.trun, c.verify)
+		if ip != c.inPlace || tr != c.trun || v != c.expV {
+			t.Errorf("%s/%s: got (inPlace=%v truncate=%v verify=%v), want (%v,%v,%v)",
+				c.action, c.verify, ip, tr, v, c.inPlace, c.trun, c.expV)
 		}
 	}
 }
@@ -93,43 +101,41 @@ func hasQuery(q []string, substr string) bool {
 	return false
 }
 
-// TestManagerOverwriteChecksumSkip verifies F-10 §8: under --overwrite a
-// conflicting table whose data is ALREADY identical on the destination
-// (same content digest) is skipped, not rewritten. (The mismatch case — a
-// differing destination is re-copied via staging+swap — is covered by
-// TestManagerOverwriteSwap.)
-func TestManagerOverwriteChecksumSkip(t *testing.T) {
+// TestManagerOverwriteAlwaysRewrites locks the --overwrite semantics: an
+// existing destination is ALWAYS re-copied (staging + swap), even when its
+// data is byte-identical to the source. There is no pre-copy content
+// comparison (it would read the whole table twice); the only content check is
+// the post-copy verify (--verify on), which is off here by default.
+func TestManagerOverwriteAlwaysRewrites(t *testing.T) {
 	cfg := config.Default()
 	cfg.ConflictAction = config.Overwrite
-	// Identical payload on both sides -> digests match -> skip.
+	// Identical payload on both sides, destination exists.
 	m, dst, j := conflictManager(t, &cfg, []byte("SAME-BINARY-PAYLOAD"), true)
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if m.Skipped != 1 {
-		t.Errorf("skipped = %d, want 1 (identical --overwrite target)", m.Skipped)
+	if m.Units != 1 {
+		t.Errorf("units = %d, want 1 (an identical --overwrite target is re-copied, not skipped)", m.Units)
 	}
-	if m.Units != 0 {
-		t.Errorf("units = %d, want 0 (a checksum-matching overwrite is skipped, not copied)", m.Units)
+	if m.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0 (no pre-copy identical-data shortcut)", m.Skipped)
 	}
 	if m.Failures != 0 {
 		t.Errorf("failures = %d, want 0", m.Failures)
 	}
 	q := dst.Queried()
-	if hasQuery(q, "FROM STDIN") {
-		t.Errorf("a checksum-matching --overwrite must not COPY into the destination, got %v", q)
+	if !hasQuery(q, "FROM STDIN") {
+		t.Errorf("an identical --overwrite target must be re-copied (COPY FROM STDIN), got %v", q)
 	}
-	if hasQuery(q, "RENAME TO") {
-		t.Errorf("a skipped unit must not swap, got %v", q)
+	if !hasQuery(q, "RENAME TO") {
+		t.Errorf("the re-copied data must be swapped in, got %v", q)
 	}
-	// The skipped unit must be TERMINAL in the journal (F-05 acceptance):
-	// `status` counts it as done and `resume` must not re-queue it.
 	units := j.Units()
 	if len(units) != 1 {
 		t.Fatalf("journal has %d units, want 1", len(units))
 	}
-	if units[0].State != StateSkipped {
-		t.Errorf("skipped unit state = %q, want %q (terminal)", units[0].State, StateSkipped)
+	if units[0].State != StateSwapped {
+		t.Errorf("unit state = %q, want %q (re-copied + swapped)", units[0].State, StateSwapped)
 	}
 }

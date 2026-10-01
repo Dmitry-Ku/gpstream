@@ -118,7 +118,7 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--compress", "zlib",
 		"--rate-limit", "100",
 		"--workers", "8",
-		"--verify", "sample",
+		"--verify", "on",
 		"--on-unit-failure", "abort",
 		"--frame-ack", "off",
 		"--ack-timeout", "30s",

@@ -116,11 +116,12 @@ func TestManagerRunHonoursRename(t *testing.T) {
 }
 
 // TestManagerRunHappyPath verifies the full unit pipeline end-to-end against
-// faked SQL: copy -> verify (checksum match) -> reindex -> swap -> journal
-// (FR-01/FR-02/FR-06/FR-17). The framed+compressed bytes must round-trip so
-// the verify checksum matches.
+// faked SQL: copy -> verify (checksum match, --verify on) -> reindex -> swap
+// -> journal (FR-01/FR-02/FR-06/FR-17). The framed+compressed bytes must
+// round-trip so the verify checksum matches.
 func TestManagerRunHappyPath(t *testing.T) {
 	cfg := config.Default()
+	cfg.Verify = config.VerifyOn
 	payload := []byte("BINARY-COPY-ROW-BATCH")
 	m, j := newManager(t, &cfg, payload, payload)
 
@@ -254,6 +255,7 @@ func TestManagerStrictConflictStops(t *testing.T) {
 // returns an error (FR-02/ADR-001 §4.4).
 func TestManagerChecksumMismatch(t *testing.T) {
 	cfg := config.Default()
+	cfg.Verify = config.VerifyOn // the mismatch is only detected with verification on
 	m, _ := newManager(t, &cfg, []byte("source-data"), []byte("different-dest-data"))
 
 	err := m.Run(context.Background(), oneUnitPlan())
@@ -315,6 +317,7 @@ func TestIsEOF(t *testing.T) {
 func TestManagerParallelConcurrentStats(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorkersPerPair = 4 // force a real multi-goroutine worker pool (FR-03)
+	cfg.Verify = config.VerifyOn // 6 verified units: 6 Comps
 	payload := []byte("BATCH-ROW")
 	m, j := newManager(t, &cfg, payload, payload)
 

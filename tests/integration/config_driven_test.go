@@ -75,14 +75,14 @@ func TestConfigFromFile(t *testing.T) {
 
 // TestConfigSafetyDefaults verifies (FR-10/FR-11) that the defaults are safe:
 // strict conflict policy (conflicts STOP the run — stop by default),
-// sample verify, zstd compression, no overwrite.
+// verify off (content check is opt-in), zstd compression, no overwrite.
 func TestConfigSafetyDefaults(t *testing.T) {
 	cfg := config.Default()
 	if cfg.ConflictAction != config.Stop {
 		t.Errorf("default conflict = %q, want %q", cfg.ConflictAction, config.Stop)
 	}
-	if cfg.Verify != config.VerifySample {
-		t.Errorf("default verify = %q, want sample", cfg.Verify)
+	if cfg.Verify != config.VerifyOff {
+		t.Errorf("default verify = %q, want off", cfg.Verify)
 	}
 	if cfg.Compression != config.CompZstd {
 		t.Errorf("default compression = %q, want zstd", cfg.Compression)

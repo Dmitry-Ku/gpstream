@@ -171,7 +171,7 @@ selected.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--metadata-only` | `MetadataOnly` | `false` (structure only: DDL + sequences, no data; idempotent) |
-| `--data-only` | `DataOnly` | `false` (data only, into the existing structure: rows replaced — TRUNCATE + load + verify; the structure must already exist) |
+| `--data-only` | `DataOnly` | `false` (data only, into the existing structure: rows replaced — TRUNCATE + load; the structure must already exist) |
 
 With neither flag both classes are copied. The two are mutually exclusive
 (Validate). There is no `--include` flag: it duplicated the two shorthands
@@ -196,8 +196,11 @@ Conflict policy semantics:
 - **`stop`** (default) — the run stops on the first conflict; nothing is
   clobbered, nothing is silently skipped.
 - **`skip`** — the conflicting unit is skipped and the run continues.
-- **`overwrite`** — copy to a staging table and swap over the final (verified
-  before the swap). If the destination table is referenced by foreign keys on
+- **`overwrite`** — copy to a staging table and swap over the final. Always
+  rewrites: an existing destination is re-copied even when its data already
+  matches the source (no pre-copy content comparison — that would read the
+  whole table twice; the only content check is the post-copy `--verify on`).
+  If the destination table is referenced by foreign keys on
   other destination tables (a prior run's restored FK set, or an operator
   table), the dependent FK constraints are dropped before the swap (equivalent
   to `DROP ... CASCADE` for the constraints — the source FK set is re-applied
@@ -217,7 +220,7 @@ Conflict policy semantics:
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
-| `--verify full\|sample\|off` | `Verify` | `sample` |
+| `--verify on\|off` | `Verify` | `off` (post-copy content verification; off = none, the COPY row count is the check) |
 | `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Transport / frame-ack (T-B, §4.6)

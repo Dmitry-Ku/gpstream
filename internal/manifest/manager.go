@@ -123,7 +123,7 @@ type Manager struct {
 type Stats struct {
 	Rows     int64 // rows copied (FR-02)
 	Units    int   // units processed
-	Comps    int   // units with a verified checksum match (FR-02)
+	Comps    int   // units verified with --verify on (FR-02)
 	Skipped  int   // units skipped by --resolve-conflicts skip (FR-10/FR-11)
 	Failures int   // units that failed after retries
 	// Balances is the F-15 live segment-fill balance measured per copied
@@ -666,8 +666,9 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	//   skip: --resolve-conflicts skip. The conflicting unit is skipped; the
 	//     run continues.
 	//   proceed: --overwrite / --truncate explicitly opt in to rewriting the
-	//     destination (overwrite additionally skips tables whose data already
-	//     matches, below).
+	//     destination (overwrite via staging+swap, truncate in-place); both
+	//     always rewrite — there is no pre-copy identical-data shortcut. The
+	//     only content check is the post-copy verify (--verify on).
 	if !reReading && u.Table != "" {
 		conflicted := u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)
 		// F-11 object classes: an existing destination table is EXPECTED for
@@ -705,23 +706,6 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		// Overwrite/Truncate: the conflict is expected — the destination is
 		// rewritten below (overwrite via staging+swap, truncate in-place).
 	}
-	// F-10 §8: --overwrite checksum-skip — a conflicting table whose data is
-	// ALREADY identical on the destination (same row-order-independent content
-	// digest) is skipped, not rewritten. Only --overwrite qualifies:
-	// --truncate deliberately changes the destination, and --skip is handled
-	// above. Re-read units are exempt (their target holds the PREVIOUS result,
-	// which must be replaced).
-	if !reReading && u.Table != "" && m.cfg.ConflictAction == config.Overwrite &&
-		m.dst.Exists(ctx, u.DstSchema, u.DstName) && m.overwriteChecksumMatches(ctx, u) {
-		m.addSkipped()
-		// Terminal state: the destination already holds identical data, so
-		// the unit is done and must not be re-queued by `resume`.
-		m.journal.CreateUnit(u, StateSkipped)
-		// F-04: the operator audit trail (which table was checksum-identical).
-		m.events.Log("unit_skipped", "schema", u.DstSchema, "table", u.DstName,
-			"reason", "overwrite checksum identical")
-		return nil
-	}
 	if err := m.runUnit(ctx, u); err != nil {
 		m.addFailure()
 		m.journal.SetState(u)
@@ -753,22 +737,6 @@ func (m *Manager) addFailure() {
 	m.statMu.Unlock()
 }
 
-// overwriteChecksumMatches reports whether the source table and the existing
-// destination table hold identical data (F-10 §8 --overwrite checksum-skip).
-// It compares the row-order-independent content digests of the two sides. Any
-// error (table gone, copy fault) returns false: when in doubt the table is
-// re-copied, which is always safe.
-func (m *Manager) overwriteChecksumMatches(ctx context.Context, u *Unit) bool {
-	srcSum, err := m.src.Checksum(ctx, u.Schema, u.Table)
-	if err != nil {
-		return false
-	}
-	dstSum, err := m.dst.Checksum(ctx, u.DstSchema, u.DstName)
-	if err != nil {
-		return false
-	}
-	return srcSum != "" && srcSum == dstSum
-}
 
 // ConflictError is returned (FR-10 §8, strict default) when a unit collides
 // with an object that already exists on the destination and no conflict
@@ -879,13 +847,17 @@ func (m *Manager) tableFor(u *Unit) plan.Table {
 // truncate : clear the final table before copying (only --truncate)
 // verify   : compare the content checksum after copying (always)
 func (m *Manager) resolve(u *Unit) (inPlace, truncate, verify bool) {
+	// Content verification runs after the copy, only when the operator asks
+	// for it (--verify on). The default (off) makes a run one source read per
+	// unit: the data COPY itself.
+	verify = m.cfg.Verify == config.VerifyOn
 	switch m.cfg.ConflictAction {
 	case config.Truncate:
-		return true, true, true
+		return true, true, verify
 	default:
 		// Stop/Skip are handled in processUnit; Overwrite and any unlisted
 		// action fall back to the staging+swap path.
-		return false, false, true
+		return false, false, verify
 	}
 }
 
@@ -1139,9 +1111,9 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		}
 	}
 
-	// 6. Verify the content checksum (FR-02): re-derive it on both sides and
-	//    compare, without re-copying the table. Skipped for --append (the final
-	//    holds existing + source rows, so an exact source checksum cannot match).
+	// 6. Verify the content checksum (FR-02, --verify on): re-derive it on both
+	//    sides and compare, without re-copying the table. Off by default — the
+	//    COPY protocol's row count is then the landed-data check.
 	//    The checksum reads on us.agent so it sees the SAME snapshot as the
 	//    data COPY (in the per-table fallback that is the unit's dedicated
 	//    short snapshot; otherwise the run-wide pinned snapshot).

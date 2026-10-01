@@ -221,7 +221,7 @@ clusters; **do not cite the perf suite as evidence for the target.**
 | Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | *partially live* — source-direct read via `--copy-mode on_segment` (T-B, ~2× on the source side); dest-segment write = backlog R5 |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
-| Protect integrity during the push     | `--verify full` for small/critical, `sample` default |
+| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a post-copy checksum of both sides) |
 
 ## Honest notes
 

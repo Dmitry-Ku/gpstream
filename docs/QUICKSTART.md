@@ -133,7 +133,7 @@ What happens:
 - It builds the plan, runs the **transfer engine** (`source -> stream -> dest`)
   with **no intermediate storage**, and records every transition in the
   operation manifest — so the operation is crash-recoverable.
-- Each unit is verified (default `--verify sample`), indexes are rebuilt in the
+- Each unit lands (verify only with `--verify on`, off by default), indexes are rebuilt in the
   **background** (F-17), and the staging table is **atomically swapped** to its
   final name. A Prometheus `/metrics` endpoint is served when you pass
   `--metrics-addr`.
@@ -286,7 +286,7 @@ instead of the default `--consistent-db`.
 | Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen`, `--seg-binary` |
 | Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
-| Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify none\|sample\|full`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
+| Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify on\|off`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables` |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
 | Redistribution | (built into `dry-run`: raw skew + layout verdict; segment-fill balance is measured always, fixed 1.5 gate) |

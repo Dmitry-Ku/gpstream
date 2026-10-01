@@ -21,7 +21,7 @@ import (
 // table (above it) together, with zstd on by default. The F-12 decision is
 // per unit, so in the SAME run the small table rides the transport with
 // compression OFF and the large one with zstd ON. Both must land byte-correct
-// (checksum verify is full by default in these tests), and events.jsonl must
+// (checksum verify is on in these tests), and events.jsonl must
 // record a compression_off event for the small table only.
 //
 // This is the live acceptance: it exercises the real data path (source COPY ->
@@ -48,7 +48,7 @@ func TestSmallTableCompressionAutoDisable(t *testing.T) {
 	cfg := config.Default()
 	cfg.Compression = config.CompZstd // real mode, so the swap is observable
 	cfg.SmallTableThreshold = 1 << 20 // 1 MiB default
-	cfg.Verify = config.VerifyFull    // checksum verify on every unit
+	cfg.Verify = config.VerifyOn      // checksum verify on every unit
 	cfg.WorkersPerPair = 1            // serial: deterministic event order
 
 	p := buildPlan(t, cfg, src, dst)
@@ -76,8 +76,8 @@ func TestSmallTableCompressionAutoDisable(t *testing.T) {
 		t.Fatalf("manager.Run: %v", err)
 	}
 
-	// Data correctness in BOTH modes: full checksum verify already ran inside
-	// Run (VerifyFull); the counts below are the independent cross-check.
+	// Data correctness in BOTH modes: checksum verify already ran inside
+	// Run (--verify on); the counts below are the independent cross-check.
 	if got := mustCount(t, dst, `SELECT count(*) FROM public.tiny`); got != 500 {
 		t.Fatalf("tiny: %d rows, want 500 (compression-off path corrupted)", got)
 	}

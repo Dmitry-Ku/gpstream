@@ -66,7 +66,7 @@ func TestPerTableFallbackSnapshot(t *testing.T) {
 	cfg.WorkersPerPair = 1
 	// Stretch the wire phase so t_a is still copying when the writer fires.
 	cfg.RateLimit = 0.1
-	cfg.Verify = config.VerifyFull
+	cfg.Verify = config.VerifyOn
 
 	p := buildPlan(t, cfg, src, dst)
 	if len(p.Units) != 2 {

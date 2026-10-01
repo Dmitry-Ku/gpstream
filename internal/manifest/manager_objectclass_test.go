@@ -92,6 +92,7 @@ func TestMetadataOnlyIdempotent(t *testing.T) {
 func TestDataOnly(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataOnly = true
+	cfg.Verify = config.VerifyOn
 	// The destination table already exists (the structure is pre-created).
 	m, dst := objectClassManager(t, &cfg, []byte("BATCH"), true)
 	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {

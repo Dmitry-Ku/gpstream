@@ -68,7 +68,7 @@ from the flags or the file.
 |-------|------|---------|--------|-------|
 | `AutoResume` | int | **`0`** | `--auto-resume` / env / file | `N ≥ 0`; `0` = manual only. |
 | `OnUnitFailure` | string | `""` → `continue` | `--on-unit-failure` / env / file | `continue` (default) \| `abort` (F-06). |
-| `Verify` | `VerifyMode` | **`sample`** | `--verify` / file | `full`/`sample`/`off`. |
+| `Verify` | `VerifyMode` | **`off`** | `--verify` / file | `on`/`off` (post-copy content verification). |
 
 ### 1.8 Indexes (F-17)
 | Field | Type | Default | Source | Notes |
@@ -174,7 +174,7 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `SmallTableThreshold` | `1 MiB` |
 | `ZstdLevel` | `3` |
 | `AutoResume` | `0` |
-| `Verify` | `sample` |
+| `Verify` | `off` |
 | `Timeout` | `120s` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
@@ -229,7 +229,7 @@ covers a different, session-level subset).
 | `small_table_threshold` | `SmallTableThreshold` | int64 bytes, or a size with a `K`/`M`/`G`/`T` suffix (same notation as the CLI) |
 | `auto_resume` | `AutoResume` | parsed as int |
 | `on_unit_failure` | `OnUnitFailure` | `continue`/`abort` |
-| `verify` | `Verify` | `full`/`sample`/`off` |
+| `verify` | `Verify` | `on`/`off` |
 | `ssl_cert` | `SSLCert` | **secret** |
 | `ssl_key` | `SSLKey` | **secret** |
 | `ssl_ca` | `SSLCA` | **secret** |
@@ -252,7 +252,7 @@ compress = "zstd"
 zstd_level = 3
 rate_limit = 10
 workers = 2
-verify = "sample"
+verify = "off"
 ssl_ca   = "/secrets/ca.pem"
 ```
 
@@ -307,7 +307,7 @@ failed validation aborts the command.
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
 | consistency scope | `--consistent-db` is the default; an explicit `--consistent-cluster`/`--consistent-tables` overrides it; two **explicitly** requested scopes are mutually exclusive | `--consistent-db, --consistent-cluster and --consistent-tables are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
-| verify mode | must be `full`/`sample`/`off` | `unknown verify mode "…"` |
+| verify mode | must be `on`/`off` | `unknown verify mode "…"` |
 | copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |

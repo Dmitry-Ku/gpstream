@@ -302,7 +302,7 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 | `Compression` | `zstd` |
 | `ZstdLevel` | `3` (range 1–19) |
 | `AutoResume` | `0` (manual only) |
-| `Verify` | `sample` |
+| `Verify` | `off` (post-copy content verification; `--verify on` enables it) |
 | `Timeout` | `120s` |
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |

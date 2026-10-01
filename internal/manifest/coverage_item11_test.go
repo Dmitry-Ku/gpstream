@@ -3,8 +3,8 @@ package manifest
 // F-09 coverage (item 11): manifest 72.8% -> >=80%. These tests target the
 // deterministic, cluster-free branches: file-based journal/epoch error paths
 // (MkdirAll/WriteFile/ReadFile/Unmarshal failures), the pure helpers
-// (splitDot/dsnHostPort/hostPairLabel/ConflictError.Error/
-// overwriteChecksumMatches), the FR-02 snapshot machinery over FakeConn
+// (splitDot/dsnHostPort/hostPairLabel/ConflictError.Error), the FR-02
+// snapshot machinery over FakeConn
 // (establishSnapshot/beginSnapshotTx error+degrade paths), the F-11 sequence
 // sync (createSequences/syncSequenceValues error branches), and the copyStream
 // coordinator error branches (dest-fail, source-fail, segment-direct dispatch).
@@ -337,29 +337,6 @@ func TestConflictErrorString(t *testing.T) {
 	}
 }
 
-// TestOverwriteChecksumMatchesErrors covers overwriteChecksumMatches when the
-// source or destination checksum read fails (returns false, never panics).
-func TestOverwriteChecksumMatchesErrors(t *testing.T) {
-	ctx := context.Background()
-	// Source checksum read fails (no canned ReadCopy payload on a fresh conn).
-	mSrc := newMgr(t, pg.NewFakeConn(), pg.NewFakeConn(), nil)
-	if mSrc.overwriteChecksumMatches(ctx, &Unit{Schema: "s", Table: "t", DstSchema: "s", DstName: "t"}) {
-		t.Error("source checksum failure: want false")
-	}
-	// Source OK, destination checksum read fails.
-	srcOK := pg.NewFakeConn().OnReadCopy("TO STDOUT", []byte("payload"))
-	dstBad := pg.NewFakeConn() // no ReadCopy payload -> Checksum errors
-	mDst := NewManager(configDefault(), srcOK, dstBad, NewJournal(pg.NewFakeConn(), t.TempDir()+"/j.jsonl"))
-	if mDst.overwriteChecksumMatches(ctx, &Unit{Schema: "s", Table: "t", DstSchema: "s", DstName: "t"}) {
-		t.Error("dest checksum failure: want false")
-	}
-	// Both OK and equal -> true.
-	dstOK := pg.NewFakeConn().OnReadCopy("TO STDOUT", []byte("payload"))
-	mBoth := NewManager(configDefault(), srcOK, dstOK, NewJournal(pg.NewFakeConn(), t.TempDir()+"/j.jsonl"))
-	if !mBoth.overwriteChecksumMatches(ctx, &Unit{Schema: "s", Table: "t", DstSchema: "s", DstName: "t"}) {
-		t.Error("equal checksums: want true")
-	}
-}
 
 // TestEstablishSnapshotBranches covers establishSnapshot's mutually-exclusive
 // early return and the beginSnapshotTx-failure degrade path.

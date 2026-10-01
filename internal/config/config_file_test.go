@@ -94,7 +94,7 @@ workers = 4
 compress = "zstd"
 zstd_level = 9
 auto_resume = 2
-verify = "full"
+verify = "on"
 `)
 	if err := c.LoadFile(path); err != nil {
 		t.Fatalf("load toml: %v", err)
@@ -117,8 +117,8 @@ verify = "full"
 	if c.AutoResume != 2 {
 		t.Errorf("auto resume = %d, want 2", c.AutoResume)
 	}
-	if c.Verify != VerifyFull {
-		t.Errorf("verify = %v, want full", c.Verify)
+	if c.Verify != VerifyOn {
+		t.Errorf("verify = %v, want on", c.Verify)
 	}
 }
 
@@ -143,7 +143,7 @@ workers: "4"
 compress: zlib
 zstd_level: "7"
 auto_resume: "2"
-verify: full
+verify: on
 ssl_cert: /etc/cert.pem
 ssl_key: /etc/key.pem
 ssl_ca: /etc/ca.pem
@@ -175,8 +175,8 @@ timeout: "5m"
 	if c.AutoResume != 2 {
 		t.Errorf("auto resume = %d, want 2", c.AutoResume)
 	}
-	if c.Verify != VerifyFull {
-		t.Errorf("verify = %v, want full", c.Verify)
+	if c.Verify != VerifyOn {
+		t.Errorf("verify = %v, want on", c.Verify)
 	}
 	if c.SSLMinTLS != "1.3" {
 		t.Errorf("ssl min tls = %q, want 1.3", c.SSLMinTLS)

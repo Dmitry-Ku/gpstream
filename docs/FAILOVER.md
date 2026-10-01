@@ -140,11 +140,13 @@ recovery. To discard a bad run's destination objects entirely, use
 Recovery is only safe because of two guarantees in `runUnit`
 (`internal/manifest/manager.go`):
 
-1. **Verify before swap.** The content checksum is re-derived on both sides
-   and compared **without re-copying the table** (F-02). The verify mode is
-   `--verify full|sample|off` (default `sample`; `full` for small or critical
-   units). A checksum mismatch sets the unit to `failed` and **drops the
-   staging table** — no partially-correct data is ever swapped in.
+1. **Verify before swap.** With `--verify on`, after each unit lands the
+   content checksum is re-derived on both sides and compared **without
+   re-copying the table** (F-02). A checksum mismatch sets the unit to
+   `failed` and **drops the staging table** — no partially-correct data is
+   ever swapped in. The default is `--verify off` (no content verification;
+   the COPY row count is the landed-data check), so a default run reads each
+   source table exactly once.
 2. **Swap failure is safe.** Data is written to a staging table
    (`StagingName(jobID, unitID)`), verified, reindexed (F-17), and only then
    **atomically renamed** to its final name. If the swap fails *after* a

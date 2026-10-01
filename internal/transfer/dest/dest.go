@@ -221,23 +221,6 @@ func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum st
 	return true, rows, nil
 }
 
-// Checksum re-derives the content checksum of a final destination table
-// (FR-10 §8: --overwrite checksum-skip). It mirrors source.Checksum — the same
-// binary COPY payload digest (transfer.ContentDigest), which is
-// row-order-independent, so a table whose data is already identical on the
-// destination produces the same digest as the source. An empty table is
-// "0" (matching source.Checksum) so two empty tables compare equal.
-func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
-	d := transfer.NewContentDigest()
-	rows, err := a.q.ReadCopy(ctx, d, copySQL(schema, table))
-	if err != nil {
-		return "", err
-	}
-	if rows == 0 {
-		return "0", nil
-	}
-	return d.Sum()
-}
 
 // toStr converts a catalog value (any) to a string, tolerating the []byte
 // form some drivers return.

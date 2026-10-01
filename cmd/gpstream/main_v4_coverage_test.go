@@ -266,7 +266,7 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--rate-limit", "2",
 		"--workers", "3",
 		"--zstd-level", "3",
-		"--verify", "full",
+		"--verify", "on",
 		"--overwrite",
 		"--compress", "zstd",
 		"--consistent-db",

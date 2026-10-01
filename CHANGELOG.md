@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed: `--overwrite` always rewrites; `--verify` is now `on`/`off` (default `off`)
+
+Removed the pre-copy identical-data shortcut on `--overwrite`. Previously a
+conflicting table whose data already matched the source was detected via a
+full `COPY ... TO STDOUT` digest of **both** the source and the destination
+and then skipped. That meant two extra full-table reads before any data moved
+— prohibitive on very large tables. Now `--overwrite` (staging + swap) and
+`--truncate` **always rewrite** the destination; there is no pre-copy content
+comparison. `--resolve-conflicts skip` still skips conflicting units, and the
+journal's completed-unit skip on a re-run is unchanged.
+
+`--verify` now takes `on`/`off` (was `full`/`sample`/`off`) and is **`off` by
+default**. With `on`, after each unit lands the content checksum is re-derived
+on the source (same snapshot as the data COPY) and on the destination and
+compared; a mismatch sets the unit to `failed` and drops the staging table —
+no unverified data is ever swapped in. With `off` (the default) the COPY
+protocol's row count is the landed-data check, so a default run reads each
+source table exactly once. This makes the flag actually do what it says:
+previously `full`/`sample`/`off` were parsed but the post-copy verify always
+ran in full, so `off` did not disable it.
+
+Unit tests: TestManagerOverwriteAlwaysRewrites (identical overwrite target is
+re-copied + swapped, not skipped), TestManagerResolve (verify follows
+`--verify`), TestManagerChecksumMismatch / TestManagerUnitFailureEmitsEvent
+(under `--verify on`).
+
 ### Changed: operation identity is a timestamp by default; `--plan-file` removed
 
 `--operation-id` is no longer defaulted to the deterministic plan hash. When

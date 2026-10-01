@@ -67,7 +67,7 @@ gpstream run
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
   [--max-reconnects N] [--retransmit-buffer-max SIZE]
-  [--verify full|sample|off]                           # default: sample
+  [--verify on|off]                                    # post-copy verification; default: off
   [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
   [--operation-id <id|latest>] [--state-dir DIR]

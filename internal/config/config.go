@@ -61,13 +61,12 @@ func (c *Config) IncludeClasses() (metadata, data bool) {
 	return true, true
 }
 
-// VerifyMode controls the verification depth (FR-02).
+// VerifyMode controls content verification after a unit lands (FR-02).
 type VerifyMode string
 
 const (
-	VerifyFull   VerifyMode = "full"
-	VerifySample VerifyMode = "sample"
-	VerifyOff    VerifyMode = "off"
+	VerifyOn  VerifyMode = "on"
+	VerifyOff VerifyMode = "off"
 )
 
 // CopyMode selects the source data-path transport (DESIGN §1.3 / T-B). The
@@ -139,7 +138,7 @@ type Config struct {
 	// finish, and hands the failed units to `gpstream resume`; "abort" stops
 	// the run at the first failure (in-flight units finish, none new starts).
 	OnUnitFailure string     // continue (default) | abort
-	Verify        VerifyMode // default sample
+	Verify        VerifyMode // default off
 
 	// Indexes (FR-17).
 	IndexWorkers  int
@@ -242,7 +241,7 @@ func Default() Config {
 		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
 		ZstdLevel:           3,
 		AutoResume:          0,
-		Verify:              VerifySample,
+		Verify:              VerifyOff,
 		Timeout:             120 * time.Second, // F-10 §6: default 120 s
 		ConsistentDB:        true,
 		IndexPriority:       "size",
@@ -341,7 +340,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unknown --resolve-conflicts value %q (want stop|skip|overwrite|truncate)", c.ConflictAction)
 	}
 	switch c.Verify {
-	case VerifyFull, VerifySample, VerifyOff:
+	case VerifyOn, VerifyOff:
 	default:
 		return fmt.Errorf("unknown verify mode %q", c.Verify)
 	}

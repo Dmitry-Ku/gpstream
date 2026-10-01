@@ -103,7 +103,7 @@ operator decides deliberately.
 |----------------------|---------|---------|
 | `stop` | **default** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
 | `skip` | — | Skip conflicting objects and continue; they are reported in `conflicts.jsonl`. |
-| `overwrite` | — | Replace the destination object (staging + atomic swap, verified before the swap). Dependent foreign keys on other destination tables are dropped before the swap and re-applied from the source after the load (F-11). |
+| `overwrite` | — | Replace the destination object (staging + atomic swap). Always rewrites — an existing destination is re-copied even when its data already matches the source; there is no pre-copy content comparison (it would read the whole table twice). Dependent foreign keys on other destination tables are dropped before the swap and re-applied from the source after the load (F-11). |
 | `truncate` | — | Truncate then reload (in-place). |
 
 `--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
@@ -126,13 +126,13 @@ After each unit is streamed and landed, gpstream can verify it:
 
 | Mode | Flag | Behaviour |
 |------|------|-----------|
-| `full` | `--verify full` | Verify the whole object (checksums). |
-| `sample` | `--verify sample` **default** | Verify a sample of units. |
-| `off` | `--verify off` | No verification. |
+| `off` | `--verify off` **default** | No content verification; the COPY row count is the landed-data check. |
+| `on` | `--verify on` | After each unit lands, re-derive the content checksum on the source and on the destination and compare; a mismatch sets the unit to `failed` (the staging table is dropped). |
 
-The default is **`sample`**. Each verified unit records a checksum (a unit cannot
-be marked completed without one), and the journal persists it, so a resumed run
-knows what was already verified. For a critical migration, run `--verify full`.
+The default is **`off`** — a run reads each source table exactly once (the
+data COPY). With **`on`**, each verified unit records a checksum and the journal
+persists it, so a resumed run knows what was already verified. For a critical
+migration, run `--verify on`.
 
 Consistency options let you copy an object atomically:
 
@@ -319,8 +319,8 @@ whether a finished run actually **succeeded**:
 | **`swapped`** | Completed unit atomically renamed to its final name — **terminal success**. |
 | **`failed`** | Unit exhausted its retries — **terminal failure**. |
 | **`skipped`** | Unit deliberately not copied (a `--resolve-conflicts skip`, or an
-  `--overwrite` target whose data is already identical on the destination) —
-  **terminal, nothing to do**. |
+  — **terminal,
+  nothing to do**. |
 
 There is **no `done` state**. A job's terminal outcomes are `swapped` (success),
 `failed` (failure), and `skipped` (deliberately not copied). This matters for

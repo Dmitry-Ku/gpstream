@@ -54,6 +54,7 @@ func oneUnitPlan() *plan.Plan {
 // compressed bytes must round-trip so the verify checksum matches.
 func TestCopyHappyPath(t *testing.T) {
 	cfg := config.Default()
+	cfg.Verify = config.VerifyOn
 	payload := []byte("BINARY-COPY-ROW-BATCH")
 	m, j := newManager(t, &cfg, payload, payload)
 

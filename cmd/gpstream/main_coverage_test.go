@@ -33,7 +33,7 @@ func TestParseConfigFull(t *testing.T) {
 		"--rate-limit", "80gbit",
 		"--workers", "4",
 		"--auto-resume", "2",
-		"--verify", "full",
+		"--verify", "on",
 		"--consistent-db",
 		"--index-workers", "3",
 		"--no-indexes",
@@ -82,7 +82,7 @@ func TestParseConfigFull(t *testing.T) {
 	if c.AutoResume != 2 {
 		t.Fatalf("auto-resume = %d", c.AutoResume)
 	}
-	if c.Verify != "full" {
+	if c.Verify != "on" {
 		t.Fatalf("verify = %q", c.Verify)
 	}
 	if !c.ConsistentDB {

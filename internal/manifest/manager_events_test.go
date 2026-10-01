@@ -106,6 +106,7 @@ func TestManagerSkipConflictEmitsEvent(t *testing.T) {
 // F-04: retries/failures are a diagnostic event).
 func TestManagerUnitFailureEmitsEvent(t *testing.T) {
 	cfg := config.Default()
+	cfg.Verify = config.VerifyOn // the mismatch is only detected with verification on
 	m, dir := newManagerAt(t, &cfg, []byte("source-data"), []byte("different-dest-data"))
 
 	if err := m.Run(context.Background(), oneUnitPlan()); err == nil {

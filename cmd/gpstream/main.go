@@ -1598,7 +1598,7 @@ Transport / resilience:
   --retransmit-buffer-max size     in-flight window per stream (default 64MiB)
 
 Integrity / consistency:
-  --verify full|sample|off         verification depth (default sample)
+  --verify on|off                  post-copy content verification (default off)
   --consistent-db                  snapshot scope: whole DB (default)
   --consistent-cluster             snapshot scope: whole cluster
   --consistent-tables              snapshot scope: per-table

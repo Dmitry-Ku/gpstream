@@ -124,10 +124,14 @@ Conflict policy. Default
 .B skip
 skips conflicting units (logged to conflicts.jsonl);
 .B overwrite
-= staging + verify + atomic swap (a destination table that is
+= staging + atomic swap (a destination table that is
 referenced by foreign keys on other destination tables has those dependent FK
 constraints dropped before the swap; the source FK set is re-applied after the
-load, F-11);
+load, F-11). An existing destination is ALWAYS rewritten — identical data is
+re-copied, never detected and skipped (a pre-copy content comparison would
+read the whole table twice, which is too expensive for large tables; the
+only content check is the post-copy
+.BR --verify );
 .B truncate
 = in-place after TRUNCATE.
 .TP
@@ -229,8 +233,19 @@ In-flight window per stream (default 64MiB).
 .SS Integrity / consistency
 .TP
 .BR --verify
-full|sample|off
-Verification depth (default sample).
+on|off
+Content verification after the copy (default
+.B off
+). With
+.B on
+, after each unit lands the content checksum is re-derived on the source
+(same snapshot as the data COPY) and on the destination, and a mismatch sets
+the unit to
+.B failed
+(dropping the staging table) — no unverified data is ever swapped in. With
+.B off
+(no verification) the row count from the COPY protocol is the landed-data
+check.
 .TP
 .BR --consistent-db | --consistent-cluster | --consistent-tables
 Snapshot scope (default --consistent-db; an explicit --consistent-cluster or

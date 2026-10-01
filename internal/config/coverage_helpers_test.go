@@ -237,7 +237,7 @@ small_table_threshold = "1024"
 auto_resume = "1"
 on_unit_failure = "abort"
 consistent_tables = "true"
-verify = "sample"
+verify = "on"
 log_level = "warn"
 ssl_cert = "/a"
 ssl_key = "/b"
@@ -273,7 +273,7 @@ small_table_threshold: "1024"
 auto_resume: "1"
 on_unit_failure: "abort"
 consistent_tables: "true"
-verify: "sample"
+verify: "on"
 log_level: "warn"
 ssl_cert: "/a"
 ssl_key: "/b"
@@ -313,7 +313,7 @@ report_text: "/t"
 		if c.Source != "postgres://s" || c.Dest != "postgres://d" || c.RateLimit != 7.5 ||
 			c.WorkersPerPair != 4 || c.Compression != "none" || c.ZstdLevel != 9 ||
 			c.SmallTableThreshold != 1024 || c.AutoResume != 1 || c.OnUnitFailure != "abort" ||
-			!c.ConsistentTables || c.Verify != "sample" ||
+			!c.ConsistentTables || c.Verify != "on" ||
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
 			c.SegTLSCA != "/sc" ||

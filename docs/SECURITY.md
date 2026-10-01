@@ -111,13 +111,15 @@ To change behavior you opt in with a single flag:
 
 | Knob | Values | Default |
 |------|--------|---------|
-| `--verify` | `full` \| `sample` \| `off` | `sample` |
+| `--verify` | `on` \| `off` | `off` |
 
-Each unit's content checksum is re-derived on both sides and compared before
-the atomic swap; a unit cannot be marked completed without one. `--verify
-sample` checks a sample of units, `full` checks every unit, `off` disables
-verification. A checksum mismatch sets the unit to `failed` and drops the
-staging table — no partially-correct data is ever swapped in.
+With **`on`**, after each unit lands its content checksum is re-derived on both
+sides (the source read shares the data COPY's snapshot) and compared; a mismatch
+sets the unit to `failed` and drops the staging table — no unverified data is
+ever swapped in. The default is **`off`** (no content verification; the COPY
+protocol's row count is the landed-data check), so a default run reads each
+source table exactly once — there is no pre-copy source/destination digest
+comparison.
 
 ---
 
@@ -177,7 +179,7 @@ material.
 - [ ] `doctor` returns **PASS** against the real clusters.
 - [ ] `ConflictAction = stop` (non-destructive) unless a specific copy
       intentionally opts into `overwrite`/`truncate` via `--resolve-conflicts`.
-- [ ] `--verify` is `sample` or `full` for critical copies.
+- [ ] `--verify on` for critical copies.
 - [ ] Destructive commands invoked only with `--yes`, deliberately.
 - [ ] `audit.log` retained / reviewed per the operation's retention policy.
 - [ ] Metrics endpoint on a private interface.
