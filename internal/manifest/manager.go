@@ -51,7 +51,9 @@ type Manager struct {
 	dst     *dest.Agent
 	journal *Journal
 	index   *index.Builder
-	idxPool *index.Pool // background index pool (FR-17); drained after the data path
+	idxPool *index.Pool // background index pool (FR-17); started before the
+	// data path so each unit's index build overlaps the rest of the copy,
+	// drained (Close + Wait) after it
 	// idxSeen marks units whose index build this run has enqueued, so the
 	// journal scan does not enqueue them twice (FR-17 resume).
 	idxSeen map[uint32]bool
@@ -439,6 +441,13 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			}
 		}()
 	}
+	// FR-17: start the background index pool BEFORE the data path so each
+	// unit's index build overlaps the remaining copies (size-priority
+	// ordering keeps the longest build ahead of the tail). The pool shares
+	// the destination pool, which is sized for workers + index workers +
+	// journal (main.go: maxConns), so concurrent index DDL and COPYs are
+	// safe.
+	m.idxPool.Start(ctx)
 	for i := 0; i < workers; i++ {
 		dispatch()
 	}
@@ -454,7 +463,7 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// idempotent per index name, so a re-enqueue is duplicate-safe.
 	m.requeueIndexes(ctx)
 	m.idxPool.Close()
-	m.idxPool.Run(ctx)
+	m.idxPool.Wait(ctx)
 	if err := m.idxPool.Err(); err != nil && firstErr == nil {
 		firstErr = err
 	}

@@ -156,15 +156,15 @@ func (p *Pool) next() (Job, bool) {
 	return j, true
 }
 
-// Run starts the workers and blocks until every enqueued job has finished
-// (or the pool is closed). It is idempotent. ctx is passed to each job so a
-// cancelled run stops issuing new index work.
-func (p *Pool) Run(ctx context.Context) {
+// Start launches the pool's workers (idempotent). The manager calls it
+// BEFORE the data path so that each unit's index build overlaps the rest of
+// the copy (F-17: "after a table's data copy is complete" — per table, in
+// the background, not after the whole run). Enqueues before Start are
+// buffered in the queue and picked up once the workers run.
+func (p *Pool) Start(ctx context.Context) {
 	p.mu.Lock()
 	if p.started {
-		started := p.done
 		p.mu.Unlock()
-		<-started
 		return
 	}
 	p.started = true
@@ -201,7 +201,34 @@ func (p *Pool) Run(ctx context.Context) {
 		wg.Wait()
 		close(p.done)
 	}()
-	<-p.done
+}
+
+// Wait blocks until every enqueued job has finished (or the pool is
+// closed). The pool must be Closed first so idle workers can drain and
+// exit; the manager Close()s after the data path and the re-queue scan.
+// Calling Wait on an unstarted pool starts it first (idempotent Run).
+func (p *Pool) Wait(ctx context.Context) {
+	p.mu.Lock()
+	if !p.started {
+		p.mu.Unlock()
+		p.Start(ctx)
+		p.mu.Lock()
+		started := p.done
+		p.mu.Unlock()
+		<-started
+		return
+	}
+	started := p.done
+	p.mu.Unlock()
+	<-started
+}
+
+// Run starts the workers and blocks until every enqueued job has finished
+// (or the pool is closed). It is idempotent. ctx is passed to each job so a
+// cancelled run stops issuing new index work.
+func (p *Pool) Run(ctx context.Context) {
+	p.Start(ctx)
+	p.Wait(ctx)
 }
 
 // SetOnProgress installs the progress callback (see the onProgress field).

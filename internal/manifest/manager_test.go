@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/plan"
@@ -479,5 +480,39 @@ func TestManagerResumeRequeuesSwappedUnitIndexes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("resume did not rebuild the swapped unit's indexes: %v", dst.Queried())
+	}
+}
+
+// TestManagerRunIndexPoolOverlapsDataPath is the F-17 overlap regression
+// (T30 phase 8, 01.10): the pool used to be drained AFTER the data path
+// (Run() started the workers only after wg.Wait), so "background" indexes
+// never overlapped the copy and the F-17 wall-time gate failed at 99%.
+// With one data worker, unit 2's copy must run CONCURRENTLY with unit 1's
+// index build: the fake conn counts copy/index overlap from either side,
+// so the test requires at least one — deterministic given the 300/400ms
+// delays against sub-millisecond fake overhead.
+func TestManagerRunIndexPoolOverlapsDataPath(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkersPerPair = 1
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", indexRows())
+	dst.SetCopyDelay(300 * time.Millisecond)
+	dst.SetExecDelay("CREATE INDEX", 400*time.Millisecond)
+	j := NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
+	m := NewManager(&cfg, src, dst, j)
+
+	plan := &plan.Plan{Units: []plan.Table{
+		{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
+		{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
+	}}
+	if err := m.Run(context.Background(), plan); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if m.idxPool.Done() != 2 || m.idxPool.Err() != nil {
+		t.Fatalf("index pool done=%d err=%v, want 2/nil", m.idxPool.Done(), m.idxPool.Err())
+	}
+	if ov := dst.MixedOverlaps(); ov == 0 {
+		t.Fatalf("index build never overlapped the data path (copy 300ms, index 400ms, 1 worker) — FR-17 background pool must run DURING the copy: %v", dst.Queried())
 	}
 }

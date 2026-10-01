@@ -18,16 +18,28 @@ import (
 // FakeConn is an in-memory implementation of Querier. Each registered SQL
 // pattern returns its canned rows; patterns are matched by substring.
 type FakeConn struct {
-	mu             sync.Mutex
-	results        map[string][][]any // substring key -> rows
-	queries        []string           // log of executed queries (for assertions)
-	pingErr        error
-	pingDelay      time.Duration // blocks Ping for this long (FR-10 hung segment)
-	execErr        error         // Exec returns this (models a rejected statement)
-	panicQuery     string        // Query panics if the SQL contains this (CR-7/FR-06)
-	panicCopy      bool          // ReadCopy panics (CR-7 data-path fault / FR-06)
-	panicCopyTimes int           // panic on the N-th ReadCopy call (0 = first)
-	readCopyN      int           // ReadCopy calls so far
+	mu        sync.Mutex
+	results   map[string][][]any // substring key -> rows
+	queries   []string           // log of executed queries (for assertions)
+	pingErr   error
+	pingDelay time.Duration // blocks Ping for this long (FR-10 hung segment)
+	execErr   error         // Exec returns this (models a rejected statement)
+	// execDelayFor models a slow statement (e.g. CREATE INDEX on a real
+	// cluster) so tests can prove two kinds of work run concurrently:
+	// longest-substring match on the SQL, like results.
+	execDelayFor map[string]time.Duration
+	// copyDelay models a slow COPY ... FROM STDIN (data-path copy).
+	copyDelay time.Duration
+	// in-flight accounting for the delayed operations: mixedOverlap counts
+	// how many times a delayed operation started while the OTHER kind was
+	// in flight (copy || index DDL overlap, F-17).
+	copyInFlight   int
+	execInFlight   int
+	mixedOverlap   int
+	panicQuery     string // Query panics if the SQL contains this (CR-7/FR-06)
+	panicCopy      bool   // ReadCopy panics (CR-7 data-path fault / FR-06)
+	panicCopyTimes int    // panic on the N-th ReadCopy call (0 = first)
+	readCopyN      int    // ReadCopy calls so far
 	closed         bool
 	readCopy       map[string][]byte // substring key -> COPY ... TO STDOUT payload
 	writeCopy      map[string][]byte // substring key -> recorded COPY ... FROM STDIN payload
@@ -36,9 +48,10 @@ type FakeConn struct {
 // NewFakeConn returns an empty fake.
 func NewFakeConn() *FakeConn {
 	return &FakeConn{
-		results:   map[string][][]any{},
-		readCopy:  map[string][]byte{},
-		writeCopy: map[string][]byte{},
+		results:      map[string][][]any{},
+		readCopy:     map[string][]byte{},
+		writeCopy:    map[string][]byte{},
+		execDelayFor: map[string]time.Duration{},
 	}
 }
 
@@ -65,6 +78,34 @@ func (f *FakeConn) SetPingError(err error) *FakeConn {
 	defer f.mu.Unlock()
 	f.pingErr = err
 	return f
+}
+
+// SetExecDelay makes Exec block for d on any SQL containing substr (models
+// a long-running statement such as CREATE INDEX, so a test can verify the
+// FR-17 background pool overlaps the data path). Longest-substring match.
+func (f *FakeConn) SetExecDelay(substr string, d time.Duration) *FakeConn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execDelayFor[substr] = d
+	return f
+}
+
+// SetCopyDelay makes WriteCopy (COPY ... FROM STDIN) block for d (models a
+// slow data-path copy).
+func (f *FakeConn) SetCopyDelay(d time.Duration) *FakeConn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.copyDelay = d
+	return f
+}
+
+// MixedOverlaps reports how many times a delayed operation started while the
+// other kind of delayed operation was in flight (an index build concurrent
+// with a copy, or vice versa) — the FR-17 overlap evidence.
+func (f *FakeConn) MixedOverlaps() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mixedOverlap
 }
 
 // SetExecError controls what Exec returns (models a failing statement, e.g.
@@ -149,12 +190,40 @@ func (f *FakeConn) Query(ctx context.Context, sql string, args ...any) ([][]any,
 // Exec implements Querier.
 func (f *FakeConn) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.queries = append(f.queries, renderQuery(sql, args...))
 	if f.execErr != nil {
+		f.mu.Unlock()
 		return 0, f.execErr
 	}
+	// Delayed-statement accounting (F-17 overlap tests): the sleep happens
+	// OUTSIDE the lock, like a real driver.
+	delay := execDelayFor(sql, f.execDelayFor)
+	if delay > 0 {
+		if f.copyInFlight > 0 {
+			f.mixedOverlap++
+		}
+		f.execInFlight++
+		f.mu.Unlock()
+		time.Sleep(delay)
+		f.mu.Lock()
+		f.execInFlight--
+		f.mu.Unlock()
+		return 1, nil
+	}
+	f.mu.Unlock()
 	return 1, nil
+}
+
+// execDelayFor returns the delay registered for the longest substring that
+// appears in sql (0 when none matches). Callers hold f.mu.
+func execDelayFor(sql string, m map[string]time.Duration) time.Duration {
+	best, bestLen := time.Duration(0), -1
+	for substr, d := range m {
+		if contains(sql, substr) && len(substr) > bestLen {
+			best, bestLen = d, len(substr)
+		}
+	}
+	return best
 }
 
 // renderQuery returns the SQL with the positional args appended (so recorded
@@ -296,14 +365,33 @@ func (f *FakeConn) WriteCopy(ctx context.Context, r io.Reader, sql string) (int6
 			bestLen = len(substr)
 		}
 	}
-	f.mu.Unlock()
-
 	if best == "" {
+		f.mu.Unlock()
 		return 0, fmt.Errorf("no canned sink for COPY: %s", sql)
 	}
+	// Delayed-copy accounting (F-17 overlap tests): the blocking read below
+	// happens outside the lock, like a real driver.
+	delay := f.copyDelay
+	if delay > 0 {
+		if f.execInFlight > 0 {
+			f.mixedOverlap++
+		}
+		f.copyInFlight++
+	}
+	f.mu.Unlock()
 	data, err := io.ReadAll(r)
 	if err != nil {
+		if delay > 0 {
+			f.mu.Lock()
+			f.copyInFlight--
+			f.mu.Unlock()
+		}
 		return 0, err
+	}
+	if delay > 0 {
+		f.mu.Lock()
+		f.copyInFlight--
+		f.mu.Unlock()
 	}
 	f.mu.Lock()
 	f.writeCopy[best] = data
