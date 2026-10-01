@@ -30,14 +30,12 @@ jobs:
           export GOPROXY=https://proxy.golang.org,direct
           scripts/package.sh release
         env:
-          # goreleaser v1.24 reads GITHUB_TOKEN (NOT GORELEASER_GITHUB_TOKEN)
-          # for the GitHub release publisher — verified locally: with the
-          # GORELEASER_ prefix it fails `missing GITHUB_TOKEN, ...`.
+          # goreleaser v1.24 auto-publishes to GitHub on `goreleaser release`
+          # when GITHUB_TOKEN is set (there is NO --publish flag in v1.24 —
+          # passing --publish=github fails `unknown flag: --publish`).
+          # Verified locally: with GITHUB_TOKEN the build proceeds straight
+          # to POST /releases.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # scripts/package.sh release honors PUBLISH_FLAG: without
-          # --publish=github goreleaser only BUILDS and never creates the
-          # GitHub release (the default for this CI step is to publish).
-          PUBLISH_FLAG: --publish=github
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
