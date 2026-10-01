@@ -124,6 +124,17 @@ pool (useful for the "many small tables" case); a lower value limits
 concurrency on a constrained link. A dead worker's units are re-assigned
 to live workers (FR-06).
 
+## Measuring the input stream (`gpstream bench`)
+
+To isolate the **source-side** ceiling from the link/destination, `gpstream
+bench` streams the selected source tables through the real data path (read →
+frame → compress → adaptive rate limiter) and **discards** the payload — no
+destination is opened. It applies the same selection and performance options
+as `run` (`--workers`, `--compress`, `--rate-limit`, `--consistent-db`), and
+prints per-table and total rows, wire/logical bytes, elapsed and MB/s.
+`--timeout S` bounds the benchmark wall-time. Use it to answer "how fast can
+the source feed the pipeline?" before committing to a full run.
+
 ## Data ports
 
 There is **no `--data-port-range` flag** — the stream manages its own data

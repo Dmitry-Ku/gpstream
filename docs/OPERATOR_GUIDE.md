@@ -338,15 +338,14 @@ systemd: when the copy finishes, the process exits and the service stops.
 the process alive.
 
 The operation id is what makes a crash recoverable, so it must be **stable
-across restarts**. Without an explicit `--operation-id`, `run` re-plans
-against the live source and uses the **deterministic plan hash** as the id
-(the journal lives at `<state-dir>/<id>/`). The hash is a pure function of the
-source's **physical** state (table count, per-table `pg_total_relation_size`,
-layout) with no time or randomness — so it is stable **only while the source
-is unchanged** (a quiesced source, the normal migration case): a restarted run
-recomputes the same id, finds the existing journal, skips terminal units
-(checksum-verified), and re-copies only the non-terminal ones under a fresh
-snapshot epoch.
+across restarts** — pass an explicit `--operation-id`. Without one, `run`
+generates a **timestamp** id (UTC, `YYYYMMDDTHHMMSSZ`, collision-suffixed), so
+a restarted run under `Restart=on-failure` would start a *new* operation
+instead of resuming. For a supervised (systemd) migration pin the id in the
+unit's `ExecStart` / config file; a restarted run then finds the existing
+journal at `<state-dir>/<id>/`, skips terminal units (checksum-verified), and
+re-copies only the non-terminal ones under a fresh snapshot epoch.
+`gpstream resume --operation-id <id>` (or `latest`) does the same on demand.
 
 If the source has **changed** since the crash — a table created/dropped, a
 table grown, a layout change — the hash differs, a new operation-id and a

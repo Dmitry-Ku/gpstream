@@ -139,9 +139,12 @@ What happens:
   `--metrics-addr`.
 
 The operation identity is `--operation-id <id>`. When omitted, `run` generates
-the id as the **deterministic plan hash** (the same value `dry-run` prints as
-`plan hash:`) — the same plan yields the same id, so an unchanged plan resumes
-the same operation. Use the same id for `status` / `resume` / `cleanup`.
+a **timestamp** id (UTC, `YYYYMMDDTHHMMSSZ`, e.g. `20261001T153000Z`) so the
+state directory is a chronological history of runs — the newest operation is
+the last entry. `status` / `resume` / `cleanup` accept a name or the magic
+value `latest` (the newest operation). An explicit id names the operation and
+is the way to resume an earlier run (a re-run with no explicit id is a *new*
+operation).
 
 ---
 

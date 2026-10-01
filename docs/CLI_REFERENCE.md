@@ -89,6 +89,13 @@ subset of flags (listed per-command below) and ignore the rest.
   prediction/forecast. `run` always persists the plan JSON to
   `<state-dir>/<operation-id>/plan.json`. `dry-run` is the command that used to
   be called `plan`.
+- **`bench`** — measures the **input stream** (F-14): streams the selected
+  source tables through the real data path (read → frame → compress →
+  adaptive rate limiter) and **discards** the payload instead of writing a
+  destination. Source only (`--dest`, if given, is ignored); all
+  selection/performance options as for `run`. Prints per-table and total
+  rows, wire/logical bytes, elapsed and MB/s. `--timeout S` is the benchmark
+  wall-time limit (unlimited when not passed).
 - **`doctor`** — self-diagnoses src/dest clusters (F-05); full contract. Uses
   a live connection that **never** fabricates a healthy fake for a
   missing/unreachable cluster (CR-7); a missing connstring is a reachability
@@ -97,17 +104,18 @@ subset of flags (listed per-command below) and ignore the rest.
   collation, TLS). Exits non-zero if any FAIL remains.
 - **`status`** — reports an operation's state (F-02/06/07) from the durable
   manifest (operation-id, snap-epoch, per-unit id/state/kind/
-  db.schema.table/bytes/epoch). **Flags:** `--operation-id <id>` (required),
-  `--state-dir <dir>`.
+  db.schema.table/bytes/epoch). **Flags:** `--operation-id <id|latest>`
+  (required), `--state-dir <dir>`.
 - **`resume`** — resumes an interrupted operation (F-06/07). Reopens the
   durable operation manifest (which survived the crash) and re-queues every
   non-terminal unit under the next snapshot epoch; the action is recorded to
-  `audit.log` (F-13). **Flags:** `--operation-id <id>` (required),
+  `audit.log` (F-13). **Flags:** `--operation-id <id|latest>` (required),
   `--state-dir <dir>`, `--auto-resume <N>` (cap on resume attempts),
   the re-read rule keeps a table only if it was verified under one snapshot epoch.
 - **`cleanup`** — removes an operation's state directory (v4 §8 "State").
   `--all-incomplete` removes every operation directory that still has
-  non-terminal units (no `--operation-id` needed); `--mode drop` ADDITIONALLY
+  non-terminal units (no `--operation-id` needed; `<id>` also accepts
+  `latest`); `--mode drop` ADDITIONALLY
   drops the destination-side objects the operation created — surviving staging
   tables, renamed-in or gpstream-created final tables, and renamed-in schemas —
   derived conservatively from the manifest (a pre-existing, conflicted
@@ -120,9 +128,8 @@ subset of flags (listed per-command below) and ignore the rest.
 - **`selftest`** — internal sanity checks; no flags, no cluster connection.
   Prints PASS/FAIL per case, exits non-zero on any failure.
 - **`version`** — prints the gpstream build version. No flags.
-- **`man`** — prints the built-in man page (F-05): reads `man/gpstream.8` if
-  present, else a short summary. No flags.
 - **`help`** / `-h` / `--help` — prints built-in help (commands + flags).
+  The man page is installed by the package (`man gpstream`).
 
 > **Note on removed v2 commands.** Earlier design drafts listed `cancel`,
 > `rollback`, `metrics`, `logs`, `indexes`, `compatibility-check`,
@@ -297,8 +304,8 @@ operator reads the number and decides. The `--locale-check` flag was removed
 ### Operation identity / state (v4 §8 "State")
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--operation-id <id>` | `OperationID` | `""` (defaults to the plan hash) |
-| `--state-dir <dir>` | `StateDir` | `/var/lib/gpstream` (operation state lives at `<state-dir>/<operation-id>/`) |
+| `--operation-id <id\|latest>` | `OperationID` | `""` (see the planning table above: timestamp default on `run`, `latest` on the read-side commands) |
+| `--state-dir <dir>` | `StateDir` | `/var/lib/gpstream` (operation state lives at `<state-dir>/<operation-id>/`, the plan JSON at `<state-dir>/<operation-id>/plan.json`) |
 
 ### Observability (F-04)
 | Flag | Config field | Default |

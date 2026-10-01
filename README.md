@@ -70,14 +70,15 @@ gpstream run
   [--verify full|sample|off]                           # default: sample
   [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
-  [--operation-id <id>] [--state-dir DIR]
-  [--timeout S] [--plan-file F]
+  [--operation-id <id|latest>] [--state-dir DIR]
+  [--timeout S]
   [--config file.toml]
 
-gpstream dry-run  [--timeout S] [--plan-file F]   # same selection flags as run
-gpstream status   --operation-id <id>
-gpstream resume   --operation-id <id>
-gpstream cleanup  --operation-id <id> [--all-incomplete] [--mode drop] [--dest <conn>]
+gpstream dry-run  [--timeout S]                     # same selection flags as run
+gpstream bench    [--timeout S]                     # input-stream rate: read source, discard payload (no dest)
+gpstream status   --operation-id <id|latest>
+gpstream resume   --operation-id <id|latest>
+gpstream cleanup  --operation-id <id|latest> [--all-incomplete] [--mode drop] [--dest <conn>]
 gpstream doctor   [--source ...] [--dest ...]
 gpstream selftest
 gpstream version
