@@ -35,3 +35,11 @@ r5probe2
 # lab provisioning templates (cloud-init YAMLs / scripts) —
 # testbed-specific, not project source; kept on disk, out of git
 /infra/
+
+# one-shot lab ops scripts (diag/smoke/stop/survey) — testbed-specific,
+# not reproducible in CI; kept on disk, out of git
+/scripts/qA*.sh
+/scripts/smokeA.sh
+/scripts/smokeB.sh
+/scripts/stopA.sh
+/scripts/survey.sh
