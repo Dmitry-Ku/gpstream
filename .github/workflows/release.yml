@@ -30,7 +30,10 @@ jobs:
           export GOPROXY=https://proxy.golang.org,direct
           scripts/package.sh release
         env:
-          GORELEASER_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # goreleaser v1.24 reads GITHUB_TOKEN (NOT GORELEASER_GITHUB_TOKEN)
+          # for the GitHub release publisher — verified locally: with the
+          # GORELEASER_ prefix it fails `missing GITHUB_TOKEN, ...`.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # scripts/package.sh release honors PUBLISH_FLAG: without
           # --publish=github goreleaser only BUILDS and never creates the
           # GitHub release (the default for this CI step is to publish).
