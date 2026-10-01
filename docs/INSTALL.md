@@ -47,8 +47,8 @@ fallback** can resolve that module:
 export GOPROXY=https://proxy.golang.org,direct
 ```
 
-The repository's `env.sh` also sets these (plus `GOFLAGS=-mod=mod`); you can
-source it for a working toolchain environment.
+These are the environment the build is tested against; export the same
+variables (plus `GOFLAGS=-mod=mod`) for a working toolchain environment.
 
 ---
 

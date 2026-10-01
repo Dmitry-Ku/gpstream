@@ -43,3 +43,14 @@ r5probe2
 /scripts/smokeB.sh
 /scripts/stopA.sh
 /scripts/survey.sh
+
+# one-shot / session / testbed-specific artifacts (removed from git 10.10,
+# kept on disk): session change-notes, superseded RC checklists (v1/v2 spec),
+# the executed T30 test plan, dead e2e/env scripts, lab runbook
+/.changes-2026-09-03.md
+/RC-CHECKLIST.md
+/RC-CHECKLIST-v2.md
+/TESTPLAN-30GB-2026-09-30.md
+/e2e.sh
+/env.sh
+/docs/TESTBED-PROVISION-RUNBOOK.md
