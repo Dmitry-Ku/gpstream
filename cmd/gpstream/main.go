@@ -55,6 +55,8 @@ func run(args []string) error {
 		return cmdDryRun(rest)
 	case "run":
 		return cmdRun(rest)
+	case "bench":
+		return cmdBench(rest)
 	case "status":
 		return cmdStatus(rest)
 	case "resume":
@@ -68,7 +70,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		return printHelp()
 	default:
-		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, status, resume, cleanup, selftest, version, help)", cmd)
+		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, bench, status, resume, cleanup, selftest, version, help)", cmd)
 	}
 }
 
@@ -309,7 +311,7 @@ func parseConfig(args []string) (config.Config, error) {
 			cfg.DryRun = true
 		case "--timeout":
 			i++
-			cfg.Timeout = parseDuration(args[i])
+			cfg.MarkTimeoutExplicit(parseDuration(args[i]))
 		case "--plan-file":
 			i++
 			cfg.PlanFile = args[i]
@@ -1452,6 +1454,9 @@ Commands:
   doctor    self-diagnose source/dest clusters
   dry-run   plan the copy without executing
   run       execute the copy (streams source -> dest, no intermediate storage)
+  bench     measure the input stream: stream the selected source tables
+            through the real data path (read -> frame -> compress) and
+            discard the payload (no destination; per-table + total rates)
   status    report operation state (--operation-id <id>)
   resume    resume an interrupted operation (--operation-id <id>)
   cleanup   remove operation state + dest objects (--operation-id <id>
@@ -1515,7 +1520,9 @@ Integrity / consistency:
 Planning / operation:
   --dry-run                        plan the copy without executing (alias of
                                    the dry-run command)
-  --timeout S                      bound plan formation (default 120s)
+  --timeout S                      run/dry-run: bound plan formation (default
+                                   120s); bench: the benchmark wall-time limit
+                                   (default unlimited)
   --plan-file F                    persist the plan JSON (dry-run and run)
   --operation-id id                operation identity (run/status/resume/cleanup)
   --state-dir dir                  state root (default /var/lib/gpstream)

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: `gpstream bench` — input-stream benchmark (F-14)
+
+A new `bench` command measures the source's production rate *before* the
+data leaves for the destination: it streams the selected tables through the
+real data path (`COPY ... TO STDOUT` -> frame v2 -> compression -> adaptive
+rate limiter) and discards the payload instead of writing a staging table.
+Only the source cluster is used (`--dest`, if given, is ignored); all
+selection/performance options (CLI > env > toml) are honored exactly as for
+`run`. Per-table and total rows, wire/logical bytes, elapsed time and MB/s
+are printed to the screen. `--timeout S` is the benchmark's wall-time limit
+(unlimited when not passed — a benchmark capped by default would truncate
+the number it reports).
+
+Use it to decide `--workers` / `--rate-limit` against the input ceiling:
+if `bench` is already slower than the link, the destination is never the
+bottleneck.
+
+Unit tests: TestBenchSelectsSourceTables / TestBenchHonorsSelectionFlags /
+TestBenchEmptySelection / TestBenchAllStreamsAndDiscards /
+TestBenchAllTimeoutCutsShort / TestBenchAllEmptyUnits.
+
 ### Fix: overwrite drop of a destination table referenced by foreign keys
 ### (F-02/F-11, non-deterministic under parallel workers)
 

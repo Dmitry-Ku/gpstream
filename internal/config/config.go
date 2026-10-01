@@ -169,9 +169,15 @@ type Config struct {
 	DestFromFile   bool `toml:"-"`
 
 	// Dry-run / planning (FR-10).
-	DryRun   bool
-	Timeout  time.Duration // plan formation, default 60s
-	PlanFile string
+	DryRun  bool
+	Timeout time.Duration // plan formation, default 60s
+	// benchTimeoutExplicit is true when --timeout was passed explicitly on the
+	// command line: for the input-stream benchmark (bench) it then means the
+	// benchmark wall-time limit (unlimited when not passed). run/dry-run keep
+	// their plan-phase default. Not mapped from file/env (CLI-only, like
+	// --consistent-db's explicit marker).
+	benchTimeoutExplicit bool
+	PlanFile             string
 
 	// Observability (FR-04). When set, copy serves Prometheus metrics here.
 	MetricsAddr string
@@ -256,6 +262,25 @@ func Default() Config {
 func (c *Config) RequestConsistentDB() {
 	c.ConsistentDB = true
 	c.consistentDBExplicit = true
+}
+
+// MarkTimeoutExplicit records an explicit --timeout from the CLI. The CLI
+// layer calls it when the flag is present; the file/env layers set Timeout
+// directly and leave the marker false.
+func (c *Config) MarkTimeoutExplicit(d time.Duration) {
+	c.Timeout = d
+	c.benchTimeoutExplicit = true
+}
+
+// BenchTimeout returns the wall-time limit for the input-stream benchmark:
+// the explicit --timeout when the operator passed it, 0 (no limit) otherwise.
+// A benchmark is a measurement, not a plan: capping it by default would
+// truncate the very number it reports.
+func (c *Config) BenchTimeout() time.Duration {
+	if c.benchTimeoutExplicit {
+		return c.Timeout
+	}
+	return 0
 }
 
 // Validate reports configuration errors that are independent of the live

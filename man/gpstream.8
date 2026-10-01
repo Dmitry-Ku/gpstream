@@ -22,6 +22,19 @@ Execute the copy: stream source to dest with no intermediate storage.
 .B dry-run
 Plan the copy without executing (\fB--timeout\fR S bounds the plan; \fB--plan-file\fR F emits it).
 .TP
+.B bench
+Measure the input stream: stream the selected source tables through the real
+data path (\fBCOPY ... TO STDOUT\fR \-> frame v2 \-> compression \->
+adaptive rate limiter) and discard the payload instead of writing a
+destination. It reports the source's production rate \emph{before} the
+network/destination hop, so the operator can size \fB--workers\fR and
+\fB--rate-limit\fR against the input ceiling. Only the source is used;
+\fB--dest\fR (if given) is ignored. Per-table and total rows, wire and
+logical bytes, elapsed and MB/s are printed. \fB--timeout\fR S is the
+benchmark wall-time limit (unlimited when not passed); all other
+selection/performance options (CLI > env > toml) are honored exactly as for
+\fBrun\fR.
+.TP
 .B status
 Report operation state (\fB--operation-id\fR id).
 .TP
@@ -240,7 +253,9 @@ continue (default) finishes the rest after a failed unit; abort stops the run.
 .TP
 .BR --timeout
 S
-Bounds plan formation (default 120s).
+\fBrun\fR/\fBdry-run\fR: bounds plan formation (default 120s).
+\fBbench\fR: the benchmark wall-time limit, unlimited when not passed
+(a benchmark capped by default would truncate the number it reports).
 .TP
 .BR --plan-file
 F

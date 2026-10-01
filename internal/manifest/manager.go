@@ -44,9 +44,15 @@ import (
 
 // Manager orchestrates a copy across the planned units.
 type Manager struct {
-	cfg     *config.Config
-	srcQ    pg.StreamingQuerier
-	dstQ    pg.StreamingQuerier
+	cfg  *config.Config
+	srcQ pg.StreamingQuerier
+	dstQ pg.StreamingQuerier
+	// bench is true for the input-stream benchmark (cmdBench, F-14): the data
+	// path streams the source through the real frame/compress/pacer pipeline
+	// but discards the payload instead of copying it to the destination, so
+	// the operator measures the input stream's throughput (source read +
+	// frame + compress) without a destination.
+	bench   bool
 	src     *source.Agent
 	dst     *dest.Agent
 	journal *Journal
@@ -186,6 +192,16 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 			return m.recvRec.AvgMs(time.Second)
 		})
 	}
+	return m
+}
+
+// Bench returns a Manager configured for the input-stream benchmark
+// (F-14, cmdBench): the data path is the real run pipeline (frame v2 +
+// compression + adaptive rate limiter + snapshot modes), but the read side
+// discards the payload instead of writing a staging table, and no
+// destination connection is used. The destination agent/journal are inert.
+func (m *Manager) Bench() *Manager {
+	m.bench = true
 	return m
 }
 
@@ -1465,6 +1481,13 @@ func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *comp
 // transport instead: the kernel streams one framed slice per primary segment
 // to the controller listener, which merges them into the same pipe.
 func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe, us unitSource) (int64, uint64, uint64, error) {
+	// Bench (F-14) always measures the canonical coordinator read path
+	// (COPY ... TO STDOUT -> frame v2 -> compress -> discard), regardless of
+	// --copy-mode: it is the deterministic "source read" measurement and never
+	// touches the destination. on_segment is not exercised in bench mode.
+	if m.bench {
+		return m.copyStreamBench(ctx, t, us, fp)
+	}
 	if m.cfg.CopyMode == config.CopyOnSegment {
 		// The segment-direct path builds its own framed pipe (the merged slice
 		// stream); the coordinator pipe the caller pre-created is unused, so
@@ -1538,6 +1561,85 @@ func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging
 	// The destination is authoritative for the row count (it wrote the table).
 	wire, logical := fp.Stats()
 	return dstRows, wire, logical, nil
+}
+
+// copyStreamBench is the input-stream benchmark data path (F-14): the source
+// streams the table through the real pipeline (COPY ... TO STDOUT -> frame
+// v2 + compression + the adaptive rate limiter), and a goroutine drains the
+// read side and DISCARDS the payload instead of writing a staging table.
+// The measured wall time is therefore the input stream's production rate:
+// source read + framing + compression (+ throttling), with no destination
+// copy, no network to the destination, and no DDL. Row counts come from the
+// driver's COPY command tag.
+func (m *Manager) copyStreamBench(ctx context.Context, t plan.Table, us unitSource, fp *transfer.FramedPipe) (int64, uint64, uint64, error) {
+	var (
+		rows   int64
+		dstErr error
+		srcErr error
+		wg     sync.WaitGroup
+	)
+	wg.Add(2)
+
+	// Reader: drain the framed stream, discarding the payload, until EOF.
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				dstErr = fmt.Errorf("benchmark drain panic: %v", r)
+			}
+		}()
+		if err := m.benchDrain(fp); err != nil && !isEOF(err) {
+			dstErr = err
+			_ = fp.Abort()
+		}
+	}()
+
+	// Source: identical to the run path (paced writer + Close on exit).
+	srcW := m.pacedWriter(fp)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			_ = fp.Close()
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				srcErr = fmt.Errorf("source copy panic: %v", r)
+			}
+		}()
+		n, err := us.agent.CopyToStream(ctx, t.Schema, t.Name, srcW)
+		if err != nil && !isEOF(err) {
+			srcErr = err
+		} else {
+			rows = n
+		}
+	}()
+
+	wg.Wait()
+	if dstErr != nil {
+		return 0, 0, 0, fmt.Errorf("bench drain: %w", dstErr)
+	}
+	if srcErr != nil {
+		return 0, 0, 0, fmt.Errorf("source copy: %w", srcErr)
+	}
+	wire, logical := fp.Stats()
+	return rows, wire, logical, nil
+}
+
+// benchDrain reads the framed pipe to EOF, discarding every byte. It is the
+// stand-in for the destination COPY in the input-stream benchmark: it must
+// consume at full speed so the source side is never back-pressured by a slow
+// discarder, but it does no DDL and writes nothing.
+func (m *Manager) benchDrain(fp *transfer.FramedPipe) error {
+	buf := make([]byte, 128*1024)
+	for {
+		_, err := fp.Read(buf)
+		if err != nil {
+			if isEOF(err) {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 // copyStreamSegmentDirect is the segment-direct data path (T-B, Fallback B).
