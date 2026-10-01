@@ -31,6 +31,10 @@ jobs:
           scripts/package.sh release
         env:
           GORELEASER_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # scripts/package.sh release honors PUBLISH_FLAG: without
+          # --publish=github goreleaser only BUILDS and never creates the
+          # GitHub release (the default for this CI step is to publish).
+          PUBLISH_FLAG: --publish=github
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
