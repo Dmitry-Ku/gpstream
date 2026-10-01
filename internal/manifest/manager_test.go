@@ -394,7 +394,9 @@ func TestManagerRunBuildsIndexesAfterSwap(t *testing.T) {
 }
 
 // TestManagerRunIndexesHonourRename rewrites the source name in the index
-// definition to the destination name (FR-11 + F-17).
+// definition to the destination name (FR-11 + F-17). On a rename the index
+// NAME is rewritten too (index names are unique per schema): orders_id_idx
+// on orders -> orders_v2_id_idx on orders_v2.
 func TestManagerRunIndexesHonourRename(t *testing.T) {
 	cfg := config.Default()
 	payload := []byte("BINARY-COPY-ROW-BATCH")
@@ -408,7 +410,7 @@ func TestManagerRunIndexesHonourRename(t *testing.T) {
 	}
 	found := false
 	for _, sql := range dst.Queried() {
-		if strings.Contains(sql, "CREATE INDEX orders_id_idx") && strings.Contains(sql, `s_new.orders_v2`) {
+		if strings.Contains(sql, "CREATE INDEX orders_v2_id_idx") && strings.Contains(sql, `s_new.orders_v2`) {
 			found = true
 		}
 	}

@@ -437,15 +437,21 @@ func splitQualifiedName(name string) (schema, base string) {
 //
 // Each definition from the source (pg_get_indexdef) references the SOURCE
 // schema/table names; for a rename (FR-11) they are rewritten to the
-// destination names before the statement is issued. The index name itself is
-// kept verbatim, so applying the same definition twice is idempotent: the
-// second pass detects the existing index and falls back to REINDEX (which
-// also makes a resume after a crash in the index phase safe — no duplicates,
-// F-17). Definitions are applied in the order the caller provides them; the
-// pool passes secondary indexes first and PK/unique last (F-17).
+// destination names before the statement is issued. Index names are unique
+// PER SCHEMA, so for a rename the index name itself is rewritten to the
+// destination table's naming (destIndexName): the source name may already be
+// taken by another table in the destination schema (e.g. a prior full copy of
+// the source table), and keeping it verbatim would either fail or silently
+// match the wrong table. On a non-rename (src == dst) the name is kept
+// verbatim, so applying the same definition twice is idempotent: the second
+// pass detects the existing index and falls back to REINDEX (which also makes
+// a resume after a crash in the index phase safe — no duplicates, F-17).
+// Definitions are applied in the order the caller provides them; the pool
+// passes secondary indexes first and PK/unique last (F-17).
 func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
 	for _, d := range defs {
 		def := d.Def
+		name := d.Name
 		// Rewrite the source names to the destination names (no-op when the
 		// unit is not renamed, i.e. src == dst).
 		if srcSchema != schema || srcTable != table {
@@ -455,20 +461,45 @@ func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, src
 			def = strings.ReplaceAll(def, srcSchema+"."+srcTable, schema+"."+table)
 			def = strings.ReplaceAll(def, quoteIdent(srcSchema)+"."+quoteIdent(srcTable),
 				quoteIdent(schema)+"."+quoteIdent(table))
+			// Rewrite the index name (CREATE [UNIQUE] INDEX <name> ON ...):
+			// the source name may be taken by another table in the destination
+			// schema, and the existence check below is scoped to this table.
+			name = destIndexName(d.Name, srcTable, table)
+			def = strings.ReplaceAll(def, "INDEX "+d.Name+" ON ", "INDEX "+name+" ON ")
+			def = strings.ReplaceAll(def, "INDEX "+quoteIdent(d.Name)+" ON ", "INDEX "+quoteIdent(name)+" ON ")
 		}
-		if err := a.createOneIndex(ctx, schema, table, d.Name, def); err != nil {
-			return fmt.Errorf("create index %s on %s.%s: %w", d.Name, schema, table, err)
+		if err := a.createOneIndex(ctx, schema, table, name, def); err != nil {
+			return fmt.Errorf("create index %s on %s.%s: %w", name, schema, table, err)
 		}
 	}
 	return nil
 }
 
+// destIndexName rewrites a source index name to its destination name when the
+// table is renamed (FR-11). Index names are unique per schema, so the source
+// name may collide with another table's index already on the destination
+// (e.g. a prior full copy of the source table). The rule is deterministic:
+// a leading <srcTable> prefix (exact name, or followed by an underscore) is
+// replaced by the destination table name (t_m1_pkey on t_m1 -> t_m1_demo_pkey
+// on t_m1_demo); any other name gets the destination table name prefixed
+// (idx_c3 -> t_m1_demo_idx_c3).
+func destIndexName(srcName, srcTable, dstTable string) string {
+	if srcName == srcTable || strings.HasPrefix(srcName, srcTable+"_") {
+		return dstTable + srcName[len(srcTable):]
+	}
+	return dstTable + "_" + srcName
+}
+
 // createOneIndex applies a single index definition, idempotently (F-17). It
-// first checks whether the index already exists; if so it REINDEXes it by name
-// (the index exists but its data may be stale after a crash mid-build).
-// Otherwise it issues the (rewritten) CREATE INDEX definition.
+// first checks whether the index already exists ON THIS TABLE; if so it
+// REINDEXes it by name (the index exists but its data may be stale after a
+// crash mid-build). Otherwise it issues the (rewritten) CREATE INDEX
+// definition. The existence check is scoped to schema.table: index names are
+// unique per schema, so a name-only check would match a different table's
+// index in the same schema and REINDEX the wrong table instead of building
+// the index (F-17).
 func (a *Agent) createOneIndex(ctx context.Context, schema, table, name, def string) error {
-	if a.indexExists(ctx, schema, name) {
+	if a.indexExists(ctx, schema, table, name) {
 		_, err := a.q.Exec(ctx, fmt.Sprintf(`REINDEX INDEX %s`, quoteIdent(schema)+"."+quoteIdent(name)))
 		if err != nil {
 			return fmt.Errorf("reindex existing %s.%s: %w", schema, name, err)
@@ -479,12 +510,20 @@ func (a *Agent) createOneIndex(ctx context.Context, schema, table, name, def str
 	return err
 }
 
-// indexExists reports whether an index named name exists in schema.
-func (a *Agent) indexExists(ctx context.Context, schema, name string) bool {
+// indexExists reports whether an index named name exists on schema.table.
+// It joins pg_index (indrelid) so an index of the same name on ANOTHER table
+// in the schema does not count (see createOneIndex).
+func (a *Agent) indexExists(ctx context.Context, schema, table, name string) bool {
 	rows, err := a.q.Query(ctx,
-		`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-		 WHERE c.relname=$1 AND n.nspname=$2 AND c.relkind='i'`,
-		name, schema)
+		`SELECT 1 FROM pg_class c
+		  JOIN pg_namespace n ON n.oid = c.relnamespace
+		  JOIN pg_index i ON i.indexrelid = c.oid
+		  JOIN pg_class t ON t.oid = i.indrelid
+		  JOIN pg_namespace nt ON nt.oid = t.relnamespace
+		 WHERE c.relname = $1 AND n.nspname = $2
+		   AND t.relname = $3 AND nt.nspname = $2
+		   AND c.relkind = 'i'`,
+		name, schema, table)
 	if err != nil || len(rows) == 0 {
 		return false
 	}

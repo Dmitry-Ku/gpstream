@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed: map-table index builds — wrong-table REINDEX and name collisions
+
+Two defects in the background index build (F-17) for renamed tables
+(`--map-table`), found by a live B→C copy where the destination already
+carried a prior full copy of the same source table:
+
+- The existence check matched an index by **name + schema only**, so an
+  index of the same name on *another* table in the destination schema
+  (the prior copy) was treated as "already built" and `REINDEX`ed — while
+  the renamed table itself was left with **no indexes and no primary key**,
+  yet journaled `index_done: true`. The check is now scoped to the target
+  table via `pg_index.indrelid`.
+- Index names are unique **per schema**, so keeping the source name on a
+  renamed table would collide with the other table's index. On a rename the
+  index name is now rewritten to the destination table's naming
+  (`t_m1_pkey` on `t_m1` → `t_m1_demo_pkey` on `t_m1_demo`; a name with no
+  `<table>_` prefix gets the destination table name prefixed).
+
+Tests: TestIndexRenameCollisionOnLivePG (integration, two real PG instances),
+TestCreateIndexesRenameCollision / TestIndexExistsScopedToTable /
+TestDestIndexName (unit); TestCreateIndexesNew and
+TestManagerRunIndexesHonourRename updated for the renamed index names.
+
 ### Changed: `--overwrite` always rewrites; `--verify` is now `on`/`off` (default `off`)
 
 Removed the pre-copy identical-data shortcut on `--overwrite`. Previously a

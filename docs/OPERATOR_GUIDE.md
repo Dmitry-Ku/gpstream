@@ -401,6 +401,13 @@ Indexes are rebuilt in the **background** as units land (F-17) by default, so
 index builds do not contend with the bulk copy. There is **no separate
 `indexes` subcommand** — index work is part of `run`.
 
+When a table is renamed (`--map-table`), its index names are rewritten to the
+destination table's naming (index names are unique per schema, so the source
+names may already be taken by another table on the destination):
+`t_m1_pkey` on `t_m1` → `t_m1_demo_pkey` on `t_m1_demo`. An index name with no
+`<table>_` prefix gets the destination table name prefixed (`idx_c3` →
+`t_m1_demo_idx_c3`).
+
 ---
 
 ## 13. Honest caveats (live stand)

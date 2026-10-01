@@ -282,15 +282,27 @@ func TestCreateIndexesNew(t *testing.T) {
 	sawCreate := 0
 	for _, sql := range q {
 		if strings.Contains(sql, "CREATE INDEX") || strings.Contains(sql, "CREATE UNIQUE INDEX") {
-			// A rename must be rewritten to the destination names.
+			// A rename must be rewritten to the destination table name AND
+			// the destination index names (unique per schema).
 			if !strings.Contains(sql, "s_new.orders_v2") {
-				t.Fatalf("index definition not rewritten to destination names: %q", sql)
+				t.Fatalf("index definition not rewritten to destination table: %q", sql)
+			}
+			if strings.Contains(sql, "INDEX orders_customer_idx ON") || strings.Contains(sql, "INDEX orders_pkey ON") {
+				t.Fatalf("index name not rewritten to the destination name: %q", sql)
 			}
 			sawCreate++
 		}
 	}
 	if sawCreate != 2 {
 		t.Fatalf("expected 2 CREATE INDEX statements, saw %d in %v", sawCreate, q)
+	}
+	// The rewritten names follow the dest-table rule: orders_v2_customer_idx /
+	// orders_v2_pkey.
+	if !strings.Contains(strings.Join(q, " "), "CREATE INDEX orders_v2_customer_idx ON s_new.orders_v2") {
+		t.Fatalf("secondary index name not rewritten: %v", q)
+	}
+	if !strings.Contains(strings.Join(q, " "), "CREATE UNIQUE INDEX orders_v2_pkey ON s_new.orders_v2") {
+		t.Fatalf("pkey index name not rewritten: %v", q)
 	}
 }
 
@@ -338,6 +350,69 @@ func TestCreateIndexesIdempotent(t *testing.T) {
 	}
 	if sawCreate {
 		t.Fatalf("must not re-create an existing index (duplicates): %v", q)
+	}
+}
+
+// TestCreateIndexesRenameCollision verifies the F-17/F-11 fix: when the
+// destination schema ALREADY holds an index with the source name on a
+// DIFFERENT table (e.g. a prior full copy of the source table), the build
+// for the renamed table must not REINDEX that foreign index — the existence
+// check is scoped to the target table, so the index is created under its
+// rewritten name.
+func TestCreateIndexesRenameCollision(t *testing.T) {
+	f := pg.NewFakeConn()
+	// indexExists (now scoped to the table) finds nothing on orders_v2.
+	f.On("pg_index", [][]any{})
+	a := mkAgent(f)
+	defs := []pg.IndexDef{{Name: "orders_pkey", PK: true, Def: `CREATE UNIQUE INDEX orders_pkey ON public.orders (id)`}}
+	if err := a.CreateIndexes(context.Background(), "public", "orders_v2", "public", "orders", defs); err != nil {
+		t.Fatalf("create indexes: %v", err)
+	}
+	q := f.Queried()
+	for _, sql := range q {
+		if strings.Contains(sql, "REINDEX") {
+			t.Fatalf("must not REINDEX a foreign table's index: %v", q)
+		}
+	}
+	if !strings.Contains(strings.Join(q, " "), "CREATE UNIQUE INDEX orders_v2_pkey ON public.orders_v2") {
+		t.Fatalf("index not created under the rewritten name: %v", q)
+	}
+}
+
+// TestIndexExistsScopedToTable verifies the existence check is scoped to the
+// table: an index of the same name on ANOTHER table in the schema does not
+// count (the F-17 wrong-table REINDEX regression).
+func TestIndexExistsScopedToTable(t *testing.T) {
+	f := pg.NewFakeConn()
+	// No index on THIS table (the scoped query returns empty).
+	f.On("pg_index", [][]any{})
+	a := mkAgent(f)
+	if a.indexExists(context.Background(), "public", "orders_v2", "orders_pkey") {
+		t.Fatalf("indexExists must be false when the index belongs to another table")
+	}
+	// The same name exists on the target table -> true.
+	f2 := pg.NewFakeConn()
+	f2.On("pg_index", [][]any{{1}})
+	a2 := mkAgent(f2)
+	if !a2.indexExists(context.Background(), "public", "orders", "orders_pkey") {
+		t.Fatalf("indexExists must be true for an index on the target table")
+	}
+}
+
+// TestDestIndexName verifies the deterministic rename rule for index names.
+func TestDestIndexName(t *testing.T) {
+	cases := []struct{ src, srcT, dstT, want string }{
+		{"t_m1_pkey", "t_m1", "t_m1_demo", "t_m1_demo_pkey"},
+		{"t_m1_i_c3", "t_m1", "t_m1_demo", "t_m1_demo_i_c3"},
+		{"orders_id_idx", "orders", "orders_v2", "orders_v2_id_idx"},
+		{"idx_c3", "t_m1", "t_m1_demo", "t_m1_demo_idx_c3"},
+		{"t_m1", "t_m1", "t_m1_demo", "t_m1_demo"},
+		{"t_m1x_pkey", "t_m1", "t_m1_demo", "t_m1_demo_t_m1x_pkey"}, // no prefix match
+	}
+	for _, c := range cases {
+		if got := destIndexName(c.src, c.srcT, c.dstT); got != c.want {
+			t.Fatalf("destIndexName(%q, %q, %q) = %q, want %q", c.src, c.srcT, c.dstT, got, c.want)
+		}
 	}
 }
 
