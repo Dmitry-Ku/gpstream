@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -852,7 +851,7 @@ func orDash(s string) string {
 // cannot be parsed. Display only — the plan hash (and job identity) still
 // uses the plan's Pairs.
 func runPairsLine(cfg config.Config, fallback []string) string {
-	src, dst := dsnHostPortLabel(cfg.Source), dsnHostPortLabel(cfg.Dest)
+	src, dst := pg.DSNHostPort(cfg.Source), pg.DSNHostPort(cfg.Dest)
 	if src == "" || dst == "" {
 		return strings.Join(fallback, ", ")
 	}
@@ -861,32 +860,6 @@ func runPairsLine(cfg config.Config, fallback []string) string {
 
 // dsnHostPortLabel extracts "host:port" from a Postgres DSN (URL or
 // key=value form) without exposing credentials.
-func dsnHostPortLabel(dsn string) string {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return ""
-	}
-	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
-		return u.Host
-	}
-	host, port := "", "5432"
-	for _, kv := range strings.Fields(dsn) {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "host":
-			host = v
-		case "port":
-			port = v
-		}
-	}
-	if host == "" {
-		return ""
-	}
-	return host + ":" + port
-}
 
 func humanDurationSec(sec int) string {
 	if sec <= 0 {

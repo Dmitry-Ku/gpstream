@@ -81,7 +81,7 @@ type Table struct {
 type Plan struct {
 	Units       []Table         `json:"units"`
 	TotalBytes  int64           `json:"total_bytes"`
-	Pairs       []string        `json:"pairs"` // host-pairs, e.g. "src-host1:5432->dst-host2:5432"
+	Pairs       []string        `json:"pairs"` // coordinator host-pairs, real "host:port" from the DSNs (no credentials)
 	WorkPerPair int             `json:"work_per_pair"`
 	ETASeconds  int             `json:"eta_seconds"`
 	Redistrib   Redistribution  `json:"redistribution"`  // FR-15 accounting
@@ -1176,10 +1176,20 @@ func distKey(ctx context.Context, q pg.Querier) string {
 }
 
 func hostPairs(cfg *config.Config) []string {
-	// The real planner reads gp_segment_hostnames() from both clusters and
-	// pairs source segment hosts with destination segment hosts (FR-10).
-	// Here we emit the canonical single-pair shape; M2 expands to N pairs.
-	return []string{"source-host:5432->dest-host:5432"}
+	// The coordinator pair, as real "host:port" labels derived from the
+	// DSNs (pg.DSNHostPort returns only host+port — never user/password,
+	// so the plan JSON carries no credentials). The per-segment pairing
+	// (FR-10) is summarized by the Route block; this is the coordinator
+	// hop every copy mode starts from.
+	src := pg.DSNHostPort(cfg.Source)
+	dst := pg.DSNHostPort(cfg.Dest)
+	if src == "" {
+		src = "unknown"
+	}
+	if dst == "" {
+		dst = "unknown"
+	}
+	return []string{src + "->" + dst}
 }
 
 // hash produces the deterministic plan hash (FR-10/CR-4). It is a pure

@@ -56,6 +56,7 @@ func TestCopyEndToEnd(t *testing.T) {
 	cfg := config.Default()
 	cfg.Source = "src"
 	cfg.Dest = "dst"
+	cfg.Verify = config.VerifyOn // this test asserts a verified checksum
 	p, err := plan.Build(ctx, &cfg, src, dst)
 	if err != nil {
 		t.Fatalf("plan.Build: %v", err)

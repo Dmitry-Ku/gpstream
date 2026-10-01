@@ -221,7 +221,6 @@ func (a *Agent) Verify(ctx context.Context, schema, stagingName, wantChecksum st
 	return true, rows, nil
 }
 
-
 // toStr converts a catalog value (any) to a string, tolerating the []byte
 // form some drivers return.
 func toStr(v any) string {

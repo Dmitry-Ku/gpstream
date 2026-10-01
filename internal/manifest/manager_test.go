@@ -316,7 +316,7 @@ func TestIsEOF(t *testing.T) {
 // for the statMu guard: under `go test -race` an unguarded write would fail.
 func TestManagerParallelConcurrentStats(t *testing.T) {
 	cfg := config.Default()
-	cfg.WorkersPerPair = 4 // force a real multi-goroutine worker pool (FR-03)
+	cfg.WorkersPerPair = 4       // force a real multi-goroutine worker pool (FR-03)
 	cfg.Verify = config.VerifyOn // 6 verified units: 6 Comps
 	payload := []byte("BATCH-ROW")
 	m, j := newManager(t, &cfg, payload, payload)

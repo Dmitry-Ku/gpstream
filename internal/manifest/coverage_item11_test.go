@@ -298,23 +298,23 @@ func TestSplitDotNoDot(t *testing.T) {
 
 // TestDSNHostPort covers dsnHostPort's URL and key/value forms.
 func TestDSNHostPort(t *testing.T) {
-	if dsnHostPort("") != "" {
+	if pg.DSNHostPort("") != "" {
 		t.Error("empty DSN: want empty host:port")
 	}
 	// URL form.
-	if got := dsnHostPort("postgres://u@dbhost:5433/db"); got != "dbhost:5433" {
+	if got := pg.DSNHostPort("postgres://u@dbhost:5433/db"); got != "dbhost:5433" {
 		t.Errorf("URL form = %q; want dbhost:5433", got)
 	}
 	// key/value form (host + explicit port).
-	if got := dsnHostPort("host=kvhost port=6543 user=u"); got != "kvhost:6543" {
+	if got := pg.DSNHostPort("host=kvhost port=6543 user=u"); got != "kvhost:6543" {
 		t.Errorf("kv form = %q; want kvhost:6543", got)
 	}
 	// key/value form (host only -> default port 5432).
-	if got := dsnHostPort("host=onlyport user=u"); got != "onlyport:5432" {
+	if got := pg.DSNHostPort("host=onlyport user=u"); got != "onlyport:5432" {
 		t.Errorf("kv host-only = %q; want onlyport:5432", got)
 	}
 	// No host at all -> empty.
-	if got := dsnHostPort("user=u dbname=d"); got != "" {
+	if got := pg.DSNHostPort("user=u dbname=d"); got != "" {
 		t.Errorf("no host = %q; want empty", got)
 	}
 }
@@ -336,7 +336,6 @@ func TestConflictErrorString(t *testing.T) {
 		t.Errorf("ConflictError.Error = %q; want it to name s.t and say conflict", e.Error())
 	}
 }
-
 
 // TestEstablishSnapshotBranches covers establishSnapshot's mutually-exclusive
 // early return and the beginSnapshotTx-failure degrade path.

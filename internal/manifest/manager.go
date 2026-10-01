@@ -737,7 +737,6 @@ func (m *Manager) addFailure() {
 	m.statMu.Unlock()
 }
 
-
 // ConflictError is returned (FR-10 §8, strict default) when a unit collides
 // with an object that already exists on the destination and no conflict
 // policy was given. The run STOPS with this error so the operator sees the
@@ -767,7 +766,7 @@ func unitTableKey(u *Unit) string {
 // the two connection DSNs (host:port only, no credentials). Empty when either
 // DSN cannot be parsed.
 func hostPairLabel(srcDSN, dstDSN string) string {
-	s, d := dsnHostPort(srcDSN), dsnHostPort(dstDSN)
+	s, d := pg.DSNHostPort(srcDSN), pg.DSNHostPort(dstDSN)
 	if s == "" || d == "" {
 		return ""
 	}
@@ -776,32 +775,6 @@ func hostPairLabel(srcDSN, dstDSN string) string {
 
 // dsnHostPort extracts "host:port" from a Postgres DSN (URL or key/value form),
 // without exposing credentials.
-func dsnHostPort(dsn string) string {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return ""
-	}
-	if u, err := url.Parse(dsn); err == nil && u.Host != "" {
-		return u.Host
-	}
-	host, port := "", "5432"
-	for _, kv := range strings.Fields(dsn) {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "host":
-			host = v
-		case "port":
-			port = v
-		}
-	}
-	if host == "" {
-		return ""
-	}
-	return host + ":" + port
-}
 
 // setUnitState transitions a unit to a new state: it updates the in-memory
 // unit, journals it (the durable record), and moves the FR-04 per-status /

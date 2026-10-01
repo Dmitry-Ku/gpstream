@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 var tsIDRe = regexp.MustCompile(`^\d{8}T\d{6}Z(-\d+)?$`)
@@ -165,8 +166,8 @@ func TestDSNHostPortLabel(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		if got := dsnHostPortLabel(c.in); got != c.want {
-			t.Errorf("dsnHostPortLabel(%q) = %q, want %q", c.in, got, c.want)
+		if got := pg.DSNHostPort(c.in); got != c.want {
+			t.Errorf("pg.DSNHostPort(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

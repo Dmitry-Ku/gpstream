@@ -67,12 +67,12 @@ func TestManagerResolve(t *testing.T) {
 	// verify follows --verify (default off): the post-copy content check is
 	// opt-in, independent of the conflict policy.
 	cases := []struct {
-		action                config.ConflictAction
-		verify                config.VerifyMode
-		inPlace, trun, expV   bool
+		action              config.ConflictAction
+		verify              config.VerifyMode
+		inPlace, trun, expV bool
 	}{
-		{config.Stop, config.VerifyOff, false, false, false},   // default: no verify
-		{config.Stop, config.VerifyOn, false, false, true},     // verify on
+		{config.Stop, config.VerifyOff, false, false, false},      // default: no verify
+		{config.Stop, config.VerifyOn, false, false, true},        // verify on
 		{config.Overwrite, config.VerifyOff, false, false, false}, // staging + swap
 		{config.Overwrite, config.VerifyOn, false, false, true},
 		{config.Truncate, config.VerifyOff, true, true, false},
