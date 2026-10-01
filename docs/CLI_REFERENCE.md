@@ -189,7 +189,11 @@ Conflict policy semantics:
   clobbered, nothing is silently skipped.
 - **`skip`** — the conflicting unit is skipped and the run continues.
 - **`overwrite`** — copy to a staging table and swap over the final (verified
-  before the swap).
+  before the swap). If the destination table is referenced by foreign keys on
+  other destination tables (a prior run's restored FK set, or an operator
+  table), the dependent FK constraints are dropped before the swap (equivalent
+  to `DROP ... CASCADE` for the constraints — the source FK set is re-applied
+  in the post-load restore pass, F-11).
 - **`truncate`** — copy in-place into the final table after `TRUNCATE`, verify.
 
 ### Performance (F-01/F-12/F-14)

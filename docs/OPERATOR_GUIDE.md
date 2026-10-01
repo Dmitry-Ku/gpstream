@@ -102,7 +102,7 @@ operator decides deliberately.
 |----------------------|---------|---------|
 | `stop` | **default** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
 | `skip` | — | Skip conflicting objects and continue; they are reported in `conflicts.jsonl`. |
-| `overwrite` | — | Replace the destination object (staging + atomic swap, verified before the swap). |
+| `overwrite` | — | Replace the destination object (staging + atomic swap, verified before the swap). Dependent foreign keys on other destination tables are dropped before the swap and re-applied from the source after the load (F-11). |
 | `truncate` | — | Truncate then reload (in-place). |
 
 `--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding

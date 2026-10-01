@@ -111,7 +111,10 @@ Conflict policy. Default
 .B skip
 skips conflicting units (logged to conflicts.jsonl);
 .B overwrite
-= staging + verify + atomic swap;
+= staging + verify + atomic swap (a destination table that is
+referenced by foreign keys on other destination tables has those dependent FK
+constraints dropped before the swap; the source FK set is re-applied after the
+load, F-11);
 .B truncate
 = in-place after TRUNCATE.
 .TP

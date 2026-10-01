@@ -239,6 +239,67 @@ func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, err
 	return d.Sum()
 }
 
+// toStr converts a catalog value (any) to a string, tolerating the []byte
+// form some drivers return.
+func toStr(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return fmt.Sprint(v)
+}
+
+// dropDependentFKs removes the foreign-key constraints on OTHER destination
+// tables that reference schema.table. It is called by Swap before the
+// overwrite DROP so the drop cannot be blocked by a pg_depend entry (2BP01).
+//
+// A foreign key is a dependency on the *referenced* table: con.confrelid is
+// the referenced table's oid, con.conrelid is the referencing (child) table
+// that carries the constraint. We enumerate every 'f' constraint whose
+// confrelid is schema.table and drop it from its child table. Self-
+// referencing FKs (the child is the table itself) are included and harmless
+// — the table is being dropped anyway, and removing them first keeps the
+// drop deterministic regardless of worker order.
+//
+// The drop is idempotent and lossless for the migration set: the manager's
+// restoreConstraints re-applies the source FK definitions after the data
+// path (manager.go). An FK owned by a table OUTSIDE the migration set is not
+// re-applied (its referenced table's oid changed) — matching DROP ... CASCADE
+// semantics for the constraint, which is the operator's explicit choice when
+// opting into --overwrite.
+func (a *Agent) dropDependentFKs(ctx context.Context, schema, table string) error {
+	rows, err := a.q.Query(ctx,
+		`SELECT n.nspname, c.relname, con.conname
+		   FROM pg_constraint con
+		   JOIN pg_class ref ON ref.oid = con.confrelid
+		   JOIN pg_namespace rns ON rns.oid = ref.relnamespace
+		   JOIN pg_class c ON c.oid = con.conrelid
+		   JOIN pg_namespace n ON n.oid = con.connamespace
+		  WHERE rns.nspname = $1 AND ref.relname = $2 AND con.contype = 'f'
+		  ORDER BY n.nspname, c.relname, con.conname`,
+		schema, table)
+	if err != nil {
+		// A catalog fault: do not cascade silently. Treat as "no dependent FKs"
+		// and let the DROP itself surface a clear error if one actually blocks
+		// (consistent with constraintExists / sequenceExists).
+		return nil
+	}
+	for _, r := range rows {
+		if len(r) < 3 {
+			continue
+		}
+		childSchema, childTable, conName := toStr(r[0]), toStr(r[1]), toStr(r[2])
+		if _, err := a.q.Exec(ctx, fmt.Sprintf(
+			`ALTER TABLE %s.%s DROP CONSTRAINT %s`,
+			quoteIdent(childSchema), quoteIdent(childTable), quoteIdent(conName))); err != nil {
+			return fmt.Errorf("drop constraint %s on %s.%s: %w", conName, childSchema, childTable, err)
+		}
+	}
+	return nil
+}
+
 // Swap atomically renames the staging table to its final name in the same
 // schema (FR-02). Because the staging and final tables share a schema, the
 // rename is a single statement and therefore atomic. If the final table
@@ -246,6 +307,20 @@ func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, err
 // otherwise the swap fails (stop default).
 func (a *Agent) Swap(ctx context.Context, schema, table, stagingName string, overwrite bool) error {
 	if overwrite {
+		// The destination table may be referenced by foreign keys that live
+		// on OTHER tables (a prior run's restoreConstraints, or an operator-
+		// created table). GP6 does not enforce FKs in DML, but DROP honours
+		// pg_depend: dropping a referenced table while a referrer still exists
+		// fails with 2BP01. With parallel workers the swap order is
+		// non-deterministic, so this is handled per-drop (not by ordering).
+		// We drop the dependent FK constraints first — surgically, since a
+		// blanket `DROP ... CASCADE` would also destroy operator views and
+		// other dependent objects. restoreConstraints re-applies the source
+		// FK set after the data path, so this is lossless for the migrated
+		// tables (F-11).
+		if err := a.dropDependentFKs(ctx, schema, table); err != nil {
+			return fmt.Errorf("swap: drop dependent FKs of %s.%s: %w", schema, table, err)
+		}
 		if _, err := a.q.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s`,
 			quoteIdent(schema), quoteIdent(table))); err != nil {
 			return fmt.Errorf("swap: drop existing %s.%s: %w", schema, table, err)

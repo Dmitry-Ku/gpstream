@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fix: overwrite drop of a destination table referenced by foreign keys
+### (F-02/F-11, non-deterministic under parallel workers)
+
+With `--resolve-conflicts overwrite`, the swap dropped the existing final
+table with a plain `DROP TABLE`. If that table was referenced by foreign
+keys on OTHER destination tables (a prior run's restored FK set, or an
+operator table), the drop failed with `2BP01` (cannot drop table ... other
+objects depend on it) — and because swap order depends on copy speed with
+parallel workers, the failure was non-deterministic (which referenced
+table got swapped first). The overwrite drop now removes the dependent FK
+constraints first (surgically — not a blanket `DROP ... CASCADE`, so
+operator views and other dependent objects are untouched); the manager's
+post-load restore pass re-applies the source FK set (F-11), so the change
+is lossless for the migrated tables.
+
+Regression: live T30 run 2 (B→C) conflict matrix — `overwrite` over a
+destination seeded with an FK graph (t_s09 → t_s01 + self-FK) failed with
+2BP01 on t_s01/t_s09; after the fix the matrix is deterministic. Unit
+tests: TestSwapOverwriteDropsDependentFKs /
+TestSwapOverwriteNoDependentFKs.
+
 ### Removed the `man` subcommand (redundant)
 
 Per the maintainer: the `gpstream man` subcommand is redundant — the man page is
