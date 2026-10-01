@@ -51,13 +51,13 @@ Three supported routes:
 go build -o bin/gpstream ./cmd/gpstream
 ```
 
-### 3.2 Cross-compile (amd64 / arm64)
+### 3.2 Cross-compile (amd64)
 ```
-make cross      # both
-make amd64      # or individually
-make arm64
+make cross      # alias for amd64
+make amd64      # -> bin/gpstream-amd64
 ```
-The Makefile targets: `all build cross amd64 arm64 test cover vet fmt
+The build matrix is linux/amd64 only (arm64 dropped 01.10).
+The Makefile targets: `all build cross amd64 test cover vet fmt
 doctor selftest clean`.
 
 ### 3.3 Linux package
@@ -183,7 +183,7 @@ Before upgrading a running deployment:
 
 ## 10. Admin checklist
 
-- [ ] Built or packaged for the target arch (`amd64`/`arm64`).
+- [ ] Built or packaged for the target arch (linux/amd64).
 - [ ] `gpstream doctor` returns **PASS** against the real clusters.
 - [ ] `compatibility-check` (collation/locale/distribution) clean or
       explained.

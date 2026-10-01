@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F-05: one-command release artifact build (tar.gz + deb + rpm, amd64+arm64).
+# F-05: one-command release artifact build (tar.gz + deb + rpm, amd64 only).
 #
 #   scripts/package.sh            # snapshot build (dev, no git tag needed)
 #   scripts/package.sh release    # real build, requires being on a git tag v*
@@ -7,10 +7,10 @@
 #                                 #  from the tag and can publish to GitHub)
 #
 # Produces dist/:
-#   gpstream-<ver>-linux-{amd64,arm64}.tar.gz
-#   gpstream-segreceiver-<ver>-linux-{amd64,arm64}.tar.gz
-#   gpstream-<ver>-{amd64,arm64}.deb
-#   gpstream-<ver>-{amd64,arm64}.rpm
+#   gpstream-<ver>-linux-amd64.tar.gz
+#   gpstream-segreceiver-<ver>-linux-amd64.tar.gz
+#   gpstream-<ver>-amd64.deb
+#   gpstream-<ver>-amd64.rpm
 #
 # goreleaser is pinned (GORELEASER_VERSION) and auto-downloaded to .tools/
 # when not already on PATH.

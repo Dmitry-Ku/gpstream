@@ -92,8 +92,7 @@ The full flag reference is in [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
 
 ```sh
 go build -o bin/gpstream ./cmd/gpstream
-# cross-compile
-GOOS=linux GOARCH=arm64  go build -o bin/gpstream-arm64  ./cmd/gpstream
+# cross-compile (amd64 only; arm64 dropped from the build matrix, 01.10)
 GOOS=linux GOARCH=amd64  go build -o bin/gpstream-amd64  ./cmd/gpstream
 ```
 

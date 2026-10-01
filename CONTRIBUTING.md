@@ -20,7 +20,7 @@ feature requirements (F-01…F-18) and non-functional constraints (§7).
    ```
 4. Open a PR with: what changed, which F-/NFR item it serves, and how you
    verified it (test names, bench numbers for perf work).
-5. CI must be green (lint, unit, build matrix x86_64/aarch64; integration on
+5. CI must be green (lint, unit, build matrix x86_64; integration on
    the self-hosted lab runner) and the PR needs one approving review.
 6. Releases are cut from tagged `vX.Y.Z` via goreleaser (binaries + RPM/DEB +
    man pages); update `CHANGELOG.md` in the same PR for user-visible changes.

@@ -84,9 +84,8 @@ The project ships a `Makefile` with the following targets:
 | --- | --- |
 | `all` | Default; runs `build`. |
 | `build` | `go build -o bin/gpstream ./cmd/gpstream`. |
-| `cross` | Cross-compiles the full matrix (builds both `amd64` and `arm64`). |
+| `cross` | Cross-compile alias (builds `amd64`; arm64 was dropped from the build matrix, 01.10). |
 | `amd64` | `go build -o bin/gpstream-amd64 -tags linux_amd64 ./cmd/gpstream`. |
-| `arm64` | `GOOS=linux GOARCH=arm64 go build -o bin/gpstream-arm64 ./cmd/gpstream`. |
 | `test` | `go test ./...`. |
 | `cover` | `go test -cover ./...`. |
 | `vet` | `go vet ./...`. |
@@ -101,15 +100,15 @@ fallback automatically.
 
 ---
 
-## 5. Cross-compile amd64 / arm64
+## 5. Cross-compile (amd64)
 
 Because gpstream is a Go static binary, cross-compilation is straightforward.
-Use the Makefile targets:
+The build matrix is **linux/amd64 only** (arm64 was dropped from the build
+matrix on 01.10 — no ARM hosts in the target environments):
 
 ```bash
-make amd64     # -> bin/gpstream-amd64
-make arm64     # -> bin/gpstream-arm64  (GOOS=linux GOARCH=arm64)
-make cross     # builds both amd64 and arm64
+make amd64     # -> bin/gpstream-amd64  (GOOS=linux GOARCH=amd64)
+make cross     # alias for amd64
 ```
 
 The resulting binary runs on any host with a Linux 6.1+ kernel; it is insensitive

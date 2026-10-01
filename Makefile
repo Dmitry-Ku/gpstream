@@ -7,23 +7,19 @@ GOFLAGS ?= -mod=mod
 # fallback resolves it (ADR-000).
 export GOPROXY ?= https://proxy.golang.org,direct
 
-.PHONY: all build cross amd64 arm64 test cover vet fmt doctor selftest man-pages package dist clean
+.PHONY: all build cross amd64 test cover vet fmt doctor selftest man-pages package dist clean
 
 all: build
 
 build:
 	$(GO) build $(GOFLAGS) -o $(BIN) ./cmd/gpstream
 
-# Cross-compile the full matrix (CR-8).
-cross: amd64 arm64
+# Cross-compile (CR-8; amd64 only — arm64 dropped from the build matrix, 01.10).
+cross: amd64
 
 amd64:
 	$(GO) build $(GOFLAGS) -o bin/gpstream-amd64 -tags linux_amd64 ./cmd/gpstream
 	@echo "built bin/gpstream-amd64"
-
-arm64:
-	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS) -o bin/gpstream-arm64 ./cmd/gpstream
-	@echo "built bin/gpstream-arm64"
 
 test:
 	$(GO) test ./...
@@ -48,7 +44,7 @@ selftest: build
 man-pages:
 	./scripts/gen-man-pages.sh
 
-# F-05: build the release artifacts (tar.gz + deb + rpm, amd64+arm64) into
+# F-05: build the release artifacts (tar.gz + deb + rpm, amd64) into
 # dist/ via goreleaser. VERSION is taken from the git tag, or set
 # VERSION= explicitly, or --snapshot for a local dev build.
 #   make package            # snapshot build (no tag needed)

@@ -12,7 +12,8 @@ gpstream is a high-throughput data-copy tool between Greenplum 6 clusters
 
 - a **single static binary** (or RPM/DEB/tar.gz) with **minimal third-party
   dependencies**, all free (Apache-2.0/MIT/BSD);
-- cross-compiled binaries for **linux amd64 and arm64**;
+- cross-compiled binaries for **linux amd64** (arm64 was in the original
+  matrix; dropped on 01.10 — no ARM hosts in the target environments);
 - an **I/O-bound** workload (≥ 80% of a 100 GbE channel — the bottleneck is the
   network and disk, not CPU);
 - **100 000 small AO/CO partitioned tables** copied in ≤ 15 min, which demands a
@@ -36,7 +37,7 @@ Implement gpstream in **Go 1.27+** (pinned `go 1.27.1` in `go.mod`).
 | 100 000 small tables + connection pool + batching (FR-03) | ✅ **goroutines are purpose-built** for this | ⚠️ tokio or hand-rolled threads — far more code/bugs | ❌ manual concurrency |
 | Separate worker processes; worker-death ≠ job-death (FR-06) | ✅ + trivial watchdog | ✅ | ✅ |
 | Crash-recovery on 100 TB–1 PB (FR-07) | ✅ memory-safe | ✅ memory-safe | ❌ **unsafe = risk at petabyte scale** |
-| Cross-compile amd64/arm64 | ✅ **verified in M0** | ✅ | ⚠️ harder |
+| Cross-compile amd64 | ✅ **verified in M0** (arm64 dropped 01.10) | ✅ | ⚠️ harder |
 | Dev velocity for 18 FR + 5 milestones | ✅ fastest | ⚠️ ×2–3 | ❌ |
 | Reads `/proc/stat`, `/proc/diskstats` (FR-14) | ✅ | ✅ | ✅ |
 
@@ -62,5 +63,6 @@ ADR records the choice so it can be revisited only via a new ADR.
 - `GOPROXY=https://proxy.golang.org,direct` — `proxy.golang.org` intermittently
   403s `klauspost/compress`; the `direct` (git clone) fallback resolves it.
 - `go test -cover ./...` gate: core packages >= 70% (FR-09/CR-8).
-- Build matrix: `GOOS=linux GOARCH=amd64|arm64 go build -o gpstream ./cmd/gpstream`.
+- Build matrix: `GOOS=linux GOARCH=amd64 go build -o gpstream ./cmd/gpstream`
+  (amd64 only; arm64 dropped from the matrix on 01.10).
 - Secrets never appear in argv (FR-08): only 0600 files or `GPSTREAM_*` env.

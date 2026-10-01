@@ -1,5 +1,5 @@
 # F-05: release pipeline. On every tag v*: build (goreleaser) + publish
-# artifacts (tar.gz/deb/rpm, amd64+arm64) to the GitHub release.
+# artifacts (tar.gz/deb/rpm, amd64 only) to the GitHub release.
 name: release
 
 on:

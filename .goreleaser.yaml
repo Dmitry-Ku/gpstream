@@ -1,10 +1,11 @@
 # goreleaser (TASK-SPEC-v4 F-05: "Package: tar.gz + RPM + DEB (goreleaser/fpm)").
 #
 # Produces, per git tag (or --snapshot):
-#   dist/gpstream-<ver>-linux-{amd64,arm64}.tar.gz           (main CLI)
-#   dist/gpstream-segreceiver-<ver>-linux-{amd64,arm64}.tar.gz
-#   dist/gpstream-<ver>-{amd64,arm64}.deb
-#   dist/gpstream-<ver>-{amd64,arm64}.rpm
+#   dist/gpstream-<ver>-linux-amd64.tar.gz                   (main CLI)
+#   dist/gpstream-segreceiver-<ver>-linux-amd64.tar.gz
+#   dist/gpstream-<ver>-amd64.deb
+#   dist/gpstream-<ver>-amd64.rpm
+# Architecture: linux/amd64 only (arm64 dropped from the build matrix, 01.10).
 #
 # Local:  goreleaser release --snapshot --clean --skip=sign,publish,docker
 # CI:     .github/workflows/release.yml (on tag v*) publishes to GitHub.
@@ -35,7 +36,6 @@ builds:
       - linux
     goarch:
       - amd64
-      - arm64
 
   - id: gpstream-segreceiver
     main: ./cmd/gpstream-segreceiver
@@ -50,7 +50,6 @@ builds:
       - linux
     goarch:
       - amd64
-      - arm64
 
 archives:
   - id: gpstream

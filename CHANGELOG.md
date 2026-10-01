@@ -43,9 +43,13 @@ with groff on the lab.
 One-command release artifact build (tar.gz + RPM + DEB, amd64+arm64) via
 goreleaser (pinned v1.24.0), plus the subcommand man-page family the spec
 requires. `make package` / `scripts/package.sh` produce into `dist/`:
-`gpstream-<ver>-linux-{amd64,arm64}.tar.gz`,
-`gpstream-segreceiver-<ver>-linux-{amd64,arm64}.tar.gz`,
-`gpstream-<ver>-{amd64,arm64}.{deb,rpm}`.
+`gpstream-<ver>-linux-amd64.tar.gz`,
+`gpstream-segreceiver-<ver>-linux-amd64.tar.gz`,
+`gpstream-<ver>-amd64.{deb,rpm}`.
+
+> **01.10 update:** arm64 dropped from the build matrix (no ARM hosts in the
+> target environments). The F-05 pipeline originally produced amd64+arm64;
+> it now produces linux/amd64 only.
 
 - **Version stamp**: `main.version` is now an `ldflags`-overridable `var`
   (was a hard-coded `const`); the build stamps `{{ .Version }}` from the git
