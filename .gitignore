@@ -31,3 +31,7 @@ r5probe2
 # live cron state (gpstream-autonomy reads/writes it every 30 min) —
 # not a repo artifact; kept outside git on purpose
 /STATE-CHECKPOINT-*.md
+
+# lab provisioning templates (cloud-init YAMLs / scripts) —
+# testbed-specific, not project source; kept on disk, out of git
+/infra/
