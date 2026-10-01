@@ -38,7 +38,9 @@ fi
 
 # --- build mode ---
 if [ "${1:-}" = "release" ]; then
-  # real release: version comes from the git tag; CI passes --publish=github.
+  # real release: version comes from the git tag; CI sets GITHUB_TOKEN so
+  # goreleaser v1.24 auto-publishes to the GitHub release (no --publish flag
+  # in v1.24 — that is v2 syntax and fails `unknown flag: --publish`).
   PUBLISH_FLAG="${PUBLISH_FLAG:-}"
   $GR release --clean --skip=sign,docker $PUBLISH_FLAG
 else
