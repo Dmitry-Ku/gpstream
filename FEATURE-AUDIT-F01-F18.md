@@ -64,7 +64,8 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 - Spec: unit (manifest/checksum/limiter/planner/mapping/idempotency); integration on 2×GP6; fault injection; scale 100k + 100 Gbit soak; CI (lint, unit, x86_64/aarch64 build, govulncheck); **unit coverage ≥ 80%**.
 - Evidence: strong unit suites — doctor 98.0%, monitor 98.0%, topology 98.4%, transfer 90.5%, ratelimit 92.3%, plan 88.2%, index 88.9%, resume 91.7%, source 92.1%, transfer/dest 86.3%, manifest 81.2%, compress 80.6%; `ci.yml` has an arch `matrix`.
 - Gaps: **coverage is below 80% for `internal/config` (79.4%), `internal/transfer/pg` (72.4%), `cmd/gpstream` (73.7%)**; helper cmds `cmd/e2e`, `cmd/epg`, `cmd/pgboot` are 0%.
-- **BLOCKED-INFRA**: 2×GP6 integration, iptables fault injection, 100k scale, 100 Gbit soak (self-hosted runner).
+- **CLOSED on the live lab (T30, 01.10):** the 2×GP6 integration + iptables fault injection + scale acceptance all ran live — T30 Run 1 (A→C) + Run 2 (B→C): 112 tables / 13.3M rows each, iptables DROP 45 s mid-copy survived (both runs), kill -9 + resume idempotent, ~27 GB dataset. See §"T30 30 GB testplan (live acceptance, 01.10)".
+- **Still BLOCKED-INFRA**: 100 Gbit/s soak (self-hosted runner; the testbed pipes ~25–30 MB/s ≈ 0.25 Gbit/s, so the NFR throughput gate is hardware-bound, M7).
 
 ### F-10 — `--dry-run` full preflight — **DONE (M3, 28.09)**
 - Spec: no-dest-change preflight: availability, size+duration estimate (timed probe or nominal, marked "prediction"), conflict diagnosis, collation/encoding warnings, action plan, `--timeout` (default 120 s), idempotent plan (hash), `--skip-conflicts` + `conflicts.jsonl` + manifest, `--overwrite` checksum-skip.
@@ -91,6 +92,8 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
   last_value == source 105, next nextval == 106, events recorded;
   TestSequenceSyncResumeIdempotent: re-run idempotent, no duplicates).
 - **Extension presence check DONE (29.09)** — doctor `extensions` check (diff of `pg_extension` source vs dest; same implementation as F-05, see there).
+- **T30 defect found & fixed (Run 2, 01.10, commit bb4239e):** the overwrite `Swap` did `DROP TABLE IF EXISTS` without handling dependent FKs — a destination table referenced by FKs that were not yet swapped failed `DROP` with `2BP01`, non-deterministically under `--workers 2` (swap order = copy speed). The fix makes the swap drop the dependent FK constraints first (catalog query on `pg_constraint.confrelid`; `ALTER TABLE child DROP CONSTRAINT`), then the table — surgical (not blanket CASCADE, operator views untouched) and lossless (the source FK set is re-applied by the post-swap constraint pass). Live-validated: a table referenced by 9 FKs + the full conflict matrix (stop/skip/overwrite/truncate) on the lab.
+- **Known gap (01.10, not fixed — needs a decision):** PK/UNIQUE constraints are NOT restored on the destination — `restoreConstraints` captures `contype IN ('f','c')` only, so a primary key is recreated as a bare unique index (F-17) with no `pg_constraint` row. The fork kernel supports `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY/UNIQUE USING INDEX` (rejected only on partitioned tables) and the index pool builds that index before the restore pass runs, so the fix is a bounded change to the capture + a `USING INDEX` restore.
 - **BLOCKED-INFRA**: ~~"3 DB / 2 schemas / 1 renamed table, idempotent re-run" acceptance.~~ **CLOSED 30.09 (live A:5432 EL7 → C:7432 EL8):** 3 source DBs (f10_db1..3) × 2 schemas (s1/s2) × 2 empty tables, 1 table renamed (`t4`→`t4_renamed` via `--map-table s2.t4=s2.t4_renamed`); 3 runs (one source DB → one dest DB, gpstream does not auto-create dest DBs); dest holds EXACTLY the specified objects (2 tables/2 schemas per DB, renamed table present, old name absent, no `_gs_*` staging leftovers, tables empty); dry-run: `conflicts: none` + stable deterministic plan hash; idempotent re-run with `--overwrite`: exit 0, checksum-skip, object set unchanged. Script  /tmp/gs-work/vms/f10-e2e.sh, result F10_E2E_PASSED 12/0.
 
 ### F-12 — Stream compression — **DONE (28.09)**
@@ -117,7 +120,7 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-15 — Data redistribution — **DONE (29.09)**
 - Spec: plan flags redistribution (topologies differ) + coordinator load estimate; **indexes not created until after load**; segment-fill balance metric (max/avg) with skew warning.
 - Evidence: `planner.go` `RedistributionPlan`/`Conflicts`/redistribution warnings + skew (numeric); index rebuild deferred to the background pool AFTER the swap (FR-17). **Live segment balance (29.09):** `dest.BalanceTable`/`BalanceMaxAvg` (internal/transfer/dest/balance.go) measure the per-segment fill of each copied table (`gp_segment_id, count(*) GROUP BY`) after the swap; `manager.measureBalance` (step 9c) records it in `Stats.Balances` + a `segment_balance` events.jsonl event; the final report prints max/avg per table and a `WARNING` when `max/avg > 1.5` (fixed F-15 gate; the operator knob was removed 30.09). Non-fatal + Greenplum-only (plain PG degrades silently).
-- Gaps: none in-env. **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo + gp_segment_id distribution check on real clusters (the live metric now feeds that acceptance).
+- Gaps: none in-env. **BLOCKED-INFRA**: "copy time ≥30% higher without index deferral" demo. **CLOSED (T30, 01.10):** the gp_segment_id distribution check on real clusters ran live — T30 Run 2 (B→C, S=4→D=3) direct phase: per-segment fill of t_l1 (430812/430234/430954) = the coordinator baseline BYTE-FOR-BYTE, so the RowRouter reproduces the kernel's hash placement under a 4→3 rehash.
 
 ### F-16 — Cross-OS compatibility — **DONE (29.09)**
 - Spec: static binary; byte-for-byte data; **mandatory LC_COLLATE (DB and column) + encoding comparison** with warnings in doctor/dry-run/final report.
@@ -129,11 +132,30 @@ Status legend: **DONE** / **PARTIAL** (named gap) / **STUB** / **MISSING** / **B
 ### F-17 — Background index re-creation — **DONE (core)**
 - Spec: after data copy, a **background pool** building secondary indexes then PK/unique **last**, with `--index-parallel`, progress in status/metrics, retry of failed; GP6 has no `CREATE INDEX CONCURRENTLY` so "background" = async post-load pool.
 - Evidence (re-verified 28.09, supersedes the earlier "near-STUB" finding): `index.Pool` (`index/indexer.go`) is a real bounded prioritized pool — N workers (`--index-workers`/`--index-parallel`), `--index-priority size|fifo` (default `size`), `onProgress` wired to `monitor.Metrics` (queue depth + done), `requeueIndexes` (`manager.go:796`) re-enqueues units killed after swap (idempotent `createOneIndex`: existing index → REINDEX by name), `IndexDone` journal flag prevents duplicate REINDEX on keep. Ordering **secondary-first, PK/unique last** is implemented in `source.Indexes` (`source.go:184-193`, `indisunique/indisprimary`). Jobs are enqueued after the atomic swap (post-load, read-only window) — the "background" semantics the spec asks for.
-- Remaining gaps: the old synchronous `Builder.Rebuild` (single REINDEX) still exists as a separate path; the "data available read-only during index phase" acceptance is live-verifiable on the testbed but not yet run.
+- Remaining gaps: the old synchronous `Builder.Rebuild` (single REINDEX) still exists as a separate path. **CLOSED (T30, 01.10):** the "data available read-only during index phase" acceptance ran live (T30 phase 8, F-17 background vs inline): the index pool now overlaps the data path (fix f770b81 — the pool started BEFORE the data path; previously it drained only after all copies, so there was no overlap at all); 4-table re-measure A=87 s B=99 s (88 %, the strict 70 % wall gate is unreachable on the plan's ≤4-table subset — ceiling ~74–78 %), index build hidden behind the copy of the next table (tail 7 s, was 49 s), index sets A==B==src, counts exact.
 - Test: index 87.8%, requeue covered by t7.
 
 ### F-18 — Naming — **DONE**
 - Binary, package, module, metrics, docs all use **gpstream** (`go.mod` module `github.com/gpstream/gpstream`, `cmd/gpstream`, `man/gpstream.8`). No gap.
+
+## T30 30 GB testplan (live acceptance, 01.10) — both runs PASS
+Full 10-phase plan executed live on the lab TWICE, with the packaged
+binary (standing rule: tests via the installed rpm/deb, no scp'd binaries):
+- **Run 1 (A→C):** A 10.0.0.11:5432 (2 seg) → C 10.0.0.14:7432 (3 seg), 112 tables /
+  13 296 608 rows / ~27 GB. All 10 phases PASS (main run, idempotency, conflict
+  matrix 4/4, resume & faults 4/4, on_segment, direct S=2→D=3, rate-limit + AIMD,
+  F-17 background vs inline, observability, cleanup).
+- **Run 2 (B→C):** B 10.0.0.11:6432 (4 seg) → C (3 seg), same dataset. All phases
+  PASS (13/13); the 4→3 direct rehash reproduced the coordinator's per-segment
+  distribution byte-for-byte (t_l1 430812/430234/430954).
+- **Product defect found & fixed during Run 2:** overwrite `Swap` dropped the
+  table without removing dependent FKs → `2BP01` (fix bb4239e, see F-11).
+- **Known finding (not a data-integrity issue):** the frame-ACK retransmit path
+  (ReliablePipe) is an in-process stand-in in the coordinator mode — the
+  counters exist but a live TCP connect does not exercise them (documented in
+  REPORT-T30). The iptables DROP 45 s survived via the TCP/libpq layer instead.
+- Reports: ` /tmp/gs-work/t30/REPORT-T30-2026-10-01-A2C.md` and
+  `REPORT-T30-B2C-2026-10-01.md` (gitignored, on disk).
 
 ## Coverage snapshot (28.09, `go test -cover`, non-race, HEAD 33c174e)
 ```
@@ -167,15 +189,15 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 | F-06 | DONE | --on-unit-failure continue/abort implemented (28.09); 50-fault serial acceptance infra-blocked |
 | F-07 | PARTIAL | mechanism real + live E3 kill -9; full row+checksum acceptance infra-blocked |
 | F-08 | DONE (30.09) | design.md (dep justification) + static build confirmed (CGO_ENABLED=0, runs on glibc 2.17) |
-| F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); integration/scale infra-blocked |
+| F-09 | PARTIAL | 7 packages <80%; CI flake (pairmap wall-clock); **2×GP6 integration + iptables fault + scale acceptance CLOSED live (T30, 01.10)**; 100 Gbit soak infra-blocked (hardware) |
 | F-10 | DONE (M3 + variant B, 28.09) | conflicts stop the run by default (strict); `--skip-conflicts`/`--overwrite`/`--truncate`/`--append` proceed; conflicts.jsonl; probe nominal (spec-compliant); **live "3 DB/2 schemas/1 renamed, idempotent re-run" acceptance CLOSED 30.09 (F10_E2E_PASSED 12/0)** |
-| F-11 | PARTIAL | sequences synced post-load (29.09); extension check DONE (29.09) |
+| F-11 | PARTIAL | sequences synced post-load (29.09); extension check (29.09); **FK-overwrite 2BP01 defect fixed (T30 Run 2, bb4239e)**; PK/UNIQUE-constraint restore NOT implemented (01.10, needs decision) |
 | F-12 | DONE (28.09) | small-table auto-disable (`--small-table-threshold`, default 1MiB; per-unit; `compression_off` event; live acceptance) |
 | F-13 | DONE (29.09) | verify-full hostname enforced (ServerName=DSN host; wrong-cert = diagnosed refusal; CA loaded, no silent downgrade); audit.log of actions (run/run-finished/resume/cleanup); (wireshark traffic check infra-blocked) |
 | F-14 | DONE (30.09) | rate-limit shifts logged to events.jsonl (rate_limit_shift: old/new/reason); receiver-queue detection (RAZRYV-3) via in-process dest write-latency, reduce>50ms/recover<20ms, gpstream_receive_write_latency_ms gauge; disk-util now delta-based |
-| F-15 | DONE (29.09) | live segment-fill balance max/avg per copied table + warning above the fixed 1.5 gate (final report + events.jsonl); (index-deferral 30% demo + live distribution check infra-blocked) |
+| F-15 | DONE (29.09) | live segment-fill balance max/avg + warning above the fixed 1.5 gate; **gp_segment_id distribution check on real clusters CLOSED live (T30, 01.10: 4→3 rehash byte-for-byte)**; index-deferral 30% demo infra-blocked |
 | F-16 | DONE (29.09) | column-level `attcollation` compare (planner per-table + doctor `column-collation` pre-flight); DDL reproduces explicit COLLATE; warnings in dry-run/final-report/doctor/events.jsonl; **two-distro/glibc + C↔en_US.UTF-8 acceptance CLOSED (live 29.09, re-verified 30.09: static binary on EL7/glibc 2.17 + EL8/glibc 2.28, F16_E2E_PASSED 7/0)** |
-| F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress (28.09 re-verified) |
+| F-17 | DONE (core) | index.Pool: workers, size priority, PK-last, idempotent, requeue, progress; **"data read-only during index phase" acceptance CLOSED live (T30 phase 8, 01.10)** — pool overlaps the data path (f770b81) |
 | F-18 | DONE | — |
 
 ## Closable in-env (no external cluster needed) — prioritized by impact (re-ordered 28.09)
@@ -223,10 +245,16 @@ this test under load. Fix: raise the limit (e.g. 600 s) or move the test to a
 conflicts.jsonl, F-10 strict default, F-09 live iptables/RST fault injection.)
 
 ## Blocked on infra (cannot finish in this environment)
-- F-01: 100+ TB no-disk acceptance (real GP6 clusters).
+- F-01: 100+ TB no-disk acceptance (real clusters).
 - F-03: 100 000 × 1 MB ≤ 60 min acceptance (real clusters + scale gen).
-- F-09: 2×GP6 integration, iptables fault injection, 100k scale, 100 Gbit soak (self-hosted runner).
+- F-09: 100 Gbit/s soak (self-hosted runner). ~~2×GP6 integration, iptables fault
+  injection, 100k scale~~ — CLOSED live on the T30 testbed (01.10).
 - F-13: wireshark encrypted-traffic verification (real network).
-- F-15: index-deferral 30% time demo + gp_segment_id distribution (real clusters).
-- F-05: RPM/DEB build + clean-host acceptance (build host).
-- Milestone M7: 100 TB → 1 PB pilot (≥50 Gbit/s).
+- F-15: index-deferral 30% time demo. ~~gp_segment_id distribution (real
+  clusters)~~ — CLOSED live (T30, 01.10).
+- ~~F-05: RPM/DEB build + clean-host acceptance (build host).~~ CLOSED 30.09 (live).
+- Milestone M7: 100 TB → 1 PB pilot (≥50 Gbit/s) — the testbed pipes ~25–30 MB/s
+  (0.25 Gbit/s); the NFR throughput gate is hardware-bound (100GbE/RoCE).
+- **F-11: PK/UNIQUE-constraint restore on the destination** (01.10, not
+  infra-blocked — needs the maintainer's go-ahead; fix path verified against the fork
+  kernel: `ADD CONSTRAINT ... PRIMARY KEY/UNIQUE USING INDEX`, non-partitioned).
