@@ -1,8 +1,11 @@
 # ADR-002: Single-controller data path (debt vs ADR-001 two-agent design)
 
-- **Status:** Accepted (debt acknowledged, remediation planned)
+- **Status:** Closed (remediated by `--topology two-agent`, ADR-001 two-agent design)
 - **Date:** 2026-10-02
 - **Supersedes (partially):** ADR-001 data-path section
+- **Remediated:** 2026-10-02 — the two-agent data path is live for all three
+  copy modes (`coordinator` P3, `on_segment` P4, `direct` P5); see the
+  "Resolution" section at the end.
 
 ## Context
 
@@ -80,3 +83,40 @@ plan the two-agent remediation:
   measured **on the network** (e.g. `ss`/`nload` sampling in an integration
   test) equal `gpstream_bytes_total` within tolerance, and the controller
   process holds no data connections.
+
+## Resolution (2026-10-02, plan `docs/plans/two-agent-transport.md` P0–P5)
+
+The two-agent design is implemented and live behind `--topology two-agent`
+(default remains `single`, the fallback). All three acceptance criteria of
+this ADR are met:
+
+1. **`gpstream_bytes_total` is the on-network volume.** In two-agent mode the
+   counter records the bytes measured on the real agent-to-agent socket
+   (source agent `SendCompressed` counting writer; dest agent `ReadStreamCompressed`
+   raw counter), not an in-memory pipe. Measured on GP6 (A→C): coordinator
+   P3 — 105,755 wire vs 1,677,552 logical (15.9×); on_segment P4 — 120,526
+   vs 1,064,915 (8.8×); direct P5 — 1,437,130 vs ~4.44 MB logical (~3.1×,
+   low-entropy 200-byte payload).
+2. **The controller holds no data connections.** The controller's
+   PostgreSQL connections are control plane only (plan, journal, catalog
+   reads: segment enumeration + distribution policy; the checksum reads in
+   two-agent mode are the agents' catalog/snapshot reads, not the data
+   stream). The data stream runs source agent → dest agent over one socket;
+   in `direct` mode the destination coordinator is out of the write path
+   (per-segment utility-mode COPYs).
+3. **All three copy modes work through the agents.** `coordinator` (P3),
+   `on_segment` (P4, SliceMux in the dest agent), `direct` (P5, RowRouter in
+   the source agent + per-segment utility COPYs). `--topology single`
+   remains available as the fallback, still documented as the ADR-002 debt.
+
+`doctor` reports the topology check as **PASS** under `--topology two-agent`
+(data runs agent → agent, compressed on the wire; the controller holds no
+data connections) and keeps the WARN for the single-controller build.
+OPERATOR_GUIDE, SECURITY.md, METRICS.md, CLI_REFERENCE and CONFIGURATION are
+updated to state the actual per-topology topology.
+
+Remaining debt recorded as a follow-up (not a blocker for closing this ADR):
+the three-process crash-recovery matrix (idempotent unit state machine under
+a death of any of the three processes — source agent mid-COPY, dest agent
+mid-verify, controller between journal writes) is tracked in the plan's
+Risks section and the T30 backlog.

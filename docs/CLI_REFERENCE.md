@@ -216,6 +216,20 @@ Conflict policy semantics:
 | `--rate-limit <rate>` | `RateLimit` | `0` (no ceiling; accepts `40`, `40gbps`, `400mbps`, …) |
 | `--workers <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
 
+### Topology (ADR-002)
+| Flag | Config field | Default |
+|------|--------------|---------|
+| `--topology single\|two-agent` | `Topology` | `single` (single-controller data path; the ADR-002 debt — network legs raw) |
+| `--source-agent-binary <path>` | `SourceAgentBinary` | `""` (gpstream-source-agent path **on the source host**; required for `two-agent`) |
+| `--dest-agent-binary <path>` | `DestAgentBinary` | `""` (gpstream-dest-agent path **on the destination host**; required for `two-agent`) |
+
+`two-agent` moves the data plane out of the controller: the source agent
+reads the table and pushes a compressed (optionally TLS) stream over a real
+socket to the dest agent; the controller orchestrates (plan, journal, verify,
+swap, indexes) and holds no data connections. Works with all three
+`--copy-mode` values (`coordinator` / `on_segment` / `direct`); in this mode
+`gpstream_bytes_total` is the on-wire agent-to-agent volume.
+
 ### Resilience (F-06/F-07)
 | Flag | Config field | Default |
 |------|--------------|---------|

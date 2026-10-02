@@ -65,7 +65,7 @@ following series (exact `# HELP` / `# TYPE` lines from
 `internal/monitor/metrics.go`):
 
 ```
-# HELP gpstream_bytes_total Bytes transferred (compressed on the wire).
+# HELP gpstream_bytes_total Bytes written to the data transport (compressed; two-agent: the on-wire agent-to-agent socket volume, single: the in-memory framed pipe).
 # TYPE gpstream_bytes_total counter
 # HELP gpstream_bytes_decoded_total Logical bytes after decompression.
 # TYPE gpstream_bytes_decoded_total counter
@@ -121,7 +121,7 @@ Summary of the series:
 
 | Series | Kind | Labels | Meaning |
 |--------|------|--------|---------|
-| `gpstream_bytes_total` | counter | — | bytes pushed through the framed transport (compressed in-memory; see ADR-002 — the network legs are uncompressed in the single-controller build) |
+| `gpstream_bytes_total` | counter | — | bytes written to the data transport (compressed): **two-agent** — the on-wire agent-to-agent socket volume (ADR-002 remediated); **single** — the in-memory framed pipe, while the network legs stay raw (ADR-002 debt) |
 | `gpstream_bytes_decoded_total` | counter | — | logical bytes after decompression |
 | `gpstream_rows_total` | counter | — | rows copied |
 | `gpstream_errors_total` | counter | — | transfer errors |

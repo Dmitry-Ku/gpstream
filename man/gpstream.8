@@ -182,6 +182,30 @@ runs jobs in enqueue order.
 Skip the FK/CHECK constraint-restore pass on the destination.
 .SS Transport / resilience
 .TP
+.BR --topology
+single|two-agent
+Where the data plane lives (default single). With
+.B two-agent
+the source agent reads the table and pushes a compressed stream over a real
+socket to the dest agent; the controller is control plane only (no data
+connections). Requires
+.BR --source-agent-binary
+and
+.BR --dest-agent-binary
+(paths of the agent binaries on the source / destination hosts).
+.TP
+.B --source-agent-binary
+PATH
+gpstream-source-agent path on the SOURCE host (required with
+.BR --topology
+two-agent).
+.TP
+.B --dest-agent-binary
+PATH
+gpstream-dest-agent path on the DESTINATION host (required with
+.BR --topology
+two-agent).
+.TP
 .BR --copy-mode
 coordinator|on_segment|direct
 Data path (default coordinator).

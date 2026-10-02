@@ -131,6 +131,13 @@ $ gpstream doctor \
 - **`on_segment` WARN** → decide: run coordinator-path now (safe), or
   apply the named fix (GUC / dispatch / binary) and re-run doctor to
   enable the fast path.
+- **`topology` WARN (single-controller data path, ADR-002)** → the data
+  stream transits the controller process and the network legs carry raw
+  binary COPY; run `--topology two-agent` (with `--source-agent-binary` /
+  `--dest-agent-binary`) to move the data plane into the agents — the check
+  then reports **PASS** (data runs source agent → dest agent, compressed on
+  the wire; the controller holds no data connections). The controller is
+  still placed where it may be trusted.
 - **`route` PASS with `direct_1to1 possible`** → if/when the R5 dest
   wire-up lands, this topology gets the zero-cost fast path; today it
   still means "source and destination layouts match 1:1", which also

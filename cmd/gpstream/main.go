@@ -450,7 +450,7 @@ func cmdDoctor(args []string) error {
 	srcQ := diagnoseConn(ctx, cfg, "source")
 	dstQ := diagnoseConn(ctx, cfg, "dest")
 
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary, SrcDSN: cfg.Source, DstDSN: cfg.Dest, Compress: string(cfg.Compression)})
+	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary, SrcDSN: cfg.Source, DstDSN: cfg.Dest, Compress: string(cfg.Compression), Topology: string(cfg.Topology)})
 	printReport(rep)
 	if !rep.Healthy {
 		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())

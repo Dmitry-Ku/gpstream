@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed: ADR-002 closed — two-agent is the remediation, docs + metrics + doctor updated (P6)
+
+With P3/P4/P5 the two-agent data path is live for all three copy modes, so
+ADR-002 (the single-controller data-path debt) is **closed**: the
+`--topology two-agent` option is the remediation and the operator-facing
+documentation now states the actual per-topology behavior instead of calling
+the two-agent design "planned".
+
+- **doctor:** the `topology` check takes the run's `--topology` value.
+  `two-agent` (cross-host) now reports **PASS** (data runs source agent →
+  dest agent, compressed on the wire; the controller holds no data
+  connections); `single` (default) keeps the WARN naming the two-hop,
+  raw-leg debt, with the recommendation now pointing at `--topology
+  two-agent` instead of a planned design.
+- **`gpstream_bytes_total`** semantics are documented per topology: two-agent
+  = the on-wire agent-to-agent socket volume (the ADR-002 acceptance
+  criterion), single = the in-memory framed pipe (the network legs stay raw).
+  The metric's `# HELP` line, METRICS.md, OPERATOR_GUIDE and PERFORMANCE all
+  state this.
+- **Docs:** OPERATOR_GUIDE (topology note rewritten; two-agent requires
+  `--source-agent-binary`/`--dest-agent-binary`), SECURITY.md (controller as
+  data trust root is now scoped to the single topology; in two-agent the data
+  trust roots are the two agent hosts), DOCTOR.md (the `topology` finding and
+  its remediation), CLI_REFERENCE + CONFIGURATION + `man/gpstream.8`
+  (the `--topology` / `--source-agent-binary` / `--dest-agent-binary` flags
+  are now documented — they were previously only in the CLI help), and
+  ADR-002 gains a **Resolution** section recording the three acceptance
+  criteria and the GP6-measured wire/logical volumes (P3 15.9×, P4 8.8×,
+  P5 ~3.1×).
+- The three-process crash-recovery matrix (idempotent unit state machine
+  under a death of any of the three processes) is recorded in ADR-002 as the
+  remaining follow-up; the idempotent staging+swap / resume core it builds on
+  is already in place.
+
 ### Added: direct data path through the agents (P5)
 
 The ADR-002 remediation reaches the fully segment-direct (`--copy-mode

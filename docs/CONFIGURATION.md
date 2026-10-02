@@ -63,6 +63,13 @@ from the flags or the file.
 | `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling; adaptive AIMD (F-14) is always active. |
 | `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
 
+### 1.6a Topology (ADR-002)
+| Field | Type | Default | Source | Notes |
+|-------|------|---------|--------|-------|
+| `Topology` | `Topology` | **`single`** | `--topology` / env / file | `single` \| `two-agent`. `two-agent` moves the data plane into the agents (ADR-002 remediation); the controller holds no data connections. |
+| `SourceAgentBinary` | string | `""` | `--source-agent-binary` / env / file | gpstream-source-agent path **on the source host**; **required** for `two-agent`. |
+| `DestAgentBinary` | string | `""` | `--dest-agent-binary` / env / file | gpstream-dest-agent path **on the destination host**; **required** for `two-agent`. |
+
 ### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
@@ -180,6 +187,7 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
 | `WorkersPerPair` | `2` |
+| `Topology` | `single` |
 | `StateDir` | `/var/lib/gpstream` |
 
 `Validate()` additionally normalises the frame-ack defaults in place:

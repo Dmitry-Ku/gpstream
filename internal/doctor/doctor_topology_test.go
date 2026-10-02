@@ -35,6 +35,31 @@ func TestCheckTopologyCrossHost(t *testing.T) {
 		}
 	})
 
+	t.Run("two-agent cross-host passes", func(t *testing.T) {
+		r := &Report{Healthy: true}
+		r.checkTopology(Options{
+			SrcDSN:   "postgres://u@10.0.0.1:5432/db",
+			DstDSN:   "postgres://u@10.0.0.2:7432/db",
+			Compress: "zstd",
+			Topology: "two-agent",
+		})
+		found := false
+		for _, c := range r.Checks {
+			if c.Name == "topology" {
+				found = true
+				if c.Sev != Pass {
+					t.Fatalf("topology check sev=%v, want PASS", c.Sev)
+				}
+				if c.Side != "network" {
+					t.Fatalf("topology check side=%q, want network", c.Side)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("topology check not emitted for a cross-host two-agent copy")
+		}
+	})
+
 	t.Run("same endpoint does not warn", func(t *testing.T) {
 		r := &Report{Healthy: true}
 		r.checkTopology(Options{

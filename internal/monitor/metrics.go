@@ -412,7 +412,7 @@ type snapshot struct {
 
 func (s snapshot) render(throughput float64) string {
 	out := make([]string, 0, 40)
-	out = append(out, "# HELP gpstream_bytes_total Bytes transferred (compressed on the wire).")
+	out = append(out, "# HELP gpstream_bytes_total Bytes written to the data transport (compressed; two-agent: the on-wire agent-to-agent socket volume, single: the in-memory framed pipe).")
 	out = append(out, "# TYPE gpstream_bytes_total counter")
 	out = append(out, fmt.Sprintf("gpstream_bytes_total %d", s.bytes))
 

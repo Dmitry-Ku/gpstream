@@ -113,6 +113,11 @@ type Options struct {
 	DstDSN string
 	// Compress is the run's --compress mode ("none"/"zlib"/"zstd").
 	Compress string
+	// Topology is the run's --topology value ("single"/"two-agent"). In
+	// two-agent mode the data plane lives in the agents and the controller
+	// holds no data connections, so the ADR-002 debt does not apply and the
+	// topology check reports PASS instead of WARN.
+	Topology string
 }
 
 // Run performs the diagnostic and returns a Report. It never panics on an
@@ -146,17 +151,26 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 // the network legs are uncompressed (compression runs in the controller's
 // memory), and a controller on an external host is a data trust root.
 // WARN, never FAIL — the job runs correctly; the operator should know the
-// topology and place the controller accordingly.
+// topology and place the controller accordingly. In two-agent mode the data
+// plane lives in the agents and the controller holds no data connections, so
+// the debt does not apply and the check reports PASS.
 func (r *Report) checkTopology(opts Options) {
 	srcHP := pg.DSNHostPort(opts.SrcDSN)
 	dstHP := pg.DSNHostPort(opts.DstDSN)
 	if srcHP == "" || dstHP == "" || srcHP == dstHP {
 		return // same endpoint (or unparseable): no cross-host topology note
 	}
+	if opts.Topology == "two-agent" {
+		r.Add(Check{
+			Name: "topology", Side: "network", Sev: Pass,
+			Msg: "two-agent data path: the data stream runs source agent -> dest agent (compressed on the wire, " + srcHP + " -> " + dstHP + ") and the controller holds no data connections (ADR-002 remediated)",
+		})
+		return
+	}
 	msg := "single-controller data path (ADR-002): the data stream transits the controller process (source " + srcHP + " -> controller -> dest " + dstHP + "); the network legs carry uncompressed binary COPY and compression runs on the controller's CPU"
-	rec := "place the controller where the data may be read; for compressed inter-cluster traffic and no data transit on the controller, the two-agent design is planned (docs/adr/002-single-controller-data-path.md)"
+	rec := "place the controller where the data may be read; for compressed inter-cluster traffic and no data transit on the controller, run --topology two-agent (docs/adr/002-single-controller-data-path.md)"
 	if opts.Compress == "" || opts.Compress == "none" {
-		rec = "no compression is enabled, so the debt is bandwidth-only (two hops through the controller); the two-agent design is planned (docs/adr/002-single-controller-data-path.md)"
+		rec = "no compression is enabled, so the debt is bandwidth-only (two hops through the controller); run --topology two-agent to move the data plane into the agents (docs/adr/002-single-controller-data-path.md)"
 	}
 	r.Add(Check{Name: "topology", Side: "network", Sev: Warn, Msg: msg, Rec: rec})
 }

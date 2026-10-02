@@ -183,7 +183,11 @@ the destination **decompresses**; only compressed bytes travel the wire.
 
 The metrics collector records both **wire bytes** (compressed) and
 **decoded bytes** (logical) so a compression change is visible
-(`gpstream_bytes_total` vs `gpstream_bytes_decoded_total`).
+(`gpstream_bytes_total` vs `gpstream_bytes_decoded_total`). In
+`--topology two-agent` the wire counter is the on-wire agent-to-agent socket
+volume, so the ratio between the two counters is the real inter-cluster
+compression ratio; in `--topology single` (default) the wire counter is the
+in-memory framed pipe and the network legs stay raw (ADR-002 debt).
 
 ## What the perf tests do and do not prove
 

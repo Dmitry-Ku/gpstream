@@ -158,15 +158,24 @@ but uses more CPU — the adaptive limiter (F-14, always active) will *degrade*
 the rate / compression level when the host is CPU-saturated, and that change
 is observable as a metric (see §8).
 
-**Topology note (ADR-002):** the single-controller build runs both
+**Topology (ADR-002):** the default `--topology single` build runs both
 PostgreSQL connections in one process, so the frame/compress transport is an
 *in-memory* pipe inside the controller: both TCP legs (source coordinator →
 controller, controller → destination) carry **uncompressed** binary COPY, and
 `--compress` costs controller CPU without reducing inter-cluster bandwidth.
 The `wire` number in `status`/metrics is the compressed in-memory volume,
-not the network volume. The two-agent design (compression between the
-clusters, controller as control plane only) is the planned remediation; see
-`docs/adr/002-single-controller-data-path.md`.
+not the network volume.
+
+`--topology two-agent` (the ADR-002 remediation, live for all three copy
+modes) moves the data plane into the agents: a source agent (source cluster)
+reads the table and pushes a **compressed** stream over a real, optionally
+TLS-encrypted socket to a dest agent (destination cluster); the controller
+orchestrates (plan, journal, verify, swap, indexes) and holds **no data
+connections**. In this mode `gpstream_bytes_total` is the on-wire agent-to-agent
+volume, compression genuinely reduces inter-cluster bandwidth, and the
+controller is a control-plane trust root only. It requires
+`--source-agent-binary` / `--dest-agent-binary` (the agent paths on the peer
+hosts). See `docs/adr/002-single-controller-data-path.md`.
 
 ---
 
@@ -215,7 +224,7 @@ endpoint (`/metrics`) is served *during* `run` via the address you pass to
 
 | Metric | Type | Meaning |
 |--------|------|---------|
-| `gpstream_bytes_total` | counter | Bytes transferred (compressed on the wire). |
+| `gpstream_bytes_total` | counter | Bytes written to the data transport (compressed; two-agent: the on-wire agent-to-agent socket volume). |
 | `gpstream_bytes_decoded_total` | counter | Logical bytes after decompression. |
 | `gpstream_errors_total` | counter | Transfer errors. |
 | `gpstream_frame_errors_total` | counter | CRC / framing errors. |

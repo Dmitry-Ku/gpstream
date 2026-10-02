@@ -18,7 +18,7 @@ not a file on disk. The security concerns are therefore:
 |---------|------------------|
 | Credential leakage (argv, logs, process list) | Secrets come from **env / file, never argv** (§2) |
 | Wire eavesdropping / MITM | TLS always enforced, min **1.2** (§3) |
-| **Controller host as data trust root** | Single-controller build: the data stream transits the controller's memory (ADR-002); place the controller where the data may be read (§3) |
+| **Controller host as data trust root** | Single-controller topology (`--topology single`, default): the data stream transits the controller's memory (ADR-002); `--topology two-agent` removes the data plane from the controller (§3) |
 | Overwriting live data by accident | **Non-destructive default** (§4) |
 | Corrupted / truncated copy | Checksum + verify (§5) |
 | Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
@@ -85,15 +85,20 @@ guarantee.
 
 ### Controller host as a data trust root (ADR-002)
 
-In the single-controller build both PostgreSQL connections live in one
-process, so the entire logical data stream transits the controller's memory
-in cleartext between the two TLS-encrypted legs (TLS protects each leg
+In the `--topology single` build (default) both PostgreSQL connections live in
+one process, so the entire logical data stream transits the controller's
+memory in cleartext between the two TLS-encrypted legs (TLS protects each leg
 separately, not the data in the controller's RAM). A compromise of the
-controller host exposes the copied data. The TLS-protected agent↔agent
-stream of the planned two-agent design removes the data plane from the
-controller. Until then: run the controller on a host that is already
-authorized to read the data (e.g. one of the cluster management hosts), and
-treat it in the threat model as a data-access endpoint.
+controller host exposes the copied data. In that topology: run the controller
+on a host that is already authorized to read the data (e.g. one of the cluster
+management hosts), and treat it in the threat model as a data-access endpoint.
+
+`--topology two-agent` removes the data plane from the controller: the data
+stream runs source agent → dest agent over a real, TLS-protected socket and
+the controller only holds control-plane (catalog) connections. The controller
+host then needs to be trusted for the *plan* (table names, DDL, state) but
+not for the data; the data trust roots become the two agent hosts (one per
+cluster), which are the hosts that run the COPYs.
 
 ---
 
