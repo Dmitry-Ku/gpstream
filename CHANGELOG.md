@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: two-agent data path — source agent (P1)
+
+The ADR-002 remediation (moving the data plane out of the controller) is
+under way. This change lands the **source agent**: a new
+`gpstream-source-agent` binary + `internal/agent` core that runs on a
+source-cluster host, owns the source pg connection and the FR-02 snapshot,
+streams `COPY ... TO STDOUT (FORMAT binary)`, and pushes the bytes
+**compressed over a real socket** (optionally TLS) to the destination agent.
+The network now carries the compressed volume (FR-12), which the
+single-controller build does not (its pipe is in-memory).
+
+- `internal/agent/source.go` — `agent.Push`: source conn + FR-02 snapshot +
+  COPY TO STDOUT + framed/compressed push; reports rows + wire/logical.
+- `cmd/gpstream-source-agent/` — the binary (dials the dest agent; `--check`
+  doctor probe; SIGINT/SIGTERM unwinds the stream).
+- `.goreleaser.yaml` — packages `gpstream-source-agent` (3rd binary).
+- P1 acceptance (`tests/integration/source_agent_test.go`): over a real TCP
+  socket the on-wire bytes are the compressed volume (strictly < logical),
+  the reconstructed payload is byte-for-byte the source table, and the row
+  count matches.
+
+The destination agent (P2) and the controller control-plane wiring (P3)
+follow; the single-controller path (`--topology single`) is untouched.
+
 ### Documented: single-controller data path is an acknowledged debt (ADR-002)
 
 The implemented build runs both PostgreSQL connections in one process, so

@@ -1,0 +1,228 @@
+// Package agent is the two-agent data path (ADR-001/ADR-002 remediation).
+//
+// In the single-controller build the source COPY and the destination COPY run
+// as two goroutines inside ONE controller process, joined by an in-memory
+// net.Pipe; the compression happens on that in-memory pipe, so the network
+// legs stay raw (the ADR-002 debt). This package moves the data plane OUT of
+// the controller: the source agent (one process, on the source cluster) owns
+// the source pg connection, the FR-02 snapshot and the `COPY ... TO STDOUT`,
+// and pushes the bytes COMPRESSED over a real socket to the destination agent
+// (a separate process, on the destination cluster), which decompresses and
+// runs `COPY ... FROM STDIN`. The controller becomes a control plane (P3).
+//
+// The source and destination halves are deliberately thin: they reuse the
+// exact framing/compression the single-controller path already uses
+// (transfer.FramedWriter / FramedReader, ADR-002 P0), so the on-wire format is
+// identical — only the transport selection (in-memory pipe -> real socket)
+// changes.
+package agent
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"time"
+
+	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/compress"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/source"
+)
+
+// SnapshotMode is the FR-02 source-snapshot scope the source agent owns.
+// Empty = no snapshot (inconsistent copy); "db" = one REPEATABLE READ snapshot
+// held across the agent's units (the --consistent-db default); "cluster" =
+// the read-only cluster freeze (--consistent-cluster).
+type SnapshotMode string
+
+const (
+	SnapNone    SnapshotMode = ""
+	SnapDB      SnapshotMode = "db"
+	SnapCluster SnapshotMode = "cluster"
+)
+
+// SourceOptions configures one source-agent push of a single table.
+type SourceOptions struct {
+	// SrcConn is the source postgres conn string.
+	SrcConn string
+	// PG-plane TLS (the agent is a client of the source DB).
+	SSLCert, SSLKey, SSLCA, SSLMinTLS string
+	// Schema/Table is the source object to stream (schema-qualified).
+	Schema, Table string
+	// JobID/UnitID are the frame ids (the job hash + the unit ordinal).
+	JobID, UnitID uint32
+	// DestAddr is the destination agent's listen address (host:port). The
+	// source dials it (the source owns the snapshot and the data; the dest
+	// publishes a per-unit endpoint, ADR-001).
+	DestAddr string
+	// Compress is the FR-12 mode string ("none"/"zlib"/"zstd[:level]").
+	Compress string
+	// Snapshot is the FR-02 scope the agent holds while streaming.
+	Snapshot SnapshotMode
+	// Data-plane TLS for the agent<->agent socket (the source is the CLIENT;
+	// the dest agent is the server). All empty = plain TCP.
+	DataTLSCert, DataTLSKey, DataTLSCA string
+	// ConnectTimeout bounds the socket dial (a wedged dest agent cannot hang
+	// the source forever).
+	ConnectTimeout time.Duration
+	// StreamTimeout bounds the whole stream (a wedged dest cannot hang the
+	// source's COPY past its own lifetime).
+	StreamTimeout time.Duration
+}
+
+// SourceResult is what the source agent reports after a push (FR-04 volume +
+// row count). Wire is the compressed/framed byte count actually on the socket
+// between the agents; Logical is the uncompressed byte count the source read
+// from PG (the FramedWriter does not count logical, so this is the source-side
+// COPY payload size, measured via a counting wrap).
+type SourceResult struct {
+	Rows    int64
+	Wire    uint64
+	Logical uint64
+}
+
+// Push streams o.Schema.o.Table from the source to o.DestAddr over a real
+// socket, compressing + framing on the wire (FR-12). It opens its own source
+// pg connection (the agent is the snapshot owner), establishes the FR-02
+// snapshot when o.Snapshot is set, runs `COPY ... TO STDOUT (FORMAT binary)`,
+// frames/compresses the payload into the socket and closes it (end-of-copy for
+// the destination). It returns the source-side row count + wire/logical volume.
+func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
+	var out SourceResult
+	if o.ConnectTimeout <= 0 {
+		o.ConnectTimeout = 10 * time.Second
+	}
+	if o.StreamTimeout <= 0 {
+		o.StreamTimeout = 6 * time.Hour
+	}
+
+	// 1. Source pg connection (the agent is the snapshot owner, ADR-001).
+	src, err := pg.NewConn(ctx, o.SrcConn, o.SSLCert, o.SSLKey, o.SSLCA, o.SSLMinTLS)
+	if err != nil {
+		return out, fmt.Errorf("source agent: connect source: %w", err)
+	}
+	defer src.Close()
+
+	// 2. FR-02 snapshot (the pinned REPEATABLE READ tx lives on this conn).
+	if o.Snapshot != SnapNone {
+		if err := beginSnapshot(ctx, src, o.Snapshot); err != nil {
+			return out, err
+		}
+		// The snapshot dies with the session; end it cleanly on success so a
+		// reused conn (multi-unit agent, P3) does not leak an open tx.
+		defer func() { _, _ = src.Exec(ctx, "COMMIT") }()
+	}
+
+	// 3. Dial the destination agent (optionally TLS), under a bounded ctx so a
+	// wedged dest cannot hang the source past the COPY lifetime.
+	dctx, dcancel := context.WithTimeout(ctx, o.StreamTimeout)
+	defer dcancel()
+	raw, err := net.DialTimeout("tcp", o.DestAddr, o.ConnectTimeout)
+	if err != nil {
+		return out, fmt.Errorf("source agent: dial dest %s: %w", o.DestAddr, err)
+	}
+	conn := raw
+	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
+		host, herr := hostOf(o.DestAddr)
+		if herr != nil {
+			raw.Close()
+			return out, fmt.Errorf("source agent: bad --dest %q: %w", o.DestAddr, herr)
+		}
+		ccfg, cerr := transfer.ClientTLSConfig(host, o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, "")
+		if cerr != nil {
+			raw.Close()
+			return out, fmt.Errorf("source agent: tls config: %w", cerr)
+		}
+		tc := tls.Client(raw, ccfg)
+		if hsErr := tc.HandshakeContext(dctx); hsErr != nil {
+			raw.Close()
+			return out, fmt.Errorf("source agent: tls handshake with dest: %w", hsErr)
+		}
+		conn = tc
+	}
+
+	// 4. Compression (FR-12) — the bytes between the agents travel compressed.
+	mode, level, perr := compress.Parse(o.Compress)
+	if perr != nil {
+		conn.Close()
+		return out, fmt.Errorf("source agent: compress %q: %w", o.Compress, perr)
+	}
+	comp := compress.New(mode, level)
+	fw := transfer.NewFramedWriter(conn, o.JobID, o.UnitID, comp)
+
+	// 5. Stream: COPY ... TO STDOUT -> (count) -> frame+compress -> socket.
+	// A counting wrap measures the logical (uncompressed) volume the source
+	// read from PG, for the FR-04 report.
+	srcAgent := source.New(src)
+	counted := &logicalCounter{}
+	tee := &teeWriter{logical: counted, out: fw}
+	rows, cerr := srcAgent.CopyToStream(dctx, o.Schema, o.Table, tee)
+	if cerr != nil {
+		conn.Close()
+		return out, fmt.Errorf("source agent: copy %s.%s: %w", o.Schema, o.Table, cerr)
+	}
+	// 6. End-of-copy: flush the framed tail and close the socket so the
+	// destination's read side sees io.EOF.
+	if flerr := fw.CloseFlush(); flerr != nil && cerr == nil {
+		cerr = flerr
+	}
+
+	out.Rows = rows
+	out.Wire = fw.Wire()
+	out.Logical = uint64(counted.n)
+	if cerr != nil {
+		return out, cerr
+	}
+	return out, nil
+}
+
+// beginSnapshot opens the FR-02 REPEATABLE READ transaction on the agent's
+// source connection (mirrors manager.beginSnapshotTx). The agent owns the
+// snapshot for its whole lifetime; the controller (P3) streams units one by
+// one over it.
+func beginSnapshot(ctx context.Context, src *pg.Conn, mode SnapshotMode) error {
+	if mode == SnapCluster {
+		if _, err := src.Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
+			return fmt.Errorf("source agent: cluster freeze: %w", err)
+		}
+	}
+	if _, err := src.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
+		return fmt.Errorf("source agent: begin snapshot tx: %w", err)
+	}
+	return nil
+}
+
+// hostOf returns the host part of a host:port address (the TLS client's
+// expected server name, if it is a name).
+func hostOf(listen string) (string, error) {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+// logicalCounter is an io.Writer that only counts bytes (the logical volume).
+type logicalCounter struct{ n int64 }
+
+func (l *logicalCounter) Write(p []byte) (int, error) {
+	l.n += int64(len(p))
+	return len(p), nil
+}
+
+// teeWriter writes each chunk to both the logical counter and the framed
+// (compressed) transport, so the source can report logical volume while
+// pushing the compressed bytes.
+type teeWriter struct {
+	logical io.Writer
+	out     io.Writer
+}
+
+func (t *teeWriter) Write(p []byte) (int, error) {
+	if _, err := t.logical.Write(p); err != nil {
+		return 0, err
+	}
+	return t.out.Write(p)
+}

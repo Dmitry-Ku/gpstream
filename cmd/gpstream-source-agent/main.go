@@ -1,0 +1,110 @@
+// Command gpstream-source-agent is the two-agent data-path source (ADR-001 /
+// ADR-002 remediation). It runs on a source-cluster host, owns the source pg
+// connection and the FR-02 snapshot, streams one table with
+// `COPY ... TO STDOUT (FORMAT binary)`, compresses + frames the payload
+// (FR-12) and pushes it COMPRESSED over a real socket (optionally TLS) to the
+// destination agent. It is the source half of the network data path that the
+// single-controller build does in memory.
+//
+// The controller (P3) launches it per unit (or, for a multi-unit run, keeps it
+// alive and re-issues units over the same snapshot). For this phase it streams
+// exactly one table per invocation, which is the coordinator data path.
+//
+// Exit codes: 0 clean stream (socket closed after the framed tail); 1
+// argument/connect/stream failure (the controller surfaces it as the unit
+// error; a non-zero exit never leaves a silent partial stream).
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/gpstream/gpstream/internal/agent"
+)
+
+func main() {
+	// Source pg connection (the agent is a client of the source DB).
+	src := flag.String("src", "", "source postgres conn string (required)")
+	sslCert := flag.String("ssl-cert", "", "pg-plane client certificate PEM")
+	sslKey := flag.String("ssl-key", "", "pg-plane client key PEM")
+	sslCA := flag.String("ssl-ca", "", "pg-plane trusted CA bundle PEM (verify-full)")
+	sslMinTLS := flag.String("ssl-min-tls", "1.2", "pg-plane minimum TLS version")
+	// The unit to stream.
+	schema := flag.String("schema", "public", "source schema")
+	table := flag.String("table", "", "source table (required)")
+	job := flag.String("job", "0", "job id (decimal, the plan hash)")
+	unit := flag.String("unit", "0", "unit id (decimal, the unit ordinal)")
+	// The destination agent endpoint (the source dials it).
+	dest := flag.String("dest", "", "destination agent listen address host:port (required)")
+	compress := flag.String("compress", "zstd", "stream compression none|zlib|zstd[:level]")
+	snapshot := flag.String("snapshot", "db", "FR-02 snapshot scope: none|db|cluster")
+	// Data-plane TLS for the agent<->agent socket (source = client).
+	dataCert := flag.String("data-tls-cert", "", "agent-stream client certificate PEM")
+	dataKey := flag.String("data-tls-key", "", "agent-stream client key PEM")
+	dataCA := flag.String("data-tls-ca", "", "agent-stream trusted CA bundle PEM (enables mTLS)")
+	// Timeouts.
+	connectTO := flag.Duration("connect-timeout", 10*time.Second, "socket dial timeout")
+	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
+	// Doctor probe: print a marker and exit 0 (no stream), proving the binary
+	// is installed on the source host.
+	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
+	flag.Parse()
+
+	fail := func(format string, a ...any) {
+		fmt.Fprintf(os.Stderr, "gpstream-source-agent: "+format+"\n", a...)
+		os.Exit(1)
+	}
+	if *check {
+		fmt.Fprintln(os.Stderr, "gpstream-source-agent: ok (check)")
+		os.Exit(0)
+	}
+	if *src == "" || *table == "" || *dest == "" {
+		fail("--src, --table and --dest are required")
+	}
+	jobID, err := strconv.ParseUint(*job, 10, 32)
+	if err != nil {
+		fail("--job: %v", err)
+	}
+	unitID, err := strconv.ParseUint(*unit, 10, 32)
+	if err != nil {
+		fail("--unit: %v", err)
+	}
+
+	// SIGINT/SIGTERM cancels the stream so a controller-side stop unwinds the
+	// COPY and the socket cleanly.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	res, err := agent.Push(ctx, agent.SourceOptions{
+		SrcConn:        *src,
+		SSLCert:        *sslCert,
+		SSLKey:         *sslKey,
+		SSLCA:          *sslCA,
+		SSLMinTLS:      *sslMinTLS,
+		Schema:         *schema,
+		Table:          *table,
+		JobID:          uint32(jobID),
+		UnitID:         uint32(unitID),
+		DestAddr:       *dest,
+		Compress:       *compress,
+		Snapshot:       agent.SnapshotMode(*snapshot),
+		DataTLSCert:    *dataCert,
+		DataTLSKey:     *dataKey,
+		DataTLSCA:      *dataCA,
+		ConnectTimeout: *connectTO,
+		StreamTimeout:  *streamTO,
+	})
+	if err != nil {
+		fail("%v", err)
+	}
+	// The report goes to stderr (stdout is not a data path here). The
+	// controller (P3) parses this to journal the unit.
+	fmt.Fprintf(os.Stderr, "gpstream-source-agent: unit=%d rows=%d wire=%d logical=%d ok\n",
+		unitID, res.Rows, res.Wire, res.Logical)
+}

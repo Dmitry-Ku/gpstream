@@ -51,6 +51,20 @@ builds:
     goarch:
       - amd64
 
+  - id: gpstream-source-agent
+    main: ./cmd/gpstream-source-agent
+    binary: gpstream-source-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+
 archives:
   - id: gpstream
     builds:
@@ -68,6 +82,13 @@ archives:
     name_template: "{{ .ProjectName }}-segreceiver-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
+  - id: gpstream-source-agent
+    builds:
+      - gpstream-source-agent
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-source-agent-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
 
 # gzip the man pages once, into dist/man/, so both package formats ship .gz
 # (man(8) reads either, .gz is the conventional on-disk form)
@@ -80,6 +101,7 @@ nfpms:
     builds:
       - gpstream
       - gpstream-segreceiver
+      - gpstream-source-agent
     package_name: gpstream
     file_name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Arch }}"
     formats:
