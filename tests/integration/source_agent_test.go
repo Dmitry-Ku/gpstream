@@ -94,6 +94,7 @@ func TestSourceAgentPushOverTCP(t *testing.T) {
 	defer l.Close()
 
 	type dstResult struct {
+		spec    agent.UnitSpec
 		payload []byte
 		wire    uint64
 		err     error
@@ -106,28 +107,45 @@ func TestSourceAgentPushOverTCP(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		// 1. Read the UnitSpec header (schema + dest names) the source sent
+		// before the framed stream.
+		spec, serr := agent.ReadUnitSpec(conn)
+		if serr != nil {
+			resCh <- dstResult{err: serr}
+			return
+		}
+		// 2. Read the framed+compressed stream to EOF, reconstructing the
+		// logical payload and counting the on-wire (compressed) bytes.
 		cc := &countingConn{Conn: conn}
-		dec := compress.NewDec(compress.ModeZstd)
+		mode, _, perr := compress.Parse(spec.Compress)
+		if perr != nil {
+			resCh <- dstResult{spec: spec, err: perr}
+			return
+		}
+		dec := compress.NewDec(mode)
 		fr := transfer.NewFramedReader(cc, dec)
 		got, rerr := readAllBuf(fr)
 		if rerr != nil {
-			resCh <- dstResult{err: rerr}
+			resCh <- dstResult{spec: spec, err: rerr}
 			return
 		}
-		resCh <- dstResult{payload: got, wire: cc.n.Load()}
+		resCh <- dstResult{spec: spec, payload: got, wire: cc.n.Load()}
 	}()
 
 	// Run the source agent in-process (the same code path as the binary).
 	start := time.Now()
 	res, perr := agent.Push(ctx, agent.SourceOptions{
-		SrcConn:  cl.URL(),
-		Schema:   "public",
-		Table:    "orders",
-		JobID:    jobID,
-		UnitID:   unitID,
-		DestAddr: l.Addr().String(),
-		Compress: "zstd",
-		Snapshot: agent.SnapDB,
+		SrcConn:   cl.URL(),
+		Schema:    "public",
+		Table:     "orders",
+		DstSchema: "public",
+		DstTable:  "orders_copy",
+		Staging:   "_gs_testjob_7",
+		JobID:     jobID,
+		UnitID:    unitID,
+		DestAddr:  l.Addr().String(),
+		Compress:  "zstd",
+		Snapshot:  agent.SnapDB,
 	})
 	if perr != nil {
 		t.Fatalf("source agent push: %v", perr)
@@ -137,6 +155,17 @@ func TestSourceAgentPushOverTCP(t *testing.T) {
 	dres := <-resCh
 	if dres.err != nil {
 		t.Fatalf("destination read: %v", dres.err)
+	}
+
+	// 0. The UnitSpec header the source sent carries the right shape.
+	if dres.spec.Table != "orders_copy" || dres.spec.Staging != "_gs_testjob_7" {
+		t.Fatalf("unit spec dest names wrong: %+v", dres.spec)
+	}
+	if dres.spec.Compress != "zstd" {
+		t.Fatalf("unit spec compress = %q, want zstd", dres.spec.Compress)
+	}
+	if len(dres.spec.Cols) != 3 {
+		t.Fatalf("unit spec cols = %d, want 3 (id, customer, amount)", len(dres.spec.Cols))
 	}
 
 	// 1. The on-wire volume is the compressed volume: strictly less than the

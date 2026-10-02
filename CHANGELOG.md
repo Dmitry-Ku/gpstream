@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: two-agent data path — destination agent (P2)
+
+The ADR-002 remediation continues: this change lands the **destination
+agent** — the `gpstream-dest-agent` binary + `internal/agent` dest core that
+runs on a destination-cluster host. It listens for the source agent's
+connection, reads the `UnitSpec` header (destination schema + the source
+table shape: columns, distribution, partition, compression), builds the
+staging table, loads it from the **compressed** framed stream (decompressing
+on the wire, FR-12), and — when instructed (`--swap`) — performs the atomic
+swap. The swap stays a controller decision (the journal's terminal-state
+semantics live in the controller), matching ADR-002's plan.
+
+- `internal/agent/spec.go` — `UnitSpec` header + `ReadUnitSpec`/`WriteUnitSpec`
+  (the schema the source sends before the framed stream).
+- `internal/agent/dest.go` — `agent.Serve`: dest conn + listen (optionally a
+  TLS/mTLS server) + staging DDL + COPY FROM + optional swap; reports rows +
+  logical (the authoritative destination counts).
+- `cmd/gpstream-dest-agent/` — the binary (`--check` doctor probe; SIGINT /
+  SIGTERM unwinds the stream).
+- `.goreleaser.yaml` — packages the dest agent (4th binary).
+- P2 acceptance (`tests/integration/two_agent_roundtrip_test.go`): a real
+  two-agent round trip over a real TCP socket — source agent push + dest agent
+  serve — the destination table is correct (count + content digest) after the
+  swap, the staging table is gone, and the on-wire volume is the compressed
+  volume (< logical).
+
+Together with P1 (the source agent) the two-agent coordinator data path is
+complete end to end; the controller control-plane wiring (P3) is next. The
+single-controller path is untouched.
+
 ### Added: two-agent data path — source agent (P1)
 
 The ADR-002 remediation (moving the data plane out of the controller) is

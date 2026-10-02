@@ -65,6 +65,20 @@ builds:
     goarch:
       - amd64
 
+  - id: gpstream-dest-agent
+    main: ./cmd/gpstream-dest-agent
+    binary: gpstream-dest-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+
 archives:
   - id: gpstream
     builds:
@@ -89,6 +103,13 @@ archives:
     name_template: "{{ .ProjectName }}-source-agent-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
+  - id: gpstream-dest-agent
+    builds:
+      - gpstream-dest-agent
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-dest-agent-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
 
 # gzip the man pages once, into dist/man/, so both package formats ship .gz
 # (man(8) reads either, .gz is the conventional on-disk form)
@@ -102,6 +123,7 @@ nfpms:
       - gpstream
       - gpstream-segreceiver
       - gpstream-source-agent
+      - gpstream-dest-agent
     package_name: gpstream
     file_name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Arch }}"
     formats:

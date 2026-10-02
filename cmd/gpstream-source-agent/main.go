@@ -40,6 +40,12 @@ func main() {
 	table := flag.String("table", "", "source table (required)")
 	job := flag.String("job", "0", "job id (decimal, the plan hash)")
 	unit := flag.String("unit", "0", "unit id (decimal, the unit ordinal)")
+	// Destination names (post-rename); the dest agent builds the staging
+	// table from the UnitSpec header the source sends.
+	dstSchema := flag.String("dst-schema", "", "destination schema (defaults to --schema)")
+	dstTable := flag.String("dst-table", "", "destination final table name (defaults to --table)")
+	staging := flag.String("staging", "", "staging table name (required; dest.StagingName)")
+	overwrite := flag.Bool("overwrite", false, "destination swaps by dropping the existing table")
 	// The destination agent endpoint (the source dials it).
 	dest := flag.String("dest", "", "destination agent listen address host:port (required)")
 	compress := flag.String("compress", "zstd", "stream compression none|zlib|zstd[:level]")
@@ -64,8 +70,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gpstream-source-agent: ok (check)")
 		os.Exit(0)
 	}
-	if *src == "" || *table == "" || *dest == "" {
-		fail("--src, --table and --dest are required")
+	if *src == "" || *table == "" || *dest == "" || *staging == "" {
+		fail("--src, --table, --dest and --staging are required")
+	}
+	// Destination names default to the source names (no rename).
+	ds, dt := *dstSchema, *dstTable
+	if ds == "" {
+		ds = *schema
+	}
+	if dt == "" {
+		dt = *table
 	}
 	jobID, err := strconv.ParseUint(*job, 10, 32)
 	if err != nil {
@@ -89,6 +103,10 @@ func main() {
 		SSLMinTLS:      *sslMinTLS,
 		Schema:         *schema,
 		Table:          *table,
+		DstSchema:      ds,
+		DstTable:       dt,
+		Staging:        *staging,
+		Overwrite:      *overwrite,
 		JobID:          uint32(jobID),
 		UnitID:         uint32(unitID),
 		DestAddr:       *dest,

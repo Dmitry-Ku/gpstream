@@ -51,6 +51,12 @@ type SourceOptions struct {
 	SSLCert, SSLKey, SSLCA, SSLMinTLS string
 	// Schema/Table is the source object to stream (schema-qualified).
 	Schema, Table string
+	// DstSchema/DstTable are the destination names (post-rename); the dest
+	// agent creates its staging table in DstSchema. DstTable is the final
+	// table name (the swap target); Staging is the staging name (dest.
+	// StagingName). Overwrite controls the dest agent's swap semantics.
+	DstSchema, DstTable, Staging string
+	Overwrite                    bool
 	// JobID/UnitID are the frame ids (the job hash + the unit ordinal).
 	JobID, UnitID uint32
 	// DestAddr is the destination agent's listen address (host:port). The
@@ -105,7 +111,36 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	}
 	defer src.Close()
 
-	// 2. FR-02 snapshot (the pinned REPEATABLE READ tx lives on this conn).
+	// 2. Capture the source table's shape (columns, distribution, partition)
+	// BEFORE the FR-02 snapshot. The manager reads catalog on the BASE pool,
+	// not the pinned REPEATABLE READ connection: a catalog SQL fault on the
+	// pinned conn aborts the whole snapshot transaction (25P02) and takes down
+	// the data COPY (the skill's FR-02 snapshot pitfall). With the agent's
+	// single connection, capturing the schema before BEGIN keeps the snapshot
+	// clean for the data COPY. (Schema is stable across the run, so reading it
+	// just before the snapshot is equivalent to the manager's base-pool read.)
+	srcAgent := source.New(src)
+	cols, cerr := srcAgent.Columns(ctx, o.Schema, o.Table)
+	if cerr != nil {
+		return out, fmt.Errorf("source agent: read columns %s.%s: %w", o.Schema, o.Table, cerr)
+	}
+	dist := srcAgent.Distribution(ctx, o.Schema, o.Table)
+	// A partition-capture fault (plain PG without pg_get_partition_def, or a
+	// transient catalog error) is NON-FATAL, matching the planner: the table
+	// is treated as non-partitioned (the dest is created plain and still
+	// receives all rows via the parent COPY).
+	part, perr := pg.CapturePartitionSpec(src, ctx, o.Schema, o.Table)
+	if perr != nil {
+		part = pg.PartitionSpec{}
+	}
+	spec := UnitSpec{
+		JobID: o.JobID, UnitID: o.UnitID,
+		Schema: o.DstSchema, Table: o.DstTable, Staging: o.Staging, Overwrite: o.Overwrite,
+		Compress: o.Compress,
+		Cols:     cols, Dist: dist, Part: part,
+	}
+
+	// 2b. FR-02 snapshot (the pinned REPEATABLE READ tx lives on this conn).
 	if o.Snapshot != SnapNone {
 		if err := beginSnapshot(ctx, src, o.Snapshot); err != nil {
 			return out, err
@@ -143,6 +178,13 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 		conn = tc
 	}
 
+	// 3b. Send the UnitSpec header first: the destination reads it to build
+	// the staging table before it reads the framed data stream.
+	if serr := WriteUnitSpec(conn, spec); serr != nil {
+		conn.Close()
+		return out, serr
+	}
+
 	// 4. Compression (FR-12) — the bytes between the agents travel compressed.
 	mode, level, perr := compress.Parse(o.Compress)
 	if perr != nil {
@@ -155,7 +197,6 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	// 5. Stream: COPY ... TO STDOUT -> (count) -> frame+compress -> socket.
 	// A counting wrap measures the logical (uncompressed) volume the source
 	// read from PG, for the FR-04 report.
-	srcAgent := source.New(src)
 	counted := &logicalCounter{}
 	tee := &teeWriter{logical: counted, out: fw}
 	rows, cerr := srcAgent.CopyToStream(dctx, o.Schema, o.Table, tee)
