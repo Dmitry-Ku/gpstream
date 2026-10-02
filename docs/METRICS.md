@@ -121,7 +121,7 @@ Summary of the series:
 
 | Series | Kind | Labels | Meaning |
 |--------|------|--------|---------|
-| `gpstream_bytes_total` | counter | — | bytes transferred (compressed on the wire) |
+| `gpstream_bytes_total` | counter | — | bytes pushed through the framed transport (compressed in-memory; see ADR-002 — the network legs are uncompressed in the single-controller build) |
 | `gpstream_bytes_decoded_total` | counter | — | logical bytes after decompression |
 | `gpstream_rows_total` | counter | — | rows copied |
 | `gpstream_errors_total` | counter | — | transfer errors |

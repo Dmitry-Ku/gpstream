@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Documented: single-controller data path is an acknowledged debt (ADR-002)
+
+The implemented build runs both PostgreSQL connections in one process, so
+the frame/compress transport is an in-memory pipe: both TCP legs carry
+uncompressed binary COPY, `--compress` costs controller CPU without
+reducing inter-cluster bandwidth, the `gpstream_bytes_total`/`wire` numbers
+are the compressed in-memory volume (not the network volume), and a
+controller on an external host is a data trust root (two hops, data in
+controller RAM). New:
+
+- `docs/adr/002-single-controller-data-path.md` — the debt, its
+  consequences, and the two-agent remediation target (ADR-001 data path).
+- `docs/plans/two-agent-transport.md` — phased remediation plan (P0
+  transport interface → P6 metrics/docs) with acceptance criteria
+  (on-network compressed bytes, controller with no data connections).
+- `doctor` now emits a `topology` WARN for cross-host copies (single
+  controller in the data path); same-endpoint copies are unaffected.
+- OPERATOR_GUIDE (`--compress`), METRICS, and SECURITY (threat model +
+  controller-as-trust-root) state the actual topology.
+
 ### Fixed: resume now completes a unit a crashed run left `completed`
 
 A run that died in the window between the `completed` journal write and the

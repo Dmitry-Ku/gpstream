@@ -158,6 +158,16 @@ but uses more CPU — the adaptive limiter (F-14, always active) will *degrade*
 the rate / compression level when the host is CPU-saturated, and that change
 is observable as a metric (see §8).
 
+**Topology note (ADR-002):** the single-controller build runs both
+PostgreSQL connections in one process, so the frame/compress transport is an
+*in-memory* pipe inside the controller: both TCP legs (source coordinator →
+controller, controller → destination) carry **uncompressed** binary COPY, and
+`--compress` costs controller CPU without reducing inter-cluster bandwidth.
+The `wire` number in `status`/metrics is the compressed in-memory volume,
+not the network volume. The two-agent design (compression between the
+clusters, controller as control plane only) is the planned remediation; see
+`docs/adr/002-single-controller-data-path.md`.
+
 ---
 
 ## 7. Back-pressure and adaptive rate-limiting

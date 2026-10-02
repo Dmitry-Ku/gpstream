@@ -18,6 +18,7 @@ not a file on disk. The security concerns are therefore:
 |---------|------------------|
 | Credential leakage (argv, logs, process list) | Secrets come from **env / file, never argv** (§2) |
 | Wire eavesdropping / MITM | TLS always enforced, min **1.2** (§3) |
+| **Controller host as data trust root** | Single-controller build: the data stream transits the controller's memory (ADR-002); place the controller where the data may be read (§3) |
 | Overwriting live data by accident | **Non-destructive default** (§4) |
 | Corrupted / truncated copy | Checksum + verify (§5) |
 | Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
@@ -81,6 +82,18 @@ verifiable name and degrades to chain verification (verify-ca). A
 missing or certificate-less bundle (or a malformed client keypair) is a
 **hard error at connect time** — gpstream never silently downgrades its TLS
 guarantee.
+
+### Controller host as a data trust root (ADR-002)
+
+In the single-controller build both PostgreSQL connections live in one
+process, so the entire logical data stream transits the controller's memory
+in cleartext between the two TLS-encrypted legs (TLS protects each leg
+separately, not the data in the controller's RAM). A compromise of the
+controller host exposes the copied data. The TLS-protected agent↔agent
+stream of the planned two-agent design removes the data plane from the
+controller. Until then: run the controller on a host that is already
+authorized to read the data (e.g. one of the cluster management hosts), and
+treat it in the threat model as a data-access endpoint.
 
 ---
 
