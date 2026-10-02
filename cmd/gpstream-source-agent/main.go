@@ -108,9 +108,20 @@ func main() {
 			fail("serve: %v", err)
 		}
 		// The bound control address goes to stderr for the controller to parse;
-		// the agent blocks until the run ends (release or controller close).
+		// the agent blocks until the run ends: a SIGINT/SIGTERM (controller stop)
+		// or the controller closing its control connection (controller crash).
+		// On control-connection loss the agent must EXIT, not linger: its
+		// pinned FR-02 snapshot is a server-side REPEATABLE READ transaction on
+		// one backend, and a lingering agent holds that backend (and its
+		// snapshot) for the life of the process. serveControl closes s.stopped
+		// when the controller's connection goes away, so Done() is the
+		// controller-death signal; srv.Close() rolls the snapshot back.
 		fmt.Fprintf(os.Stderr, "gpstream-source-agent: serving control on %s\n", addr)
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-srv.Done():
+			fmt.Fprintln(os.Stderr, "gpstream-source-agent: control connection lost (controller gone); rolling back the run snapshot and exiting")
+		}
 		srv.Close()
 		fmt.Fprintln(os.Stderr, "gpstream-source-agent: stopped")
 		return

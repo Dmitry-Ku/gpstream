@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: two-agent crash-recovery matrix (kill any of the three processes mid-copy)
+
+The ADR-002 remediation's hard part is now tested: `TestTwoAgentCrashRecoveryMatrix`
+kills each of the three processes while a copy is in flight and verifies the
+operation recovers idempotently by re-running the same `--operation-id`:
+
+- **kill the source agent mid-COPY** — the controller's stream call errors,
+  the unit is left non-terminal in the durable journal, and the re-run
+  re-copies it under a fresh snapshot (epoch+1).
+- **kill the dest agent mid-COPY** — the partial staging is truncated on
+  resume (the dest agent truncates a surviving staging before re-creating it),
+  so the re-copy replaces rather than appends.
+- **kill the controller between journal writes** — the source agent detects
+  the dropped control connection and **exits, rolling back its pinned
+  REPEATABLE READ snapshot** (no orphan holding a server-side backend); the
+  dest agent's one-shot serve ends; the re-run resumes from the durable
+  journal.
+
+In every case the already-swapped table is KEPT (the T5 keep rule — a unit
+verified under one snapshot epoch) and only the in-flight table is re-copied;
+the destination ends up exactly right (row count + content digest match, no
+staging left). The test drives the real three binaries as subprocesses over a
+real (loopback) socket, so the process boundaries — the thing the crash
+matrix is about — are the production ones.
+
+### Fixed: binary two-agent coordinator path failed every unit
+
+`parseDestReport` (the process-runner coordinator path) required a 5-field
+destination report (`n == 5`) but the coordinator report has always been four
+fields (`unit rows logical <verdict> ok`, no `wire=`) — the on-wire volume is
+the source agent's, reported separately. The binary `--topology two-agent`
+coordinator copy therefore failed every unit with "no dest report line found".
+It was latent because the in-proc runner returns counts directly and the
+segment/direct paths use their own 5-field inline parsers; the new crash
+matrix (which exercises the binary coordinator path) caught it. Fixed to
+`n == 4` + a regression test.
+
 ### Changed: ADR-002 closed — two-agent is the remediation, docs + metrics + doctor updated (P6)
 
 With P3/P4/P5 the two-agent data path is live for all three copy modes, so

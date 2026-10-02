@@ -521,13 +521,17 @@ func dialControlRetry(ctx context.Context, addr string, deadline time.Duration) 
 }
 
 // parseDestReport extracts (rows, logical) from the destination agent's stderr
-// report line: "gpstream-dest-agent: unit=N rows=R logical=L <verdict> ok".
+// report. The COORDINATOR two-agent report is four fields —
+// "gpstream-dest-agent: unit=N rows=R logical=L <verdict> ok" (no wire=; the
+// on-wire volume is the SOURCE agent's, reported separately). The segment
+// (P4) and direct (P5) reports carry a fifth wire= field and are parsed by
+// their own inline Sscanf in StreamSegment/StreamDirect, not here.
 func parseDestReport(stderr string) (rows int64, logical uint64, err error) {
 	for _, line := range strings.Split(stderr, "\n") {
 		var unit, r, l int64
 		var verdict string
 		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d %s ok",
-			&unit, &r, &l, &verdict); perr == nil && n == 5 {
+			&unit, &r, &l, &verdict); perr == nil && n == 4 {
 			return r, uint64(l), nil
 		}
 	}
