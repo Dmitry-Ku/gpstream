@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: direct data path through the agents (P5)
+
+The ADR-002 remediation reaches the fully segment-direct (`--copy-mode
+direct`, R5 endgame) path. In two-agent topology the controller no longer
+routes rows: it computes the routing key (the table's distribution key, mapped
+to its column positions + type OIDs) and the per-segment destination DSNs
+(utility-mode, one per up primary) on its control-plane connections, hands the
+routing key to the source agent and the launch payload (staging shape + DSNs)
+to the destination agent, and keeps the DDL / journal / verify / swap
+decision. The source agent reads the table with `COPY ... TO STDOUT`, routes
+each row to one of D destination segments (the RowRouter reproduces the
+kernel's cdbhash + jump-consistent-hash, so every row lands on the segment the
+destination kernel would place it on) and streams D per-segment COMPRESSED
+slices (content-tagged) to the destination agent; the destination agent
+performs D utility-mode per-segment `COPY ... FROM STDIN` into the staging
+table. The destination coordinator is out of the write path, so the copy is
+bounded by the segment hosts, not the coordinator. A table that cannot be
+routed (non-hash distribution, an unsupported dist-key type, a key column
+absent from the source, or a non-Greenplum destination) degrades to the
+two-agent coordinator path (correct, just not direct) and the decision is
+logged (`direct_degraded`). Verified live on GP6 (A→C, 3 destination
+segments): 20,000 rows, `--verify on` checksum match, 0 degraded, per-segment
+balance max/avg ≈ 1.02, on-wire volume compressed ~3× vs the logical volume.
+
+- `internal/agent/server.go` — `handleDirect`: the source agent's direct data
+  path (read the table on the pinned FR-02 snapshot conn, route each row to a
+  destination segment, stream D per-segment compressed slices over D
+  connections to the destination agent; reports the router's row count +
+  per-segment distribution + the on-wire byte volume it wrote).
+- `internal/agent/direct.go` — `ServeDirect`: the destination agent's direct
+  mode (builds the staging table on the coordinator conn, opens D utility-mode
+  per-segment COPYs, accepts the D compressed slice connections and routes each
+  by content-id to its segment; reports rows + raw on-network wire + logical
+  bytes + the per-segment distribution).
+- `internal/agent/control.go` + `internal/agent/spec.go` — the `direct` control
+  op (`DirectReq`/`DirectResp`) and the `DirectLaunch` payload the controller
+  hands the destination agent at launch (`--direct-spec`).
+- `internal/manifest/twoagent.go` — `TwoAgentRunner.StreamDirect` (process +
+  in-proc) + `unitDirectRequest`.
+- `internal/manifest/manager.go` — the two-agent direct branch:
+  `streamTwoAgentDirect` (routing key + per-segment DSNs computed on the
+  control plane; degrades to the two-agent coordinator path when unroutable).
+- `cmd/gpstream-dest-agent/main.go` — `--direct-spec` (the direct-mode launch
+  payload).
+
 ### Added: on_segment data path through the agents (P4)
 
 The ADR-002 remediation reaches the segment-direct (`--copy-mode on_segment`)

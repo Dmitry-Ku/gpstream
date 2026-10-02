@@ -38,6 +38,37 @@ type UnitSpec struct {
 	Part pg.PartitionSpec
 }
 
+// DirectLaunch is the P5 direct-mode launch payload the controller hands the
+// destination agent at start (--direct-spec JSON, mirroring P4's --spec). The
+// destination agent builds the staging table from the source shape (Cols /
+// Dist / Part) and performs D utility-mode per-segment COPYs over DstDSNs.
+// The per-segment compressed slice streams themselves arrive over the data
+// socket (the source agent routes each row to a segment and streams D
+// content-tagged compressed slices); this payload carries everything the
+// destination needs to receive + load them.
+type DirectLaunch struct {
+	// UnitID is the unit ordinal (for the agent's report line).
+	UnitID uint32
+	// Destination staging shape (the source table's layout, so the loaded
+	// data is byte-faithful).
+	Schema    string
+	Table     string
+	Staging   string
+	Overwrite bool
+	Cols      []pg.Column
+	Dist      pg.Distribution
+	Part      pg.PartitionSpec
+	// Compress is the FR-12 mode the source used (the dest decompresses).
+	Compress string
+	// D is the number of destination primary segments (== len(DstDSNs)); the
+	// destination accepts D slice connections and opens D utility COPYs.
+	D int32
+	// DstDSNs is one utility-mode destination DSN per segment (content
+	// 0..D-1); the destination COPYs each segment's slice into its local
+	// staging slice over that DSN (gp_session_role=utility).
+	DstDSNs []string
+}
+
 const unitSpecVersion = 1
 
 // WriteUnitSpec serialises s as a 5-byte header (1 version byte + 4-byte

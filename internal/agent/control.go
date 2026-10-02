@@ -74,6 +74,47 @@ type OnSegmentResp struct {
 	Error string `json:"error,omitempty"`
 }
 
+// DirectReq is the controller's per-unit instruction for the P5 direct data
+// path (R5 through the agents). The source agent reads the source table with
+// `COPY ... TO STDOUT`, routes each row to one of D destination segments
+// (jump-consistent-hash over the distribution key) and streams D per-segment
+// COMPRESSED slices (content-tagged) to the destination agent, which performs
+// D utility-mode per-segment COPYs. The destination's staging shape + the
+// per-segment DSNs are handed to the DESTINATION agent at launch (DirectLaunch,
+// --direct-spec), so the source only carries the routing key (KeyIdx/KeyOid/D)
+// and the destination agent's data endpoint. The controller holds no data
+// connection.
+type DirectReq struct {
+	Op       string `json:"op"` // "direct"
+	Schema   string `json:"schema"`
+	Table    string `json:"table"`
+	JobID    uint32 `json:"job_id"`
+	UnitID   uint32 `json:"unit_id"`
+	DestAddr string `json:"dest"` // the destination agent's listen address (the source dials it)
+	Compress string `json:"compress"`
+	// Routing key: distribution-key column positions (source COPY order),
+	// their type OIDs, and the number of destination primary segments.
+	KeyIdx []int    `json:"key_idx"`
+	KeyOid []uint32 `json:"key_oid"`
+	D      int32    `json:"d"`
+	// Data-plane TLS for the agent<->agent socket (source = client).
+	DataTLSCert string `json:"data_tls_cert,omitempty"`
+	DataTLSKey  string `json:"data_tls_key,omitempty"`
+	DataTLSCA   string `json:"data_tls_ca,omitempty"`
+}
+
+// DirectResp is the source agent's report after the direct stream finished
+// (all D per-segment slices streamed). Rows is the count the router saw (a
+// cross-check; the authoritative count is the destination agent's). PerSeg is
+// the router's per-segment row distribution (the F-15 balance cross-check).
+type DirectResp struct {
+	Ok     bool    `json:"ok"`
+	Rows   int64   `json:"rows,omitempty"`
+	Wire   uint64  `json:"wire,omitempty"`
+	PerSeg []int64 `json:"per_seg,omitempty"`
+	Error  string  `json:"error,omitempty"`
+}
+
 // ReleaseReq tells the source agent to end the run (commit the snapshot and
 // close the source connection).
 type ReleaseReq struct {
@@ -195,6 +236,26 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 	}
 	if err := recvLine(c.r, &resp); err != nil {
 		return resp, fmt.Errorf("control: read onsegment response: %w", err)
+	}
+	return resp, nil
+}
+
+// Direct instructs the source agent to run the P5 direct data path for one
+// unit: it reads the source table, routes each row to one of D destination
+// segments, and streams D per-segment compressed slices to the destination
+// agent (which runs the D utility-mode per-segment COPYs). It blocks until all
+// D slices are streamed and returns the router's row count (a cross-check; the
+// authoritative count is the destination agent's).
+func (c *ControlClient) Direct(req DirectReq) (DirectResp, error) {
+	var resp DirectResp
+	if err := SendLine(c.w, req); err != nil {
+		return resp, err
+	}
+	if err := c.w.Flush(); err != nil {
+		return resp, fmt.Errorf("control: flush: %w", err)
+	}
+	if err := recvLine(c.r, &resp); err != nil {
+		return resp, fmt.Errorf("control: read direct response: %w", err)
 	}
 	return resp, nil
 }

@@ -52,6 +52,11 @@ func main() {
 	// the FR-12 compress mode.
 	segments := flag.Int("segments", 0, "P4 on_segment mode: number of source segments to accept (0 = coordinator mode)")
 	segSpec := flag.String("spec", "", "P4 on_segment mode: UnitSpec JSON (the controller serialises it; required with --segments)")
+	// P5 direct mode: the controller passes the launch payload (staging shape
+	// + D + the per-segment utility-mode DSNs) as a single DirectLaunch JSON.
+	// The agent accepts D content-tagged compressed slice connections and
+	// performs D utility-mode per-segment COPYs into the staging table.
+	directSpec := flag.String("direct-spec", "", "P5 direct mode: DirectLaunch JSON (the controller serialises it)")
 	// Timeouts.
 	acceptTO := flag.Duration("accept-timeout", 5*time.Minute, "wait for the source agent's connection")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
@@ -76,6 +81,42 @@ func main() {
 	// COPY and the socket cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if *directSpec != "" {
+		// P5 direct mode: accept D content-tagged compressed slice connections
+		// (one per destination segment) and perform D utility-mode per-segment
+		// COPYs into the staging table.
+		var launch agent.DirectLaunch
+		if err := json.Unmarshal([]byte(*directSpec), &launch); err != nil {
+			fail("parse --direct-spec: %v", err)
+		}
+		res, err := agent.ServeDirect(ctx, agent.DirectOptions{
+			Listen:        *listen,
+			DestConn:      *dest,
+			SSLCert:       *sslCert,
+			SSLKey:        *sslKey,
+			SSLCA:         *sslCA,
+			SSLMinTLS:     *sslMinTLS,
+			DataTLSCert:   *dataCert,
+			DataTLSKey:    *dataKey,
+			DataTLSCA:     *dataCA,
+			DataTLSMinTLS: *dataMinTLS,
+			Launch:        launch,
+			Swap:          *swap,
+			AcceptTimeout: *acceptTO,
+			StreamTimeout: *streamTO,
+		})
+		if err != nil {
+			fail("%v", err)
+		}
+		verdict := "loaded"
+		if res.Swapped {
+			verdict = "swapped"
+		}
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok\n",
+			res.Launch.UnitID, res.Rows, res.Logical, res.Wire, verdict)
+		return
+	}
 
 	if *segments > 0 {
 		// P4 on_segment mode: merge N compressed segment slices (SliceMux)
