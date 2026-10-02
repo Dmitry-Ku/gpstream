@@ -242,6 +242,19 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--copy-mode":
 			i++
 			cfg.CopyMode = config.CopyMode(args[i])
+		// ADR-002 / two-agent remediation. --topology selects where the data
+		// plane lives: single (default, the data COPY runs inside the
+		// controller) or two-agent (the controller orchestrates the source /
+		// destination agent binaries; the data COPY runs only in the agents).
+		case "--topology":
+			i++
+			cfg.Topology = config.Topology(args[i])
+		case "--source-agent-binary":
+			i++
+			cfg.SourceAgentBinary = args[i]
+		case "--dest-agent-binary":
+			i++
+			cfg.DestAgentBinary = args[i]
 		case "--seg-listen":
 			i++
 			cfg.SegListen = args[i]
@@ -1560,6 +1573,9 @@ Performance:
 
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)
+  --topology single|two-agent                  where the data plane lives (default single; two-agent = ADR-002 remediation)
+  --source-agent-binary PATH                   gpstream-source-agent path (two-agent topology)
+  --dest-agent-binary PATH                     gpstream-dest-agent path (two-agent topology)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the SOURCE segment hosts (package or copied file; required with --copy-mode on_segment)
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop

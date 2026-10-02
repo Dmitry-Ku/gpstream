@@ -24,6 +24,10 @@ type UnitSpec struct {
 	Table     string // destination final table name (post-rename)
 	Staging   string // staging table name (dest.StagingName)
 	Overwrite bool   // destination drops the existing table on swap
+	// SrcSchema/SrcTable are the source object (for the source's data COPY).
+	// The server (P3) sets these; the one-shot Push sets them equal to the
+	// source table it streams.
+	SrcSchema, SrcTable string
 	// Compress is the FR-12 mode string the source used to compress the
 	// stream ("none"/"zlib"/"zstd[:level]"). Carried here so the destination
 	// decompresses with exactly the matching decoder (no flag-mismatch).

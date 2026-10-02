@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: two-agent data path — controller as control plane (P3)
+
+The ADR-002 remediation reaches the controller: `--topology two-agent` moves
+the data plane out of the `gpstream` process. In two-agent topology the
+controller keeps plan / journal / status / resume / metrics and the DDL +
+verify + swap decision, but it **never runs a data COPY**: the long-lived
+source agent (owns the source pg pool + the run-wide FR-02 snapshot) streams
+each unit's `COPY ... TO STDOUT` framed + compressed over a real socket to a
+per-unit destination agent (owns the destination conn + staging DDL +
+`COPY ... FROM STDIN`). The controller orchestrates the agents over a
+short-lived control protocol (JSON over TCP: `stream` / `checksum` /
+`release`) and reads back the destination's authoritative row count + the
+wire volume. `--topology single` (default) keeps the current in-process data
+path as a fallback.
+
+- `internal/agent/control.go` — the controller↔agent control protocol
+  (`StreamReq`/`StreamResp`, `ChecksumReq`, `ReleaseReq`, `ControlClient`).
+- `internal/agent/server.go` — `SourceServer`: the long-lived source agent
+  (source pool + FR-02 snapshot on a pinned conn, control listener, per-unit
+  stream over a real socket, `heal` re-BEGIN after a unit failure).
+- `internal/agent/source.go` — `dialDestRetry` (the source retries its dial
+  while the destination is still binding its listen socket).
+- `internal/manifest/twoagent.go` — the `TwoAgentRunner` control-plane
+  interface + `processTwoAgentRunner` (drives the real agent binaries as
+  subprocesses, pre-binding loopback ports) + `InProcTwoAgentRunner` (drives
+  the agent package in-process over a real TCP socket, for the integration
+  test) + `NewInProcTwoAgentRunner`.
+- `internal/manifest/manager.go` — `--topology two-agent` branch: the
+  controller skips its own FR-02 snapshot (the source agent holds it), the
+  data COPY runs through `streamTwoAgent`, the `--verify` source checksum is
+  read from the source agent (same snapshot as the copy), and the in-place
+  copy target (`--truncate` / `--data-only`) is rejected (the two-agent path
+  is staging+swap).
+- `cmd/gpstream-source-agent` — `--serve` long-lived mode (the controller's
+  two-agent topology drives it over the control socket).
+- `cmd/gpstream` — `--topology single|two-agent`, `--source-agent-binary`,
+  `--dest-agent-binary`.
+- P3 acceptance (`tests/integration/two_agent_manager_test.go`): the Manager
+  itself runs the two-agent data path end to end — destination table correct
+  (row count + content), staging gone (controller's swap landed), on-wire
+  volume compressed (< logical, 15.9× in the test) with the manager's
+  `bytes_total` metric equal to the wire volume, and `--verify on` working
+  through the agent-side checksum.
+
 ### Added: two-agent data path — destination agent (P2)
 
 The ADR-002 remediation continues: this change lands the **destination

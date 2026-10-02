@@ -136,6 +136,7 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	spec := UnitSpec{
 		JobID: o.JobID, UnitID: o.UnitID,
 		Schema: o.DstSchema, Table: o.DstTable, Staging: o.Staging, Overwrite: o.Overwrite,
+		SrcSchema: o.Schema, SrcTable: o.Table,
 		Compress: o.Compress,
 		Cols:     cols, Dist: dist, Part: part,
 	}
@@ -219,11 +220,17 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	return out, nil
 }
 
+// snapshotExec is the minimal pg-exec interface beginSnapshot needs (both a
+// *pg.Conn and a pinned pool connection satisfy it).
+type snapshotExec interface {
+	Exec(ctx context.Context, sql string, args ...any) (int64, error)
+}
+
 // beginSnapshot opens the FR-02 REPEATABLE READ transaction on the agent's
 // source connection (mirrors manager.beginSnapshotTx). The agent owns the
 // snapshot for its whole lifetime; the controller (P3) streams units one by
 // one over it.
-func beginSnapshot(ctx context.Context, src *pg.Conn, mode SnapshotMode) error {
+func beginSnapshot(ctx context.Context, src snapshotExec, mode SnapshotMode) error {
 	if mode == SnapCluster {
 		if _, err := src.Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
 			return fmt.Errorf("source agent: cluster freeze: %w", err)
@@ -243,6 +250,34 @@ func hostOf(listen string) (string, error) {
 		return "", err
 	}
 	return host, nil
+}
+
+// dialDestRetry dials the destination agent's data socket, retrying while the
+// destination is still binding its listen socket. The controller launches the
+// per-unit destination agent and then instructs the source to dial it, so there
+// is a short window where the destination has not bound yet and the dial is
+// refused. A refused connection never reached the destination's (single)
+// accept, so retrying is safe and cannot consume the destination's one
+// connection. The retry is bounded (the destination binds within milliseconds
+// of starting).
+func dialDestRetry(ctx context.Context, addr string, perDial time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for {
+		conn, err := net.DialTimeout("tcp", addr, perDial)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("dial %s (retries exhausted): %w", addr, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // logicalCounter is an io.Writer that only counts bytes (the logical volume).

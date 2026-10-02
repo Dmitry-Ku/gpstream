@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/index"
 	"github.com/gpstream/gpstream/internal/monitor"
@@ -110,6 +111,11 @@ type Manager struct {
 	// reRead holds the logical-table keys that a resume must re-copy under
 	// the fresh snapshot (T5, DESIGN §2.2); empty on a fresh run.
 	reRead map[string]bool
+	// twoAgent is the control-plane runner for --topology two-agent (ADR-002
+	// remediation): non-nil only in that topology, where it drives the source /
+	// destination agent binaries and the data COPY runs only in the agents.
+	// nil in the default single topology (the data path stays in-process).
+	twoAgent TwoAgentRunner
 	// events is the F-04/F-14 diagnostic event stream (events.jsonl): rate
 	// shifts, conflicts, unit failures and re-reads. No-op when the journal
 	// has no file mirror.
@@ -245,6 +251,15 @@ func (m *Manager) unitCompressors(t plan.Table) (comp *compress.Compressor, dec 
 // ceiling (FR-14). Each unit is fully journaled so the run is resumable
 // (FR-06/FR-07). A first unit failure is reported after the in-flight units
 // finish (the pool does not cancel the batch).
+// SetTwoAgentRunner injects the two-agent control-plane runner (the
+// integration test injects the in-process runner so the Manager's two-agent
+// orchestration runs against the agent package without subprocesses). Only
+// meaningful with cfg.Topology == TopologyTwoAgent; Run uses the injected
+// runner as-is (it does not build the process runner when one is set).
+func (m *Manager) SetTwoAgentRunner(r TwoAgentRunner) {
+	m.twoAgent = r
+}
+
 func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// Ensure the primary journal table exists (ADR-001 §4.3); the file
 	// mirror is the durable fallback if this fails (FR-07).
@@ -324,7 +339,27 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// copied so every COPY of the database reads from the same point-in-time
 	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
 	// proceeds) but is logged so the operator can see the consistency mode.
-	m.establishSnapshot(ctx)
+	//
+	// In two-agent topology the FR-02 snapshot lives in the long-lived source
+	// agent (a REPEATABLE READ tx is server-side, on one backend, and the
+	// agent runs every unit's data COPY under it) — the controller does not
+	// pin its own snapshot and never streams data.
+	if m.cfg.Topology == config.TopologyTwoAgent {
+		// Two-agent (ADR-002): launch the long-lived source agent (owns the
+		// source pg pool + the run-wide FR-02 snapshot) and connect the control
+		// client. The data COPY runs only in the agents; the controller holds
+		// only control connections. A test may pre-inject an in-process runner
+		// (m.twoAgent != nil) to drive the agent package without subprocesses.
+		if m.twoAgent == nil {
+			m.twoAgent = newProcessTwoAgentRunner(m.cfg)
+		}
+		if err := m.twoAgent.Start(ctx); err != nil {
+			return fmt.Errorf("two-agent: %w", err)
+		}
+		defer func() { _ = m.twoAgent.Release(context.Background()) }()
+	} else {
+		m.establishSnapshot(ctx)
+	}
 
 	// FR-14: sample host load periodically so the limiter adapts the data-path
 	// rate (the pacer reads ratelimit.Current). No-op when no rate-limit is set.
@@ -1107,8 +1142,25 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		}
 		inPlace, truncate = true, true
 	}
+	// Two-agent (P3) data path is staging+swap only: the destination agent
+	// creates a staging table and (after the controller's verify) swaps it.
+	// The in-place targets (--truncate, --data-only) have no two-agent
+	// equivalent yet — fail the unit with a clear config error instead of
+	// silently degrading the topology.
+	if m.twoAgent != nil && inPlace {
+		m.setUnitState(u, StateFailed)
+		return fmt.Errorf("two-agent topology does not support the in-place copy target (conflict action %q / --data-only); use the default staging+swap path", m.cfg.ConflictAction)
+	}
 	var target string
-	if inPlace {
+	switch {
+	case m.twoAgent != nil && !inPlace:
+		// Two-agent (ADR-002): the destination AGENT owns the staging DDL
+		// (it creates it from the UnitSpec the source agent sends — cols /
+		// dist / part captured on the source side). The controller must not
+		// create it here: the staging name is the contract between the two
+		// agents.
+		target = dest.StagingName(u.JobID, u.UnitID)
+	case inPlace:
 		// Copy into the final table directly. Create it from the source layout
 		// if it does not exist yet, then (optionally) truncate it.
 		target = dn
@@ -1122,7 +1174,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 				return fmt.Errorf("truncate: %w", err)
 			}
 		}
-	} else {
+	default:
 		target = dest.StagingName(u.JobID, u.UnitID)
 		// The staging table is scratch for this unit's in-flight copy. A
 		// surviving one (a crashed/failed run that copied but never swapped)
@@ -1172,6 +1224,14 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"reason", "small-table auto-disable (F-12)")
 	}
 	switch {
+	case m.twoAgent != nil:
+		// Two-agent (ADR-002, P3): the data COPY runs ONLY in the agents over
+		// a real, compressed socket (source agent -> destination agent). The
+		// controller holds no data connection for the unit: it passes the
+		// instruction, reads back the destination's count + the wire volume,
+		// and keeps the DDL/journal/verify/swap decision. The FR-02 snapshot
+		// is held by the long-lived source agent, not the controller.
+		rows, wire, logical, err = m.streamTwoAgent(ctx, t, u, target, ds, dn)
 	case m.cfg.CopyMode == config.CopyDirect:
 		rows, wire, logical, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
 		if isDirectDegraded(err) {
@@ -1226,7 +1286,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    short snapshot; otherwise the run-wide pinned snapshot).
 	if verify {
 		_ = m.setUnitState(u, StateVerifying)
-		srcSum, err := us.agent.Checksum(ctx, t.Schema, t.Name)
+		// The source checksum must be read on the SAME snapshot the data COPY
+		// used. In two-agent mode the copy ran under the long-lived source
+		// agent's FR-02 snapshot, so the checksum must come from that agent
+		// (not the controller's own pool, which holds a different snapshot).
+		var srcSum string
+		if m.twoAgent != nil {
+			srcSum, err = m.twoAgent.Checksum(ctx, t.Schema, t.Name)
+		} else {
+			srcSum, err = us.agent.Checksum(ctx, t.Schema, t.Name)
+		}
 		if err != nil {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
@@ -1313,6 +1382,64 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//     covered by the journal scan in Run on the next resume.
 	m.enqueueIndexes(ctx, u)
 	return nil
+}
+
+// streamTwoAgent runs the unit's data COPY through the two-agent data path
+// (ADR-002 remediation, P3): the controller hands the instruction to the
+// twoAgentRunner, which drives the long-lived source agent (owns the FR-02
+// snapshot + `COPY ... TO STDOUT`) and a per-unit destination agent (owns
+// `COPY ... FROM STDIN` + the staging DDL). The framed, compressed stream goes
+// source agent -> destination agent over a real socket; the controller only
+// reads back the destination's row count and the wire volume. The destination
+// staging table is created + loaded by the destination agent; the swap is the
+// controller's decision (runUnit step 9).
+func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string) (int64, uint64, uint64, error) {
+	uc, _ := m.unitCompressors(t)
+	jobID := jobIDFromHash(u.JobID)
+	return m.twoAgent.Stream(ctx, unitStreamRequest{
+		StreamReq: agent.StreamReq{
+			Op:        "stream",
+			Schema:    t.Schema,
+			Table:     t.Name,
+			JobID:     jobID,
+			UnitID:    uint32(u.UnitID),
+			Compress:  m.twoAgentCompressString(uc),
+			DstSchema: ds,
+			DstTable:  dn,
+			Staging:   target,
+		},
+		DstConn: m.cfg.Dest,
+		DstCert: m.cfg.SSLCert,
+		DstKey:  m.cfg.SSLKey,
+		DstCA:   m.cfg.SSLCA,
+	})
+}
+
+// twoAgentCompressString renders the unit's compression mode the way the
+// destination agent's compress.Parse expects (the agent side must pick the
+// same mode as the source side of the wire). The unit's compressor is the
+// none-pair either when the operator chose --compress none or when the F-12
+// small-table auto-disable applied (unitCompressors).
+func (m *Manager) twoAgentCompressString(c *compress.Compressor) string {
+	if m.compMode == compress.ModeNone || c == m.compNone {
+		return "none"
+	}
+	switch m.compMode {
+	case compress.ModeZlib:
+		return "zlib"
+	default:
+		return "zstd"
+	}
+}
+
+// jobIDFromHash derives the uint32 frame job-id the agents bind their frames
+// to, from the string plan hash (the single-controller path uses a fixed 1).
+func jobIDFromHash(jobID string) uint32 {
+	var h uint32
+	for i := 0; i < len(jobID); i++ {
+		h = h*31 + uint32(jobID[i])
+	}
+	return h
 }
 
 // measureBalance records the F-15 segment-fill balance of a just-swapped

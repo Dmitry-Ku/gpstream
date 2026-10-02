@@ -1,18 +1,26 @@
 // Command gpstream-source-agent is the two-agent data-path source (ADR-001 /
 // ADR-002 remediation). It runs on a source-cluster host, owns the source pg
-// connection and the FR-02 snapshot, streams one table with
+// connection and the FR-02 snapshot, streams tables with
 // `COPY ... TO STDOUT (FORMAT binary)`, compresses + frames the payload
 // (FR-12) and pushes it COMPRESSED over a real socket (optionally TLS) to the
 // destination agent. It is the source half of the network data path that the
 // single-controller build does in memory.
 //
-// The controller (P3) launches it per unit (or, for a multi-unit run, keeps it
-// alive and re-issues units over the same snapshot). For this phase it streams
-// exactly one table per invocation, which is the coordinator data path.
+// Two modes:
 //
-// Exit codes: 0 clean stream (socket closed after the framed tail); 1
-// argument/connect/stream failure (the controller surfaces it as the unit
-// error; a non-zero exit never leaves a silent partial stream).
+//   - one-shot (default): stream exactly one table (given by --schema/--table
+//     and --dest) and exit. Used by tests and manual runs.
+//   - --serve LISTEN: the long-lived source agent (P3). It opens the source
+//     pool, establishes the FR-02 snapshot (which must outlive every unit: a
+//     REPEATABLE READ transaction lives on one server-side backend), and
+//     listens on LISTEN for the controller's control protocol (stream /
+//     checksum / release). The controller streams one unit per message; the
+//     whole run shares the single snapshot. This is the mode the controller's
+//     --topology two-agent uses.
+//
+// Exit codes: 0 clean (stream complete / released); 1 argument/connect/stream
+// failure (the controller surfaces it as the unit error; a non-zero exit never
+// leaves a silent partial stream).
 package main
 
 import (
@@ -35,19 +43,16 @@ func main() {
 	sslKey := flag.String("ssl-key", "", "pg-plane client key PEM")
 	sslCA := flag.String("ssl-ca", "", "pg-plane trusted CA bundle PEM (verify-full)")
 	sslMinTLS := flag.String("ssl-min-tls", "1.2", "pg-plane minimum TLS version")
-	// The unit to stream.
-	schema := flag.String("schema", "public", "source schema")
-	table := flag.String("table", "", "source table (required)")
+	// One-shot mode: the unit to stream.
+	schema := flag.String("schema", "public", "source schema (one-shot mode)")
+	table := flag.String("table", "", "source table (one-shot mode, required)")
 	job := flag.String("job", "0", "job id (decimal, the plan hash)")
 	unit := flag.String("unit", "0", "unit id (decimal, the unit ordinal)")
-	// Destination names (post-rename); the dest agent builds the staging
-	// table from the UnitSpec header the source sends.
 	dstSchema := flag.String("dst-schema", "", "destination schema (defaults to --schema)")
 	dstTable := flag.String("dst-table", "", "destination final table name (defaults to --table)")
-	staging := flag.String("staging", "", "staging table name (required; dest.StagingName)")
+	staging := flag.String("staging", "", "staging table name (one-shot mode, required)")
 	overwrite := flag.Bool("overwrite", false, "destination swaps by dropping the existing table")
-	// The destination agent endpoint (the source dials it).
-	dest := flag.String("dest", "", "destination agent listen address host:port (required)")
+	dest := flag.String("dest", "", "destination agent listen address host:port (one-shot mode, required)")
 	compress := flag.String("compress", "zstd", "stream compression none|zlib|zstd[:level]")
 	snapshot := flag.String("snapshot", "db", "FR-02 snapshot scope: none|db|cluster")
 	// Data-plane TLS for the agent<->agent socket (source = client).
@@ -57,6 +62,8 @@ func main() {
 	// Timeouts.
 	connectTO := flag.Duration("connect-timeout", 10*time.Second, "socket dial timeout")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
+	// Long-lived (P3) mode: listen for the controller's control protocol.
+	serve := flag.String("serve", "", "control listen address host:port (long-lived source agent mode)")
 	// Doctor probe: print a marker and exit 0 (no stream), proving the binary
 	// is installed on the source host.
 	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
@@ -70,10 +77,49 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gpstream-source-agent: ok (check)")
 		os.Exit(0)
 	}
-	if *src == "" || *table == "" || *dest == "" || *staging == "" {
-		fail("--src, --table, --dest and --staging are required")
+	if *src == "" {
+		fail("--src is required")
 	}
-	// Destination names default to the source names (no rename).
+
+	// SIGINT/SIGTERM cancels the work so a controller-side stop unwinds the
+	// COPY and the socket cleanly (and rolls back the snapshot in serve mode).
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Long-lived mode (P3): the controller drives this agent over the control
+	// socket; the FR-02 snapshot spans the whole run.
+	if *serve != "" {
+		srv := agent.NewSourceServer(agent.ServerOptions{
+			SrcConn:        *src,
+			SSLCert:        *sslCert,
+			SSLKey:         *sslKey,
+			SSLCA:          *sslCA,
+			SSLMinTLS:      *sslMinTLS,
+			Snapshot:       agent.SnapshotMode(*snapshot),
+			Listen:         *serve,
+			DataTLSCert:    *dataCert,
+			DataTLSKey:     *dataKey,
+			DataTLSCA:      *dataCA,
+			ConnectTimeout: *connectTO,
+			StreamTimeout:  *streamTO,
+		})
+		addr, err := srv.Start(ctx)
+		if err != nil {
+			fail("serve: %v", err)
+		}
+		// The bound control address goes to stderr for the controller to parse;
+		// the agent blocks until the run ends (release or controller close).
+		fmt.Fprintf(os.Stderr, "gpstream-source-agent: serving control on %s\n", addr)
+		<-ctx.Done()
+		srv.Close()
+		fmt.Fprintln(os.Stderr, "gpstream-source-agent: stopped")
+		return
+	}
+
+	// One-shot mode: stream exactly one table to a given destination agent.
+	if *table == "" || *dest == "" || *staging == "" {
+		fail("--table, --dest and --staging are required (one-shot mode)")
+	}
 	ds, dt := *dstSchema, *dstTable
 	if ds == "" {
 		ds = *schema
@@ -89,11 +135,6 @@ func main() {
 	if err != nil {
 		fail("--unit: %v", err)
 	}
-
-	// SIGINT/SIGTERM cancels the stream so a controller-side stop unwinds the
-	// COPY and the socket cleanly.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	res, err := agent.Push(ctx, agent.SourceOptions{
 		SrcConn:        *src,

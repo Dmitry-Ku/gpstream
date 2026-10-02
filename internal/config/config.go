@@ -94,6 +94,23 @@ const (
 	CopyDirect CopyMode = "direct"
 )
 
+// Topology selects where the data plane lives (ADR-002 / two-agent
+// remediation plan).
+type Topology string
+
+const (
+	// TopologySingle is the default and the current build: both PostgreSQL
+	// connections run in the controller process and the framed/compressed
+	// transport is an in-memory pipe (the ADR-002 debt — the network legs are
+	// raw). It remains the fallback.
+	TopologySingle Topology = "single"
+	// TopologyTwoAgent moves the data plane out of the controller: a source
+	// agent (source cluster) pushes the compressed stream over a real socket
+	// to a dest agent (destination cluster); the controller is control plane
+	// only (plan, journal, verify, swap, indexes, constraints).
+	TopologyTwoAgent Topology = "two-agent"
+)
+
 // Config is the fully resolved runtime configuration. It is the single source
 // of truth consumed by every component; CLI flags, YAML and env all fold into
 // it (CLI > env > file > defaults).
@@ -205,6 +222,18 @@ type Config struct {
 	SegListen string   // controller listen address the segreceivers dial (host:port)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
 
+	// Topology selects where the data plane lives (ADR-002 / two-agent
+	// remediation). TopologySingle (default) keeps the data path inside the
+	// controller process (the in-memory framed pipe — the ADR-002 debt).
+	// TopologyTwoAgent moves the data plane out: the controller orchestrates
+	// a source agent (on the source cluster) and a dest agent (on the
+	// destination cluster) over a real, compressed, optionally-TLS socket; the
+	// controller holds no data connections. The agent binaries' paths on the
+	// peer hosts.
+	Topology          Topology // default single
+	SourceAgentBinary string   // gpstream-source-agent path on the SOURCE host
+	DestAgentBinary   string   // gpstream-dest-agent path on the DEST host
+
 	// Data-plane TLS for the segment-direct (on_segment) hop (F-13 «TLS
 	// between sender/receiver»). Deliberately SEPARATE from the SSL*
 	// (PG-connection) fields: a cluster can have no TLS on its PG connections
@@ -238,7 +267,8 @@ func Default() Config {
 	return Config{
 		ConflictAction:      Stop,
 		Compression:         CompZstd,
-		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
+		Topology:            TopologySingle, // ADR-002: single-controller is the default/fallback
+		SmallTableThreshold: 1 << 20,        // 1 MiB (F-12 auto-disable default)
 		ZstdLevel:           3,
 		AutoResume:          0,
 		Verify:              VerifyOff,
@@ -354,6 +384,22 @@ func (c *Config) Validate() error {
 	}
 	if c.CopyMode == CopyOnSegment && c.SegListen == "" {
 		return fmt.Errorf("--copy-mode on_segment requires --seg-listen (controller listen address the segreceivers dial, e.g. 10.0.0.5:9432)")
+	}
+	// Topology (ADR-002 / two-agent remediation). Default single; two-agent
+	// requires the agent binary paths on both clusters (the controller
+	// launches them over SSH per the deployment model, F-05/spec §5).
+	switch c.Topology {
+	case "", TopologySingle, TopologyTwoAgent:
+	default:
+		return fmt.Errorf("unknown topology %q (want single|two-agent)", c.Topology)
+	}
+	if c.Topology == TopologyTwoAgent {
+		if c.SourceAgentBinary == "" {
+			return fmt.Errorf("--topology two-agent requires --source-agent-binary (gpstream-source-agent path on the source host)")
+		}
+		if c.DestAgentBinary == "" {
+			return fmt.Errorf("--topology two-agent requires --dest-agent-binary (gpstream-dest-agent path on the destination host)")
+		}
 	}
 	// Frame-ack (DESIGN §4.6, R2): validate the knob and normalise the
 	// defaults so the data path always sees a usable config.

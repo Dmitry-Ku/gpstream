@@ -35,6 +35,11 @@ type DestOptions struct {
 	AcceptTimeout time.Duration
 	// StreamTimeout bounds the whole stream.
 	StreamTimeout time.Duration
+	// ListenNotify, when non-nil, is called with the bound listen address
+	// immediately after the socket is bound (before the accept). A controller
+	// that launches the dest agent with a wildcard port (127.0.0.1:0) uses
+	// this to learn the real endpoint the source agent must dial.
+	ListenNotify func(addr string)
 }
 
 // DestResult is what the destination agent reports after a serve (FR-04
@@ -42,6 +47,10 @@ type DestOptions struct {
 // count, exactly as the single-controller path treats the dest's count).
 type DestResult struct {
 	Spec UnitSpec
+	// ListenAddr is the address the destination agent actually bound (the
+	// source agent dials it). Carried so a controller that launched the dest
+	// agent with a wildcard port (127.0.0.1:0) learns the real endpoint.
+	ListenAddr string
 	// Rows is the row count the destination wrote (COPY command tag).
 	Rows int64
 	// Logical is the decompressed byte count the destination served into the
