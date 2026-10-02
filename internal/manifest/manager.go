@@ -661,6 +661,87 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 	return m.processUnit(ctx, u)
 }
 
+// finishCompleted completes a unit that a previous (crashed) run left in the
+// "completed" state — verified data in the staging table, but the atomic
+// rename to the final name never ran (the FR-02 crash window between the
+// "completed" journal write and the swap). It finishes that swap so the
+// destination actually receives the table, closing the resume gap where such
+// a unit was silently skipped as terminal (FR-06/FR-07: "resume completes to
+// the end"). It reuses the same atomic dst.Swap as runUnit step 9, with the
+// same overwrite decision, so the semantics match the crashed run exactly.
+//
+// Three cases:
+//  1. staging present -> perform the rename (the common crash window).
+//  2. staging absent, final present -> the rename already landed but the
+//     "swapped" journal write was lost; just record it (idempotent).
+//  3. staging absent, final absent -> the verified staging data was removed
+//     (e.g. an operator cleanup) and the rename never ran; the data is gone,
+//     so mark the unit failed (a resume re-copies it) and report the anomaly
+//     rather than claiming success.
+func (m *Manager) finishCompleted(ctx context.Context, u *Unit) error {
+	ds, dn := u.DstSchema, u.DstName
+	if ds == "" {
+		ds = u.Schema
+	}
+	if dn == "" {
+		dn = u.Table
+	}
+	target := dest.StagingName(u.JobID, u.UnitID)
+
+	if !m.dst.Exists(ctx, ds, target) {
+		// The staging table is gone: either the rename already landed (case 2)
+		// or the verified data was dropped without a rename (case 3).
+		if m.dst.Exists(ctx, ds, dn) {
+			m.events.Log("resume_swap_recorded",
+				"schema", ds, "table", dn,
+				"reason", "staging absent, final present (rename landed; journal write lost)")
+			if err := m.setUnitState(u, StateSwapped); err != nil {
+				return fmt.Errorf("resume journal swapped: %w", err)
+			}
+			m.statMu.Lock()
+			m.Units++
+			m.statMu.Unlock()
+			return nil
+		}
+		// Both gone: the verified data is lost. Mark failed so a resume
+		// re-copies the table; report the anomaly (do not claim success).
+		m.events.Log("resume_swap_data_lost",
+			"schema", ds, "table", dn,
+			"reason", "staging and final both absent; verified data lost — re-copy required")
+		_ = m.setUnitState(u, StateFailed)
+		return fmt.Errorf("resume: unit %s.%s was completed but its staging and final tables are both absent (verified data lost; re-copying)", ds, dn)
+	}
+
+	// Case 1: the staging table holds the verified data; complete the atomic
+	// rename. Same overwrite decision as runUnit step 9.
+	overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
+	if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
+		// A swap fault on resume: the verified data is still in the staging
+		// table (safe), but mark the unit failed so it is counted and
+		// retried on the next resume (consistent with a mid-copy failure).
+		_ = m.setUnitState(u, StateFailed)
+		m.addFailure()
+		m.events.Log("resume_swap_failed",
+			"schema", ds, "table", dn, "error", err.Error())
+		return fmt.Errorf("resume swap: %w", err)
+	}
+	// Post-swap: the same side effects as runUnit steps 9b/9c/10, so the
+	// recovered table is as complete as a normally-swapped one (sequences,
+	// segment balance, background index build).
+	m.syncSequenceValues(ctx, u)
+	m.measureBalance(ctx, u)
+	m.enqueueIndexes(ctx, u)
+	if err := m.setUnitState(u, StateSwapped); err != nil {
+		return fmt.Errorf("resume journal swapped: %w", err)
+	}
+	m.statMu.Lock()
+	m.Units++ // a completed unit; no bytes were transferred THIS run (rows were copied by the crashed run)
+	m.statMu.Unlock()
+	m.events.Log("resume_swap_completed",
+		"schema", ds, "table", dn, "rows", u.RowCount)
+	return nil
+}
+
 // processUnit runs a single unit through the pipeline (FR-01/FR-02/FR-17),
 // honouring the conflict policy (FR-10/FR-11). It is safe to call from
 // multiple workers (FR-03): stats are guarded by statMu and the journal by its
@@ -679,6 +760,16 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	reReading := false
 	if u.State == StateCompleted || u.State == StateSwapped {
 		if !m.reRead[tableKey(u)] {
+			// A completed (verified) unit that never reached swapped is the
+			// crash-window: the previous run recorded "completed" (data
+			// verified in the staging table) but died before the atomic
+			// rename to the final name. Do NOT skip it — complete the swap so
+			// the destination actually gets the table (the FR-06/FR-07
+			// "resume completes to the end" guarantee). A swapped unit is
+			// already terminal and is kept.
+			if u.State == StateCompleted {
+				return m.finishCompleted(ctx, u)
+			}
 			m.addSkipped()
 			// The unit is terminal (a previous run verified it); keep the
 			// journal state as-is (completed/swapped).

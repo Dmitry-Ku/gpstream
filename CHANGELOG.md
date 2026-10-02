@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed: resume now completes a unit a crashed run left `completed`
+
+A run that died in the window between the `completed` journal write and the
+atomic staging->final rename left the unit `completed` (verified data sitting
+in the staging table) while the destination never received the table. A
+re-run treated `completed` as terminal and skipped it, so the journal said
+"done" but the table was missing — contradicting the run's own comment that a
+resume should retry the swap. Now a re-run finishes the swap:
+
+- staging table present -> the atomic rename is performed (same overwrite
+  decision as the normal path), then sequences/segment-balance/index build
+  run as for a normal swap; the unit is counted as a completed unit.
+- staging gone, final present -> the rename already landed but the `swapped`
+  journal write was lost; the state is simply recorded.
+- staging and final both gone -> the verified data is lost (e.g. an operator
+  cleanup); the unit is marked `failed` (a re-copy is required) and the
+  anomaly is reported instead of claiming success.
+
+New events: `resume_swap_completed`, `resume_swap_recorded`,
+`resume_swap_data_lost`, `resume_swap_failed`. Test:
+TestResumeCompletesUnswappedUnit (integration, all three cases).
+
 ### Fixed: primary key constraints are now restored (F-11)
 
 The post-swap constraint pass read only foreign keys and user CHECK

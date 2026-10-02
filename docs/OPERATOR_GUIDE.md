@@ -251,6 +251,10 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 | `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (default) / `skip` / `overwrite` / `truncate` |
 | `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
+| `resume_swap_completed` | a re-run finished the swap of a unit a crashed run left `completed` (data verified in staging, rename never ran) — the destination now has the table (FR-06/FR-07) | `schema`, `table`, `rows` |
+| `resume_swap_recorded` | a re-run found the unit's rename already landed but the `swapped` journal write lost (staging gone, final present) — recorded `swapped` without a swap | `schema`, `table`, `reason` |
+| `resume_swap_data_lost` | a re-run found a `completed` unit whose staging and final tables are both gone (verified data lost, e.g. an operator cleanup) — the unit is marked `failed` for a re-copy | `schema`, `table`, `reason` |
+| `resume_swap_failed` | a re-run's recovered swap itself failed (the verified staging data is kept; the unit is marked `failed` and retried on the next resume) | `schema`, `table`, `error` |
 | `sequence_synced` | a table's sequence was recreated on the destination and resynchronised to the source last_value (F-11 post-load) | `table`, `sequence`, `last_value` |
 | `sequence_sync_failed` | a sequence recreation/resync step failed (non-fatal; the data is in place) | `table`, `sequence`, `reason`, `error` |
 | `segment_balance` | the live segment-fill balance of a copied table was measured on a Greenplum destination (F-15, after the swap) | `table`, `segments`, `max`, `avg`, `max_avg`, `threshold` (fixed 1.5 gate), `warning` (true when `max_avg` exceeds the gate) |
@@ -284,7 +288,7 @@ Both are best-effort (a write failure never fails the action).
 
 | Command | When to use |
 |---------|-------------|
-| `gpstream resume --operation-id <id>` | A run stopped or crashed; resume only the incomplete units. |
+| `gpstream resume --operation-id <id>` | A run stopped or crashed; resume only the incomplete units. A unit a crashed run left `completed` (data verified in the staging table, but the atomic rename never ran) is **finished** on the next re-run — the staging table is swapped to its final name (the re-run reports it as a completed unit, not a skip). |
 | `kill <pid>` (no `cancel` subcommand) | Stop an in-flight run; `resume` re-queues the incomplete units. |
 | `gpstream cleanup --operation-id <id> --yes` | Clear the operation's state after it is done. |
 | `gpstream cleanup --operation-id <id> --mode drop --dest <conn> --yes` | Also discard the destination objects the run created. |
