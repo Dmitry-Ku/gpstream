@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed: primary key constraints are now restored (F-11)
+
+The post-swap constraint pass read only foreign keys and user CHECK
+constraints (`contype 'f','c'`), so a migrated table ended up with its PK's
+unique index (built by the FR-17 pool) but **no `pg_constraint` row** — the
+table had no primary key on the destination. Now the pass also restores the
+primary key constraint (`contype 'p'`), with two accompanying changes:
+
+- The FR-17 pool builds only the **secondary** indexes. The PK's unique index
+  is created atomically by `ALTER TABLE ... ADD CONSTRAINT <name> PRIMARY
+  KEY`; PostgreSQL does not adopt a pre-existing standalone unique index on
+  that statement, so a pool-built PK index would be a 42P07 collision.
+- PK constraints are applied in a **first pass, before** foreign keys and
+  CHECKs, so an FK referencing a migrated table's key column finds the unique
+  index. On a rename the PK constraint is rewritten to the destination
+  table's naming (same rule as index names: `t_m1_pkey` → `t_m1_demo_pkey`).
+
+Tests: TestPKConstraintRestoredOnLivePG (integration, no-rename + map-table
+rename, asserts exactly one index and the `pg_constraint` row),
+TestManagerRestoresPKConstraintRename / TestManagerRestoresPKConstraintNoRename
+(unit).
+
 ### Fixed: map-table index builds — wrong-table REINDEX and name collisions
 
 Two defects in the background index build (F-17) for renamed tables

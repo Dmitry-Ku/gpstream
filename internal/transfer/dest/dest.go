@@ -439,7 +439,7 @@ func splitQualifiedName(name string) (schema, base string) {
 // schema/table names; for a rename (FR-11) they are rewritten to the
 // destination names before the statement is issued. Index names are unique
 // PER SCHEMA, so for a rename the index name itself is rewritten to the
-// destination table's naming (destIndexName): the source name may already be
+// destination table's naming (DestIndexName): the source name may already be
 // taken by another table in the destination schema (e.g. a prior full copy of
 // the source table), and keeping it verbatim would either fail or silently
 // match the wrong table. On a non-rename (src == dst) the name is kept
@@ -464,7 +464,7 @@ func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, src
 			// Rewrite the index name (CREATE [UNIQUE] INDEX <name> ON ...):
 			// the source name may be taken by another table in the destination
 			// schema, and the existence check below is scoped to this table.
-			name = destIndexName(d.Name, srcTable, table)
+			name = DestIndexName(d.Name, srcTable, table)
 			def = strings.ReplaceAll(def, "INDEX "+d.Name+" ON ", "INDEX "+name+" ON ")
 			def = strings.ReplaceAll(def, "INDEX "+quoteIdent(d.Name)+" ON ", "INDEX "+quoteIdent(name)+" ON ")
 		}
@@ -475,7 +475,7 @@ func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, src
 	return nil
 }
 
-// destIndexName rewrites a source index name to its destination name when the
+// DestIndexName rewrites a source index name to its destination name when the
 // table is renamed (FR-11). Index names are unique per schema, so the source
 // name may collide with another table's index already on the destination
 // (e.g. a prior full copy of the source table). The rule is deterministic:
@@ -483,7 +483,7 @@ func (a *Agent) CreateIndexes(ctx context.Context, schema, table, srcSchema, src
 // replaced by the destination table name (t_m1_pkey on t_m1 -> t_m1_demo_pkey
 // on t_m1_demo); any other name gets the destination table name prefixed
 // (idx_c3 -> t_m1_demo_idx_c3).
-func destIndexName(srcName, srcTable, dstTable string) string {
+func DestIndexName(srcName, srcTable, dstTable string) string {
 	if srcName == srcTable || strings.HasPrefix(srcName, srcTable+"_") {
 		return dstTable + srcName[len(srcTable):]
 	}

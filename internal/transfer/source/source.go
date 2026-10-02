@@ -409,7 +409,7 @@ func (a *Agent) Constraints(ctx context.Context, schema, table string) ([]pg.Con
 		   LEFT JOIN pg_class rc ON rc.oid = con.confrelid
 		   LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
 		  WHERE n.nspname = $1 AND c.relname = $2
-		    AND con.contype IN ('f','c')
+		    AND con.contype IN ('f','c','p')
 		    AND con.coninhcount = 0
 		    AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = con.conrelid)
 		  ORDER BY con.contype, con.conname`,

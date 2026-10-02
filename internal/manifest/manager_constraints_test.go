@@ -162,6 +162,82 @@ func TestManagerConstraintResumeIdempotent(t *testing.T) {
 	}
 }
 
+// TestManagerRestoresPKConstraintRename verifies that on a renamed table the
+// primary key is restored under the name of the index the FR-17 pool already
+// built (dest.DestIndexName), so ADD CONSTRAINT adopts that pre-built unique
+// index instead of creating a duplicate. The source carries both a PK
+// constraint (whose unique index is orders_pkey) and its index definition.
+func TestManagerRestoresPKConstraintRename(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	// Source: the PK index (the FR-17 pool SKIPS it — the PK index is built
+	// atomically by ADD CONSTRAINT in the constraint pass, not by the pool).
+	src.On("pg_index", [][]any{
+		{"orders_pkey", false, true, "CREATE UNIQUE INDEX orders_pkey ON public.orders (id)"},
+	})
+	// Source: the PK constraint (contype p).
+	src.On("pg_get_constraintdef", [][]any{
+		// name, contype, def, localcols, refcols, refschemaname, reftablename, deltype, uptype
+		{"orders_pkey", "p", "PRIMARY KEY (id)", "id", "", "", "", "", ""},
+	})
+	// Destination: no constraint yet (constraintExists -> empty); the swap
+	// guard matches "pg_class" (empty) from newPair.
+	dst.On("pg_constraint", [][]any{})
+
+	j := NewJournal(pg.NewFakeConn(), dir+"/journal.jsonl")
+	m := NewManager(configDefault(), src, dst, j)
+	if err := m.Run(context.Background(), renamedPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	q := dst.Queried()
+	// The pool must NOT build the PK index (ADD CONSTRAINT builds it; a
+	// pre-built one would be a 42P07 collision).
+	for _, sql := range q {
+		if strings.Contains(sql, "CREATE UNIQUE INDEX orders_pkey") {
+			t.Fatalf("the pool must not build the PK index, got %q in %v", sql, q)
+		}
+	}
+	// The PK constraint is restored under the REWRITTEN name (destination
+	// table naming), building its index atomically.
+	if !hasQuery(q, `ADD CONSTRAINT "orders_v2_pkey" PRIMARY KEY (id)`) {
+		t.Fatalf("PK constraint not restored under the rewritten name, got %v", q)
+	}
+}
+
+// TestManagerRestoresPKConstraintNoRename verifies that without a rename the
+// PK constraint keeps its source name (idempotent re-apply on a re-run).
+func TestManagerRestoresPKConstraintNoRename(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("BINARY-COPY-ROW-BATCH")
+	src, dst := newPair(t, payload, payload)
+	src.On("pg_index", [][]any{
+		{"orders_pkey", false, true, "CREATE UNIQUE INDEX orders_pkey ON public.orders (id)"},
+	})
+	src.On("pg_get_constraintdef", [][]any{
+		// name, contype, def, localcols, refcols, refschemaname, reftablename, deltype, uptype
+		{"orders_pkey", "p", "PRIMARY KEY (id)", "id", "", "", "", "", ""},
+	})
+	dst.On("pg_constraint", [][]any{})
+
+	j := NewJournal(pg.NewFakeConn(), dir+"/journal.jsonl")
+	m := NewManager(configDefault(), src, dst, j)
+	if err := m.Run(context.Background(), oneUnitPlan()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	q := dst.Queried()
+	// No pool-built PK index (ADD CONSTRAINT builds it)...
+	for _, sql := range q {
+		if strings.Contains(sql, "CREATE UNIQUE INDEX orders_pkey") {
+			t.Fatalf("the pool must not build the PK index, got %q in %v", sql, q)
+		}
+	}
+	// ...the PK constraint is restored under its source name.
+	if !hasQuery(q, `ADD CONSTRAINT "orders_pkey" PRIMARY KEY (id)`) {
+		t.Fatalf("PK constraint not restored under its source name, got %v", q)
+	}
+}
+
 func configDefault() *config.Config {
 	c := config.Default()
 	return &c

@@ -410,8 +410,8 @@ func TestDestIndexName(t *testing.T) {
 		{"t_m1x_pkey", "t_m1", "t_m1_demo", "t_m1_demo_t_m1x_pkey"}, // no prefix match
 	}
 	for _, c := range cases {
-		if got := destIndexName(c.src, c.srcT, c.dstT); got != c.want {
-			t.Fatalf("destIndexName(%q, %q, %q) = %q, want %q", c.src, c.srcT, c.dstT, got, c.want)
+		if got := DestIndexName(c.src, c.srcT, c.dstT); got != c.want {
+			t.Fatalf("DestIndexName(%q, %q, %q) = %q, want %q", c.src, c.srcT, c.dstT, got, c.want)
 		}
 	}
 }

@@ -408,6 +408,15 @@ names may already be taken by another table on the destination):
 `<table>_` prefix gets the destination table name prefixed (`idx_c3` →
 `t_m1_demo_idx_c3`).
 
+**Primary keys** are restored in the post-swap constraint pass: the pool
+builds only the *secondary* indexes, and the PK's unique index is created
+atomically by `ALTER TABLE ... ADD CONSTRAINT <name> PRIMARY KEY` (PostgreSQL
+does not adopt a pre-existing standalone unique index there, so the pool must
+not build it first). PK constraints are applied **before** foreign keys, so
+an FK that references a migrated table's key column finds its unique index.
+On a rename the PK constraint keeps the destination table's naming, too
+(`t_m1_pkey` → `t_m1_demo_pkey`).
+
 ---
 
 ## 13. Honest caveats (live stand)

@@ -535,6 +535,14 @@ func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
 		rm[u.Schema+"."+u.Table] = u.DstSchema + "." + u.DstName
 	}
 	srcAgent := source.New(m.srcQ)
+
+	// Read every swapped unit's constraints up front (one catalog pass per
+	// unit), so the apply phase below can run in two ordered passes.
+	type unitDefs struct {
+		u    *Unit
+		defs []pg.ConstraintDef
+	}
+	all := make([]unitDefs, 0, len(units))
 	for _, u := range units {
 		if u.State != StateSwapped {
 			continue // in-place paths kept the existing table (constraints intact)
@@ -547,44 +555,79 @@ func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
 				"table", u.Schema+"."+u.Table, "reason", err.Error())
 			continue
 		}
-		for i := range defs {
-			d := &defs[i]
-			if d.Kind == "f" && d.RefSchema != "" && d.RefTable != "" {
-				// Rewrite the referenced source table to its destination name via
-				// the plan's rename map. The FK is captured structurally (not as a
-				// pg_get_constraintdef string, whose referenced-table qualification
-				// depends on the capture session's search_path), so this is a
-				// deterministic field rewrite; BuildDef re-renders it with
-				// schema-qualified names on the destination.
-				if dstRef, ok := rm[d.RefSchema+"."+d.RefTable]; ok {
-					d.RefSchema, d.RefTable = splitDot(dstRef)
-				} else {
-					// Referenced table is outside the migration set: it keeps its
-					// source name (if it does not exist on the destination the ALTER
-					// below fails, is logged, and the pass continues — like the
-					// collation warnings, the operator decides).
-					m.events.Log("constraint_external_ref",
-						"table", u.DstSchema+"."+u.DstName,
-						"constraint", d.Name,
-						"references", d.RefSchema+"."+d.RefTable)
-				}
-			}
-		}
 		if len(defs) == 0 {
 			continue
 		}
-		if err := m.dst.Constraints(ctx, u.DstSchema, u.DstName, defs); err != nil {
-			// Non-fatal: the data is in place; log the cause (F-04) and keep
-			// going with the other tables. A resume retries the whole pass; the
-			// idempotency guard skips what already applied.
-			m.events.Log("constraint_restore_failed",
-				"table", u.DstSchema+"."+u.DstName, "error", err.Error())
-			if m.cfg.OnUnitFailure == "abort" {
-				return err
+		all = append(all, unitDefs{u: u, defs: defs})
+	}
+
+	// apply rewrites each selected definition to the destination and issues
+	// "ALTER TABLE ... ADD CONSTRAINT" per unit. It returns the first error
+	// when --on-unit-failure=abort, otherwise it logs and continues.
+	apply := func(pred func(pg.ConstraintDef) bool) error {
+		for _, ud := range all {
+			u := ud.u
+			var sel []pg.ConstraintDef
+			for _, d := range ud.defs {
+				if !pred(d) {
+					continue
+				}
+				if d.Kind == "p" && (u.Schema != u.DstSchema || u.Table != u.DstName) {
+					// PK on a renamed table: rewrite the constraint name to the
+					// destination table's naming (index names are unique per
+					// schema, so the source name may be taken by another table
+					// already on the destination). The PK index ADD CONSTRAINT
+					// builds takes its name from the constraint.
+					d.Name = dest.DestIndexName(d.Name, u.Table, u.DstName)
+				}
+				if d.Kind == "f" && d.RefSchema != "" && d.RefTable != "" {
+					// Rewrite the referenced source table to its destination name
+					// via the plan's rename map. The FK is captured structurally
+					// (not as a pg_get_constraintdef string, whose
+					// referenced-table qualification depends on the capture
+					// session's search_path), so this is a deterministic field
+					// rewrite; BuildDef re-renders it with schema-qualified names
+					// on the destination.
+					if dstRef, ok := rm[d.RefSchema+"."+d.RefTable]; ok {
+						d.RefSchema, d.RefTable = splitDot(dstRef)
+					} else {
+						// Referenced table is outside the migration set: it keeps
+						// its source name (if it does not exist on the destination
+						// the ALTER below fails, is logged, and the pass continues
+						// — like the collation warnings, the operator decides).
+						m.events.Log("constraint_external_ref",
+							"table", u.DstSchema+"."+u.DstName,
+							"constraint", d.Name,
+							"references", d.RefSchema+"."+d.RefTable)
+					}
+				}
+				sel = append(sel, d)
+			}
+			if len(sel) == 0 {
+				continue
+			}
+			if err := m.dst.Constraints(ctx, u.DstSchema, u.DstName, sel); err != nil {
+				// Non-fatal: the data is in place; log the cause (F-04) and keep
+				// going with the other tables. A resume retries the whole pass;
+				// the idempotency guard skips what already applied.
+				m.events.Log("constraint_restore_failed",
+					"table", u.DstSchema+"."+u.DstName, "error", err.Error())
+				if m.cfg.OnUnitFailure == "abort" {
+					return err
+				}
 			}
 		}
+		return nil
 	}
-	return nil
+
+	// Pass 1: PRIMARY KEY constraints. "ADD CONSTRAINT ... PRIMARY KEY" builds
+	// the PK's unique index atomically; doing this BEFORE the FKs lets an FK
+	// that references a migrated table's PK column find the unique index.
+	if err := apply(func(d pg.ConstraintDef) bool { return d.Kind == "p" }); err != nil {
+		return err
+	}
+	// Pass 2: foreign keys + user CHECK constraints.
+	return apply(func(d pg.ConstraintDef) bool { return d.Kind != "p" })
 }
 
 // splitDot splits a "schema.table" pair (no embedded dots are possible here:
@@ -1324,8 +1367,16 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 	if err != nil {
 		return
 	}
-	if len(defs) == 0 {
+	// The PRIMARY KEY's unique index is NOT built here: the post-swap
+	// constraint pass applies "ADD CONSTRAINT ... PRIMARY KEY", which builds
+	// the PK index atomically. PostgreSQL does not adopt a pre-existing
+	// standalone unique index on that statement, so a pre-built PK index
+	// would be a 42P07 collision. The pool builds only the secondary indexes
+	// (which overlap the copy, F-17).
+	if out := poolIndexDefs(defs); len(out) == 0 {
 		return
+	} else {
+		defs = out
 	}
 	m.idxMu.Lock()
 	m.idxSeen[uint32(u.UnitID)] = true
@@ -1340,6 +1391,23 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 		Defs:      defs,
 		Priority:  u.Bytes, // --index-priority=size: larger tables first
 	})
+}
+
+// poolIndexDefs filters the source index definitions to the ones the FR-17
+// pool must build: the secondary indexes. The PRIMARY KEY's unique index is
+// excluded — the post-swap constraint pass applies
+// "ADD CONSTRAINT ... PRIMARY KEY", which builds the PK index atomically, and
+// PostgreSQL does not adopt a pre-existing standalone unique index on that
+// statement, so a pre-built PK index would be a 42P07 collision.
+func poolIndexDefs(defs []pg.IndexDef) []pg.IndexDef {
+	out := make([]pg.IndexDef, 0, len(defs))
+	for _, d := range defs {
+		if d.PK {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // requeueIndexes re-enqueues the index build for every unit the journal holds
@@ -1368,7 +1436,10 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 			continue
 		}
 		defs, err := m.src.Indexes(ctx, u.Schema, u.Table)
-		if err != nil || len(defs) == 0 {
+		if err != nil {
+			continue
+		}
+		if defs = poolIndexDefs(defs); len(defs) == 0 {
 			continue
 		}
 		m.idxPool.Enqueue(index.Job{
