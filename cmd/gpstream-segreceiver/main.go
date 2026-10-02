@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -42,6 +43,12 @@ func main() {
 	sslCert := flag.String("ssl-cert", "", "client certificate PEM (data-plane TLS)")
 	sslKey := flag.String("ssl-key", "", "client key PEM (data-plane TLS)")
 	sslCA := flag.String("ssl-ca", "", "trusted CA bundle PEM for the controller cert")
+	// P4: per-slice compression (on_segment through agents). The controller
+	// embeds the mode in the program string when the two-agent on_segment
+	// path is active; the destination agent decompresses with the matching
+	// decoder. Empty = plain (uncompressed) frames (the single-controller
+	// path, pre-P4 behavior).
+	compressMode := flag.String("compress", "", "per-slice compression mode: none|zlib|zstd[:level]")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -80,9 +87,25 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
-	raw, err := net.DialTimeout("tcp", *listen, 10*time.Second)
-	if err != nil {
-		fail("connect %s: %v", *listen, err)
+	// The destination agent may still be binding its listen socket (the
+	// controller launches it right before the source agent triggers the
+	// ON SEGMENT dispatch), so retry the dial briefly.
+	var raw net.Conn
+	var derr error
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		raw, derr = net.DialTimeout("tcp", *listen, 10*time.Second)
+		if derr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			fail("connect %s (retries exhausted): %v", *listen, derr)
+		}
+		select {
+		case <-ctx.Done():
+			fail("connect %s: %v", *listen, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	// F-13: data-plane TLS. The controller embedded the cert/key/ca paths in
 	// our command line; all three empty = plain TCP (the pre-F-13 behavior).
@@ -104,7 +127,18 @@ func main() {
 		}
 		conn = tc
 	}
-	rows, err := segstream.Send(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
+	var rows int64
+	if *compressMode != "" {
+		// P4: the two-agent on_segment path — the destination agent
+		// decompresses each slice with the matching decoder.
+		mode, level, perr := compress.Parse(*compressMode)
+		if perr != nil {
+			fail("compress %q: %v", *compressMode, perr)
+		}
+		rows, err = segstream.SendCompressed(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level)
+	} else {
+		rows, err = segstream.Send(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
+	}
 	if err != nil {
 		fail("stream: %v", err)
 	}

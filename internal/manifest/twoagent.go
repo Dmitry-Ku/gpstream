@@ -3,15 +3,18 @@ package manifest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
 // twoAgentRunner is the control-plane interface the Manager uses to drive the
@@ -35,6 +38,15 @@ type TwoAgentRunner interface {
 	// volume. The destination staging table is created + loaded by the dest
 	// agent; the swap is NOT performed (the Manager decides it).
 	Stream(ctx context.Context, req unitStreamRequest) (rows int64, wire, logical uint64, err error)
+	// StreamSegment launches a destination agent in SEGMENT mode (P4,
+	// on_segment) and instructs the source agent to trigger the ON SEGMENT
+	// dispatch: the kernel launches the segreceiver on every primary source
+	// segment, and each streams its slice compressed to the destination
+	// agent, which merges them (SliceMux) and loads the staging table. It
+	// returns the authoritative (destination) row count + the on-network
+	// wire volume + the logical (decompressed) volume. The swap is NOT
+	// performed (the Manager decides it).
+	StreamSegment(ctx context.Context, req unitSegmentRequest) (rows int64, wire, logical uint64, err error)
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
@@ -45,6 +57,28 @@ type TwoAgentRunner interface {
 // unitStreamRequest is the Manager's per-unit instruction to the runner.
 type unitStreamRequest struct {
 	agent.StreamReq
+	// DstConn is the destination postgres conn string the dest agent uses.
+	DstConn string
+	// DstTLS are the dest agent's pg-plane TLS settings.
+	DstCert, DstKey, DstCA string
+}
+
+// unitSegmentRequest is the Manager's per-unit instruction for the P4
+// on_segment data path: the source agent triggers the ON SEGMENT dispatch and
+// the destination agent (segment mode) merges the N compressed slices.
+type unitSegmentRequest struct {
+	agent.OnSegmentReq
+	// Spec is the unit's destination shape the dest agent builds the staging
+	// table from (the kernel-launched segreceivers cannot carry it).
+	Spec agent.UnitSpec
+	// Segments is the number of source primary segments.
+	Segments int
+	// SegListen is the routable base listen address the segreceivers dial;
+	// the destination agent binds SegListen's host with port base+unitID.
+	// (The segreceivers run on the SOURCE segment hosts — a different machine
+	// than the destination agent — so the port must be reachable over the
+	// network, unlike the P3 coordinator path which is loopback.)
+	SegListen string
 	// DstConn is the destination postgres conn string the dest agent uses.
 	DstConn string
 	// DstTLS are the dest agent's pg-plane TLS settings.
@@ -183,6 +217,94 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 		return 0, 0, 0, fmt.Errorf("two-agent: parse dest report unit %d: %v (stderr: %s)", sreq.UnitID, perr, dstderr.String())
 	}
 	return drows, resp.Wire, dlogical, nil
+}
+
+// StreamSegment (P4) launches a destination agent in SEGMENT mode, instructs
+// the source agent to trigger the ON SEGMENT dispatch (the kernel launches the
+// segreceiver on every primary source segment; each streams its slice
+// compressed to the destination agent), and waits for the destination to
+// finish merging + loading. The destination is the authoritative row-count
+// source; the wire volume is the raw on-network byte volume it read from the
+// N segment connections. The swap is NOT performed — the Manager decides it.
+func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmentRequest) (int64, uint64, uint64, error) {
+	// 1. Bind the segment data port. The segreceivers run on the SOURCE
+	//    segment hosts (a different machine than this destination agent), so
+	//    the port must be reachable over the network: bind the --seg-listen
+	//    host with port base+unitID (the same address the kernel's COPY ON
+	//    SEGMENT embeds in the segreceiver --listen flag).
+	listen, err := segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: segment listen %q: %w", req.SegListen, err)
+	}
+	specJSON, err := json.Marshal(req.Spec)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: marshal segment spec: %w", err)
+	}
+	var dstderr bytes.Buffer
+	dargs := []string{
+		"--dest", req.DstConn,
+		"--listen", listen,
+		"--segments", strconv.Itoa(req.Segments),
+		"--spec", string(specJSON),
+		"--accept-timeout", "5m",
+	}
+	if req.DstCert != "" {
+		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
+	}
+	if req.DstCA != "" {
+		dargs = append(dargs, "--ssl-ca", req.DstCA)
+	}
+	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
+	dcmd.Stderr = &dstderr
+	dcmd.Stdout = io.Discard
+	if err := dcmd.Start(); err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent (segment): %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- dcmd.Wait() }()
+	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
+		_ = dcmd.Process.Kill()
+		<-done
+		return 0, 0, 0, fmt.Errorf(format, a...)
+	}
+
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch. The
+	//    segreceivers retry their dial while the destination is still binding
+	//    (dialDestRetry in the segreceiver), so there is no launch/dial race.
+	o := req.OnSegmentReq
+	o.DestAddr = listen
+	oresp, err := r.ctrl.OnSegment(o)
+	if err != nil {
+		return fail("two-agent: onsegment unit %d: %w", o.UnitID, err)
+	}
+	if !oresp.Ok {
+		return fail("two-agent: source agent onsegment unit %d: %s", o.UnitID, oresp.Error)
+	}
+
+	// 3. Wait for the destination to finish the COPY (it exits after serving).
+	var werr error
+	select {
+	case werr = <-done:
+	case <-time.After(r.streamDeadline()):
+		_ = dcmd.Process.Kill()
+		<-done
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): timed out", o.UnitID)
+	}
+	if werr != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): %v (stderr: %s)", o.UnitID, werr, dstderr.String())
+	}
+
+	// 4. Parse the destination report: "gpstream-dest-agent: unit=N rows=R
+	// logical=L wire=W <verdict> ok".
+	for _, line := range strings.Split(dstderr.String(), "\n") {
+		var unit, rows, logical, wire int64
+		var verdict string
+		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok",
+			&unit, &rows, &logical, &wire, &verdict); perr == nil && n == 5 {
+			return rows, uint64(wire), uint64(logical), nil
+		}
+	}
+	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (segment) report unit %d: %s", o.UnitID, dstderr.String())
 }
 
 // Checksum asks the source agent (FR-02 snapshot) for the table's checksum.
@@ -407,6 +529,84 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 
 	// 5. Destination row count is authoritative; wire volume from the source.
 	return dres.Rows, resp.Wire, dres.Logical, nil
+}
+
+// StreamSegment (P4, in-proc) launches an in-process destination agent
+// (agent.ServeSegments) on a pre-bound port, instructs the source agent to run
+// the ON SEGMENT dispatch, and waits for the destination to finish. The
+// destination is the authoritative row-count source; the wire volume is the
+// raw on-network byte volume it read from the N segment connections.
+func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmentRequest) (int64, uint64, uint64, error) {
+	// Bind the segment data port: the --seg-listen base when set (routable,
+	// matching the segreceiver --listen flag), else a free loopback port (the
+	// in-proc test's fake segreceivers are local).
+	var listen string
+	var err error
+	if req.SegListen != "" {
+		listen, err = segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
+	} else {
+		listen, err = prebindLoopback()
+	}
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: segment data port: %w", err)
+	}
+	// 1. Launch the per-unit in-process destination agent (segment mode).
+	sresCh := make(chan agent.SegmentsResult, 1)
+	serrCh := make(chan error, 1)
+	go func() {
+		res, err := agent.ServeSegments(ctx, agent.SegmentsOptions{
+			Listen:        listen,
+			DestConn:      req.DstConn,
+			SSLCert:       req.DstCert,
+			SSLKey:        req.DstKey,
+			SSLCA:         req.DstCA,
+			Spec:          req.Spec,
+			Segments:      req.Segments,
+			Swap:          false,
+			AcceptTimeout: 5 * time.Minute,
+			StreamTimeout: 6 * time.Hour,
+		})
+		if err != nil {
+			serrCh <- err
+			return
+		}
+		sresCh <- res
+	}()
+	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
+		// Unblock the ServeSegments accept (ctx cancel does not close the
+		// listener): dial + close a probe connection.
+		if c, lerr := net.Dial("tcp", listen); lerr == nil {
+			_ = c.Close()
+		}
+		select {
+		case <-serrCh:
+		case <-sresCh:
+		case <-time.After(2 * time.Second):
+		}
+		return 0, 0, 0, fmt.Errorf(format, a...)
+	}
+
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch. The
+	//    segreceivers retry their dial while the destination is still binding.
+	o := req.OnSegmentReq
+	o.DestAddr = listen
+	oresp, err := r.ctrl.OnSegment(o)
+	if err != nil {
+		return fail("two-agent: onsegment unit %d: %w", o.UnitID, err)
+	}
+	if !oresp.Ok {
+		return fail("two-agent: source agent onsegment unit %d: %s", o.UnitID, oresp.Error)
+	}
+
+	// 3. Wait for the destination to finish the COPY.
+	select {
+	case serr := <-serrCh:
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): %w", o.UnitID, serr)
+	case sres := <-sresCh:
+		return sres.Rows, sres.Wire, sres.Logical, nil
+	case <-time.After(6*time.Hour + time.Minute):
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): timed out", o.UnitID)
+	}
 }
 
 // Checksum asks the in-process source agent (FR-02 snapshot) for the checksum.

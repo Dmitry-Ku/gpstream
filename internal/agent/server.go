@@ -13,6 +13,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
@@ -150,6 +151,13 @@ func (s *SourceServer) serveControl(l net.Listener) {
 				continue
 			}
 			_ = SendLine(conn, s.handleStream(req))
+		case "onsegment":
+			var req OnSegmentReq
+			if uerr := json.Unmarshal(line, &req); uerr != nil {
+				_ = SendLine(conn, OnSegmentResp{Ok: false, Error: uerr.Error()})
+				continue
+			}
+			_ = SendLine(conn, s.handleOnSegment(req))
 		case "checksum":
 			var req ChecksumReq
 			if uerr := json.Unmarshal(line, &req); uerr != nil {
@@ -197,6 +205,36 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 		return StreamResp{Ok: false, Error: serr.Error()}
 	}
 	return StreamResp{Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical}
+}
+
+// handleOnSegment runs the P4 on_segment data path on the source agent's FR-02
+// snapshot connection: it builds the COPY ... TO PROGRAM ... ON SEGMENT BINARY
+// statement (the segreceiver program string points at the destination agent,
+// with the per-slice compression mode + the data-plane TLS paths) and executes
+// it. The GPDB kernel launches the segreceiver on every primary source segment
+// (dispatched with DF_WITH_SNAPSHOT, so every slice reads the coordinator's
+// pinned snapshot) and waits for all of them to exit before the COPY returns
+// (DF_NEED_TWO_PHASE) — so when this returns, every slice has been streamed to
+// the destination agent. It returns the kernel's row count (a cross-check; the
+// authoritative count is the destination agent's).
+func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
+	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StreamTimeout)
+	defer cancel()
+	prog, err := segstream.ProgramCommandFull(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+		req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress)
+	if err != nil {
+		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("build program: %v", err)}
+	}
+	sql := segstream.CopyOnSegmentSQL(req.Schema, req.Table, prog)
+	// The ON SEGMENT dispatch must run on the unit's FR-02 snapshot
+	// connection (the kernel dispatches with DF_WITH_SNAPSHOT); the pinned
+	// conn is that connection.
+	rows, err := s.copyQuerier().Exec(ctx, sql)
+	if err != nil {
+		s.heal(ctx) // a failed dispatch may have aborted the snapshot tx (F-06)
+		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
+	}
+	return OnSegmentResp{Ok: true, Rows: rows}
 }
 
 // handleChecksum re-derives the content checksum of a table on the pinned

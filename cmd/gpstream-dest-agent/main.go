@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +44,14 @@ func main() {
 	// Swap is a controller decision (the journal's terminal-state semantics
 	// live in the controller, ADR-002 plan).
 	swap := flag.Bool("swap", false, "perform the atomic swap (rename staging -> final) after the load")
+	// P4 on_segment mode: serve N compressed segment slices (merging them
+	// with SliceMux) instead of one coordinator stream. The kernel-launched
+	// segreceivers cannot carry the unit shape, so the controller passes it
+	// at launch as a single UnitSpec JSON (--spec): destination schema /
+	// table / staging, the source columns + distribution + partition, and
+	// the FR-12 compress mode.
+	segments := flag.Int("segments", 0, "P4 on_segment mode: number of source segments to accept (0 = coordinator mode)")
+	segSpec := flag.String("spec", "", "P4 on_segment mode: UnitSpec JSON (the controller serialises it; required with --segments)")
 	// Timeouts.
 	acceptTO := flag.Duration("accept-timeout", 5*time.Minute, "wait for the source agent's connection")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
@@ -67,6 +76,42 @@ func main() {
 	// COPY and the socket cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if *segments > 0 {
+		// P4 on_segment mode: merge N compressed segment slices (SliceMux)
+		// and load them into the staging table.
+		var spec agent.UnitSpec
+		if err := json.Unmarshal([]byte(*segSpec), &spec); err != nil {
+			fail("parse --spec: %v", err)
+		}
+		res, err := agent.ServeSegments(ctx, agent.SegmentsOptions{
+			Listen:        *listen,
+			DestConn:      *dest,
+			SSLCert:       *sslCert,
+			SSLKey:        *sslKey,
+			SSLCA:         *sslCA,
+			SSLMinTLS:     *sslMinTLS,
+			DataTLSCert:   *dataCert,
+			DataTLSKey:    *dataKey,
+			DataTLSCA:     *dataCA,
+			DataTLSMinTLS: *dataMinTLS,
+			Spec:          spec,
+			Segments:      *segments,
+			Swap:          *swap,
+			AcceptTimeout: *acceptTO,
+			StreamTimeout: *streamTO,
+		})
+		if err != nil {
+			fail("%v", err)
+		}
+		verdict := "loaded"
+		if res.Swapped {
+			verdict = "swapped"
+		}
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok\n",
+			res.Spec.UnitID, res.Rows, res.Logical, res.Wire, verdict)
+		return
+	}
 
 	res, err := agent.Serve(ctx, agent.DestOptions{
 		Listen:        *listen,

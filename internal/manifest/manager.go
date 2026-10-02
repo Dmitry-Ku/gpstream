@@ -1224,6 +1224,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"reason", "small-table auto-disable (F-12)")
 	}
 	switch {
+	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment:
+		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
+		// moves into the agents. The source agent triggers the ON SEGMENT
+		// dispatch (kernel launches the segreceiver on every primary source
+		// segment, which stream each slice compressed to the destination
+		// agent); the destination agent merges the N slices (SliceMux) and
+		// loads the staging table. The controller holds no data connection:
+		// it reads the segment count + table shape on its source pool, passes
+		// the instruction, reads back the destination's count + wire volume.
+		rows, wire, logical, err = m.streamTwoAgentSegment(ctx, t, u, target, ds, dn, cols, dist, u.Partition)
 	case m.twoAgent != nil:
 		// Two-agent (ADR-002, P3): the data COPY runs ONLY in the agents over
 		// a real, compressed socket (source agent -> destination agent). The
@@ -1412,6 +1422,60 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 		DstCert: m.cfg.SSLCert,
 		DstKey:  m.cfg.SSLKey,
 		DstCA:   m.cfg.SSLCA,
+	})
+}
+
+// streamTwoAgentSegment runs the P4 on_segment data path through the agents:
+// the controller (control plane only) reads the source's primary-segment count
+// and the table shape (columns / distribution / partition) on its source pool,
+// builds the UnitSpec the destination agent needs, and hands it to the
+// twoAgentRunner. The source agent triggers the ON SEGMENT dispatch (the kernel
+// launches the segreceiver on every primary source segment, which stream each
+// slice compressed to the destination agent); the destination agent merges the
+// N slices (SliceMux) and loads the staging table. The controller holds no data
+// connection: it reads back the destination's authoritative row count + the
+// on-network wire volume. The swap is the controller's decision (runUnit step 9).
+func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec) (int64, uint64, uint64, error) {
+	n, err := m.primarySegmentCount(ctx)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("on_segment two-agent: %w", err)
+	}
+	uc, _ := m.unitCompressors(t)
+	jobID := jobIDFromHash(u.JobID)
+	overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
+	return m.twoAgent.StreamSegment(ctx, unitSegmentRequest{
+		OnSegmentReq: agent.OnSegmentReq{
+			Op:          "onsegment",
+			Schema:      t.Schema,
+			Table:       t.Name,
+			JobID:       jobID,
+			UnitID:      uint32(u.UnitID),
+			SegBinary:   m.cfg.SegBinary,
+			Compress:    m.twoAgentCompressString(uc),
+			DataTLSCert: m.cfg.SegTLSCert,
+			DataTLSKey:  m.cfg.SegTLSKey,
+			DataTLSCA:   m.cfg.SegTLSCA,
+		},
+		Spec: agent.UnitSpec{
+			JobID:     jobID,
+			UnitID:    uint32(u.UnitID),
+			Schema:    ds,
+			Table:     dn,
+			Staging:   target,
+			Overwrite: overwrite,
+			SrcSchema: t.Schema,
+			SrcTable:  t.Name,
+			Compress:  m.twoAgentCompressString(uc),
+			Cols:      cols,
+			Dist:      dist,
+			Part:      part,
+		},
+		Segments:  n,
+		SegListen: m.cfg.SegListen,
+		DstConn:   m.cfg.Dest,
+		DstCert:   m.cfg.SSLCert,
+		DstKey:    m.cfg.SSLKey,
+		DstCA:     m.cfg.SSLCA,
 	})
 }
 

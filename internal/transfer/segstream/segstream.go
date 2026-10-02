@@ -40,6 +40,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/gpstream/gpstream/internal/transfer"
@@ -294,6 +295,16 @@ func ProgramCommand(binPath, listen string, jobID, unitID uint32) (string, error
 // just like the binary path, so they are rejected on any shell metacharacter
 // (defense in depth against command injection).
 func ProgramCommandTLS(binPath, listen string, jobID, unitID uint32, cert, key, ca string) (string, error) {
+	return ProgramCommandFull(binPath, listen, jobID, unitID, cert, key, ca, "")
+}
+
+// ProgramCommandFull is ProgramCommandTLS plus the optional per-slice
+// compression mode (P4, on_segment through agents). When compress is non-empty
+// ("none"/"zlib"/"zstd"[:level]), the segreceiver compresses each slice's
+// chunks before framing (FR-12), and the destination agent decompresses. The
+// mode is a fixed token from the controller (not user input), so it is
+// validated against the allowed set and rejected on any other character.
+func ProgramCommandFull(binPath, listen string, jobID, unitID uint32, cert, key, ca, compressMode string) (string, error) {
 	if binPath == "" || listenBinChars(binPath) {
 		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
 	}
@@ -316,7 +327,37 @@ func ProgramCommandTLS(binPath, listen string, jobID, unitID uint32, cert, key, 
 	case cert != "" || key != "":
 		return "", fmt.Errorf("segstream: TLS enabled with only one of --ssl-cert/--ssl-key (cert=%q key=%q); provide both or neither", cert, key)
 	}
+	// P4: per-slice compression (the destination agent decompresses). The
+	// mode is a controller-chosen token; validate it strictly.
+	if compressMode != "" {
+		if !validCompressMode(compressMode) {
+			return "", fmt.Errorf("segstream: bad compress mode %q", compressMode)
+		}
+		cmd += " --compress " + compressMode
+	}
 	return cmd, nil
+}
+
+// validCompressMode accepts the compression tokens the controller may embed in
+// the segreceiver program string (a fixed set, not arbitrary user input).
+func validCompressMode(s string) bool {
+	switch {
+	case s == "none" || s == "zlib" || s == "zstd":
+		return true
+	case strings.HasPrefix(s, "zstd:"):
+		lvl := s[len("zstd:"):]
+		if lvl == "" {
+			return false
+		}
+		for _, c := range lvl {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		n, err := strconv.Atoi(lvl)
+		return err == nil && n >= 1 && n <= 19
+	}
+	return false
 }
 
 // listenBinChars rejects anything with shell/quote metacharacters in the

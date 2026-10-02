@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: on_segment data path through the agents (P4)
+
+The ADR-002 remediation reaches the segment-direct (`--copy-mode on_segment`)
+path. In two-agent topology the controller no longer owns the N-way segment
+merge: it reads the source's primary-segment count + table shape on its source
+pool, passes the instruction to the agents, and keeps the DDL / journal /
+verify / swap decision. The source agent triggers the ON SEGMENT dispatch on
+its FR-02 snapshot connection (the kernel launches `gpstream-segreceiver` on
+every primary source segment); each segreceiver compresses its slice and
+streams it over the network to the per-unit destination agent, which merges
+the N slices (SliceMux) and loads the staging table. The controller holds no
+data connection; it reads back the destination's authoritative row count + the
+on-network wire volume (`gpstream_bytes_total`).
+
+- `internal/transfer/segstream/segstream_compressed.go` — `SendCompressed` /
+  `ReceiveCompressed` / `ReadStreamCompressed`: per-slice compression over the
+  framed transport, the mode carried in the trailer (a mismatch is an error,
+  never a silent mis-decode).
+- `internal/agent/segments.go` — `ServeSegments`: the destination agent's
+  segment mode (accepts N compressed segment slices, merges them with
+  SliceMux, loads the staging table, reports rows + raw on-network wire +
+  logical bytes).
+- `internal/agent/control.go` + `internal/agent/server.go` — the `onsegment`
+  control op: the source agent runs `COPY ... TO PROGRAM '<segreceiver>
+  --listen <dest> --compress <mode>' ON SEGMENT` on its pinned FR-02 snapshot
+  connection.
+- `cmd/gpstream-segreceiver/main.go` — `--compress` (per-slice compression) +
+  a bounded connect with dial-retry (the destination agent may still be
+  binding its listen socket).
+- `cmd/gpstream-dest-agent/main.go` — segment-mode flags (`--segments`,
+  `--spec`, `--data-ssl-*`).
+- `internal/manifest/twoagent.go` — `TwoAgentRunner.StreamSegment` (process +
+  in-proc); the destination agent binds the routable `--seg-listen` host with
+  port base+unitID (the segreceivers run on the source segment hosts, a
+  different machine, so the port must be reachable over the network).
+- `internal/manifest/manager.go` — the two-agent on_segment branch:
+  `streamTwoAgentSegment` (segment count + shape read on the control-plane
+  pool; the destination agent owns the staging DDL).
+
 ### Added: two-agent data path — controller as control plane (P3)
 
 The ADR-002 remediation reaches the controller: `--topology two-agent` moves

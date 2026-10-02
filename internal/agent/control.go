@@ -39,6 +39,41 @@ type StreamReq struct {
 	Overwrite bool   `json:"overwrite"`
 }
 
+// OnSegmentReq is the controller's per-unit instruction for the P4
+// on_segment data path: the source agent runs
+// `COPY ... TO PROGRAM 'gpstream-segreceiver --listen <DestAddr> --compress
+// <Compress> ...' ON SEGMENT` on its FR-02 snapshot connection. The kernel
+// launches the segreceiver on every primary source segment; each one dials
+// the destination agent (DestAddr) and streams its slice compressed. The
+// source agent waits for the kernel's COPY to return (all segreceivers have
+// streamed) and reports the kernel's row count; the authoritative count +
+// the on-network wire volume come from the destination agent.
+type OnSegmentReq struct {
+	Op        string `json:"op"` // "onsegment"
+	Schema    string `json:"schema"`
+	Table     string `json:"table"`
+	JobID     uint32 `json:"job_id"`
+	UnitID    uint32 `json:"unit_id"`
+	DestAddr  string `json:"dest"`     // the destination agent's listen address (the segreceivers dial it)
+	SegBinary string `json:"segbin"`   // gpstream-segreceiver path on the source segment hosts
+	Compress  string `json:"compress"` // per-slice compression mode (the dest agent decompresses)
+	// Data-plane TLS for the segment<->agent links (the segreceivers are the
+	// clients; the destination agent serves). All empty = plain TCP.
+	DataTLSCert string `json:"data_tls_cert,omitempty"`
+	DataTLSKey  string `json:"data_tls_key,omitempty"`
+	DataTLSCA   string `json:"data_tls_ca,omitempty"`
+}
+
+// OnSegmentResp is the source agent's report after the ON SEGMENT COPY
+// returned (all segreceivers have finished streaming). Rows is the kernel's
+// COPY row count (a cross-check; the authoritative count is the destination
+// agent's).
+type OnSegmentResp struct {
+	Ok    bool   `json:"ok"`
+	Rows  int64  `json:"rows,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 // ReleaseReq tells the source agent to end the run (commit the snapshot and
 // close the source connection).
 type ReleaseReq struct {
@@ -141,6 +176,25 @@ func (c *ControlClient) Stream(req StreamReq) (StreamResp, error) {
 	}
 	if err := recvLine(c.r, &resp); err != nil {
 		return resp, fmt.Errorf("control: read stream response: %w", err)
+	}
+	return resp, nil
+}
+
+// OnSegment instructs the source agent to run the ON SEGMENT dispatch for one
+// unit (the P4 on_segment data path): it triggers the kernel to launch the
+// segreceiver on every primary source segment, which stream each slice
+// compressed to the destination agent. It blocks until the kernel's COPY
+// returns (all segreceivers have streamed) and returns the kernel's row count.
+func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
+	var resp OnSegmentResp
+	if err := SendLine(c.w, req); err != nil {
+		return resp, err
+	}
+	if err := c.w.Flush(); err != nil {
+		return resp, fmt.Errorf("control: flush: %w", err)
+	}
+	if err := recvLine(c.r, &resp); err != nil {
+		return resp, fmt.Errorf("control: read onsegment response: %w", err)
 	}
 	return resp, nil
 }
