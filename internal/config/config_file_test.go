@@ -47,42 +47,6 @@ func TestLoadFileBadYAML(t *testing.T) {
 
 // TestLoadFileTOML verifies the TOML layer (FR-05: /etc/gpstream/gpstream.toml)
 // overlays known keys, including native numeric/bool values, onto defaults.
-// TestLoadFileConsistentKeys covers the consistent_db / consistent_cluster /
-// consistent_tables file keys (one name, three notations).
-func TestLoadFileConsistentKeys(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "c.toml")
-	src := "consistent_cluster = true\n"
-	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c := Default()
-	if err := c.LoadFile(p); err != nil {
-		t.Fatalf("LoadFile: %v", err)
-	}
-	if !c.ConsistentCluster {
-		t.Fatalf("consistent_cluster file key not bound")
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-	if c.ConsistentDB {
-		t.Errorf("file cluster must override the default db scope")
-	}
-
-	// Two explicit scopes in the file are a conflict.
-	src = "consistent_db = true\nconsistent_tables = true\n"
-	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c = Default()
-	if err := c.LoadFile(p); err != nil {
-		t.Fatalf("LoadFile: %v", err)
-	}
-	if err := c.Validate(); err == nil {
-		t.Fatal("Validate: want error for consistent_db + consistent_tables in the file")
-	}
-}
 
 func TestLoadFileTOML(t *testing.T) {
 	c := Default()

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -227,7 +227,7 @@ func TestDryRunStrictConflictStops(t *testing.T) {
 	}
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	err = runWithTimeout(t, mgr, p, 60*time.Second)
 	if err == nil {
 		t.Fatal("run should stop on the 'keep' conflict (strict default)")

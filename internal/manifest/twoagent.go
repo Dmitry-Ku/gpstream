@@ -14,6 +14,8 @@ import (
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -60,6 +62,90 @@ type TwoAgentRunner interface {
 	Checksum(ctx context.Context, schema, table string) (string, error)
 	// Release ends the run (commits the source snapshot) and stops the agents.
 	Release(ctx context.Context) error
+	// Bench streams ONE table through the two-agent source read (the F-14
+	// input-stream benchmark, P7): the source agent runs the real
+	// COPY ... TO STDOUT -> frame v2 -> compression -> socket pipeline and
+	// reports the row count + on-wire + logical volume. The runner receives
+	// the stream on a drain sink (it reads the UnitSpec header, decompresses
+	// and discards the frames) — no destination database is involved. The
+	// source agent's report is authoritative.
+	Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (rows int64, wire, logical uint64, err error)
+}
+
+// benchViaCtrl is the shared Bench implementation for both runners: the
+// runner's control client is already connected (Start), so it pre-binds a
+// loopback drain sink, instructs the long-lived source agent to stream the
+// unit to it, and returns the source agent's own report (rows + on-wire +
+// logical volume). The sink reads the UnitSpec header, decompresses the
+// framed stream and discards it; a source that dies mid-stream surfaces as a
+// sink error (the io.Copy hits EOF only on a clean stream end).
+func benchViaCtrl(ctrl *agent.ControlClient, ctx context.Context, unitID, jobID uint32, schema, table, compressStr string) (int64, uint64, uint64, error) {
+	listen, err := prebindLoopback()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("bench: pre-bind drain sink: %w", err)
+	}
+	sinkDone := make(chan error, 1)
+	go func() {
+		l, lerr := net.Listen("tcp", listen)
+		if lerr != nil {
+			sinkDone <- lerr
+			return
+		}
+		defer l.Close()
+		conn, aerr := l.Accept()
+		if aerr != nil {
+			sinkDone <- aerr
+			return
+		}
+		defer conn.Close()
+		spec, serr := agent.ReadUnitSpec(conn)
+		if serr != nil {
+			sinkDone <- serr
+			return
+		}
+		mode, _, perr := compress.Parse(spec.Compress)
+		if perr != nil {
+			sinkDone <- perr
+			return
+		}
+		fr := transfer.NewFramedReader(conn, compress.NewDec(mode))
+		if _, cerr := io.Copy(io.Discard, fr); cerr != nil {
+			sinkDone <- cerr
+			return
+		}
+		sinkDone <- nil
+	}()
+	sreq := agent.StreamReq{
+		Op:       "stream",
+		Schema:   schema,
+		Table:    table,
+		JobID:    jobID,
+		UnitID:   unitID,
+		Compress: compressStr,
+		DestAddr: listen,
+	}
+	resp, serr := ctrl.Stream(sreq)
+	if serr != nil {
+		return 0, 0, 0, fmt.Errorf("bench: source agent stream %s.%s: %w", schema, table, serr)
+	}
+	if !resp.Ok {
+		// The source finished (or failed) its stream; let the sink goroutine
+		// drain its error/EOF before reporting.
+		<-sinkDone
+		return 0, 0, 0, fmt.Errorf("bench: source agent stream %s.%s: %s", schema, table, resp.Error)
+	}
+	if sinkErr := <-sinkDone; sinkErr != nil {
+		return 0, 0, 0, fmt.Errorf("bench: drain sink %s.%s: %w", schema, table, sinkErr)
+	}
+	return resp.Rows, resp.Wire, resp.Logical, nil
+}
+
+func (r *processTwoAgentRunner) Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (int64, uint64, uint64, error) {
+	return benchViaCtrl(r.ctrl, ctx, unitID, jobID, schema, table, compress)
+}
+
+func (r *InProcTwoAgentRunner) Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (int64, uint64, uint64, error) {
+	return benchViaCtrl(r.ctrl, ctx, unitID, jobID, schema, table, compress)
 }
 
 // unitStreamRequest is the Manager's per-unit instruction to the runner.
@@ -479,10 +565,8 @@ func (r *processTwoAgentRunner) streamDeadline() time.Duration {
 
 // snapshotMode maps the config's FR-02 scope to the agent's snapshot string.
 func (r *processTwoAgentRunner) snapshotMode() string {
-	if r.cfg.ConsistentCluster {
-		return "cluster"
-	}
-	// FR-02 default is the DB-scoped REPEATABLE READ snapshot.
+	// FR-02: the source agent always reads under the DB-scoped REPEATABLE
+	// READ snapshot (P7 removed the cluster/per-table scopes).
 	return "db"
 }
 
@@ -839,9 +923,7 @@ func (r *InProcTwoAgentRunner) Release(ctx context.Context) error {
 
 // snapshotMode maps the config's FR-02 scope to the agent's SnapshotMode.
 func (r *InProcTwoAgentRunner) snapshotMode() agent.SnapshotMode {
-	if r.cfg.ConsistentCluster {
-		return agent.SnapCluster
-	}
-	// FR-02 default is the DB-scoped REPEATABLE READ snapshot.
+	// FR-02: the source agent always reads under the DB-scoped REPEATABLE
+	// READ snapshot (P7 removed the cluster/per-table scopes).
 	return agent.SnapDB
 }

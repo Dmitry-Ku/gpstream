@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -138,7 +138,7 @@ func TestSoakThroughputLive(t *testing.T) {
 	}
 	p := buildPlan(t, cfg, src, dst)
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 
 	start := time.Now()
 	if err := runWithTimeout(t, mgr, p, maxTime); err != nil {

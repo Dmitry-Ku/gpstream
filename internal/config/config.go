@@ -94,23 +94,6 @@ const (
 	CopyDirect CopyMode = "direct"
 )
 
-// Topology selects where the data plane lives (ADR-002 / two-agent
-// remediation plan).
-type Topology string
-
-const (
-	// TopologySingle is the default and the current build: both PostgreSQL
-	// connections run in the controller process and the framed/compressed
-	// transport is an in-memory pipe (the ADR-002 debt — the network legs are
-	// raw). It remains the fallback.
-	TopologySingle Topology = "single"
-	// TopologyTwoAgent moves the data plane out of the controller: a source
-	// agent (source cluster) pushes the compressed stream over a real socket
-	// to a dest agent (destination cluster); the controller is control plane
-	// only (plan, journal, verify, swap, indexes, constraints).
-	TopologyTwoAgent Topology = "two-agent"
-)
-
 // Config is the fully resolved runtime configuration. It is the single source
 // of truth consumed by every component; CLI flags, YAML and env all fold into
 // it (CLI > env > file > defaults).
@@ -190,8 +173,7 @@ type Config struct {
 	// benchTimeoutExplicit is true when --timeout was passed explicitly on the
 	// command line: for the input-stream benchmark (bench) it then means the
 	// benchmark wall-time limit (unlimited when not passed). run/dry-run keep
-	// their plan-phase default. Not mapped from file/env (CLI-only, like
-	// --consistent-db's explicit marker).
+	// their plan-phase default. Not mapped from file/env (CLI-only).
 	benchTimeoutExplicit bool
 
 	// Observability (FR-04). When set, copy serves Prometheus metrics here.
@@ -200,21 +182,10 @@ type Config struct {
 	// Operational.
 	ConfigFile string
 
-	// Consistency (FR-02). The three consistency scopes are mutually
-	// exclusive: ConsistentDB (default) pins one long-running
-	// REPEATABLE READ snapshot per database; ConsistentCluster adds a
-	// cluster-wide freeze; ConsistentTables is the explicit per-table
-	// fallback (each table under its own short snapshot — the documented
-	// discrepancy between tables is the trade-off, spec F-02).
-	ConsistentDB      bool // default
-	ConsistentCluster bool
-	ConsistentTables  bool // explicit fallback flag (spec F-02)
-	// consistentDBExplicit is true when the DB scope was requested explicitly
-	// (CLI/env/file) rather than taken from the built-in default. It lets
-	// Validate tell a real --consistent-db conflict apart from the default, so
-	// an explicit --consistent-cluster/--consistent-tables can override the
-	// default DB mode without a false "mutually exclusive" error.
-	consistentDBExplicit bool
+	// Consistency (FR-02): the source agent always reads under one
+	// run-wide REPEATABLE READ snapshot per database (the DB scope). P7
+	// removed the --consistent-db/--consistent-cluster/--consistent-tables
+	// scopes: the two-agent data path has a single snapshot mode.
 
 	// Transport (T-B, DESIGN §1.3). CopyMode selects the source data path;
 	// the on_segment fields configure the segment-direct fast path.
@@ -222,17 +193,13 @@ type Config struct {
 	SegListen string   // controller listen address the segreceivers dial (host:port)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
 
-	// Topology selects where the data plane lives (ADR-002 / two-agent
-	// remediation). TopologySingle (default) keeps the data path inside the
-	// controller process (the in-memory framed pipe — the ADR-002 debt).
-	// TopologyTwoAgent moves the data plane out: the controller orchestrates
-	// a source agent (on the source cluster) and a dest agent (on the
-	// destination cluster) over a real, compressed, optionally-TLS socket; the
-	// controller holds no data connections. The agent binaries' paths on the
-	// peer hosts.
-	Topology          Topology // default single
-	SourceAgentBinary string   // gpstream-source-agent path on the SOURCE host
-	DestAgentBinary   string   // gpstream-dest-agent path on the DEST host
+	// The data plane ALWAYS runs in the source/dest agents (ADR-002, P7): the
+	// controller orchestrates a source agent (on the source cluster) and a
+	// dest agent (on the destination cluster) over a real, compressed,
+	// optionally-TLS socket and holds no data connections. The agent
+	// binaries' paths on the peer hosts; required by run/bench.
+	SourceAgentBinary string // gpstream-source-agent path on the SOURCE host
+	DestAgentBinary   string // gpstream-dest-agent path on the DEST host
 
 	// Data-plane TLS for the segment-direct (on_segment) hop (F-13 «TLS
 	// between sender/receiver»). Deliberately SEPARATE from the SSL*
@@ -267,29 +234,16 @@ func Default() Config {
 	return Config{
 		ConflictAction:      Stop,
 		Compression:         CompZstd,
-		Topology:            TopologySingle, // ADR-002: single-controller is the default/fallback
-		SmallTableThreshold: 1 << 20,        // 1 MiB (F-12 auto-disable default)
+		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
 		ZstdLevel:           3,
 		AutoResume:          0,
 		Verify:              VerifyOff,
 		Timeout:             120 * time.Second, // F-10 §6: default 120 s
-		ConsistentDB:        true,
 		IndexPriority:       "size",
 		SSLMinTLS:           "1.2",
 		WorkersPerPair:      2,
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
-}
-
-// RequestConsistentDB enables the DB consistency scope and marks it as
-// explicitly requested (as opposed to the built-in default). The CLI
-// --consistent-db flag calls this; the env/file layers set the fields
-// directly. Validate then resolves the scopes so an explicit
-// --consistent-cluster or --consistent-tables overrides the default DB mode,
-// and two explicitly requested scopes are a conflict.
-func (c *Config) RequestConsistentDB() {
-	c.ConsistentDB = true
-	c.consistentDBExplicit = true
 }
 
 // MarkTimeoutExplicit records an explicit --timeout from the CLI. The CLI
@@ -344,26 +298,6 @@ func (c *Config) Validate() error {
 	if c.MetadataOnly && c.DataOnly {
 		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
 	}
-	// FR-02: resolve the consistency scopes. consistent-db is the default; an
-	// explicit --consistent-cluster or --consistent-tables overrides it. Only
-	// two *explicitly* requested scopes conflict (the default never does, so
-	// GPSTREAM_CONSISTENT_TABLES=1 is not an error — it just switches the mode).
-	explicit := 0
-	if c.consistentDBExplicit {
-		explicit++
-	}
-	if c.ConsistentCluster {
-		explicit++
-	}
-	if c.ConsistentTables {
-		explicit++
-	}
-	if explicit > 1 {
-		return fmt.Errorf("--consistent-db, --consistent-cluster and --consistent-tables are mutually exclusive")
-	}
-	if c.ConsistentCluster || c.ConsistentTables {
-		c.ConsistentDB = false // an explicit non-DB scope overrides the default
-	}
 	switch c.ConflictAction {
 	case Stop, Skip, Overwrite, Truncate:
 	default:
@@ -384,22 +318,6 @@ func (c *Config) Validate() error {
 	}
 	if c.CopyMode == CopyOnSegment && c.SegListen == "" {
 		return fmt.Errorf("--copy-mode on_segment requires --seg-listen (controller listen address the segreceivers dial, e.g. 10.0.0.5:9432)")
-	}
-	// Topology (ADR-002 / two-agent remediation). Default single; two-agent
-	// requires the agent binary paths on both clusters (the controller
-	// launches them over SSH per the deployment model, F-05/spec §5).
-	switch c.Topology {
-	case "", TopologySingle, TopologyTwoAgent:
-	default:
-		return fmt.Errorf("unknown topology %q (want single|two-agent)", c.Topology)
-	}
-	if c.Topology == TopologyTwoAgent {
-		if c.SourceAgentBinary == "" {
-			return fmt.Errorf("--topology two-agent requires --source-agent-binary (gpstream-source-agent path on the source host)")
-		}
-		if c.DestAgentBinary == "" {
-			return fmt.Errorf("--topology two-agent requires --dest-agent-binary (gpstream-dest-agent path on the destination host)")
-		}
 	}
 	// Frame-ack (DESIGN §4.6, R2): validate the knob and normalise the
 	// defaults so the data path always sees a usable config.
@@ -478,16 +396,6 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("ON_UNIT_FAILURE"); ok {
 		c.OnUnitFailure = v
-	}
-	if v, ok := get("CONSISTENT_DB"); ok && (v == "true" || v == "1") {
-		c.ConsistentDB = true
-		c.consistentDBExplicit = true
-	}
-	if v, ok := get("CONSISTENT_CLUSTER"); ok {
-		c.ConsistentCluster = v == "true" || v == "1"
-	}
-	if v, ok := get("CONSISTENT_TABLES"); ok {
-		c.ConsistentTables = v == "true" || v == "1"
 	}
 	// Secrets: only from env, never argv (FR-08).
 	if v, ok := get("SSL_CERT"); ok {
@@ -752,15 +660,6 @@ func assignConfigString(c *Config, key, v string) {
 		}
 	case "on_unit_failure":
 		c.OnUnitFailure = v
-	case "consistent_db":
-		if v == "true" || v == "1" {
-			c.ConsistentDB = true
-			c.consistentDBExplicit = true
-		}
-	case "consistent_cluster":
-		c.ConsistentCluster = v == "true" || v == "1"
-	case "consistent_tables":
-		c.ConsistentTables = v == "true" || v == "1"
 	case "verify":
 		c.Verify = VerifyMode(v)
 	case "ssl_cert":

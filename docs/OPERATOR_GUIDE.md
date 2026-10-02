@@ -134,13 +134,9 @@ data COPY). With **`on`**, each verified unit records a checksum and the journal
 persists it, so a resumed run knows what was already verified. For a critical
 migration, run `--verify on`.
 
-Consistency options let you copy an object atomically:
-
-| Flag | Meaning |
-|------|---------|
-| `--consistent-db` | Keep each DB consistent during the copy. |
-| `--consistent-cluster` | Keep the whole cluster consistent during the copy. |
-| `--consistent-tables` | Per-table fallback: each table under its own short snapshot (per-table discrepancy, see CLI_REFERENCE). |
+Consistency (F-02): the source agent always reads under one run-wide
+REPEATABLE READ snapshot per database, so every table is copied from the same
+point in time.
 
 ---
 
@@ -158,21 +154,13 @@ but uses more CPU — the adaptive limiter (F-14, always active) will *degrade*
 the rate / compression level when the host is CPU-saturated, and that change
 is observable as a metric (see §8).
 
-**Topology (ADR-002):** the default `--topology single` build runs both
-PostgreSQL connections in one process, so the frame/compress transport is an
-*in-memory* pipe inside the controller: both TCP legs (source coordinator →
-controller, controller → destination) carry **uncompressed** binary COPY, and
-`--compress` costs controller CPU without reducing inter-cluster bandwidth.
-The `wire` number in `status`/metrics is the compressed in-memory volume,
-not the network volume.
-
-`--topology two-agent` (the ADR-002 remediation, live for all three copy
-modes) moves the data plane into the agents: a source agent (source cluster)
-reads the table and pushes a **compressed** stream over a real, optionally
-TLS-encrypted socket to a dest agent (destination cluster); the controller
-orchestrates (plan, journal, verify, swap, indexes) and holds **no data
-connections**. In this mode `gpstream_bytes_total` is the on-wire agent-to-agent
-volume, compression genuinely reduces inter-cluster bandwidth, and the
+**Transport (two-agent, ADR-002):** the data plane lives in the agents: a
+source agent (source cluster) reads the table and pushes a **compressed**
+stream over a real, optionally TLS-encrypted socket to a dest agent
+(destination cluster); the controller orchestrates (plan, journal, verify,
+swap, indexes) and holds **no data connections**. `gpstream_bytes_total` is
+the on-wire agent-to-agent volume, compression genuinely reduces
+inter-cluster bandwidth, and the
 controller is a control-plane trust root only. It requires
 `--source-agent-binary` / `--dest-agent-binary` (the agent paths on the peer
 hosts). See `docs/adr/002-single-controller-data-path.md`.
@@ -291,7 +279,7 @@ In parallel, every operator action on the operation is appended to
 
 | `action` | When | Key fields |
 |----------|------|-----------|
-| `run` | `gpstream run` starts (before any copy) | `operation-id`, `units`, `copy-mode`, `on-unit-failure`, `compression`, `consistent-db`/`consistent-cluster`/`consistent-tables` |
+| `run` | `gpstream run` starts (before any copy) | `operation-id`, `units`, `copy-mode`, `on-unit-failure`, `compression` |
 | `run-finished` | `gpstream run` ends | `operation-id`, `units`, `rows`, `skipped`, `failed`, `error` (if any) |
 | `resume` | `gpstream resume` | `operation-id`, `requeued`, `attempt` (or `error`) |
 | `cleanup` | `gpstream cleanup` — logged **before** the state dir is removed | `operation-id`, `mode` (`state`/`drop`), `units`, `dropped` (objects removed with `--mode drop`) |

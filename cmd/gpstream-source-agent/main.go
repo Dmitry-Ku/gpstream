@@ -15,8 +15,8 @@
 //     REPEATABLE READ transaction lives on one server-side backend), and
 //     listens on LISTEN for the controller's control protocol (stream /
 //     checksum / release). The controller streams one unit per message; the
-//     whole run shares the single snapshot. This is the mode the controller's
-//     --topology two-agent uses.
+//     whole run shares the single snapshot. This is the mode the controller
+//     uses (two-agent is the only data path).
 //
 // Exit codes: 0 clean (stream complete / released); 1 argument/connect/stream
 // failure (the controller surfaces it as the unit error; a non-zero exit never
@@ -54,7 +54,7 @@ func main() {
 	overwrite := flag.Bool("overwrite", false, "destination swaps by dropping the existing table")
 	dest := flag.String("dest", "", "destination agent listen address host:port (one-shot mode, required)")
 	compress := flag.String("compress", "zstd", "stream compression none|zlib|zstd[:level]")
-	snapshot := flag.String("snapshot", "db", "FR-02 snapshot scope: none|db|cluster")
+	snapshot := flag.String("snapshot", "db", "FR-02 snapshot scope: none|db")
 	// Data-plane TLS for the agent<->agent socket (source = client).
 	dataCert := flag.String("data-tls-cert", "", "agent-stream client certificate PEM")
 	dataKey := flag.String("data-tls-key", "", "agent-stream client key PEM")

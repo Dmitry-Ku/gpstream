@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -83,7 +83,7 @@ func scaleDigestsEqual(t *testing.T, src, dst *pg.Pool, want map[string]string) 
 // exactly the pre-copy rows, and the source must show the writer DID write
 // (non-vacuous).
 func TestScale24TablesConsistentSnapshot(t *testing.T) {
-	src, dst, srcCl := startPGPair(t, 5621, 5622)
+	src, dst, srcCl, _ := startPGPair(t, 5621, 5622)
 	defer func() { src.Close(); dst.Close() }()
 
 	const n = 5_000 // per table: 24 x 5000 = 120k rows
@@ -106,7 +106,7 @@ func TestScale24TablesConsistentSnapshot(t *testing.T) {
 		t.Fatalf("plan has %d units, want %d", len(p.Units), nScaleTables)
 	}
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- mgr.Run(context.Background(), p) }()
@@ -214,7 +214,7 @@ func TestScale24TablesCrashResume(t *testing.T) {
 		t.Fatalf("plan has %d units, want %d", len(p1.Units), nScaleTables+1)
 	}
 	j1 := manifest.NewJournal(dstP, stateDir+"/journal.jsonl")
-	m1 := manifest.NewManager(&cfg1, srcP, dstP, j1)
+	m1 := newTwoAgentManager(t, &cfg1, srcP, dstP, j1, srcP.DSN(), dstP.DSN())
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	run1Done := make(chan error, 1)
 	go func() { run1Done <- m1.Run(ctx1, p1) }()
@@ -235,7 +235,7 @@ func TestScale24TablesCrashResume(t *testing.T) {
 	cfg2 := base
 	p2 := buildPlan(t, cfg2, srcP2, dstP2)
 	j2 := manifest.NewJournal(dstP2, stateDir+"/journal.jsonl")
-	m2 := manifest.NewManager(&cfg2, srcP2, dstP2, j2)
+	m2 := newTwoAgentManager(t, &cfg2, srcP2, dstP2, j2, srcP2.DSN(), dstP2.DSN())
 	if err := runWithTimeout(t, m2, p2, 600*time.Second); err != nil {
 		t.Fatalf("run 2 (relaxed resume): %v", err)
 	}
@@ -261,7 +261,7 @@ func TestScale24TablesCrashResume(t *testing.T) {
 // (relation does not exist). The run must surface the failure but complete
 // the other 23 tables exactly, and record the unit as failed for a resume.
 func TestScale24TablesUnitFailureContinue(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5641, 5642)
+	src, dst, _, _ := startPGPair(t, 5641, 5642)
 	defer func() { src.Close(); dst.Close() }()
 
 	const n = 2_000
@@ -279,7 +279,7 @@ func TestScale24TablesUnitFailureContinue(t *testing.T) {
 	mustExec(t, src, `DROP TABLE public.`+scaleTableName(broken))
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	runErr := runWithTimeout(t, mgr, p, 300*time.Second)
 	if runErr == nil {
 		t.Fatalf("run returned nil, want the failed unit's error (F-06: failure is surfaced)")

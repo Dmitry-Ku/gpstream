@@ -269,8 +269,8 @@ curl -s http://localhost:9100/metrics
 gpstream resume --operation-id first-copy
 ```
 
-For a maintenance-window-wide, cluster-consistent copy, use `--consistent-cluster`
-instead of the default `--consistent-db`.
+The copy always reads the source under one run-wide REPEATABLE READ snapshot
+per database (F-02), so the whole copy sees a single point in time.
 
 ---
 
@@ -287,7 +287,7 @@ instead of the default `--consistent-db`.
 | Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen`, `--seg-binary` |
 | Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify on\|off`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
-| Consistency | `--consistent-db` (default), `--consistent-cluster`, `--consistent-tables` |
+| Consistency | always on: one run-wide REPEATABLE READ snapshot per database (F-02) |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |
 | Redistribution | (built into `dry-run`: raw skew + layout verdict; segment-fill balance is measured always, fixed 1.5 gate) |
 | TLS | `--ssl-ca F` (pg plane; `sslmode=verify-full` default), `--seg-tls-cert/-key/-ca` (segment plane) |

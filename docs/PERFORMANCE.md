@@ -130,7 +130,7 @@ To isolate the **source-side** ceiling from the link/destination, `gpstream
 bench` streams the selected source tables through the real data path (read →
 frame → compress → adaptive rate limiter) and **discards** the payload — no
 destination is opened. It applies the same selection and performance options
-as `run` (`--workers`, `--compress`, `--rate-limit`, `--consistent-db`), and
+as `run` (`--workers`, `--compress`, `--rate-limit`), and
 prints per-table and total rows, wire/logical bytes, elapsed and MB/s.
 `--timeout S` bounds the benchmark wall-time. Use it to answer "how fast can
 the source feed the pipeline?" before committing to a full run.
@@ -183,19 +183,16 @@ the destination **decompresses**; only compressed bytes travel the wire.
 
 The metrics collector records both **wire bytes** (compressed) and
 **decoded bytes** (logical) so a compression change is visible
-(`gpstream_bytes_total` vs `gpstream_bytes_decoded_total`). In
-`--topology two-agent` the wire counter is the on-wire agent-to-agent socket
+(`gpstream_bytes_total` vs `gpstream_bytes_decoded_total`). In the two-agent
+transport (the only data path) the wire counter is the on-wire agent-to-agent
 volume, so the ratio between the two counters is the real inter-cluster
-compression ratio; in `--topology single` (default) the wire counter is the
-in-memory framed pipe and the network legs stay raw (ADR-002 debt).
+compression ratio.
 
 ## What the perf tests do and do not prove
 
-The `tests/perf` suite (runs by default, no build tag) drives the **real**
-`Manager` over a **faked SQL layer only** — framing, compression, verify,
-the journal, and the adaptive limiter are the **real code**; only the
-`COPY FROM/TO` SQL is faked (`internal/pg` `FakeConn`). The tests assert
-*characteristics*, not a 100 Gbit/s channel:
+The data-path characteristics are exercised by the `gp6lab`-tagged
+integration suite (real clusters, real agent sockets; the in-controller
+data path no longer exists in P7):
 
 - **`TestBatchManyUnitsComplete`** — a batch of 50 units over 4 workers
   all complete, data is copied, nothing fails (FR-01/FR-03). This is the

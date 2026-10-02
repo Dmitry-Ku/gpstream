@@ -181,30 +181,19 @@ runs jobs in enqueue order.
 .B --no-constraints
 Skip the FK/CHECK constraint-restore pass on the destination.
 .SS Transport / resilience
-.TP
-.BR --topology
-single|two-agent
-Where the data plane lives (default single). With
-.B two-agent
-the source agent reads the table and pushes a compressed stream over a real
-socket to the dest agent; the controller is control plane only (no data
-connections). Requires
-.BR --source-agent-binary
-and
-.BR --dest-agent-binary
-(paths of the agent binaries on the source / destination hosts).
+The data path is the two-agent transport (ADR-002): the source agent reads
+the table and pushes a compressed stream over a real socket to the dest
+agent; the controller is control plane only (no data connections).
 .TP
 .B --source-agent-binary
 PATH
-gpstream-source-agent path on the SOURCE host (required with
-.BR --topology
-two-agent).
+gpstream-source-agent path on the SOURCE host (required for
+.BR run / bench ).
 .TP
 .B --dest-agent-binary
 PATH
-gpstream-dest-agent path on the DESTINATION host (required with
-.BR --topology
-two-agent).
+gpstream-dest-agent path on the DESTINATION host (required for
+.BR run / bench ).
 .TP
 .BR --copy-mode
 coordinator|on_segment|direct
@@ -270,11 +259,6 @@ the unit to
 .B off
 (no verification) the row count from the COPY protocol is the landed-data
 check.
-.TP
-.BR --consistent-db | --consistent-cluster | --consistent-tables
-Snapshot scope (default --consistent-db; an explicit --consistent-cluster or
---consistent-tables overrides the default; two explicit scopes are mutually
-exclusive).
 .TP
 .BR --auto-resume
 N
@@ -352,9 +336,6 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .RI MAX_RECONNECTS ,
 .RI RETRANSMIT_BUFFER_MAX ,
 .RI SMALL_TABLE_THRESHOLD ,
-.RI CONSISTENT_DB ,
-.RI CONSISTENT_CLUSTER ,
-.RI CONSISTENT_TABLES ,
 .RI SSL_CERT ,
 .RI SSL_KEY ,
 .RI SSL_CA ,

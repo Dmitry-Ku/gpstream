@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -85,10 +85,9 @@ func TestTwoAgentManagerRun(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.WorkersPerPair = 1
-	cfg.Topology = config.TopologyTwoAgent // ADR-002: controller = control plane
-	cfg.ConflictAction = config.Overwrite  // staging + swap path (the two-agent path)
-	cfg.Verify = config.VerifyOn           // exercise the agent-side checksum
-	cfg.Compression = config.CompZstd      // compressed on the wire
+	cfg.ConflictAction = config.Overwrite // staging + swap path (the two-agent path)
+	cfg.Verify = config.VerifyOn          // exercise the agent-side checksum
+	cfg.Compression = config.CompZstd     // compressed on the wire
 	// cfg.Source/Dest are the conn strings the in-proc source/dest agents use.
 	cfg.Source = srcCl.URL()
 	cfg.Dest = dstCl.URL()

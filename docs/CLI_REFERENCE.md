@@ -216,19 +216,18 @@ Conflict policy semantics:
 | `--rate-limit <rate>` | `RateLimit` | `0` (no ceiling; accepts `40`, `40gbps`, `400mbps`, …) |
 | `--workers <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
 
-### Topology (ADR-002)
+### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--topology single\|two-agent` | `Topology` | `single` (single-controller data path; the ADR-002 debt — network legs raw) |
-| `--source-agent-binary <path>` | `SourceAgentBinary` | `""` (gpstream-source-agent path **on the source host**; required for `two-agent`) |
-| `--dest-agent-binary <path>` | `DestAgentBinary` | `""` (gpstream-dest-agent path **on the destination host**; required for `two-agent`) |
+| `--source-agent-binary <path>` | `SourceAgentBinary` | `""` (gpstream-source-agent path **on the source host**; **required** for `run` / `bench`) |
+| `--dest-agent-binary <path>` | `DestAgentBinary` | `""` (gpstream-dest-agent path **on the destination host**; **required** for `run` / `bench`) |
 
-`two-agent` moves the data plane out of the controller: the source agent
-reads the table and pushes a compressed (optionally TLS) stream over a real
-socket to the dest agent; the controller orchestrates (plan, journal, verify,
-swap, indexes) and holds no data connections. Works with all three
-`--copy-mode` values (`coordinator` / `on_segment` / `direct`); in this mode
-`gpstream_bytes_total` is the on-wire agent-to-agent volume.
+The data path is always the two-agent transport: the source agent reads the
+table and pushes a compressed (optionally TLS) stream over a real socket to
+the dest agent; the controller orchestrates (plan, journal, verify, swap,
+indexes) and holds no data connections. Works with all three `--copy-mode`
+values (`coordinator` / `on_segment` / `direct`); `gpstream_bytes_total` is
+the on-wire agent-to-agent volume.
 
 ### Resilience (F-06/F-07)
 | Flag | Config field | Default |
@@ -272,27 +271,10 @@ default, `workers 2` / `size`). An advisory on stderr names the ignored flag(s).
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--no-constraints` | `NoConstraints` | `false` (disable the F-11 constraint-restore pass: FK/PK/unique are re-applied post-load by default) |
-| `--consistent-db` | `ConsistentDB` | `true` (db scope — the default; overridable by an explicit `--consistent-cluster` / `--consistent-tables`) |
-| `--consistent-cluster` | `ConsistentCluster` | `false` (cluster-wide freeze; overrides the default db scope) |
-| `--consistent-tables` | `ConsistentTables` | `false` (per-table fallback: each table under its own short snapshot; overrides the default db scope — see below) |
 
-The scopes resolve in `Validate()`: `--consistent-db` is the default, an explicit
-`--consistent-cluster` or `--consistent-tables` overrides it, and only two
-*explicitly* requested scopes are mutually exclusive.
-
-**Per-table fallback (`--consistent-tables`).** Instead of one long run-wide
-`READ ONLY, REPEATABLE READ` snapshot per database, each table is copied under
-its own **short** snapshot: the table's data COPY and its checksum read run on
-a dedicated connection with one REPEATABLE READ snapshot, which is released
-right after the table completes. **Documented trade-off (spec F-02):** the
-tables are therefore *not mutually consistent* — table N is read at a slightly
-different point in the source history than table N+1 (the discrepancy is
-bounded by the copy time of the tables in between). In exchange, the run does
-not hold a long snapshot, which avoids the vacuum pressure a long
-`--consistent-db` snapshot puts on a busy PROD. Use it only when a per-table
-discrepancy is acceptable (e.g. batch/analytics loads); for a strict
-point-in-time copy keep the default `--consistent-db`. The flag is an explicit
-fallback and is off by default.
+Consistency (F-02): the source agent always reads under one run-wide
+REPEATABLE READ snapshot per database; every table's data COPY and checksum
+read share that single point in time.
 
 ### Redistribution / checks (F-15/F-16)
 
@@ -384,8 +366,7 @@ Environment variables are read by `ApplyEnv()` (the env layer of
 CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 
 `RATE_LIMIT`, `WORKERS`, `COMPRESS`, `SMALL_TABLE_THRESHOLD`,
-`AUTO_RESUME`, `ON_UNIT_FAILURE`, `CONSISTENT_DB`, `CONSISTENT_CLUSTER`,
-`CONSISTENT_TABLES`, `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
+`AUTO_RESUME`, `ON_UNIT_FAILURE`, `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
 `RETRANSMIT_BUFFER_MAX`, `SSL_CERT`, `SSL_KEY`, `SSL_CA`, `SEG_TLS_CERT`,
 `SEG_TLS_KEY`, `SEG_TLS_CA`.
 

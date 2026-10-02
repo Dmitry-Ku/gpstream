@@ -107,17 +107,9 @@ type Options struct {
 	// will have on the SOURCE segment hosts (it is a required component of
 	// the segment-direct capability; empty disables the on_segment check).
 	SegmentBinary string
-	// SrcDSN / DstDSN are the raw connection strings (host:port are read,
-	// never the credentials) for the ADR-002 topology check.
-	SrcDSN string
-	DstDSN string
-	// Compress is the run's --compress mode ("none"/"zlib"/"zstd").
-	Compress string
-	// Topology is the run's --topology value ("single"/"two-agent"). In
-	// two-agent mode the data plane lives in the agents and the controller
-	// holds no data connections, so the ADR-002 debt does not apply and the
-	// topology check reports PASS instead of WARN.
-	Topology string
+	// (P7) the data plane is always two-agent: the source/dest agents carry
+	// the data and the controller holds no data connections. There is no
+	// topology to select, so the check below is a constant confirmation.
 }
 
 // Run performs the diagnostic and returns a Report. It never panics on an
@@ -145,34 +137,15 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	return r
 }
 
-// checkTopology surfaces the ADR-002 debt: the single-controller build
-// routes the whole data stream through the controller process, so for a
-// cross-host copy the data takes two hops (source -> controller -> dest),
-// the network legs are uncompressed (compression runs in the controller's
-// memory), and a controller on an external host is a data trust root.
-// WARN, never FAIL — the job runs correctly; the operator should know the
-// topology and place the controller accordingly. In two-agent mode the data
-// plane lives in the agents and the controller holds no data connections, so
-// the debt does not apply and the check reports PASS.
-func (r *Report) checkTopology(opts Options) {
-	srcHP := pg.DSNHostPort(opts.SrcDSN)
-	dstHP := pg.DSNHostPort(opts.DstDSN)
-	if srcHP == "" || dstHP == "" || srcHP == dstHP {
-		return // same endpoint (or unparseable): no cross-host topology note
-	}
-	if opts.Topology == "two-agent" {
-		r.Add(Check{
-			Name: "topology", Side: "network", Sev: Pass,
-			Msg: "two-agent data path: the data stream runs source agent -> dest agent (compressed on the wire, " + srcHP + " -> " + dstHP + ") and the controller holds no data connections (ADR-002 remediated)",
-		})
-		return
-	}
-	msg := "single-controller data path (ADR-002): the data stream transits the controller process (source " + srcHP + " -> controller -> dest " + dstHP + "); the network legs carry uncompressed binary COPY and compression runs on the controller's CPU"
-	rec := "place the controller where the data may be read; for compressed inter-cluster traffic and no data transit on the controller, run --topology two-agent (docs/adr/002-single-controller-data-path.md)"
-	if opts.Compress == "" || opts.Compress == "none" {
-		rec = "no compression is enabled, so the debt is bandwidth-only (two hops through the controller); run --topology two-agent to move the data plane into the agents (docs/adr/002-single-controller-data-path.md)"
-	}
-	r.Add(Check{Name: "topology", Side: "network", Sev: Warn, Msg: msg, Rec: rec})
+// checkTopology confirms the data-plane architecture (P7): the build is
+// always two-agent — the source/dest agents carry the (compressed) data
+// stream and the controller holds no data connections (ADR-002, remediated
+// and since the only topology). Constant PASS.
+func (r *Report) checkTopology(Options) {
+	r.Add(Check{
+		Name: "topology", Side: "network", Sev: Pass,
+		Msg: "two-agent data path: the data stream runs source agent -> dest agent (compressed on the wire) and the controller holds no data connections (ADR-002)",
+	})
 }
 
 // checkStatementTimeouts warns when an operator-set statement/idle timeout

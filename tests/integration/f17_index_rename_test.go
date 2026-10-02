@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -19,9 +19,9 @@ import (
 // (orders_v2_pkey, orders_v2_c_idx) instead of silently REINDEXing the
 // foreign table's indexes and leaving orders_v2 index-less.
 func TestIndexRenameCollisionOnLivePG(t *testing.T) {
-	src := startPG(t, 5621, "srcdb")
+	srcCl, src := startPG(t, 5621, "srcdb")
 	defer src.Close()
-	dst := startPG(t, 5622, "dstdb")
+	dstCl, dst := startPG(t, 5622, "dstdb")
 	defer dst.Close()
 
 	ctx := context.Background()
@@ -46,8 +46,6 @@ func TestIndexRenameCollisionOnLivePG(t *testing.T) {
 
 	// Copy orders -> orders_v2 (map-table) with the data + index path.
 	cfg := config.Default()
-	cfg.Source = "src"
-	cfg.Dest = "dst"
 	cfg.RenameTable = map[string]string{"public.orders": "public.orders_v2"}
 	p, err := plan.Build(ctx, &cfg, src, dst)
 	if err != nil {
@@ -61,7 +59,8 @@ func TestIndexRenameCollisionOnLivePG(t *testing.T) {
 	}
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
+		srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 )
 
 // This file is the controller<->agent CONTROL protocol (ADR-002 plan, P3).
@@ -189,10 +190,16 @@ func recvLine(r *bufio.Reader, out any) error {
 // run — one Stream per unit (the source dials the destination agent and
 // streams) and a final Release (commit the snapshot). The controller never
 // touches the data path; it only sends/receives these control messages.
+//
+// The source agent's control loop is strictly sequential (one op at a time,
+// blocking), so the client serialises every op under mu: the run's worker
+// pool may issue Stream/Checksum calls concurrently (FR-03) and each must
+// wait for the previous op to complete before writing the next request.
 type ControlClient struct {
 	conn net.Conn
 	w    *bufio.Writer
 	r    *bufio.Reader
+	mu   sync.Mutex
 }
 
 // DialControl connects the controller to a source agent's control socket.
@@ -208,6 +215,8 @@ func DialControl(ctx context.Context, addr string) (*ControlClient, error) {
 // Stream instructs the source agent to stream one unit to the given
 // destination agent endpoint and waits for the source's report.
 func (c *ControlClient) Stream(req StreamReq) (StreamResp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var resp StreamResp
 	if err := SendLine(c.w, req); err != nil {
 		return resp, err
@@ -227,6 +236,8 @@ func (c *ControlClient) Stream(req StreamReq) (StreamResp, error) {
 // compressed to the destination agent. It blocks until the kernel's COPY
 // returns (all segreceivers have streamed) and returns the kernel's row count.
 func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var resp OnSegmentResp
 	if err := SendLine(c.w, req); err != nil {
 		return resp, err
@@ -247,6 +258,8 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 // D slices are streamed and returns the router's row count (a cross-check; the
 // authoritative count is the destination agent's).
 func (c *ControlClient) Direct(req DirectReq) (DirectResp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var resp DirectResp
 	if err := SendLine(c.w, req); err != nil {
 		return resp, err
@@ -263,6 +276,8 @@ func (c *ControlClient) Direct(req DirectReq) (DirectResp, error) {
 // Checksum asks the source agent (which holds the FR-02 snapshot) for the
 // content checksum of a table.
 func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var resp ChecksumResp
 	if err := SendLine(c.w, ChecksumReq{Op: "checksum", Schema: schema, Table: table}); err != nil {
 		return resp, err
@@ -278,6 +293,8 @@ func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
 
 // Release tells the source agent to end the run (commit the snapshot).
 func (c *ControlClient) Release() (ReleaseResp, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var resp ReleaseResp
 	if err := SendLine(c.w, ReleaseReq{Op: "release"}); err != nil {
 		return resp, err

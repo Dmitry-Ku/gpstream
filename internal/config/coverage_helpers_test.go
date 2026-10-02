@@ -93,7 +93,6 @@ func TestApplyEnvSweep(t *testing.T) {
 	t.Setenv("GPSTREAM_SMALL_TABLE_THRESHOLD", "2097152")
 	t.Setenv("GPSTREAM_AUTO_RESUME", "2")
 	t.Setenv("GPSTREAM_ON_UNIT_FAILURE", "abort")
-	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "true")
 	t.Setenv("GPSTREAM_SSL_CERT", "/c.pem")
 	t.Setenv("GPSTREAM_SSL_KEY", "/k.pem")
 	t.Setenv("GPSTREAM_SSL_CA", "/ca.pem")
@@ -110,7 +109,7 @@ func TestApplyEnvSweep(t *testing.T) {
 
 	if c.RateLimit != 42.5 || c.WorkersPerPair != 3 || c.Compression != "none" ||
 		c.SmallTableThreshold != 2097152 || c.AutoResume != 2 ||
-		c.OnUnitFailure != "abort" || !c.ConsistentTables {
+		c.OnUnitFailure != "abort" {
 		t.Errorf("scalar env overlay wrong: %+v", c)
 	}
 	if c.SSLCert != "/c.pem" || c.SSLKey != "/k.pem" || c.SSLCA != "/ca.pem" ||
@@ -129,7 +128,6 @@ func TestApplyEnvInvalidValues(t *testing.T) {
 	t.Setenv("GPSTREAM_WORKERS", "not-an-int")
 	t.Setenv("GPSTREAM_AUTO_RESUME", "junk")
 	t.Setenv("GPSTREAM_MAX_RECONNECTS", "junk")
-	t.Setenv("GPSTREAM_CONSISTENT_TABLES", "false")
 
 	c := Default()
 	c.RateLimit = 99
@@ -140,9 +138,6 @@ func TestApplyEnvInvalidValues(t *testing.T) {
 
 	if c.RateLimit != 99 || c.WorkersPerPair != 7 || c.AutoResume != 3 || c.MaxReconnects != 11 {
 		t.Errorf("invalid env values must not clobber: %+v", c)
-	}
-	if c.ConsistentTables {
-		t.Error("false-ish bool env values must parse to false")
 	}
 }
 
@@ -162,9 +157,6 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.AutoResume = -1 }, "auto-resume<0")
 	fail(func(c *Config) { c.OnUnitFailure = "stop" }, "on-unit-failure")
 	fail(func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }, "metadata+data")
-	fail(func(c *Config) { c.RequestConsistentDB(); c.ConsistentCluster = true }, "db+cluster (both explicit)")
-	fail(func(c *Config) { c.ConsistentTables, c.ConsistentCluster = true, true }, "tables+cluster")
-	fail(func(c *Config) { c.RequestConsistentDB(); c.ConsistentTables = true }, "tables+db (both explicit)")
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
@@ -313,7 +305,7 @@ report_text: "/t"
 		if c.Source != "postgres://s" || c.Dest != "postgres://d" || c.RateLimit != 7.5 ||
 			c.WorkersPerPair != 4 || c.Compression != "none" || c.ZstdLevel != 9 ||
 			c.SmallTableThreshold != 1024 || c.AutoResume != 1 || c.OnUnitFailure != "abort" ||
-			!c.ConsistentTables || c.Verify != "on" ||
+			c.Verify != "on" ||
 			c.SSLCert != "/a" || c.SSLKey != "/b" || c.SSLCA != "/c" ||
 			c.SSLMinTLS != "1.2" || c.SegTLSCert != "/sa" || c.SegTLSKey != "/sb" ||
 			c.SegTLSCA != "/sc" ||

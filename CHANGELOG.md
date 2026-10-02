@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed: `--topology` flag — the two-agent data path is now the only one
+
+The single-controller data path (the ADR-002 debt) is fully removed.
+`--topology single|two-agent` no longer exists: every `run`/`bench` copies
+through the source + destination agent binaries (required for `run`/`bench`;
+`doctor`/`dry-run`/`status`/`cleanup` do not need them — they are control
+plane only). The controller keeps only the control plane: catalog, DDL,
+journal, verify, swap.
+
+### Removed: `--consistent-db` / `--consistent-cluster` / `--consistent-tables`
+
+All three consistency flags are gone. The only behavior is the default one:
+a REPEATABLE READ database snapshot pinned on the source agent's connection
+for the whole run (FR-02). Per-table and cluster-wide scopes are no longer
+exposed — the run-wide DB snapshot is what every operator wants and it is
+what the data path guarantees.
+
+### Changed: REPEATABLE READ snapshot point is pinned at run start
+
+`BEGIN ISOLATION LEVEL REPEATABLE READ` alone does not establish the
+snapshot in PostgreSQL — it is established at the first query in the
+transaction. The source agent now runs `SELECT 1` right after BEGIN, so the
+snapshot point is the run start, not the first unit's data COPY. Without
+this, concurrent source writes committed between the run start and the first
+COPY would leak into the run (FR-02 violation; caught by the scale-24
+consistent-snapshot integration test).
+
+### Changed: test strategy — data-path and integration tests under the
+`gp6lab` build tag
+
+- All data-path unit tests that faked the transport (fake-conn
+  `internal/manifest` suite) are deleted; their coverage is replaced by the
+  two-agent integration + crash-matrix suites and the live lab e2e.
+- Every data-path/integration test (`tests/integration`, the transfer live
+  tests, `two_agent_*`) now carries `//go:build gp6lab`. The default
+  `go test ./...` runs only pure logic (config, plan, journal, DSN,
+  doctor, framing, ratelimit, epoch rules) — no database required, fast,
+  CI-stable.
+- `go test -tags gp6lab ./...` runs the full stack against a real
+  PostgreSQL (plain 9.4 works locally; GP6 on the testbed). CI vets the tag
+  (`go vet -tags gp6lab ./...`) so it can never rot.
+
+### Added: `pg.Pool.DSN()`
+
+The pool now retains its normalized connection string and exposes it, so
+tests and the controller can hand the two-agent runner the exact DSN the
+pool uses.
+
 ### Added: two-agent crash-recovery matrix (kill any of the three processes mid-copy)
 
 The ADR-002 remediation's hard part is now tested: `TestTwoAgentCrashRecoveryMatrix`

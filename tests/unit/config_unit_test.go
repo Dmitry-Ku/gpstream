@@ -1,24 +1,28 @@
-// Package integration holds integration tests for the gpstream data path and
-// config. They run by default (no build tag) and need no live cluster: they
-// drive the importable packages (config, job, journal, limiter, metrics,
-// planner) through their public API. They verify the operator-facing surface
-// end-to-end.
-package integration
+// Package unit holds the pure-logic (no data path) unit tests for gpstream.
+// P7 removed the in-controller data path, so the fake-conn data-path unit
+// tests (full Manager.Run over faked SQL) are gone — that coverage is carried
+// by the gp6lab-tagged integration tests and the lab e2e. What remains
+// here is the operator-facing config surface and the metrics collector:
+// pure logic that needs no cluster, no agents, and no build tag.
+package unit
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/monitor"
-	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/ratelimit"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
+
+// provider is a ratelimit.Provider with a controllable load.
+type provider struct{ load float64 }
+
+func (p *provider) Snapshot() ratelimit.Metrics {
+	return ratelimit.Metrics{IOWaitPercent: p.load}
+}
 
 // TestConfigFromEnv verifies (FR-08/FR-12) that secrets and compression come
 // from env (never argv), and that env vars map to the right config fields.
@@ -41,14 +45,13 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
-// TestConfigFromFile verifies (v2 §6) that a YAML config file populates the
-// config, including the new v2 flags.
+// TestConfigFromFile verifies that a YAML config file populates the config.
 func TestConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	yaml := strings.Join([]string{
-		"source: postgresql://u:srcpw@10.0.0.1:6000/prod",
-		"dest: postgresql://u:destpw@10.0.0.2:6000/preprod",
+		"source: postgresql://u:***@10.0.0.1:6000/prod",
+		"dest: postgresql://u:***@10.0.0.2:6000/preprod",
 		// LoadFile only honours string leaves (FR-08): numbers/bools must be
 		// quoted so YAML parses them as strings, not as int/bool.
 		"rate_limit: \"50\"",
@@ -73,9 +76,8 @@ func TestConfigFromFile(t *testing.T) {
 	}
 }
 
-// TestConfigSafetyDefaults verifies (FR-10/FR-11) that the defaults are safe:
-// strict conflict policy (conflicts STOP the run — stop by default),
-// verify off (content check is opt-in), zstd compression, no overwrite.
+// TestConfigSafetyDefaults locks the operator-safe defaults: strict conflict
+// (stop), verify off, zstd compression.
 func TestConfigSafetyDefaults(t *testing.T) {
 	cfg := config.Default()
 	if cfg.ConflictAction != config.Stop {
@@ -140,50 +142,4 @@ func TestMetricsCollectBytes(t *testing.T) {
 	if m.FrameErrors == 0 {
 		t.Error("expected a frame error to be recorded")
 	}
-}
-
-// TestFullFlowConfigToJob verifies (v2 §4.2) the full operator path: a config
-// drives a real Manager over faked SQL, and the unit is journaled as swapped
-// (terminal success) so a resume would skip it.
-func TestFullFlowConfigToJob(t *testing.T) {
-	cfg := config.Default()
-	payload := []byte("BINARY-COPY-ROW-BATCH")
-
-	src := pg.NewFakeConn()
-	src.On("format_type", [][]any{
-		{"id", "integer", true, ""},
-		{"customer", "text", false, `''::text`},
-	})
-	src.OnReadCopy("TO STDOUT", payload)
-
-	dst := pg.NewFakeConn()
-	dst.OnWriteCopy("FROM STDIN")
-	dst.OnReadCopy("TO STDOUT", payload)
-	dst.On("pg_class", [][]any{})
-
-	j := manifest.NewJournal(pg.NewFakeConn(), t.TempDir()+"/journal.jsonl")
-	m := manifest.NewManager(&cfg, src, dst, j)
-
-	plan := &plan.Plan{
-		Units: []plan.Table{
-			{DB: "db", Schema: "public", Name: "orders", DstSchema: "public", DstName: "orders", Bytes: 100},
-		},
-	}
-	if err := m.Run(context.Background(), plan); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if m.Units != 1 {
-		t.Errorf("units = %d, want 1", m.Units)
-	}
-	u := j.Get(1)
-	if u == nil || u.State != manifest.StateSwapped {
-		t.Errorf("expected unit 1 swapped, got %+v", u)
-	}
-}
-
-// provider is a ratelimit.Provider with a controllable load.
-type provider struct{ load float64 }
-
-func (p *provider) Snapshot() ratelimit.Metrics {
-	return ratelimit.Metrics{IOWaitPercent: p.load}
 }

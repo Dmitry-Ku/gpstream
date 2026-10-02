@@ -171,8 +171,8 @@ table.
 
 ## Consistency across a crash
 
-With `--consistent-db` / `--consistent-cluster`, gpstream pins a read-only
-`REPEATABLE READ` transaction (source read snapshot) **before** any unit is
+gpstream pins a read-only `REPEATABLE READ` transaction (the source read
+snapshot, owned by the source agent) **before** any unit is
 copied, so every `COPY ... TO STDOUT` of the database reads from the same
 point-in-time (F-02). The snapshot is released only after every unit has been
 copied. If a crash happens mid-snapshot, resume re-establishes it; a snapshot

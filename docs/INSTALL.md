@@ -152,31 +152,26 @@ cleanly on a wide range of Debian/Ubuntu hosts with a Linux 6.1+ kernel.
 ## 6.3 Deployment model: what goes where
 
 gpstream ships **four** binaries: the `gpstream` controller CLI, the
-`gpstream-source-agent` / `gpstream-dest-agent` (the two-agent data path), and
-`gpstream-segreceiver` (the `on_segment` kernel helper). Which of them a host
-needs depends on the `--topology` and `--copy-mode` you run:
+`gpstream-source-agent` / `gpstream-dest-agent` (the two-agent data path — the
+only data path), and `gpstream-segreceiver` (the `on_segment` kernel helper).
+Which of them a host needs depends on the `--copy-mode` you run:
 
 | Where | What | When |
 | --- | --- | --- |
 | **Controller host** (the machine the operator runs gpstream from — it does *not* have to be a cluster host; any host with network access to both clusters) | `gpstream` (main CLI) + `gpstream-source-agent` + `gpstream-dest-agent` | always (the package installs all four) |
 | **Source segment hosts** (every host in the source segment topology) | `gpstream-segreceiver` | only for `--copy-mode on_segment` |
-| **Destination hosts** | *nothing* (coordinator / on_segment) or `gpstream-dest-agent` (two-agent) | two-agent: the dest agent runs the per-unit `COPY FROM` on the destination cluster |
+| **Destination hosts** | *nothing* by default, or `gpstream-dest-agent` for a cross-host dest placement | cross-host: the dest agent runs the per-unit `COPY FROM` on the destination cluster |
 
-**`--topology single` (default):** the controller holds both PostgreSQL
-connections and the data path is an in-memory pipe, so only the controller
-host runs gpstream code (plus the segreceiver on source segment hosts for
-`on_segment`). This is the ADR-002 debt: the network legs are uncompressed.
-
-**`--topology two-agent` (ADR-002 remediation):** the data plane moves into
-the agents. The source agent runs on the controller host by default and reads
-the source cluster; the dest agent runs on the controller host and writes the
-destination cluster (or, for a true cross-host placement, on the destination
-cluster host). The controller is control plane only. Point
-`--source-agent-binary` / `--dest-agent-binary` at the agent paths (the
-package places both at `/usr/bin/gpstream-source-agent` and
-`/usr/bin/gpstream-dest-agent`), so a single package install on the controller
-host is enough for the default two-agent layout. In this mode the network
-carries the compressed agent-to-agent volume and the controller holds no data
+The data plane always runs in the agents (ADR-002 remediated; the
+single-controller in-memory data path is gone). The source agent runs on the
+controller host by default and reads the source cluster; the dest agent runs
+on the controller host and writes the destination cluster (or, for a true
+cross-host placement, on the destination cluster host). The controller is
+control plane only. Point `--source-agent-binary` / `--dest-agent-binary` at
+the agent paths (the package places both at `/usr/bin/gpstream-source-agent`
+and `/usr/bin/gpstream-dest-agent`), so a single package install on the
+controller host is enough for the default layout. The network carries the
+compressed agent-to-agent volume and the controller holds no data
 connections.
 
 **Recommended:** install the full `gpstream` package on the controller host
@@ -187,11 +182,11 @@ version-control surface (`rpm -qa gpstream` / `dnf upgrade gpstream` on every
 host) — today there is no version handshake between controller and agents, so
 the package is the only practical way to keep them in lockstep.
 
-**Minimal-footprint alternative (single topology + on_segment):** copy the
-single static `gpstream-segreceiver` file to every source segment host (one
-file, unprivileged, no root) and point `--seg-binary` at that path. This is
-the F-15 "install = copy one file" mode; use it only if you deliberately want
-no package on the segment hosts.
+**Minimal-footprint alternative (on_segment):** copy the single static
+`gpstream-segreceiver` file to every source segment host (one file,
+unprivileged, no root) and point `--seg-binary` at that path. This is the
+F-15 "install = copy one file" mode; use it only if you deliberately want no
+package on the segment hosts.
 
 ```bash
 # controller (installs all four binaries)
@@ -199,9 +194,8 @@ rpm -i gpstream-<ver>-amd64.rpm            # or .deb
 # on_segment: also on every source segment host
 rpm -i gpstream-<ver>-amd64.rpm
 gpstream doctor --config /etc/gpstream/gpstream.toml --seg-binary /usr/bin/gpstream-segreceiver
-# two-agent (default two-agent layout: both agents on the controller host)
+# default layout: both agents on the controller host
 gpstream run --config /etc/gpstream/gpstream.toml \
-  --topology two-agent \
   --source-agent-binary /usr/bin/gpstream-source-agent \
   --dest-agent-binary /usr/bin/gpstream-dest-agent
 ```

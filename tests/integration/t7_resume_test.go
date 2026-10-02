@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -60,7 +60,7 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 	cfg1 := base
 	p1 := buildPlan(t, cfg1, srcP, dstP)
 	j1 := manifest.NewJournal(dstP, stateDir+"/journal.jsonl")
-	m1 := manifest.NewManager(&cfg1, srcP, dstP, j1)
+	m1 := newTwoAgentManager(t, &cfg1, srcP, dstP, j1, srcP.DSN(), dstP.DSN())
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	run1Done := make(chan error, 1)
 	go func() { run1Done <- m1.Run(ctx1, p1) }()
@@ -81,7 +81,7 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 	cfg2 := base
 	p2 := buildPlan(t, cfg2, srcP2, dstP2)
 	j2 := manifest.NewJournal(dstP2, stateDir+"/journal.jsonl")
-	m2 := manifest.NewManager(&cfg2, srcP2, dstP2, j2)
+	m2 := newTwoAgentManager(t, &cfg2, srcP2, dstP2, j2, srcP2.DSN(), dstP2.DSN())
 	if err := runWithTimeout(t, m2, p2, 300*time.Second); err != nil {
 		t.Fatalf("run 2 (relaxed resume): %v", err)
 	}
@@ -110,7 +110,7 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 	cfg3 := base
 	p3 := buildPlan(t, cfg3, srcP3, dstP3)
 	j3 := manifest.NewJournal(dstP3, stateDir+"/journal.jsonl")
-	m3 := manifest.NewManager(&cfg3, srcP3, dstP3, j3)
+	m3 := newTwoAgentManager(t, &cfg3, srcP3, dstP3, j3, srcP3.DSN(), dstP3.DSN())
 	if err := runWithTimeout(t, m3, p3, 300*time.Second); err != nil {
 		t.Fatalf("run 3 (relaxed resume): %v", err)
 	}

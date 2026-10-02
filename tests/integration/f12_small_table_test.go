@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -28,7 +28,7 @@ import (
 // framed pipe -> destination COPY) in both per-unit modes at once, proving the
 // mode swap does not corrupt either stream.
 func TestSmallTableCompressionAutoDisable(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5671, 5672)
+	src, dst, _, _ := startPGPair(t, 5671, 5672)
 	defer func() { src.Close(); dst.Close() }()
 
 	ctx := context.Background()
@@ -71,7 +71,7 @@ func TestSmallTableCompressionAutoDisable(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

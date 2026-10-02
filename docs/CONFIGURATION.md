@@ -63,12 +63,14 @@ from the flags or the file.
 | `RateLimit` | float64 | `0` (no ceiling) | `--rate-limit` / env / file | Gbps total ceiling; adaptive AIMD (F-14) is always active. |
 | `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
 
-### 1.6a Topology (ADR-002)
+### 1.6a Transport (two-agent, ADR-002)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `Topology` | `Topology` | **`single`** | `--topology` / env / file | `single` \| `two-agent`. `two-agent` moves the data plane into the agents (ADR-002 remediation); the controller holds no data connections. |
-| `SourceAgentBinary` | string | `""` | `--source-agent-binary` / env / file | gpstream-source-agent path **on the source host**; **required** for `two-agent`. |
-| `DestAgentBinary` | string | `""` | `--dest-agent-binary` / env / file | gpstream-dest-agent path **on the destination host**; **required** for `two-agent`. |
+| `SourceAgentBinary` | string | `""` | `--source-agent-binary` (CLI only) | gpstream-source-agent path **on the source host**; **required** for `run` / `bench`. |
+| `DestAgentBinary` | string | `""` | `--dest-agent-binary` (CLI only) | gpstream-dest-agent path **on the destination host**; **required** for `run` / `bench`. |
+
+The data path is always the two-agent transport: the data plane lives in the
+agents, the controller holds no data connections.
 
 ### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |
@@ -147,18 +149,10 @@ place.
 | `MetricsAddr` | string | `""` | `--metrics-addr` | Serve the Prometheus endpoint during `run`. |
 
 ### 1.16 Consistency (F-02)
-| Field | Type | Default | Source |
-|-------|------|---------|--------|
-| `ConsistentDB` | bool | **`true`** | `--consistent-db` / env / file — db scope (the default) |
-| `ConsistentCluster` | bool | `false` | `--consistent-cluster` / env / file — cluster-wide freeze |
-| `ConsistentTables` | bool | `false` | `--consistent-tables` / env / file — per-table fallback |
 
-The scopes are resolved in `Validate()`: `--consistent-db` is the default, and an
-explicit `--consistent-cluster` or `--consistent-tables` **overrides** it (so
-`GPSTREAM_CONSISTENT_TABLES=1` on its own is a valid per-table run, not a
-conflict). Only two *explicitly* requested scopes are mutually exclusive
-(“—consistent-db, —consistent-cluster and —consistent-tables are mutually
-exclusive”).
+The source agent always reads under one run-wide REPEATABLE READ snapshot per
+database; every table's data COPY and checksum read share that single point in
+time (no configurable scope).
 
 ### 1.17 Operational / state (v4 §8)
 | Field | Type | Default | Source |
@@ -183,11 +177,9 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `AutoResume` | `0` |
 | `Verify` | `off` |
 | `Timeout` | `120s` |
-| `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
 | `WorkersPerPair` | `2` |
-| `Topology` | `single` |
 | `StateDir` | `/var/lib/gpstream` |
 
 `Validate()` additionally normalises the frame-ack defaults in place:
@@ -276,9 +268,6 @@ ssl_ca   = "/secrets/ca.pem"
 | `GPSTREAM_SMALL_TABLE_THRESHOLD` | `SmallTableThreshold` | int64 bytes |
 | `GPSTREAM_AUTO_RESUME` | `AutoResume` | int |
 | `GPSTREAM_ON_UNIT_FAILURE` | `OnUnitFailure` | string |
-| `GPSTREAM_CONSISTENT_DB` | `ConsistentDB` | `true`/`1` |
-| `GPSTREAM_CONSISTENT_CLUSTER` | `ConsistentCluster` | `true`/`1` |
-| `GPSTREAM_CONSISTENT_TABLES` | `ConsistentTables` | `true`/`1` |
 | `GPSTREAM_SSL_CERT` | `SSLCert` | string (**secret**) |
 | `GPSTREAM_SSL_KEY` | `SSLKey` | string (**secret**) |
 | `GPSTREAM_SSL_CA` | `SSLCA` | string (**secret**) |
@@ -313,7 +302,6 @@ failed validation aborts the command.
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
 | on-unit-failure | must be `continue`/`abort` (or empty) | `unknown on-unit-failure "…" (want continue\|abort)` |
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
-| consistency scope | `--consistent-db` is the default; an explicit `--consistent-cluster`/`--consistent-tables` overrides it; two **explicitly** requested scopes are mutually exclusive | `--consistent-db, --consistent-cluster and --consistent-tables are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `on`/`off` | `unknown verify mode "…"` |
 | copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |

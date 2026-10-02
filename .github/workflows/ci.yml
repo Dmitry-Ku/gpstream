@@ -40,6 +40,9 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      - name: vet gp6lab tag (data-path + integration tests must not rot)
+        run: go vet -tags gp6lab ./...
+
       - name: build (static)
         # TASK-SPEC §9: static linux-amd64 artifact. CGO_ENABLED=0 so the
         # binary runs on clean hosts without local toolchain dependencies.

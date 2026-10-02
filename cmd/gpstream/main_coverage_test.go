@@ -34,7 +34,6 @@ func TestParseConfigFull(t *testing.T) {
 		"--workers", "4",
 		"--auto-resume", "2",
 		"--verify", "on",
-		"--consistent-db",
 		"--index-workers", "3",
 		"--no-indexes",
 		"--index-priority", "size",
@@ -84,9 +83,6 @@ func TestParseConfigFull(t *testing.T) {
 	}
 	if c.Verify != "on" {
 		t.Fatalf("verify = %q", c.Verify)
-	}
-	if !c.ConsistentDB {
-		t.Fatalf("consistent-db not set")
 	}
 	if c.IndexWorkers != 3 {
 		t.Fatalf("index-workers = %d", c.IndexWorkers)
@@ -141,18 +137,6 @@ func TestParseConfigValidationErrors(t *testing.T) {
 	bad := config.Config{MetadataOnly: true, DataOnly: true}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected error for MetadataOnly + DataOnly")
-	}
-	// --consistent-db and --consistent-cluster are two EXPLICIT scopes: conflict.
-	if _, err := parseConfig([]string{"--consistent-db", "--consistent-cluster"}); err == nil {
-		t.Fatal("expected error for --consistent-db + --consistent-cluster")
-	}
-	// --consistent-cluster alone overrides the DEFAULT db scope (no error).
-	c, err := parseConfig([]string{"--consistent-cluster"})
-	if err != nil {
-		t.Fatalf("parseConfig --consistent-cluster: %v", err)
-	}
-	if !c.ConsistentCluster || c.ConsistentDB {
-		t.Fatalf("consistent-cluster must override the default db scope: %+v", c)
 	}
 	// --compress zstd:25 exceeds the valid zstd level range (1-19).
 	if _, err := parseConfig([]string{"--compress", "zstd:25"}); err == nil {

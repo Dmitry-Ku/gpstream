@@ -1,6 +1,6 @@
 # ADR-002: Single-controller data path (debt vs ADR-001 two-agent design)
 
-- **Status:** Closed (remediated by `--topology two-agent`, ADR-001 two-agent design)
+- **Status:** Closed (remediated by the two-agent data path — the only data path since the `--topology` flag was removed; ADR-001)
 - **Date:** 2026-10-02
 - **Supersedes (partially):** ADR-001 data-path section
 - **Remediated:** 2026-10-02 — the two-agent data path is live for all three

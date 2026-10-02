@@ -1,9 +1,10 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/config"
@@ -13,10 +14,11 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// startPG starts a real (embedded) PostgreSQL server as non-root and returns a
-// pg.Conn to it. It proves the data path works against a real server, not a
-// fake.
-func startPG(t *testing.T, port uint32, db string) *pg.Conn {
+// startPG starts a real (embedded) PostgreSQL server as non-root and returns
+// the cluster + a pg.Conn to it. It proves the data path works against a real
+// server, not a fake. The cluster is returned so the two-agent runner can be
+// handed the cluster's DSN (cfg.Source/cfg.Dest).
+func startPG(t *testing.T, port uint32, db string) (*pgtest.Cluster, *pg.Conn) {
 	t.Helper()
 	cl, err := pgtest.Start(port, db)
 	if err != nil {
@@ -29,7 +31,34 @@ func startPG(t *testing.T, port uint32, db string) *pg.Conn {
 	if err != nil {
 		t.Fatalf("connect %s: %v", db, err)
 	}
-	return c
+	return cl, c
+}
+
+// labDSN returns the two-agent lab DSN override, or the local cluster URL.
+// The gp6lab suite runs the in-process two-agent runner against the LOCAL
+// pgtest clusters by default; on the lab the operator sets GP6_LAB_SRC /
+// GP6_LAB_DST to the real Greenplum coordinator DSNs (the two-agent data path
+// then runs over the real cluster, which is what the suite is named for).
+func labDSN(t *testing.T, env string, localURL string) string {
+	t.Helper()
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return localURL
+}
+
+// newTwoAgentManager builds a Manager whose data path is the in-process
+// two-agent runner (P7: the ONLY data path). srcDSN/dstDSN are handed to the
+// source/dest agents (normally the local pgtest cluster URLs, or the lab
+// DSNs via GP6_LAB_SRC/GP6_LAB_DST). The controller keeps srcQ/dstQ for DDL,
+// journal, verify and swap (control plane only).
+func newTwoAgentManager(t *testing.T, cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *manifest.Journal, srcDSN, dstDSN string) *manifest.Manager {
+	t.Helper()
+	cfg.Source = srcDSN
+	cfg.Dest = dstDSN
+	m := manifest.NewManager(cfg, srcQ, dstQ, j)
+	m.SetTwoAgentRunner(manifest.NewInProcTwoAgentRunner(cfg))
+	return m
 }
 
 // TestCopyEndToEnd verifies the full data path against two real PostgreSQL
@@ -38,9 +67,9 @@ func startPG(t *testing.T, port uint32, db string) *pg.Conn {
 // destination ends up with the source's rows and the unit is journaled
 // (FR-06/FR-07).
 func TestCopyEndToEnd(t *testing.T) {
-	src := startPG(t, 5501, "srcdb")
+	srcCl, src := startPG(t, 5501, "srcdb")
 	defer src.Close()
-	dst := startPG(t, 5502, "dstdb")
+	dstCl, dst := startPG(t, 5502, "dstdb")
 	defer dst.Close()
 
 	ctx := context.Background()
@@ -70,7 +99,8 @@ func TestCopyEndToEnd(t *testing.T) {
 	// keep rule loads the mirror at Run start, so a stale mirror from a
 	// previous run would keep the unit and skip the copy).
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
+		srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}
@@ -109,9 +139,9 @@ func TestCopyEndToEnd(t *testing.T) {
 // swapped: if the destination checksum does not match the source, the unit
 // must fail (the verified-only swap gate, ADR-001 §4.4).
 func TestCopyChecksumMismatch(t *testing.T) {
-	src := startPG(t, 5511, "srcdb2")
+	srcCl, src := startPG(t, 5511, "srcdb2")
 	defer src.Close()
-	dst := startPG(t, 5512, "dstdb2")
+	dstCl, dst := startPG(t, 5512, "dstdb2")
 	defer dst.Close()
 
 	ctx := context.Background()
@@ -134,7 +164,8 @@ func TestCopyChecksumMismatch(t *testing.T) {
 	// assert the normal path still swaps a matching unit.
 	// Fresh operation (T5 keep rule loads the mirror at Run start).
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
+		srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

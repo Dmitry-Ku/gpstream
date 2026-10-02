@@ -15,7 +15,7 @@ change, not a PR.
 **Feature / spec item:** F-xx if it maps to one, otherwise "out of spec".
 
 **Problem it solves:** what operator pain, and why the existing flags
-(`--rate-limit`, `--consistent-tables`, `--small-table-threshold`,
+(`--rate-limit`, `--small-table-threshold`,
 `--on-unit-failure`, …) don't cover it.
 
 **Proposed behavior:** the exact CLI surface (command + flags), what appears

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -59,16 +59,17 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	bin := buildGPStream(t)
+	bin := buildTwoAgentBinaries(t)
 	stateDir := t.TempDir()
 	opID := "f02kill9"
 
 	// --- Phase 1: run + kill -9 mid-operation -------------------------
 	// No rate limit: the 130 MB table streams in seconds, and the kill
 	// window is the `verifying` phase (two full-table checksum re-reads).
-	cmd := exec.Command(bin, "run",
+	cmd := exec.Command(bin.gpstream, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
+		"--source-agent-binary", bin.srcAgent, "--dest-agent-binary", bin.destAgent,
 		"--workers", "1", "--verify", "on")
 	var runErr strings.Builder
 	cmd.Stderr = &runErr
@@ -127,7 +128,7 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 
 	// --- Phase 2: cleanup --mode drop restores the pre-operation state --
-	cl := exec.Command(bin, "cleanup",
+	cl := exec.Command(bin.gpstream, "cleanup",
 		"--state-dir", stateDir, "--operation-id", opID,
 		"--mode", "drop", "--dest", dstCl.URL(), "--yes")
 	out, err := cl.CombinedOutput()
@@ -151,9 +152,10 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 
 	// --- Phase 3: re-run the same operation completes the killed unit ---
-	rr := exec.Command(bin, "run",
+	rr := exec.Command(bin.gpstream, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
-		"--operation-id", opID, "--state-dir", stateDir)
+		"--operation-id", opID, "--state-dir", stateDir,
+		"--source-agent-binary", bin.srcAgent, "--dest-agent-binary", bin.destAgent)
 	rrOut, err := rr.CombinedOutput()
 	if err != nil {
 		t.Fatalf("re-run: %v\n%s", err, rrOut)
@@ -219,7 +221,7 @@ func TestF02TwoDBConcurrentSnapshot(t *testing.T) {
 			t.Fatalf("leg %d: plan has %d units, want 2", i, len(p.Units))
 		}
 		j := manifest.NewJournal(l.dst, l.journal)
-		mgr := manifest.NewManager(&cfg, l.src, l.dst, j)
+		mgr := newTwoAgentManager(t, &cfg, l.src, l.dst, j, l.src.DSN(), l.dst.DSN())
 		go func(i int, mgr *manifest.Manager, p *plan.Plan) {
 			results <- result{i, mgr.Run(ctx, p)}
 		}(i, mgr, p)
@@ -374,22 +376,6 @@ func scanJournal(journal string, fn func(journalUnit) bool) bool {
 		}
 	}
 	return false
-}
-
-func buildGPStream(t *testing.T) string {
-	t.Helper()
-	root, err := findRepoRoot()
-	if err != nil {
-		t.Fatalf("find repo root: %v", err)
-	}
-	bin := filepath.Join(t.TempDir(), "gpstream")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/gpstream")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build gpstream: %v\n%s", err, out)
-	}
-	return bin
 }
 
 // findRepoRoot walks up from the test working directory to the directory

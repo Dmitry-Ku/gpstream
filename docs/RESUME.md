@@ -11,8 +11,8 @@ checkpoint `28.09 ~02:30 UTC`).
 
 ## 1. The core idea: snapshot epochs
 
-A copy reads the source under a snapshot (`--consistent-db` pins one
-REPEATABLE READ snapshot per database). If the job dies and is resumed,
+A copy reads the source under a snapshot (one REPEATABLE READ snapshot per
+database, owned by the source agent). If the job dies and is resumed,
 the fresh run takes a **new** snapshot — the source may have moved on.
 Which tables must be re-read, and which can be kept, is decided by the
 **epoch** each table was completed under.
@@ -144,7 +144,7 @@ dest staging objects a journal recorded).
 
 ## 5. Vacuum pressure (the real cost of a long snapshot)
 
-`--consistent-db` holds a REPEATABLE READ snapshot for the whole copy.
+The run holds a REPEATABLE READ snapshot for the whole copy.
 On a live source, that snapshot **pins the catalog**: dead tuples from
 writes that are newer than the snapshot cannot be vacuumed until the
 snapshot is gone. A multi-hour copy of a hot table will accumulate

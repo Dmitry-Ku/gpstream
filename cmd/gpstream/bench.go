@@ -43,7 +43,7 @@ func cmdBench(args []string) error {
 	ctx := context.Background()
 	// Same pool sizing as a run: the data path runs WorkersPerPair parallel
 	// stream workers; the pool also serves the planning queries and the
-	// (default --consistent-db) snapshot pin.
+	// run-wide DB snapshot pin (FR-02).
 	maxConns := cfg.WorkersPerPair + 4
 	srcQ, err := pg.NewPool(ctx, cfg.Source, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
 	if err != nil {
@@ -78,14 +78,12 @@ func cmdBench(args []string) error {
 	fmt.Printf("compression:    %s\n", comp)
 	fmt.Printf("rate-limit:     %s\n", limiter)
 	fmt.Printf("timeout:        %s\n", timeout)
-	if cfg.ConsistentDB || cfg.ConsistentCluster || cfg.ConsistentTables {
-		fmt.Println("snapshot:       on (source reads share one REPEATABLE READ snapshot, as in a run)")
-	}
 
-	// The benchmark drives the real Manager data path with the destination
-	// agent inert: no destination connection, no DDL, no journal writes.
-	// The journal is a bare file-less instance (events/metrics paths empty).
-	mgr := manifest.NewManager(&cfg, srcQ, nil, manifest.NewJournal(nil, "")).Bench()
+	// P7: the benchmark drives the two-agent source read (the source agent
+	// streams each unit to a drain sink - no destination connection, no DDL,
+	// no journal writes). The runner is nil, so BenchAll starts + releases a
+	// process runner (the real source agent binary).
+	mgr := manifest.NewManager(&cfg, srcQ, nil, manifest.NewJournal(nil, ""))
 
 	benchCtx := ctx
 	var cancelBench context.CancelFunc
@@ -95,7 +93,7 @@ func cmdBench(args []string) error {
 	}
 
 	fmt.Println()
-	st, berr := mgr.BenchAll(benchCtx, units)
+	st, berr := mgr.BenchAll(benchCtx, units, nil)
 	if st == nil {
 		return fmt.Errorf("bench: %w", berr)
 	}

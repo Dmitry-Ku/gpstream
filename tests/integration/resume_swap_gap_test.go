@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -43,7 +43,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
 		mirror = filepath.Join(t.TempDir(), "journal.jsonl")
-		mgr := manifest.NewManager(&cfg, src, dstQ, manifest.NewJournal(nil, mirror))
+		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("initial run: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 	}
 
 	t.Run("case1_staging_present_swap_completed", func(t *testing.T) {
-		src, dstQ, _ := startPGPair(t, 5821, 5822)
+		src, dstQ, _, _ := startPGPair(t, 5821, 5822)
 		defer func() { src.Close(); dstQ.Close() }()
 		mirror, staging := makeCrashed(t, src, dstQ)
 
@@ -77,7 +77,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := manifest.NewManager(&cfg, src, dstQ, manifest.NewJournal(nil, mirror))
+		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("re-run: %v", err)
 		}
@@ -106,7 +106,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 	})
 
 	t.Run("case2_final_present_state_recorded", func(t *testing.T) {
-		src, dstQ, _ := startPGPair(t, 5823, 5824)
+		src, dstQ, _, _ := startPGPair(t, 5823, 5824)
 		defer func() { src.Close(); dstQ.Close() }()
 		mirror, staging := makeCrashed(t, src, dstQ)
 		// Case 2: the rename already landed but the "swapped" journal write
@@ -116,7 +116,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := manifest.NewManager(&cfg, src, dstQ, manifest.NewJournal(nil, mirror))
+		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("re-run: %v", err)
 		}
@@ -129,7 +129,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 	})
 
 	t.Run("case3_both_absent_data_lost", func(t *testing.T) {
-		src, dstQ, _ := startPGPair(t, 5825, 5826)
+		src, dstQ, _, _ := startPGPair(t, 5825, 5826)
 		defer func() { src.Close(); dstQ.Close() }()
 		mirror, staging := makeCrashed(t, src, dstQ)
 		// Case 3: the verified staging data was removed (e.g. operator
@@ -140,7 +140,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := manifest.NewManager(&cfg, src, dstQ, manifest.NewJournal(nil, mirror))
+		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err == nil {
 			t.Fatal("re-run with lost staging data returned nil, want an error (data must not be claimed copied)")
 		}

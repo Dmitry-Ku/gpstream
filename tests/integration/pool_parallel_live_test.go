@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -30,9 +30,9 @@ const (
 func TestPoolParallelWorkersLive(t *testing.T) {
 	ctx := context.Background()
 
-	src := startPG(t, 5611, "srcdb")
+	srcCl, src := startPG(t, 5611, "srcdb")
 	defer src.Close()
-	dst := startPG(t, 5612, "dstdb")
+	dstCl, dst := startPG(t, 5612, "dstdb")
 	defer dst.Close()
 
 	// Three tables of very different sizes so that, under 4 workers, at least
@@ -54,8 +54,6 @@ func TestPoolParallelWorkersLive(t *testing.T) {
 
 	// Plan against the real clusters, selecting the three tables explicitly.
 	cfg := config.Default()
-	cfg.Source = "postgres://src"
-	cfg.Dest = "postgres://dst"
 	cfg.Tables = []string{"srcdb.public.orders", "srcdb.public.customers", "srcdb.public.invoices"}
 	cfg.ConflictAction = config.Overwrite // staging + swap path (E1 layout)
 	cfg.WorkersPerPair = 4                // parallel stream workers (FR-03)
@@ -81,7 +79,8 @@ func TestPoolParallelWorkersLive(t *testing.T) {
 	defer dstPool.Close()
 
 	j := manifest.NewJournal(dstPool, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, srcPool, dstPool, j)
+	mgr := newTwoAgentManager(t, &cfg, srcPool, dstPool, j,
+		srcCl.URL(), dstCl.URL())
 	start := time.Now()
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run (pool, 4 workers): %v", err)

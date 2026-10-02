@@ -15,12 +15,10 @@ package manifest
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -35,25 +33,17 @@ import (
 	"github.com/gpstream/gpstream/internal/monitor"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/ratelimit"
-	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
-	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
 // Manager orchestrates a copy across the planned units.
 type Manager struct {
-	cfg  *config.Config
-	srcQ pg.StreamingQuerier
-	dstQ pg.StreamingQuerier
-	// bench is true for the input-stream benchmark (cmdBench, F-14): the data
-	// path streams the source through the real frame/compress/pacer pipeline
-	// but discards the payload instead of copying it to the destination, so
-	// the operator measures the input stream's throughput (source read +
-	// frame + compress) without a destination.
-	bench   bool
+	cfg     *config.Config
+	srcQ    pg.StreamingQuerier
+	dstQ    pg.StreamingQuerier
 	src     *source.Agent
 	dst     *dest.Agent
 	journal *Journal
@@ -76,28 +66,7 @@ type Manager struct {
 	compNone *compress.Compressor
 	decNone  *compress.Decompressor
 	lim      *ratelimit.Limiter // adaptive rate limiter (FR-14); nil when unlimited
-	pacer    *ratelimit.Pacer   // throttles the data path to lim (FR-14)
-	// recvRec records data-path write latencies so the limiter can observe the
-	// destination's receive queue (FR-14 "receive queue … COPY metrics").
-	// Shared across all units of the run; nil when no rate-limit is set.
-	recvRec *ratelimit.WriteRecorder
-	// snapshotMode is the FR-02 consistency mode actually in effect for this
-	// run ("db", "cluster", or "" when no snapshot is pinned). snapshotTx is
-	// true while a read-only REPEATABLE READ transaction is open on the source
-	// (all unit COPY statements read from that one snapshot, FR-02).
-	// pinnedSrc is the single source connection the snapshot transaction runs
-	// on (set for pool-backed sources with parallel workers, FR-03+FR-02);
-	// pinRelease returns it to the pool after the COMMIT.
-	snapshotMode string
-	snapshotTx   bool
-	pinnedSrc    pg.StreamingQuerier
-	pinRelease   func()
-	// healMu serialises snapshot healing (FR-06): a failed unit's SQL error
-	// aborts the shared REPEATABLE READ transaction, and only one worker may
-	// ROLLBACK/re-BEGIN it.
-	healMu sync.Mutex
-	// statMu guards Stats, which multiple workers mutate under the FR-03 pool.
-	statMu sync.Mutex
+	statMu   sync.Mutex         // guards Stats, which multiple workers mutate under the FR-03 pool
 	// mu_runstats guards the runstats.json refresh (FR-04): the heartbeat
 	// goroutine and the stop hook both call write().
 	mu_runstats sync.Mutex
@@ -111,7 +80,7 @@ type Manager struct {
 	// reRead holds the logical-table keys that a resume must re-copy under
 	// the fresh snapshot (T5, DESIGN §2.2); empty on a fresh run.
 	reRead map[string]bool
-	// twoAgent is the control-plane runner for --topology two-agent (ADR-002
+	// twoAgent is the control-plane runner for the two-agent data path (ADR-002
 	// remediation): non-nil only in that topology, where it drives the source /
 	// destination agent binaries and the data COPY runs only in the agents.
 	// nil in the default single topology (the data path stays in-process).
@@ -167,7 +136,7 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 	}
 	// F-12 small-table auto-disable: when the operator chose a real
 	// compression mode, prebuild the none-mode pair so a small unit's
-	// transport can swap onto it (per unit, decided in framedPipe).
+	// transport (per unit, decided in the two-agent data path).
 	if mode != compress.ModeNone {
 		m.compNone = compress.New(compress.ModeNone, 0)
 		m.decNone = compress.NewDec(compress.ModeNone)
@@ -186,28 +155,8 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		})
 		lim.SetOnChange(m.onRateChange)
 		m.lim = lim
-		m.pacer = ratelimit.NewPacer(lim)
 		m.monitor.SetRateLimit(cfg.RateLimit)
-		// FR-14 "receive queue": the destination host's /proc is not
-		// readable from the controller, but the data path is an unbuffered
-		// pipe — every source-side frame write only completes once the
-		// destination has drained it. Record those write durations and feed
-		// their 1s average to the limiter as the receive-queue signal.
-		m.recvRec = &ratelimit.WriteRecorder{}
-		lim.SetReceiveWriteLatency(func() float64 {
-			return m.recvRec.AvgMs(time.Second)
-		})
 	}
-	return m
-}
-
-// Bench returns a Manager configured for the input-stream benchmark
-// (F-14, cmdBench): the data path is the real run pipeline (frame v2 +
-// compression + adaptive rate limiter + snapshot modes), but the read side
-// discards the payload instead of writing a staging table, and no
-// destination connection is used. The destination agent/journal are inert.
-func (m *Manager) Bench() *Manager {
-	m.bench = true
 	return m
 }
 
@@ -340,26 +289,19 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
 	// proceeds) but is logged so the operator can see the consistency mode.
 	//
-	// In two-agent topology the FR-02 snapshot lives in the long-lived source
-	// agent (a REPEATABLE READ tx is server-side, on one backend, and the
-	// agent runs every unit's data COPY under it) — the controller does not
-	// pin its own snapshot and never streams data.
-	if m.cfg.Topology == config.TopologyTwoAgent {
-		// Two-agent (ADR-002): launch the long-lived source agent (owns the
-		// source pg pool + the run-wide FR-02 snapshot) and connect the control
-		// client. The data COPY runs only in the agents; the controller holds
-		// only control connections. A test may pre-inject an in-process runner
-		// (m.twoAgent != nil) to drive the agent package without subprocesses.
-		if m.twoAgent == nil {
-			m.twoAgent = newProcessTwoAgentRunner(m.cfg)
-		}
-		if err := m.twoAgent.Start(ctx); err != nil {
-			return fmt.Errorf("two-agent: %w", err)
-		}
-		defer func() { _ = m.twoAgent.Release(context.Background()) }()
-	} else {
-		m.establishSnapshot(ctx)
+	// P7: the data path is ALWAYS two-agent. Launch the long-lived source
+	// agent (owns the source pg pool + the run-wide FR-02 snapshot) and
+	// connect the control client. The data COPY runs only in the agents; the
+	// controller holds only control connections (DDL, journal, verify, swap).
+	// A test may pre-inject an in-process runner (m.twoAgent != nil) to drive
+	// the agent package without subprocesses.
+	if m.twoAgent == nil {
+		m.twoAgent = newProcessTwoAgentRunner(m.cfg)
 	}
+	if err := m.twoAgent.Start(ctx); err != nil {
+		return fmt.Errorf("two-agent: %w", err)
+	}
+	defer func() { _ = m.twoAgent.Release(context.Background()) }()
 
 	// FR-14: sample host load periodically so the limiter adapts the data-path
 	// rate (the pacer reads ratelimit.Current). No-op when no rate-limit is set.
@@ -550,8 +492,8 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 		}
 	}
 
-	// Release the source snapshot (FR-02) once every unit has been copied.
-	m.releaseSnapshot(ctx)
+	// The source agent owns the FR-02 snapshot; it is released when the run
+	// ends (m.twoAgent.Release, deferred in Run). Nothing to release here.
 	return firstErr
 }
 
@@ -686,8 +628,8 @@ func (m *Manager) processUnitSafe(ctx context.Context, u *Unit) (retErr error) {
 			// then surface the panic as a failure for the run.
 			_ = m.setUnitState(u, StateFailed)
 			m.addFailure()
-			m.healSnapshot(ctx)
 			// F-04: a panicking unit is a failure event like any other.
+			// (The FR-02 snapshot is held by the source agent, which heals it.)
 			m.events.Log("unit_failed", "schema", u.Schema, "table", u.Table,
 				"attempts", u.Attempts, "error", fmt.Sprintf("panic: %v", r))
 			retErr = fmt.Errorf("unit %s.%s panic: %v", u.Schema, u.Table, r)
@@ -878,8 +820,9 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	if err := m.runUnit(ctx, u); err != nil {
 		m.addFailure()
 		m.journal.SetState(u)
-		m.healSnapshot(ctx)
 		// F-04: retry/failure event — a resume (or an explicit re-run)
+		// retries the unit. (The FR-02 snapshot is held by the source agent,
+		// which heals it after a failed unit.)
 		// retries the unit; the operator sees the failure and its cause.
 		// on_unit_failure records the mode the run is applying (spec F-06:
 		// continue = default, keep going; abort = stop at first failure).
@@ -1202,16 +1145,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//    degrades to the coordinator path below (correct, just not direct).
 	//    fp is the framed pipe used by the coordinator path; it is nil for a
 	//    pure-direct unit (direct builds its own per-segment pipes).
-	//    FR-02 per-table fallback (--consistent-tables): the unit's source
-	//    reads run on a dedicated short snapshot (unitSource); endUnitSrc
-	//    closes it (COMMIT/ROLLBACK + pool release) when the unit finishes,
-	//    whatever the outcome.
-	us, endUnitSrc := m.unitSource(ctx)
-	defer endUnitSrc()
+	//    P7: the data COPY runs only in the source/dest agents (two-agent);
+	//    the FR-02 run-wide DB snapshot is held by the long-lived source
+	//    agent, not the controller.
 	var (
 		rows          int64
 		wire, logical uint64
-		fp            *transfer.FramedPipe
 	)
 	// F-12: a small table (below --small-table-threshold) rides the transport
 	// with compression OFF; record the decision in events.jsonl (F-04) so the
@@ -1260,21 +1199,6 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// and keeps the DDL/journal/verify/swap decision. The FR-02 snapshot
 		// is held by the long-lived source agent, not the controller.
 		rows, wire, logical, err = m.streamTwoAgent(ctx, t, u, target, ds, dn)
-	case m.cfg.CopyMode == config.CopyDirect:
-		rows, wire, logical, err = m.copyStreamDirect(ctx, t, u, target, cols, us)
-		if isDirectDegraded(err) {
-			// Unroutable table: fall back to the coordinator path.
-			m.events.Log("direct_degraded",
-				"table", t.Schema+"."+t.Name,
-				"reason", err.Error())
-			uc, ud := m.unitCompressors(t)
-			fp = m.framedPipe(uint32(u.UnitID), uc, ud)
-			rows, wire, logical, err = m.copyStream(ctx, t, u, target, fp, us)
-		}
-	default:
-		uc, ud := m.unitCompressors(t)
-		fp = m.framedPipe(uint32(u.UnitID), uc, ud)
-		rows, wire, logical, err = m.copyStream(ctx, t, u, target, fp, us)
 	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
@@ -1297,15 +1221,6 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	tkey := unitTableKey(u)
 	m.monitor.RecordRows(tkey, rows)
 	m.monitor.RecordBytes(tkey, wire, logical)
-	// Surface the frame-ACK counters (DESIGN §4.6 / FR-04) when in use. fp is
-	// nil for a pure-direct unit (no coordinator framed pipe).
-	if fp != nil {
-		if rp := fp.Reliable(); rp != nil {
-			st := rp.Stats()
-			m.monitor.RecordFrameAck(st.Retransmitted, uint64(st.Reconnects), st.AckLag)
-		}
-	}
-
 	// 6. Verify the content checksum (FR-02, --verify on): re-derive it on both
 	//    sides and compare, without re-copying the table. Off by default — the
 	//    COPY protocol's row count is then the landed-data check.
@@ -1318,12 +1233,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// used. In two-agent mode the copy ran under the long-lived source
 		// agent's FR-02 snapshot, so the checksum must come from that agent
 		// (not the controller's own pool, which holds a different snapshot).
-		var srcSum string
-		if m.twoAgent != nil {
-			srcSum, err = m.twoAgent.Checksum(ctx, t.Schema, t.Name)
-		} else {
-			srcSum, err = us.agent.Checksum(ctx, t.Schema, t.Name)
-		}
+		srcSum, err := m.twoAgent.Checksum(ctx, t.Schema, t.Name)
 		if err != nil {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
@@ -1856,359 +1766,6 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 	}
 }
 
-// framedPipe builds a framed, compressed transport (FR-01) with the given
-// compressor pair. With --frame-ack (DESIGN §4.6, default on) the transport is
-// a ReliablePipe pair: frames ride a retransmit ring with cumulative ACKs, so
-// a transport reset costs seconds (replay from RAM) and never a table re-read.
-// With --frame-ack off it is the plain net.Pipe.
-//
-// F-12 small-table auto-disable: callers pass unitCompressors(t) so a small
-// table's transport runs compression-off while the rest of the run stays on
-// the operator's mode (each unit owns its own pipe, so per-unit modes never
-// interfere).
-func (m *Manager) framedPipe(unitID uint32, comp *compress.Compressor, dec *compress.Decompressor) *transfer.FramedPipe {
-	var fp *transfer.FramedPipe
-	if m.cfg.FrameAckOn() {
-		// In-process stand-in for the agent<->agent connection B; the
-		// production TCP variant plugs the same ReliablePipe onto a dialer.
-		s, r := transfer.NewReliablePipePair(m.cfg.ReliablePipeConfig())
-		fp = transfer.NewFramedPipeOver(s, r, 1, unitID, comp, dec)
-	} else {
-		// A net.Pipe is an in-memory, back-pressure-respecting connected pair;
-		// in production this is a net.Conn (optionally TLS, FR-13).
-		w, r := net.Pipe()
-		fp = transfer.NewFramedPipe(w, r, 1, unitID, comp, dec)
-	}
-	if m.recvRec != nil {
-		// FR-14 "receive queue": record each transport write's duration
-		// (the destination drains an unbuffered pipe, so the write time is
-		// the receive-queue depth the controller can observe).
-		fp.SetWriteLatencyHook(m.recvRec.Record)
-	}
-	return fp
-}
-
-// copyStream runs the source and destination COPY in parallel over the framed
-// pipe (FR-01). The source writes `COPY ... TO STDOUT` into the pipe; the
-// destination reads it into `COPY ... FROM STDIN`. It returns the number of
-// rows the destination received. The FramedPipe is both the io.Writer (source)
-// and the io.Reader (destination) over one back-pressure-respecting pipe.
-//
-// With --copy-mode on_segment (T-B) the source side is the segment-direct
-// transport instead: the kernel streams one framed slice per primary segment
-// to the controller listener, which merges them into the same pipe.
-func (m *Manager) copyStream(ctx context.Context, t plan.Table, u *Unit, staging string, fp *transfer.FramedPipe, us unitSource) (int64, uint64, uint64, error) {
-	// Bench (F-14) always measures the canonical coordinator read path
-	// (COPY ... TO STDOUT -> frame v2 -> compress -> discard), regardless of
-	// --copy-mode: it is the deterministic "source read" measurement and never
-	// touches the destination. on_segment is not exercised in bench mode.
-	if m.bench {
-		return m.copyStreamBench(ctx, t, us, fp)
-	}
-	if m.cfg.CopyMode == config.CopyOnSegment {
-		// The segment-direct path builds its own framed pipe (the merged slice
-		// stream); the coordinator pipe the caller pre-created is unused, so
-		// close it to avoid a leaked net.Pipe.
-		_ = fp.Close()
-		return m.copyStreamSegmentDirect(ctx, t, u, staging, us)
-	}
-	var (
-		dstRows int64
-		dstErr  error
-		srcErr  error
-		wg      sync.WaitGroup
-	)
-	wg.Add(2)
-
-	// Destination: read framed bytes into the staging table until EOF.
-	go func() {
-		defer wg.Done()
-		// A panic in the data path (a genuine fault, CR-7) must not crash the
-		// whole copy (FR-06): convert it to an error so the caller records a
-		// failure and the other workers continue.
-		defer func() {
-			if r := recover(); r != nil {
-				dstErr = fmt.Errorf("destination copy panic: %v", r)
-			}
-		}()
-		rows, err := m.dst.CopyIntoStream(ctx, u.DstSchema, staging, fp)
-		if err != nil && !isEOF(err) {
-			dstErr = err
-			// Abort the pipe so the source (still streaming into a full
-			// unbuffered net.Pipe with no reader) unblocks and the unit
-			// fails instead of hanging (FR-06; T7 retry scenario).
-			_ = fp.Abort()
-		}
-		dstRows = rows
-	}()
-
-	// Source: write the table's bytes into the pipe (throttled by the limiter,
-	// FR-14), then close it so the destination read sees io.EOF (end-of-copy).
-	srcW := m.pacedWriter(fp)
-	go func() {
-		defer wg.Done()
-		// Close the pipe on exit so the destination always sees end-of-copy,
-		// even if CopyToStream panics (a genuine fault, CR-7). The deferred
-		// recover converts a panic to an error (FR-06) so the run survives.
-		defer func() {
-			_ = fp.Close()
-		}()
-		defer func() {
-			if r := recover(); r != nil {
-				srcErr = fmt.Errorf("source copy panic: %v", r)
-			}
-		}()
-		_, err := us.agent.CopyToStream(ctx, t.Schema, t.Name, srcW)
-		if err != nil && !isEOF(err) {
-			srcErr = err
-		}
-	}()
-
-	wg.Wait()
-	// Report the destination error first: when the destination dies
-	// mid-copy it aborts the pipe, and the source's blocked write then
-	// fails with a secondary "closed pipe" error. The destination error is
-	// the root cause; the source error is its consequence.
-	if dstErr != nil {
-		return 0, 0, 0, fmt.Errorf("dest copy: %w", dstErr)
-	}
-	if srcErr != nil {
-		return 0, 0, 0, fmt.Errorf("source copy: %w", srcErr)
-	}
-	// The destination is authoritative for the row count (it wrote the table).
-	wire, logical := fp.Stats()
-	return dstRows, wire, logical, nil
-}
-
-// copyStreamBench is the input-stream benchmark data path (F-14): the source
-// streams the table through the real pipeline (COPY ... TO STDOUT -> frame
-// v2 + compression + the adaptive rate limiter), and a goroutine drains the
-// read side and DISCARDS the payload instead of writing a staging table.
-// The measured wall time is therefore the input stream's production rate:
-// source read + framing + compression (+ throttling), with no destination
-// copy, no network to the destination, and no DDL. Row counts come from the
-// driver's COPY command tag.
-func (m *Manager) copyStreamBench(ctx context.Context, t plan.Table, us unitSource, fp *transfer.FramedPipe) (int64, uint64, uint64, error) {
-	var (
-		rows   int64
-		dstErr error
-		srcErr error
-		wg     sync.WaitGroup
-	)
-	wg.Add(2)
-
-	// Reader: drain the framed stream, discarding the payload, until EOF.
-	go func() {
-		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				dstErr = fmt.Errorf("benchmark drain panic: %v", r)
-			}
-		}()
-		if err := m.benchDrain(fp); err != nil && !isEOF(err) {
-			dstErr = err
-			_ = fp.Abort()
-		}
-	}()
-
-	// Source: identical to the run path (paced writer + Close on exit).
-	srcW := m.pacedWriter(fp)
-	go func() {
-		defer wg.Done()
-		defer func() {
-			_ = fp.Close()
-		}()
-		defer func() {
-			if r := recover(); r != nil {
-				srcErr = fmt.Errorf("source copy panic: %v", r)
-			}
-		}()
-		n, err := us.agent.CopyToStream(ctx, t.Schema, t.Name, srcW)
-		if err != nil && !isEOF(err) {
-			srcErr = err
-		} else {
-			rows = n
-		}
-	}()
-
-	wg.Wait()
-	if dstErr != nil {
-		return 0, 0, 0, fmt.Errorf("bench drain: %w", dstErr)
-	}
-	if srcErr != nil {
-		return 0, 0, 0, fmt.Errorf("source copy: %w", srcErr)
-	}
-	wire, logical := fp.Stats()
-	return rows, wire, logical, nil
-}
-
-// benchDrain reads the framed pipe to EOF, discarding every byte. It is the
-// stand-in for the destination COPY in the input-stream benchmark: it must
-// consume at full speed so the source side is never back-pressured by a slow
-// discarder, but it does no DDL and writes nothing.
-func (m *Manager) benchDrain(fp *transfer.FramedPipe) error {
-	buf := make([]byte, 128*1024)
-	for {
-		_, err := fp.Read(buf)
-		if err != nil {
-			if isEOF(err) {
-				return nil
-			}
-			return err
-		}
-	}
-}
-
-// copyStreamSegmentDirect is the segment-direct data path (T-B, Fallback B).
-// Instead of `COPY ... TO STDOUT` through the coordinator, the GPDB kernel
-// launches gpstream-segreceiver on every primary segment via
-// `COPY ... TO PROGRAM ... ON SEGMENT BINARY` (dispatched with
-// DF_WITH_SNAPSHOT, so every slice reads the coordinator's pinned snapshot —
-// the same consistency as the coordinator path). Each segreceiver frames its
-// local slice (Frame v2, content-tagged) and streams it over direct TCP to
-// the controller listener; the controller merges the N slices into one
-// binary-COPY stream and feeds it through the same framed/compressed pipe as
-// the coordinator path, so the destination is unchanged. The kernel waits for
-// all segreceivers to exit (DF_NEED_TWO_PHASE) before the COPY returns.
-func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *Unit, staging string, us unitSource) (int64, uint64, uint64, error) {
-	n, err := m.primarySegmentCount(ctx)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
-	}
-	if n < 1 {
-		return 0, 0, 0, fmt.Errorf("segment-direct: no up primary segments")
-	}
-	// Each parallel unit runs its own controller listener, so derive a
-	// per-unit port from the operator's base address (port + unitID).
-	listen, err := segstream.UnitListen(m.cfg.SegListen, uint32(u.UnitID))
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
-	}
-	l, err := net.Listen("tcp", listen)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("segment-direct: listen %s: %w", listen, err)
-	}
-	defer l.Close()
-
-	// F-13: when the data-plane TLS option set is active, the controller
-	// serves the segment streams over TLS (mTLS when a CA is set) — the
-	// only inter-host data path not already covered by the two PG
-	// connections of the coordinator path. The seg-tls-* options are
-	// separate from the PG ssl-* options: the segment stream can be
-	// encrypted even when the PG connections are not.
-	if transfer.TLSEnabled(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA) {
-		scfg, serr := transfer.ServerTLSConfig(m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA, m.cfg.SSLMinTLS)
-		if serr != nil {
-			return 0, 0, 0, fmt.Errorf("segment-direct TLS: %w", serr)
-		}
-		// HandshakeFilter: a rejected/noisy connection on the port (a probe,
-		// a monitor, a bad client) must not abort the in-flight copy.
-		l = segstream.HandshakeFilter(tls.NewListener(l, scfg))
-	}
-
-	jobID, unitID := uint32(1), uint32(u.UnitID)
-	prog, err := segstream.ProgramCommandTLS(m.cfg.SegBinary, listen, jobID, unitID,
-		m.cfg.SegTLSCert, m.cfg.SegTLSKey, m.cfg.SegTLSCA)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
-	}
-	sql := segstream.CopyOnSegmentSQL(t.Schema, t.Name, prog)
-
-	// Data plane: the merged slice stream goes through the same framed,
-	// compressed pipe as the coordinator path, so the destination is unchanged.
-	uc, ud := m.unitCompressors(t)
-	fp := m.framedPipe(uint32(u.UnitID), uc, ud)
-
-	var (
-		dstRows int64
-		dstErr  error
-	)
-	dstDone := make(chan struct{})
-	// Destination: read the merged binary-COPY stream into the staging table.
-	go func() {
-		defer close(dstDone)
-		defer func() {
-			if r := recover(); r != nil {
-				dstErr = fmt.Errorf("destination copy panic: %v", r)
-			}
-		}()
-		rows, err := m.dst.CopyIntoStream(ctx, u.DstSchema, staging, fp)
-		if err != nil && !isEOF(err) {
-			dstErr = err
-			// Abort the pipe so the source (still streaming into a full
-			// unbuffered net.Pipe with no reader) unblocks and the unit
-			// fails instead of hanging (FR-06; T7 retry scenario).
-			_ = fp.Abort()
-		}
-		dstRows = rows
-	}()
-
-	// Source: merge the N per-segment slices into one binary-COPY stream on fp.
-	mux := segstream.NewSliceMux(fp, n)
-	if err := mux.Begin(); err != nil {
-		_ = fp.Close()
-		<-dstDone
-		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
-	}
-
-	type recvOut struct {
-		results []*segstream.SliceResult
-		err     error
-	}
-	recvCh := make(chan recvOut, 1)
-	go func() {
-		res, err := segstream.Receive(ctx, l, n, mux.Write)
-		recvCh <- recvOut{res, err}
-	}()
-
-	// The kernel runs the segreceiver on each primary and waits for all of
-	// them to exit before the COPY returns (DF_NEED_TWO_PHASE); this blocks
-	// until every slice stream is complete. The ON SEGMENT COPY dispatches
-	// the snapshot to the segments (DF_WITH_SNAPSHOT), so it must run on the
-	// unit's snapshot connection: the pinned run-wide snapshot (FR-02 default
-	// modes) or the unit's dedicated short snapshot (per-table fallback).
-	if _, err := us.q.Exec(ctx, sql); err != nil {
-		_ = fp.Close()
-		<-dstDone
-		return 0, 0, 0, fmt.Errorf("segment-direct COPY ON SEGMENT: %w", err)
-	}
-
-	out := <-recvCh
-	if out.err != nil {
-		_ = fp.Close()
-		<-dstDone
-		return 0, 0, 0, fmt.Errorf("segment-direct receive: %w", out.err)
-	}
-	// Cross-check: the sum of the per-slice trailer row counts must equal the
-	// rows the destination actually wrote (a merge bug would break this).
-	var trailerRows int64
-	for _, r := range out.results {
-		if r.Err != nil {
-			_ = fp.Close()
-			<-dstDone
-			return 0, 0, 0, fmt.Errorf("segment-direct slice content=%d: %w", r.ContentID, r.Err)
-		}
-		trailerRows += r.Rows
-	}
-	if err := mux.End(); err != nil {
-		_ = fp.Close()
-		<-dstDone
-		return 0, 0, 0, fmt.Errorf("segment-direct: %w", err)
-	}
-	// Close the write side so the destination sees end-of-copy.
-	_ = fp.Close()
-	<-dstDone
-
-	if dstErr != nil {
-		return 0, 0, 0, fmt.Errorf("dest copy: %w", dstErr)
-	}
-	if trailerRows != dstRows {
-		return 0, 0, 0, fmt.Errorf("segment-direct: trailer rows %d != dest rows %d", trailerRows, dstRows)
-	}
-	wire, logical := fp.Stats()
-	return dstRows, wire, logical, nil
-}
-
 // primarySegmentCount returns the number of up primary CONTENTS on the
 // source — i.e. the number of segreceivers the kernel launches with
 // ON SEGMENT (GANGTYPE_PRIMARY_WRITER, one per content; the master's
@@ -2220,7 +1777,7 @@ func (m *Manager) copyStreamSegmentDirect(ctx context.Context, t plan.Table, u *
 // (E2 e2e, 27.09: n=3 on a 2-segment cluster — the receiver waited for a
 // third slice that never came).
 func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
-	v := pg.RowStr(ctx, m.srcRead(),
+	v := pg.RowStr(ctx, m.srcQ,
 		`SELECT count(DISTINCT content) FROM gp_segment_configuration
 		 WHERE role = 'p' AND status = 'u' AND content >= 0`)
 	if v == "" {
@@ -2310,198 +1867,6 @@ func segmentDSN(destDSN string, seg destSegment) (string, error) {
 	return u.String(), nil
 }
 
-// copyStreamDirect is the fully segment-direct data path (R5 endgame,
-// --copy-mode direct). The source streams through its coordinator (already
-// correct); gpstream computes each row's destination segment —
-// d = JCH(cdbhash(K_dest), D) — and writes each segment's rows directly into
-// that segment's local staging slice via a utility-mode `COPY ... FROM STDIN
-// (FORMAT binary)`. The destination coordinator is out of the write path, so
-// the copy is bounded by the segment hosts' disk/network, not the dest
-// coordinator (the bottleneck the R5 endgame removes).
-//
-// Correctness: rows land on the slice the destination kernel would place them
-// on, because the staging table is created with the destination's distribution
-// policy (key K_dest) and the router reproduces the kernel's cdbhash +
-// jump-consistent-hash exactly (internal/route, validated live). The row bytes
-// are forwarded verbatim, so the FR-02 content digest verifies it unchanged.
-//
-// Graceful degradation: a table that cannot be routed (non-hash distribution,
-// unsupported dist-key type, a key column absent from the source, or a
-// non-Greenplum destination) returns a *directDegradedError; the caller falls
-// back to the coordinator path for that table.
-func (m *Manager) copyStreamDirect(ctx context.Context, t plan.Table, u *Unit, target string, cols []pg.Column, us unitSource) (int64, uint64, uint64, error) {
-	// A partitioned parent cannot be written per-segment: the kernel rejects
-	// utility-mode COPY FROM on the root of an inheritance/partition
-	// hierarchy (SQLSTATE 0A000, lab 29.09). Pre-routing each row to a
-	// leaf slice is not an alternative: choosing the leaf requires
-	// collation-aware evaluation of the destination's bounds, which the Go
-	// row router cannot do (it reproduces only the hash distribution), and
-	// guessing by the source's placement would defeat Fix 1 (the destination
-	// must re-route the rows by its own collation). Degrade to the
-	// coordinator path, whose single parent-COPY carries every leaf's rows
-	// and lets the destination place them.
-	if u.Partition.Spec != "" {
-		return 0, 0, 0, &directDegradedError{
-			reason: "partitioned parent: utility-mode COPY FROM is not supported on partition-hierarchy roots; using the coordinator path (parent-COPY)",
-		}
-	}
-	// 1. Destination topology: the up primaries in content order.
-	segs, err := m.destSegments(ctx)
-	if err != nil {
-		return 0, 0, 0, &directDegradedError{reason: err.Error()}
-	}
-	D := int32(len(segs))
-
-	// 2. The routing key: the TARGET table's distribution policy (the placement
-	//    the rows must satisfy). The target exists on the destination after
-	//    runUnit step 3 (staging in overwrite mode, the final table in-place),
-	//    so read its policy from the destination — this is exactly the policy
-	//    the local slices were created with. A table without a hash key cannot
-	//    be routed directly.
-	dstDist := source.New(m.dstQ).Distribution(ctx, u.DstSchema, target)
-	if dstDist.Kind != "hash" || len(dstDist.Keys) == 0 {
-		return 0, 0, 0, &directDegradedError{
-			reason: fmt.Sprintf("target distribution policy %q (no hash key) cannot be routed directly", dstDist.Kind),
-		}
-	}
-	// Map the key column names to (position, type OID) in the source row
-	// stream; a key column absent from the source is unroutable.
-	colBy := map[string]int{}
-	for i, c := range cols {
-		colBy[c.Name] = i
-	}
-	keyIdx := make([]int, 0, len(dstDist.Keys))
-	keyOid := make([]uint32, 0, len(dstDist.Keys))
-	for _, k := range dstDist.Keys {
-		idx, ok := colBy[k]
-		if !ok {
-			return 0, 0, 0, &directDegradedError{
-				reason: fmt.Sprintf("dest dist-key column %q is not in the source table", k),
-			}
-		}
-		keyIdx = append(keyIdx, idx)
-		keyOid = append(keyOid, cols[idx].Oid)
-	}
-
-	// 3. Per-segment pipes + utility-mode COPY sessions. Each segment receives
-	//    its own well-formed binary-COPY stream (header + its rows + trailer)
-	//    from the RowRouter: the router writes to the pipe's write end, the
-	//    segment's utility `COPY FROM STDIN` reads the read end. Results are
-	//    collected on one buffered channel (no shared mutable state).
-	type segRes struct {
-		rows int64
-		err  error
-	}
-	res := make(chan segRes, D)
-	segWriters := make([]io.Writer, D)
-	var pipeW []io.Closer // write ends, closed by the router/main on completion
-	for i, seg := range segs {
-		dsn, err := segmentDSN(m.cfg.Dest, seg)
-		if err != nil {
-			_ = m.closePipes(pipeW)
-			return 0, 0, 0, &directDegradedError{reason: err.Error()}
-		}
-		w, r := net.Pipe()
-		pipeW = append(pipeW, w)
-		segWriters[i] = w
-		go func(i int, dsn string, r io.ReadCloser) {
-			defer r.Close() // unblock the router's write to this segment on exit
-			defer func() {
-				if p := recover(); p != nil {
-					res <- segRes{err: fmt.Errorf("segment %d copy panic: %v", i, p)}
-				}
-			}()
-			c, err := pg.NewConn(ctx, dsn, m.cfg.SSLCert, m.cfg.SSLKey, m.cfg.SSLCA, m.cfg.SSLMinTLS)
-			if err != nil {
-				res <- segRes{err: fmt.Errorf("connect segment %d: %w", i, err)}
-				return
-			}
-			defer c.Close()
-			sql := fmt.Sprintf(`COPY %s.%s FROM STDIN (FORMAT binary)`,
-				quoteIdentDSN(u.DstSchema), quoteIdentDSN(target))
-			n, err := c.WriteCopy(ctx, r, sql)
-			if err != nil && !isEOF(err) {
-				res <- segRes{err: fmt.Errorf("segment %d COPY: %w", i, err)}
-				return
-			}
-			res <- segRes{rows: n}
-		}(i, dsn, r)
-	}
-	// collectSegs drains the D segment results (exactly-once).
-	collectSegs := func() (int64, error) {
-		var (
-			n     int64
-			first error
-		)
-		for i := 0; i < int(D); i++ {
-			r := <-res
-			n += r.rows
-			if r.err != nil && first == nil {
-				first = r.err
-			}
-		}
-		return n, first
-	}
-
-	// 4. Source --> framed pipe --> RowRouter --> per-segment pipes.
-	uc, ud := m.unitCompressors(t)
-	fp := m.framedPipe(uint32(u.UnitID), uc, ud)
-	rw, err := transfer.NewRowRouter(fp, keyIdx, keyOid, D, segWriters)
-	if err != nil {
-		_ = fp.Abort()
-		_ = m.closePipes(pipeW)
-		_, _ = collectSegs()
-		return 0, 0, 0, &directDegradedError{reason: err.Error()}
-	}
-	routeErr := make(chan error, 1)
-	go func() {
-		_, e := rw.Run()
-		routeErr <- e
-	}()
-	srcErr := make(chan error, 1)
-	go func() {
-		defer func() { _ = fp.Close() }()
-		defer func() {
-			if p := recover(); p != nil {
-				srcErr <- fmt.Errorf("source copy panic: %v", p)
-			}
-		}()
-		_, e := us.agent.CopyToStream(ctx, t.Schema, t.Name, m.pacedWriter(fp))
-		if e != nil && !isEOF(e) {
-			srcErr <- e
-		} else {
-			srcErr <- nil
-		}
-	}()
-
-	// 5. Wait: the router finishes when the source stream reaches EOF, then
-	//    close the per-segment pipes so the segment COPYs see end-of-copy.
-	rErr := <-routeErr
-	_ = m.closePipes(pipeW)
-	n, segErr := collectSegs()
-	sErr := <-srcErr
-
-	// The first root-cause error wins. A segment failure is the cause; the
-	// router's subsequent "closed pipe" (the segment closed its read side) and
-	// a source error that followed the abort are its consequences. So report
-	// the segment error first, then the route error, then the source error.
-	if segErr != nil {
-		return 0, 0, 0, fmt.Errorf("direct dest: %w", segErr)
-	}
-	if rErr != nil {
-		return 0, 0, 0, fmt.Errorf("direct route: %w", rErr)
-	}
-	if sErr != nil {
-		return 0, 0, 0, fmt.Errorf("direct source: %w", sErr)
-	}
-	// Cross-check: rows the destination wrote == rows the router saw.
-	if n != rw.Rows() {
-		return 0, 0, 0, fmt.Errorf("direct: dest rows %d != routed rows %d", n, rw.Rows())
-	}
-	wire, logical := fp.Stats()
-	return n, wire, logical, nil
-}
-
 func (m *Manager) closePipes(w []io.Closer) error {
 	var first error
 	for _, c := range w {
@@ -2539,29 +1904,6 @@ func quoteIdentDSN(s string) string {
 	}
 	out = append(out, '"') // closing quote
 	return string(out)
-}
-
-// pacedWriter throttles the source-side writes to the limiter's current rate
-// (FR-14). When the limiter is nil (no --rate-limit) it is a transparent
-// passthrough, so the default path is unaffected.
-func (m *Manager) pacedWriter(fp *transfer.FramedPipe) io.Writer {
-	if m.pacer == nil {
-		return fp
-	}
-	return &pacedWriter{m: m, fp: fp}
-}
-
-type pacedWriter struct {
-	m  *Manager
-	fp *transfer.FramedPipe
-}
-
-// Write throttles to the current rate, then writes the chunk to the pipe.
-func (w *pacedWriter) Write(p []byte) (int, error) {
-	if err := w.m.pacer.Wait(context.Background(), len(p)); err != nil {
-		return 0, err
-	}
-	return w.fp.Write(p)
 }
 
 // startRunStatsWriter periodically refreshes runstats.json (FR-04) so
@@ -2631,256 +1973,10 @@ func (m *Manager) startLimiterSampler(ctx context.Context) func() {
 				return
 			case <-t.C:
 				m.lim.Update()
-				// Expose the receive-queue depth as a gauge (FR-04) so the
-				// operator can see the destination falling behind even when the
-				// rate is at its ceiling.
-				if m.recvRec != nil {
-					m.monitor.SetReceiveWriteMs(m.recvRec.AvgMs(time.Second))
-				}
 			}
 		}
 	}()
 	return func() {}
-}
-
-// establishSnapshot pins the source read snapshot for the run (FR-02). The spec
-// requires that the data of each source database be copied within a single
-// point-in-time snapshot, realised as a long-lived read-only REPEATABLE READ
-// transaction on the source with every COPY executed inside it.
-//
-//	--consistent-db (default): begin a snapshot transaction up front; the first
-//	  unit's COPY establishes the snapshot and the remaining units read from
-//	  the same one (all COPYs of the database are inside one snapshot).
-//	--consistent-cluster: additionally place the source in a single frozen
-//	  state (maintenance window) so the whole cluster is frozen, then begin the
-//	  snapshot transaction.
-//
-// A failure to begin the transaction is non-fatal: the copy still proceeds
-// (unit-by-unit) and is recorded in the journal, but the operator is told the
-// consistency mode could not be established so a snapshot-consistent copy is
-// not guaranteed.
-func (m *Manager) establishSnapshot(ctx context.Context) {
-	if m.cfg.ConsistentDB && m.cfg.ConsistentCluster {
-		// Mutually exclusive (validated by config); treat as a warning.
-		return
-	}
-	if !m.cfg.ConsistentDB && !m.cfg.ConsistentCluster {
-		m.snapshotMode = ""
-		return
-	}
-
-	mode := "db"
-	if m.cfg.ConsistentCluster {
-		mode = "cluster"
-	}
-
-	// FR-02 + FR-03: a snapshot is per-connection (a transaction lives on one
-	// backend), so a pool-backed source must pin ONE connection for the whole
-	// run; every source read then shares the single REPEATABLE READ snapshot
-	// even under parallel workers. Without the pin, each pool COPY would take
-	// a fresh connection and see a different snapshot, silently breaking the
-	// consistency guarantee. The pin serialises source reads (pinnedConn.mu).
-	if pool, ok := m.srcQ.(*pg.Pool); ok {
-		if q, release, err := pool.Pin(ctx); err == nil {
-			m.pinnedSrc = q
-			m.pinRelease = release
-			m.src = source.New(q) // route all source reads through the pinned conn
-		}
-	}
-
-	// A live snapshot requires a streaming connection. The integration tests
-	// and fakes do not run a real transaction, so when the source is a fake
-	// (no streaming transaction support) we record the intended mode without
-	// issuing the transaction — the fake COPYs already read a consistent view.
-	if err := m.beginSnapshotTx(ctx, mode); err != nil {
-		// Non-fatal: proceed without a pinned snapshot but surface it.
-		m.snapshotMode = ""
-		m.unpinSource()
-		return
-	}
-	m.snapshotMode = mode
-	m.snapshotTx = true
-}
-
-// srcRead returns the querier that source reads (data COPYs, catalog, checksum)
-// run on. In FR-02 snapshot mode over a pool it is the pinned connection so all
-// reads share one snapshot; otherwise it is the source querier (pool or conn).
-func (m *Manager) srcRead() pg.StreamingQuerier {
-	if m.pinnedSrc != nil {
-		return m.pinnedSrc
-	}
-	return m.srcQ
-}
-
-// unpinSource returns a pinned snapshot connection to its pool (idempotent).
-func (m *Manager) unpinSource() {
-	if m.pinRelease != nil {
-		m.pinRelease()
-		m.pinRelease = nil
-		m.pinnedSrc = nil
-	}
-	// m.src was pointed at the pinned connection by establishSnapshot; once
-	// the pin is released it references a connection handed back to the pool
-	// (or closed), so route source reads back to the base querier. Reading
-	// a stale pinned agent nil-derefs (puddle resource released).
-	m.src = source.New(m.srcQ)
-}
-
-// unitSource is the source read configuration for ONE unit: the agent that
-// runs the data COPY and the checksum read, and the raw querier that dispatches
-// the ON SEGMENT statement (segment-direct path). In the run-wide snapshot
-// modes (default --consistent-db / --consistent-cluster) this is the pinned
-// snapshot connection; in the per-table fallback (--consistent-tables) it is
-// a dedicated short snapshot connection owned by the unit; with no snapshot it
-// is the base source pool. Threading it per unit (instead of a shared field)
-// is what makes the per-table fallback parallel-safe: each in-flight unit
-// holds its own independent snapshot.
-type unitSource struct {
-	agent *source.Agent
-	q     pg.StreamingQuerier
-}
-
-// unitSource returns the source read configuration for the current unit and an
-// end func that MUST be called exactly once (defer it) when the unit finishes:
-// in per-table mode it ends the unit's short snapshot transaction (COMMIT, or
-// ROLLBACK if a statement aborted it) and returns the connection to the pool.
-// Outside per-table mode end is a no-op.
-//
-// FR-02 per-table fallback (spec: "permitted mode 'per table' (each table
-// has its own short snapshot, discrepancy documented) — only as an explicit
-// fallback flag"): the data COPY and the checksum read of one table run
-// on one dedicated REPEATABLE READ snapshot connection, so they see one
-// consistent point for THAT table. The per-table discrepancy (tables are not
-// mutually consistent) is the documented trade-off, in exchange for not holding
-// a long run-wide snapshot that pressures PROD vacuum.
-func (m *Manager) unitSource(ctx context.Context) (us unitSource, end func()) {
-	q, endPT := m.perTableSnapshotConn(ctx)
-	if q != nil {
-		return unitSource{agent: source.New(q), q: q}, endPT
-	}
-	// Run-wide snapshot or no snapshot: the base source agent already wraps
-	// the pinned connection (snapshot modes) or the pool (no snapshot), and
-	// srcRead() is the matching querier for the ON SEGMENT dispatch.
-	return unitSource{agent: m.src, q: m.srcRead()}, func() {}
-}
-
-// perTableSnapshotConn acquires a dedicated pool connection and opens a short
-// REPEATABLE READ snapshot on it, for the FR-02 per-table fallback. It returns
-// the connection and an end func (COMMIT/ROLLBACK + release), or (nil, no-op)
-// outside per-table mode, for a non-pool source, or on any acquisition failure
-// (non-fatal: the unit proceeds without a pinned snapshot, same policy as the
-// run-wide snapshot).
-func (m *Manager) perTableSnapshotConn(ctx context.Context) (q pg.StreamingQuerier, end func()) {
-	if !m.cfg.ConsistentTables {
-		return nil, func() {}
-	}
-	pool, ok := m.srcQ.(*pg.Pool)
-	if !ok {
-		// A fake / bare-Conn source has no pool to draw a second transaction
-		// connection from; a fake COPY is already consistent. Degrade to base.
-		return nil, func() {}
-	}
-	c, release, err := pool.AcquireSnapshotConn(ctx)
-	if err != nil {
-		return nil, func() {}
-	}
-	if _, err := c.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
-		release()
-		return nil, func() {}
-	}
-	end = func() {
-		// COMMIT ends a healthy snapshot. On an aborted transaction (a failed
-		// statement) COMMIT errors — ROLLBACK clears the 25P02 state before
-		// the connection returns to the pool.
-		if _, cerr := c.Exec(context.Background(), `COMMIT`); cerr != nil {
-			_, _ = c.Exec(context.Background(), `ROLLBACK`)
-		}
-		release()
-	}
-	return c, end
-}
-
-// beginSnapshotTx opens the read-only REPEATABLE READ transaction that pins the
-// source snapshot for the run (FR-02). For --consistent-cluster it first
-// requests a cluster-wide freeze. It runs on the snapshot connection (the
-// pinned pool connection in snapshot mode, else the source querier) so the
-// BEGIN is on the same backend the COPYs will use. It returns an error if the
-// transaction cannot be started (the caller then proceeds without a snapshot).
-func (m *Manager) beginSnapshotTx(ctx context.Context, mode string) error {
-	// --consistent-cluster: single source freeze (maintenance window, FR-02).
-	if mode == "cluster" {
-		if _, err := m.srcRead().Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
-			return fmt.Errorf("consistent-cluster freeze: %w", err)
-		}
-	}
-	if _, err := m.srcRead().Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
-		return fmt.Errorf("begin snapshot tx: %w", err)
-	}
-	return nil
-}
-
-// releaseSnapshot ends the source snapshot transaction (FR-02) once all units
-// have been copied. It is a no-op when no snapshot transaction was opened.
-func (m *Manager) releaseSnapshot(ctx context.Context) {
-	if !m.snapshotTx {
-		return
-	}
-	_, _ = m.srcRead().Exec(ctx, `COMMIT`)
-	m.snapshotTx = false
-	m.unpinSource()
-}
-
-// healSnapshot re-establishes the FR-02 source snapshot after a unit failure.
-// In snapshot mode every data COPY runs on the ONE pinned REPEATABLE READ
-// connection, and a failed unit's SQL error (e.g. `COPY ... TO STDOUT` for a
-// table dropped mid-run) aborts the whole current transaction. Left unhealed,
-// every remaining unit's COPY then fails with 25P02 "current transaction is
-// aborted" — a single failed unit would take down the whole operation,
-// violating F-06 ("operation continues with the remaining objects").
-//
-// The heal is: probe the pinned connection; if the transaction is aborted,
-// ROLLBACK and begin a FRESH REPEATABLE READ snapshot on the same connection.
-// The fresh snapshot is the best available consistency for the surviving
-// units (the original snapshot is destroyed by the abort and cannot be
-// restored); units already swapped keep their verified data. healMu
-// serialises it so concurrent workers don't race the ROLLBACK/BEGIN.
-func (m *Manager) healSnapshot(ctx context.Context) {
-	if !m.snapshotTx {
-		return
-	}
-	// The run is being cancelled (operator stop / crash): the snapshot dies
-	// with the session anyway — healing would only race the teardown.
-	if ctx.Err() != nil {
-		return
-	}
-	m.healMu.Lock()
-	defer m.healMu.Unlock()
-	if !m.snapshotTx {
-		return // another worker already healed
-	}
-	q := m.srcRead()
-	// Probe: a trivial statement. If it fails, the transaction is aborted
-	// (25P02) — a heal is needed.
-	if _, perr := q.Exec(ctx, `SELECT 1`); perr == nil {
-		return // snapshot still healthy
-	}
-	// ROLLBACK clears the aborted transaction. If the connection itself is
-	// dead (not just the transaction), the ROLLBACK fails and a re-BEGIN
-	// cannot succeed either: degrade to best-effort (no live snapshot)
-	// rather than cascade 25P02 to the remaining units.
-	if _, rerr := q.Exec(ctx, `ROLLBACK`); rerr != nil {
-		m.snapshotMode = ""
-		m.unpinSource()
-		return
-	}
-	if err := m.beginSnapshotTx(ctx, m.snapshotMode); err != nil {
-		// Heal failed: proceed without a live snapshot (FR-02 degrades to
-		// best-effort) rather than cascading 25P02 to the remaining units.
-		m.snapshotMode = ""
-		m.unpinSource()
-		return
-	}
-	// snapshotTx stays true; the run continues under the fresh snapshot.
 }
 
 // jobID derives a stable job identifier from the plan hash (FR-10). It is used

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -33,7 +33,7 @@ import (
 // The data path must be unaffected: full checksum verify passes and the
 // counts match.
 func TestSequencePostLoadSync(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5681, 5682)
+	src, dst, _, _ := startPGPair(t, 5681, 5682)
 	defer func() { src.Close(); dst.Close() }()
 
 	ctx := context.Background()
@@ -64,7 +64,7 @@ func TestSequencePostLoadSync(t *testing.T) {
 	}
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSequencePostLoadSync(t *testing.T) {
 // IF NOT EXISTS + setval are idempotent): the value stays at the source
 // last_value, no duplicate rows.
 func TestSequenceSyncResumeIdempotent(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5683, 5684)
+	src, dst, _, _ := startPGPair(t, 5683, 5684)
 	defer func() { src.Close(); dst.Close() }()
 
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestSequenceSyncResumeIdempotent(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("first run: %v", err)
 	}

@@ -23,7 +23,7 @@ import (
 // owns the source pg connection pool AND the FR-02 snapshot: a REPEATABLE READ
 // transaction lives on one server-side backend, so ONE process must run every
 // unit's data COPY under that single snapshot to keep the whole run consistent
-// (--consistent-db). The controller drives it over a control socket: it sends
+// (FR-02). The controller drives it over a control socket: it sends
 // one StreamReq per unit (the source dials the destination agent and streams)
 // and a final ReleaseReq (commit the snapshot). Catalog reads (columns /
 // distribution / partition) run on the pool, NOT the pinned snapshot

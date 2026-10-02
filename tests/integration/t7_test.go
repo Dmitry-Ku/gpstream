@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 // T7 (DESIGN §6 / TASK-SPEC v4 FR-02 mandatory test): live integration
 // scenarios on real PostgreSQL 9.4.26 clusters (the GP6 kernel is 9.4.26;
@@ -24,6 +24,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ import (
 // startPGPair boots two real PG 9.4.26 clusters and returns pools for both
 // (mirroring cmdRun) plus the source cluster (for its conn URL, used by the
 // raw-writer helper).
-func startPGPair(t *testing.T, srcPort, dstPort uint32) (*pg.Pool, *pg.Pool, *pgtest.Cluster) {
+func startPGPair(t *testing.T, srcPort, dstPort uint32) (*pg.Pool, *pg.Pool, *pgtest.Cluster, *pgtest.Cluster) {
 	t.Helper()
 	ctx := context.Background()
 	srcCl, err := pgtest.Start(srcPort, "srcdb")
@@ -63,7 +64,7 @@ func startPGPair(t *testing.T, srcPort, dstPort uint32) (*pg.Pool, *pg.Pool, *pg
 	}
 	t.Cleanup(func() { src.Close() })
 	t.Cleanup(func() { dst.Close() })
-	return src, dst, srcCl
+	return src, dst, srcCl, dstCl
 }
 
 // buildPlan builds the copy plan against the live clusters.
@@ -108,7 +109,7 @@ func runWithTimeout(t *testing.T, mgr *manifest.Manager, p *plan.Plan, timeout t
 // pins the REPEATABLE READ snapshot), so every writer commit is strictly
 // after the snapshot point and provably not in the copied data.
 func TestConsistentSnapshotWriterLoop(t *testing.T) {
-	src, dst, srcCl := startPGPair(t, 5521, 5522)
+	src, dst, srcCl, dstCl := startPGPair(t, 5521, 5522)
 	ctx := context.Background()
 
 	const n = 1_000_000
@@ -128,7 +129,8 @@ func TestConsistentSnapshotWriterLoop(t *testing.T) {
 	cfg.RateLimit = 0.1
 	p := buildPlan(t, cfg, src, dst)
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
+		srcCl.URL(), dstCl.URL())
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- mgr.Run(context.Background(), p) }()
@@ -225,7 +227,7 @@ func TestConsistentSnapshotWriterLoop(t *testing.T) {
 // reuses a dead conn. The destination pool is safe to keep (the pool
 // recycles dead conns).
 func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
-	src, dst, srcCl := startPGPair(t, 5531, 5532)
+	src, dst, srcCl, dstCl := startPGPair(t, 5531, 5532)
 	ctx := context.Background()
 
 	const n = 20_000 // ~1.2 MB: several 256 KB frames -> the pipe fills
@@ -234,21 +236,34 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 		`INSERT INTO public.e SELECT g, repeat('x', 50) || g FROM generate_series(1,`+itoa(n)+`) g`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Poison the destination: same name, but the 'v' column is INTEGER, so
-	// the binary stream's text field is undecodable -> COPY FROM fails on
-	// the first row, mid-copy.
-	mustExec(t, dst, `CREATE TABLE public.e (id int, v integer)`)
+	// Poison the destination (P7: the two-agent data path is staging+swap
+	// only, so the single-topology "poison the final table's column type"
+	// shape is re-aimed at the dest agent's staging DDL): a second,
+	// low-privilege role cannot create the staging table, so the dest agent
+	// fails the unit mid-run. The mid-copy dest-death no-deadlock property is
+	// carried by the crash matrix (kill-dest-agent-mid-copy).
+	mustExec(t, dst, `CREATE ROLE readonly LOGIN`)
+	mustExec(t, dst, `GRANT CONNECT ON DATABASE dstdb TO readonly`)
+	mustExec(t, dst, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
 
 	cfg := config.Default()
-	// In-place copy into the final (poisoned) table: the COPY FROM target is
-	// the wrong-typed table, so the stream is rejected on row 1.
-	cfg.ConflictAction = config.Truncate
 	p := buildPlan(t, cfg, src, dst)
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
 
-	// Run 1: the unit must FAIL (dest rejects the stream) and must NOT hang.
-	mgr := manifest.NewManager(&cfg, src, dst, j)
-	runErr := runWithTimeout(t, mgr, p, 30*time.Second)
+	// The dest agent runs as the low-privilege role: its staging CREATE
+	// TABLE is rejected (the controller's dst pool stays gp — control plane).
+	readonlyDSN := strings.Replace(dstCl.URL(), "user=gp", "user=readonly", 1)
+	// Run 1: the unit must FAIL (dest rejects the staging DDL) and must NOT hang.
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
+		labDSN(t, "GP6_LAB_SRC", srcCl.URL()), labDSN(t, "GP6_LAB_DST", readonlyDSN))
+	runDone := make(chan error, 1)
+	go func() { runDone <- mgr.Run(context.Background(), p) }()
+	var runErr error
+	select {
+	case runErr = <-runDone:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("run 1 did not return within 30s (data-path deadlock?)")
+	}
 	if runErr == nil {
 		t.Fatalf("run 1 succeeded, want the poisoned dest to fail the copy")
 	}
@@ -260,17 +275,17 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 		t.Fatalf("unit 1 state=%s, want failed", u.State)
 	}
 
-	// Operator fixes the destination (drop the poisoned table); a resume
+	// Operator fixes the destination (restore the schema grants); a resume
 	// re-run must re-copy the failed unit to success (no duplicates).
-	mustExec(t, dst, `DROP TABLE public.e`)
-	// Fresh source pool (cmdRun shape): run 1's COPY failure closed its
-	// pinned source conn, and a resume never reuses a dead conn.
+	mustExec(t, dst, `GRANT CREATE ON SCHEMA public TO PUBLIC`)
+	// Fresh source pool (cmdRun shape): a resume never reuses a dead conn.
 	src2, err := pg.NewPool(ctx, srcCl.URL(), "", "", "", "", 8)
 	if err != nil {
 		t.Fatalf("reconnect src: %v", err)
 	}
 	t.Cleanup(func() { src2.Close() })
-	mgr2 := manifest.NewManager(&cfg, src2, dst, j)
+	mgr2 := newTwoAgentManager(t, &cfg, src2, dst, j,
+		srcCl.URL(), dstCl.URL())
 	if err := runWithTimeout(t, mgr2, p, 30*time.Second); err != nil {
 		t.Fatalf("resume run: %v", err)
 	}

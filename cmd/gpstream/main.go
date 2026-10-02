@@ -228,27 +228,12 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.RetransmitBufferMax = parseBytes(args[i])
 
-		// Consistency (FR-02).
-		case "--consistent-db":
-			cfg.RequestConsistentDB() // explicit: conflicts with the other scopes
-		case "--consistent-cluster":
-			cfg.ConsistentCluster = true
-		case "--consistent-tables":
-			cfg.ConsistentTables = true
-
 		// Transport (T-B, DESIGN §1.3). --copy-mode selects the source data
 		// path; on_segment needs the segreceiver binary path (on the segment
 		// hosts) and the controller listen address the segreceivers dial.
 		case "--copy-mode":
 			i++
 			cfg.CopyMode = config.CopyMode(args[i])
-		// ADR-002 / two-agent remediation. --topology selects where the data
-		// plane lives: single (default, the data COPY runs inside the
-		// controller) or two-agent (the controller orchestrates the source /
-		// destination agent binaries; the data COPY runs only in the agents).
-		case "--topology":
-			i++
-			cfg.Topology = config.Topology(args[i])
 		case "--source-agent-binary":
 			i++
 			cfg.SourceAgentBinary = args[i]
@@ -450,7 +435,7 @@ func cmdDoctor(args []string) error {
 	srcQ := diagnoseConn(ctx, cfg, "source")
 	dstQ := diagnoseConn(ctx, cfg, "dest")
 
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary, SrcDSN: cfg.Source, DstDSN: cfg.Dest, Compress: string(cfg.Compression), Topology: string(cfg.Topology)})
+	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary})
 	printReport(rep)
 	if !rep.Healthy {
 		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())
@@ -1300,6 +1285,11 @@ func cmdRun(args []string) error {
 		}
 		return err
 	}
+	// P7: the data path is always two-agent, so the agent binaries are
+	// required (the controller launches them; it holds no data connection).
+	if cfg.SourceAgentBinary == "" || cfg.DestAgentBinary == "" {
+		return fmt.Errorf("run requires --source-agent-binary and --dest-agent-binary (the data path is two-agent; the controller holds no data connections)")
+	}
 
 	ctx := context.Background()
 	// The data path runs WorkersPerPair parallel stream workers (FR-03); a
@@ -1400,9 +1390,7 @@ func cmdRun(args []string) error {
 	}
 	audit.Log("run", "operation-id", cfg.OperationID, "units", len(p.Units),
 		"copy-mode", copyMode, "on-unit-failure", onFailure,
-		"compression", string(cfg.Compression), "consistent-db", cfg.ConsistentDB,
-		"consistent-cluster", cfg.ConsistentCluster,
-		"consistent-tables", cfg.ConsistentTables)
+		"compression", string(cfg.Compression))
 
 	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
 
@@ -1573,9 +1561,8 @@ Performance:
 
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)
-  --topology single|two-agent                  where the data plane lives (default single; two-agent = ADR-002 remediation)
-  --source-agent-binary PATH                   gpstream-source-agent path (two-agent topology)
-  --dest-agent-binary PATH                     gpstream-dest-agent path (two-agent topology)
+  --source-agent-binary PATH                   gpstream-source-agent path on the source host (required for run/bench)
+  --dest-agent-binary PATH                     gpstream-dest-agent path on the destination host (required for run/bench)
   --seg-listen HOST:PORT           controller listen addr for the segreceivers
   --seg-binary PATH                gpstream-segreceiver path on the SOURCE segment hosts (package or copied file; required with --copy-mode on_segment)
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop
@@ -1588,9 +1575,6 @@ Transport / resilience:
 
 Integrity / consistency:
   --verify on|off                  post-copy content verification (default off)
-  --consistent-db                  snapshot scope: whole DB (default)
-  --consistent-cluster             snapshot scope: whole cluster
-  --consistent-tables              snapshot scope: per-table
   --auto-resume N                  auto-resume attempts after the run (default 0)
   --on-unit-failure continue|abort on a failed unit (default continue)
 

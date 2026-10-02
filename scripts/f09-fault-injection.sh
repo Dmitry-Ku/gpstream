@@ -57,9 +57,11 @@ rm -rf $STATE /tmp/f09-run.log
 
 echo "=== PHASE 1: run + RST injection at +${INJECT_AT}s (hold ${HOLD_FOR}s) ==="
 (
-  /tmp/gpstream run \
+  /usr/bin/gpstream run \
     --source "$SRC" --dest "$DST" \
-    --dbs f09 --overwrite --consistent-db \
+    --dbs f09 --overwrite \
+    --source-agent-binary /usr/bin/gpstream-source-agent \
+    --dest-agent-binary /usr/bin/gpstream-dest-agent \
     --operation-id $OP --state-dir $STATE \
     --streams 4 --verify full
 ) > /tmp/f09-run.log 2>&1 &
@@ -79,12 +81,14 @@ awk -F'"unit_id":' '{split($2,a,","); uid=a[1]} /"state":/{match($0,/"state":"[a
 echo "PHASE1_LOG=/tmp/f09-run.log"
 
 echo "=== PHASE 2: resume (re-queue non-terminal) ==="
-/tmp/gpstream resume --operation-id $OP --state-dir $STATE 2>&1 | grep -vE "setlocale"
+/usr/bin/gpstream resume --operation-id $OP --state-dir $STATE 2>&1 | grep -vE "setlocale"
 echo "=== PHASE 3: re-run (retries failed units, keeps completed) ==="
 T0=$(date +%s)
-/tmp/gpstream run \
+/usr/bin/gpstream run \
   --source "$SRC" --dest "$DST" \
-  --dbs f09 --overwrite --consistent-db \
+  --dbs f09 --overwrite \
+  --source-agent-binary /usr/bin/gpstream-source-agent \
+  --dest-agent-binary /usr/bin/gpstream-dest-agent \
   --operation-id $OP --state-dir $STATE \
   --streams 4 --verify full 2>&1 | grep -vE "setlocale" | grep -E "units:|run:|conflicts:"
 T1=$(date +%s)

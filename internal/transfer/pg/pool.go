@@ -23,15 +23,23 @@ import (
 type Pool struct {
 	pool *pgxpool.Pool
 
+	// dsn is the normalized connection string the pool was built from
+	// (ensureVerifyFull applied). Exposed via DSN so a two-agent runner can
+	// be handed the exact source/destination string the controller pool uses.
+	dsn string
+
 	// pinned holds the one connection reserved for a FR-02 snapshot
-	// transaction (--consistent-db/--consistent-cluster). While non-nil, all
-	// source data reads must run on it so they share the single
-	// REPEATABLE READ snapshot. It is acquired by Pin and released by the
-	// matching Release, never returned to the pool in between.
+	// transaction. While non-nil, all source data reads must run on it so
+	// they share the single REPEATABLE READ snapshot. It is acquired by Pin
+	// and released by the matching Release, never returned to the pool in
+	// between.
 	pinMu    sync.Mutex
 	pinned   *pgxpool.Conn
 	pinnedOK bool
 }
+
+// DSN returns the normalized connection string the pool was built from.
+func (p *Pool) DSN() string { return p.dsn }
 
 // NewPool opens a connection pool from a connection string, honouring the TLS
 // flags from FR-13 (same sslmode/TLS handling as NewConn). maxConns bounds the
@@ -66,7 +74,7 @@ func NewPool(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string
 		p.Close()
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	return &Pool{pool: p}, nil
+	return &Pool{pool: p, dsn: connStr}, nil
 }
 
 // Query implements Querier on an acquired connection.
@@ -160,7 +168,7 @@ func (p *Pool) WriteCopy(ctx context.Context, r io.Reader, sql string) (int64, e
 // snapshot transaction and returns it as a StreamingQuerier bound to that
 // single connection. All source data reads issued through the returned querier
 // share the one open REPEATABLE READ transaction, which is what makes
-// --consistent-db/--consistent-cluster read a single point-in-time snapshot
+// run-wide snapshot reads a single point-in-time snapshot
 // even with parallel workers. The caller MUST call the returned release func
 // (after COMMIT) to return the connection to the pool.
 //
@@ -194,7 +202,7 @@ func (p *Pool) Pin(ctx context.Context) (q StreamingQuerier, release func(), err
 // runs on the same backend and therefore the same transaction.
 //
 // A FR-02 snapshot is per-transaction and a transaction is per-connection, so
-// every source read in a --consistent-db run funnels through this ONE
+// every source read in a run funnels through this ONE
 // connection. Parallel workers must therefore be serialized on it (a source
 // COPY is a long-lived stream); mu guarantees that, so a snapshot run is
 // source-serial by construction rather than a "conn busy" collision.
@@ -278,7 +286,7 @@ var (
 )
 
 // AcquireSnapshotConn hands out a DEDICATED pool connection for a per-table
-// snapshot transaction (FR-02 per-table fallback, --consistent-tables): the
+// snapshot transaction (FR-02 per-table scope): the
 // caller runs BEGIN ... COMMIT on the returned querier so the whole
 // statement sequence of ONE table (the data COPY plus the checksum read)
 // shares one short REPEATABLE READ snapshot. Unlike Pin (one run-wide

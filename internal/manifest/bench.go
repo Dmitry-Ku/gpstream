@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/plan"
 )
 
@@ -54,27 +55,45 @@ func (s *BenchStats) WireRate() float64 {
 	return float64(s.TotalWire) / s.Elapsed.Seconds()
 }
 
-// BenchAll runs the input-stream benchmark over the selected units (F-14).
-// Each unit streams through the real data path (COPY ... TO STDOUT -> frame
-// v2 -> compression -> adaptive rate limiter) but the payload is discarded
-// instead of written to a destination, so the measured wall time is the
-// source's production rate. Units run on a WorkersPerPair pool, exactly like
-// a run; the --timeout deadline (ctx) cuts the benchmark short and the
-// partial result is returned with TimedOut set.
-func (m *Manager) BenchAll(ctx context.Context, units []plan.Table) (*BenchStats, error) {
+// BenchAll runs the input-stream benchmark over the selected units (F-14, P7).
+// Each unit is read through the two-agent source path: the source agent runs
+// the real COPY ... TO STDOUT -> frame v2 -> compression -> socket pipeline and
+// reports the row count + on-wire + logical volume; the runner receives the
+// stream on a drain sink (it reads the UnitSpec header, decompresses and
+// discards the frames) so the measured wall time is the source's production
+// rate and no destination database is involved. Units run on a WorkersPerPair
+// pool, exactly like a run; the --timeout deadline (ctx) cuts the benchmark
+// short and the partial result is returned with TimedOut set.
+//
+// When runner is nil a process runner is started for the benchmark and
+// released on return (cmdBench); the unit tests inject a fake runner.
+func (m *Manager) BenchAll(ctx context.Context, units []plan.Table, runner TwoAgentRunner) (*BenchStats, error) {
 	if len(units) == 0 {
 		return nil, fmt.Errorf("bench: no units to measure")
+	}
+	released := false
+	if runner == nil {
+		runner = newProcessTwoAgentRunner(m.cfg)
+		if err := runner.Start(ctx); err != nil {
+			return nil, fmt.Errorf("bench: start source agent: %w", err)
+		}
+		released = true
+	}
+	defer func() {
+		if released {
+			_ = runner.Release(context.Background())
+		}
+	}()
+	switch m.cfg.CopyMode {
+	case config.CopyOnSegment:
+		return nil, fmt.Errorf("bench: --copy-mode on_segment measures the per-segment source read (COPY ON SEGMENT), which requires a real Greenplum source; run it on the lab (gp6lab build tag)")
+	case config.CopyDirect:
+		return nil, fmt.Errorf("bench: --copy-mode direct measures the per-segment routed source read, which requires a real Greenplum source; run it on the lab (gp6lab build tag)")
 	}
 	workers := m.cfg.WorkersPerPair
 	if workers < 1 {
 		workers = 1
 	}
-
-	// The benchmark honors the operator's consistency mode exactly like a run:
-	// the default --consistent-db pins one REPEATABLE READ snapshot so every
-	// worker's COPY reads the same point of the source.
-	m.establishSnapshot(ctx)
-	defer m.unpinSource()
 
 	start := time.Now()
 	results := make([]BenchResult, len(units))
@@ -94,9 +113,10 @@ func (m *Manager) BenchAll(ctx context.Context, units []plan.Table) (*BenchStats
 	close(work)
 
 	// Worker pool (same shape as Run): each worker pulls unit indices and
-	// streams them. A unit error (or the deadline) is recorded per unit; the
-	// benchmark keeps going (like the default on-unit-failure=continue) so
-	// the operator sees the full measurement picture.
+	// streams them through the two-agent source read. A unit error (or the
+	// deadline) is recorded per unit; the benchmark keeps going (like the
+	// default on-unit-failure=continue) so the operator sees the full
+	// measurement picture.
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -111,13 +131,10 @@ func (m *Manager) BenchAll(ctx context.Context, units []plan.Table) (*BenchStats
 					Table:  t.Name,
 					Kind:   "table",
 				}
-				us, end := m.unitSource(ctx)
 				t0 := time.Now()
-				uc, ud := m.unitCompressors(t)
+				uc, _ := m.unitCompressors(t)
 				res.CompOff = m.compressionOffFor(t)
-				fp := m.framedPipe(uint32(u.UnitID), uc, ud)
-				rows, wire, logical, err := m.copyStream(ctx, t, u, "", fp, us)
-				end()
+				rows, wire, logical, err := runner.Bench(ctx, uint32(u.UnitID), jobIDFromHash(u.JobID), t.Schema, t.Name, m.twoAgentCompressString(uc))
 				res.Elapsed = time.Since(t0)
 				res.Rows = rows
 				res.Wire = wire

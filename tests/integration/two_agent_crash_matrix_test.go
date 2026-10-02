@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -63,7 +63,6 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			"--source", srcCl.URL(), "--dest", dstCl.URL(),
 			"--operation-id", opID, "--state-dir", stateDir,
 			"--dbs", "srcdb",
-			"--topology", "two-agent",
 			"--source-agent-binary", bin.srcAgent,
 			"--dest-agent-binary", bin.destAgent,
 			"--workers", "1",

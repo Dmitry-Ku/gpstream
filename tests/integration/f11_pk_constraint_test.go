@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -19,7 +19,7 @@ import (
 // (orders -> orders_v2: orders_pkey -> orders_v2_pkey).
 func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 	t.Run("no rename", func(t *testing.T) {
-		src, dst, _ := startPGPair(t, 5721, 5722)
+		src, dst, _, _ := startPGPair(t, 5721, 5722)
 		defer func() { src.Close(); dst.Close() }()
 
 		mustExec(t, src, `CREATE TABLE public.orders (
@@ -36,7 +36,7 @@ func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 			t.Fatalf("plan has %d units, want 1", len(p.Units))
 		}
 		j := manifest.NewJournal(dst, filepath.Join(t.TempDir(), "journal.jsonl"))
-		mgr := manifest.NewManager(&cfg, src, dst, j)
+		mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 		if err := mgr.Run(t.Context(), p); err != nil {
 			t.Fatalf("manager.Run: %v", err)
 		}
@@ -70,7 +70,7 @@ func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 	})
 
 	t.Run("map-table rename", func(t *testing.T) {
-		src, dst, _ := startPGPair(t, 5723, 5724)
+		src, dst, _, _ := startPGPair(t, 5723, 5724)
 		defer func() { src.Close(); dst.Close() }()
 
 		mustExec(t, src, `CREATE TABLE public.orders (
@@ -86,7 +86,7 @@ func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 			t.Fatalf("plan has %d units, want 1", len(p.Units))
 		}
 		j := manifest.NewJournal(dst, filepath.Join(t.TempDir(), "journal.jsonl"))
-		mgr := manifest.NewManager(&cfg, src, dst, j)
+		mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 		if err := mgr.Run(t.Context(), p); err != nil {
 			t.Fatalf("manager.Run: %v", err)
 		}

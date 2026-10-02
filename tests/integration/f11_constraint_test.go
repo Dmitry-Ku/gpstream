@@ -1,4 +1,4 @@
-//go:build integration
+//go:build gp6lab
 
 package integration
 
@@ -20,7 +20,7 @@ import (
 // rewrite), not its source name. The data path must be unaffected: counts
 // match and the full checksum verify passes.
 func TestConstraintRestoreFKCheckRename(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5711, 5712)
+	src, dst, _, _ := startPGPair(t, 5711, 5712)
 	defer func() { src.Close(); dst.Close() }()
 
 	mustExec(t, src, `CREATE TABLE public.parents (id integer PRIMARY KEY, code text)`)
@@ -57,7 +57,7 @@ func TestConstraintRestoreFKCheckRename(t *testing.T) {
 	}
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestConstraintRestoreFKCheckRename(t *testing.T) {
 // sibling CHECK constraint is still applied, and a constraint_restore_failed
 // event is logged (F-04) so the operator can see the dangling reference.
 func TestConstraintRestoreExternalRef(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5721, 5722)
+	src, dst, _, _ := startPGPair(t, 5721, 5722)
 	defer func() { src.Close(); dst.Close() }()
 
 	// An anchor table that will NOT be migrated (it stays on the source only).
@@ -124,7 +124,7 @@ func TestConstraintRestoreExternalRef(t *testing.T) {
 	}
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	// The run must SUCCEED even though the FK's referenced table is absent on
 	// the destination (non-fatal constraint restore).
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
@@ -164,7 +164,7 @@ func TestConstraintRestoreExternalRef(t *testing.T) {
 // always returned zero indexes and the PK was never rebuilt — which in turn
 // left a restored foreign key with no unique index to reference).
 func TestDestinationPKIndexRestored(t *testing.T) {
-	src, dst, _ := startPGPair(t, 5731, 5732)
+	src, dst, _, _ := startPGPair(t, 5731, 5732)
 	defer func() { src.Close(); dst.Close() }()
 
 	mustExec(t, src, `CREATE TABLE public.parents (id integer PRIMARY KEY, code text)`)
@@ -175,7 +175,7 @@ func TestDestinationPKIndexRestored(t *testing.T) {
 	p := buildPlan(t, cfg, src, dst)
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

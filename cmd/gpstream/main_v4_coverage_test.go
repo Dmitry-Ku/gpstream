@@ -269,7 +269,6 @@ func TestParseConfigKitchenSink(t *testing.T) {
 		"--verify", "on",
 		"--overwrite",
 		"--compress", "zstd",
-		"--consistent-db",
 		"--metadata-only",
 		"--auto-resume", "1",
 		"--metrics-addr", "127.0.0.1:0",

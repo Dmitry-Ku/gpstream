@@ -31,16 +31,11 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
-// SnapshotMode is the FR-02 source-snapshot scope the source agent owns.
-// Empty = no snapshot (inconsistent copy); "db" = one REPEATABLE READ snapshot
-// held across the agent's units (the --consistent-db default); "cluster" =
-// the read-only cluster freeze (--consistent-cluster).
 type SnapshotMode string
 
 const (
-	SnapNone    SnapshotMode = ""
-	SnapDB      SnapshotMode = "db"
-	SnapCluster SnapshotMode = "cluster"
+	SnapNone SnapshotMode = ""
+	SnapDB   SnapshotMode = "db"
 )
 
 // SourceOptions configures one source-agent push of a single table.
@@ -230,14 +225,19 @@ type snapshotExec interface {
 // source connection (mirrors manager.beginSnapshotTx). The agent owns the
 // snapshot for its whole lifetime; the controller (P3) streams units one by
 // one over it.
+//
+// The SELECT 1 right after BEGIN pins the snapshot point IMMEDIATELY: in
+// Postgres a REPEATABLE READ snapshot is established at the first query in
+// the transaction, not at BEGIN. Without the probe, the "run-wide" snapshot
+// would actually open at the first unit's data COPY, and concurrent source
+// writes committed between the run start and that first COPY would leak into
+// the run (breaking FR-02's run-consistency contract).
 func beginSnapshot(ctx context.Context, src snapshotExec, mode SnapshotMode) error {
-	if mode == SnapCluster {
-		if _, err := src.Exec(ctx, `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`); err != nil {
-			return fmt.Errorf("source agent: cluster freeze: %w", err)
-		}
-	}
 	if _, err := src.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ`); err != nil {
 		return fmt.Errorf("source agent: begin snapshot tx: %w", err)
+	}
+	if _, err := src.Exec(ctx, `SELECT 1`); err != nil {
+		return fmt.Errorf("source agent: pin snapshot point: %w", err)
 	}
 	return nil
 }

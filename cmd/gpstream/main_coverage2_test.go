@@ -185,15 +185,6 @@ func TestParseConfigFlagErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--zstd-level", "25"}); err == nil {
 		t.Error("zstd-level 25: want error")
 	}
-	// --consistent-tables OVERRIDES the default --consistent-db scope (no error);
-	// the per-table fallback becomes the active mode.
-	c, err := parseConfig([]string{"--consistent-tables"})
-	if err != nil {
-		t.Fatalf("consistent-tables overriding the default db scope: %v", err)
-	}
-	if !c.ConsistentTables || c.ConsistentDB {
-		t.Fatalf("consistent-tables must override the default db scope: %+v", c)
-	}
 	// --include was removed (duplicated the -only shorthands): it is an unknown flag.
 	if _, err := parseConfig([]string{"--include", "bogus"}); err == nil {
 		t.Error("removed --include: want unknown-flag error")
