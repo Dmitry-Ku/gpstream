@@ -32,6 +32,10 @@ r5probe2
 # not a repo artifact; kept outside git on purpose
 /STATE-CHECKPOINT-*.md
 
+# cron pause signal (created on disk by the stop procedure, deleted on
+# resume) — a local control file, never a repo artifact
+/STOP
+
 # lab provisioning templates (cloud-init YAMLs / scripts) —
 # testbed-specific, not project source; kept on disk, out of git
 /infra/
