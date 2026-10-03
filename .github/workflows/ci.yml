@@ -136,7 +136,7 @@ jobs:
           done
           [ -n "${GPTEST_PGBIN:-}" ] || { echo "no PG 9.4.26 toolchain found (GPTEST_PGBIN)"; exit 1; }
           echo "using $GPTEST_PGBIN"
-      - name: integration tests (live PG 9.4.26, -tags integration)
+      - name: data-path + integration tests (live PG 9.4.26, -tags gp6lab)
         env:
           GOPROXY: https://proxy.golang.org,direct
-        run: go test -tags integration -count=1 -timeout 90m ./...
+        run: go test -tags gp6lab -count=1 -timeout 90m ./...
