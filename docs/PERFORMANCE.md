@@ -141,32 +141,51 @@ There is **no `--data-port-range` flag** — the stream manages its own data
 ports per **host-pair** connection (source-host → destination-host)
 internally, bounded by the worker pool (`--workers`).
 
-**Status:** two data paths are **implemented and live-verified** on the
-lab (E1/E2), plus one backlog item:
+**Status:** the two-agent data path (source agent + destination agent, the
+controller holds no data connection) is the only data path. Three copy modes
+are **implemented and live-verified** on the lab:
 
-- **Coordinator path (default)** — all data flows **through the
-  coordinator hosts** of each cluster (source coordinator → dest
-  coordinator); the planner reports the resulting host pairs in the
-  `run` plan output.
-- **`--copy-mode on_segment` (T-B, source-direct read)** — the source
-  **segments** stream directly to the controller via
-  `gpstream-segreceiver` (`COPY ... TO PROGRAM ... ON SEGMENT` under the
-  coordinator's snapshot), while the **destination write still goes
-  through the dest coordinator**. Live-verified (E2: 111 000 rows,
-  trailer cross-check OK); T0-4 measured **~2× throughput** on the
-  source side. Requirements: the `gpstream-segreceiver` binary on the
-  source segment hosts (`--seg-binary`, `--seg-listen`) and, on the
-  open-gpdb 6.x fork, the GUC `ycmdb.yc_allow_copy_to_program=on`
-  (postgres superuser). `gpstream doctor` reports the capability as
-  `on_segment` (PASS / WARN — WARN only degrades the *option*, the
-  coordinator path always works).
-- **Direct write into dest segments (T4b wire-up, backlog R5)** — the
-  hash-aware routing kernel (`internal/route`, `PairMap`,
-  `ResolveMode`) is implemented, but the per-(s→d) destination write is
-  **not wired up**. See `DESIGN-SNAPSHOT-CHUNK-2026-09-15.md` §5/§6 and
-  `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27.md` (only `direct_1to1`
-  (S==D) and `router_full` are correct under the GP jump-hash). Until
-  it lands, do not treat dest-segment-direct as available.
+- **`--copy-mode coordinator` (default)** — the source agent reads the table
+  with one `COPY ... TO STDOUT` on the source coordinator; the destination
+  agent loads the staging table with one `COPY ... FROM STDIN` on the dest
+  coordinator. All data transits the two coordinator hosts.
+- **`--copy-mode on_segment` (T-B, source-direct read)** — the source agent
+  triggers the ON SEGMENT dispatch (`COPY ... TO PROGRAM ... ON SEGMENT`
+  under the FR-02 run snapshot): the kernel launches `gpstream-segreceiver`
+  on every up primary source segment, and each streams its compressed
+  content-tagged slice to the destination agent; the destination agent merges
+  the N slices (SliceMux) and loads the staging table via the dest
+  coordinator. Live-verified (E2: 111 000 rows, trailer cross-check OK);
+  measured **~2–3.5× on the source-read side** (the coordinator is the
+  read bottleneck; grows with segment count). Requirements: the
+  `gpstream-segreceiver` binary on the source segment hosts
+  (`--seg-binary`, `--seg-listen`) and, on the open-gpdb 6.x fork, the GUC
+  `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream doctor`
+  reports the capability as `on_segment` (PASS / WARN — WARN only degrades
+  the *option*, the coordinator path always works).
+- **`--copy-mode direct` (P5, dest-segment write)** — the source agent reads
+  with one coordinator `COPY ... TO STDOUT` and the RowRouter hashes each row
+  to one of the D destination segments, streaming D per-segment compressed
+  slices; the destination agent performs D utility-mode per-segment COPYs
+  into the staging table. The dest coordinator is out of the write path. A
+  table that cannot be routed (no distribution key, a partitioned parent, or a
+  destination without all primaries up) **degrades to the coordinator path**
+  (correct, just not direct) and the run logs `direct_degraded`.
+
+- **`direct_1to1` fast-path (P8)** — when the planner proves a table's route
+  is `direct_1to1` (S==D primaries, both tables `DISTRIBUTED BY` the same
+  keys in the same order, same GP major, non-legacy hashops), `--copy-mode
+  on_segment` additionally takes the **fast-path write**: the destination
+  agent loads the N content-tagged slices with N per-segment utility-mode
+  COPYs (one per dest segment, routed by content-id) instead of merging them
+  into one coordinator COPY — **no SliceMux, no destination re-distribution**.
+  The source side is the same ON SEGMENT dispatch (the kernel streams the
+  same slices). The run logs `direct_1to1_fastpath` per such table. A
+  partitioned parent, or a live destination segment-count mismatch (a primary
+  down since planning), degrades to the on_segment merge path. The hash-aware
+  routing kernel (`internal/route`, `ResolveMode`) is the single source of
+  the mode; see `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27.md` (only
+  `direct_1to1` (S==D) and `router_full` are correct under the GP jump-hash).
 
 ## Compression
 
@@ -220,7 +239,7 @@ clusters; **do not cite the perf suite as evidence for the target.**
 | Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` (the limiter auto-degrades, F-14) |
 | Push a fast link, let it adapt         | `--rate-limit` high, let the limiter auto-degrade |
 | Many small tables / more concurrency   | `--workers N` up |
-| Direct segment→segment routing        | *partially live* — source-direct read via `--copy-mode on_segment` (T-B, ~2× on the source side); dest-segment write = backlog R5 |
+| Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel) + `--copy-mode direct` (per-segment writes); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
 | Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a post-copy checksum of both sides) |
 

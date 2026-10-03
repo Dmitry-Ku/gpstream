@@ -33,6 +33,7 @@ import (
 	"github.com/gpstream/gpstream/internal/monitor"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/ratelimit"
+	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -328,6 +329,7 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			// the planner's guard (a non-empty guard fails the unit early).
 			Partition:      t.Partition,
 			PartitionGuard: t.PartitionGuard,
+			RouteMode:      t.RouteMode,
 		}
 		// Fall back to the source names when a rename did not supply a
 		// destination (applyRename defaults them, but a hand-built plan may
@@ -1371,7 +1373,22 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 	uc, _ := m.unitCompressors(t)
 	jobID := jobIDFromHash(u.JobID)
 	overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
-	return m.twoAgent.StreamSegment(ctx, unitSegmentRequest{
+	compStr := m.twoAgentCompressString(uc)
+
+	// P8 direct_1to1 fast-path: the plan proved this table's route is
+	// direct_1to1 (S==D, equal hash keys, same major, non-legacy). Then source
+	// segment s's slice == destination segment s's slice, so the destination
+	// can load the N content-tagged slices with N per-segment utility-mode
+	// COPYs (ServeDirect) instead of merging them into one coordinator COPY
+	// (ServeSegments): no SliceMux, no destination re-distribution. The source
+	// side is the SAME ON SEGMENT dispatch (the kernel streams the same
+	// content-tagged slices). A partitioned parent cannot be written
+	// per-segment (utility-mode COPY FROM is rejected on a partition-hierarchy
+	// root), so it stays on the merge path; a mismatch in the live destination
+	// segment count (a primary down since planning) also degrades to the merge
+	// path.
+	var req unitSegmentRequest
+	req = unitSegmentRequest{
 		OnSegmentReq: agent.OnSegmentReq{
 			Op:          "onsegment",
 			Schema:      t.Schema,
@@ -1379,7 +1396,7 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 			JobID:       jobID,
 			UnitID:      uint32(u.UnitID),
 			SegBinary:   m.cfg.SegBinary,
-			Compress:    m.twoAgentCompressString(uc),
+			Compress:    compStr,
 			DataTLSCert: m.cfg.SegTLSCert,
 			DataTLSKey:  m.cfg.SegTLSKey,
 			DataTLSCA:   m.cfg.SegTLSCA,
@@ -1393,7 +1410,7 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 			Overwrite: overwrite,
 			SrcSchema: t.Schema,
 			SrcTable:  t.Name,
-			Compress:  m.twoAgentCompressString(uc),
+			Compress:  compStr,
 			Cols:      cols,
 			Dist:      dist,
 			Part:      part,
@@ -1404,7 +1421,43 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 		DstCert:   m.cfg.SSLCert,
 		DstKey:    m.cfg.SSLKey,
 		DstCA:     m.cfg.SSLCA,
-	})
+	}
+	if u.RouteMode == route.Direct1to1 && part.Spec == "" {
+		segs, serr := m.destSegments(ctx)
+		if serr == nil && len(segs) == n {
+			dstDSNs := make([]string, 0, n)
+			ok := true
+			for _, seg := range segs {
+				dsn, derr := segmentDSN(m.cfg.Dest, seg)
+				if derr != nil {
+					ok = false
+					break
+				}
+				dstDSNs = append(dstDSNs, dsn)
+			}
+			if ok {
+				req.DirectWrite = true
+				req.DirectLaunch = agent.DirectLaunch{
+					UnitID:    uint32(u.UnitID),
+					Schema:    ds,
+					Table:     dn,
+					Staging:   target,
+					Overwrite: overwrite,
+					Compress:  compStr,
+					Cols:      cols,
+					Dist:      dist,
+					Part:      part,
+					D:         int32(n),
+					DstDSNs:   dstDSNs,
+				}
+				m.events.Log("direct_1to1_fastpath",
+					"table", t.Schema+"."+t.Name,
+					"segments", n,
+					"reason", "S==D + equal hash keys + same major: per-segment utility COPYs, no merge/re-distribution")
+			}
+		}
+	}
+	return m.twoAgent.StreamSegment(ctx, req)
 }
 
 // streamTwoAgentDirect runs the P5 direct data path through the agents (R5

@@ -177,6 +177,21 @@ type unitSegmentRequest struct {
 	DstConn string
 	// DstTLS are the dest agent's pg-plane TLS settings.
 	DstCert, DstKey, DstCA string
+	// DataTLS is the agent<->agent data-plane TLS (source segreceivers =
+	// clients, dest agent = server). Empty = plain TCP.
+	DataTLSCert, DataTLSKey, DataTLSCA string
+	// DirectWrite (P8, direct_1to1 fast-path) makes the destination agent
+	// load the N content-tagged slices with N per-segment utility-mode COPYs
+	// (ServeDirect) instead of merging them (SliceMux) into one coordinator
+	// COPY (ServeSegments). It is only set when the plan proves the route is
+	// direct_1to1 (S==D, equal hash keys, same major): then source segment
+	// s's slice == destination segment s's slice, so no merge and no
+	// destination re-distribution are needed. The SOURCE side is unchanged
+	// (the kernel's ON SEGMENT dispatch streams the same content-tagged
+	// slices either way); only the destination's load method changes.
+	// DirectLaunch carries the per-segment destination DSNs + D for ServeDirect.
+	DirectWrite  bool
+	DirectLaunch agent.DirectLaunch
 }
 
 // unitDirectRequest is the Manager's per-unit instruction for the P5 direct
@@ -351,23 +366,47 @@ func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegme
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: segment listen %q: %w", req.SegListen, err)
 	}
-	specJSON, err := json.Marshal(req.Spec)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: marshal segment spec: %w", err)
-	}
 	var dstderr bytes.Buffer
-	dargs := []string{
-		"--dest", req.DstConn,
-		"--listen", listen,
-		"--segments", strconv.Itoa(req.Segments),
-		"--spec", string(specJSON),
-		"--accept-timeout", "5m",
+	var dargs []string
+	if req.DirectWrite {
+		// P8 direct_1to1 fast-path: the destination loads the N content-tagged
+		// slices with N per-segment utility-mode COPYs (ServeDirect) — no
+		// merge, no re-distribution. The source side is the same ON SEGMENT
+		// dispatch (the kernel streams the same content-tagged slices).
+		launchJSON, lerr := json.Marshal(req.DirectLaunch)
+		if lerr != nil {
+			return 0, 0, 0, fmt.Errorf("two-agent: marshal direct launch (1to1): %w", lerr)
+		}
+		dargs = []string{
+			"--dest", req.DstConn,
+			"--listen", listen,
+			"--direct-spec", string(launchJSON),
+			"--accept-timeout", "5m",
+		}
+	} else {
+		specJSON, serr := json.Marshal(req.Spec)
+		if serr != nil {
+			return 0, 0, 0, fmt.Errorf("two-agent: marshal segment spec: %w", serr)
+		}
+		dargs = []string{
+			"--dest", req.DstConn,
+			"--listen", listen,
+			"--segments", strconv.Itoa(req.Segments),
+			"--spec", string(specJSON),
+			"--accept-timeout", "5m",
+		}
 	}
 	if req.DstCert != "" {
 		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
 	}
 	if req.DstCA != "" {
 		dargs = append(dargs, "--ssl-ca", req.DstCA)
+	}
+	if req.DataTLSCert != "" {
+		dargs = append(dargs, "--data-tls-cert", req.DataTLSCert, "--data-tls-key", req.DataTLSKey)
+	}
+	if req.DataTLSCA != "" {
+		dargs = append(dargs, "--data-tls-ca", req.DataTLSCA)
 	}
 	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
 	dcmd.Stderr = &dstderr
@@ -762,44 +801,79 @@ func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmen
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: segment data port: %w", err)
 	}
-	// 1. Launch the per-unit in-process destination agent (segment mode).
+	// 1. Launch the per-unit in-process destination agent: segment mode
+	// (ServeSegments, merge) by default, or the P8 direct_1to1 fast-path
+	// (ServeDirect, per-segment utility COPYs) when req.DirectWrite.
 	sresCh := make(chan agent.SegmentsResult, 1)
+	dresCh := make(chan agent.DirectResult, 1)
 	serrCh := make(chan error, 1)
-	go func() {
-		res, err := agent.ServeSegments(ctx, agent.SegmentsOptions{
-			Listen:        listen,
-			DestConn:      req.DstConn,
-			SSLCert:       req.DstCert,
-			SSLKey:        req.DstKey,
-			SSLCA:         req.DstCA,
-			Spec:          req.Spec,
-			Segments:      req.Segments,
-			Swap:          false,
-			AcceptTimeout: 5 * time.Minute,
-			StreamTimeout: 6 * time.Hour,
-		})
-		if err != nil {
-			serrCh <- err
-			return
-		}
-		sresCh <- res
-	}()
+	if req.DirectWrite {
+		go func() {
+			res, err := agent.ServeDirect(ctx, agent.DirectOptions{
+				Listen:        listen,
+				DestConn:      req.DstConn,
+				SSLCert:       req.DstCert,
+				SSLKey:        req.DstKey,
+				SSLCA:         req.DstCA,
+				DataTLSCert:   req.DataTLSCert,
+				DataTLSKey:    req.DataTLSKey,
+				DataTLSCA:     req.DataTLSCA,
+				Launch:        req.DirectLaunch,
+				Swap:          false,
+				AcceptTimeout: 5 * time.Minute,
+				StreamTimeout: 6 * time.Hour,
+			})
+			if err != nil {
+				serrCh <- err
+				return
+			}
+			dresCh <- res
+		}()
+	} else {
+		go func() {
+			res, err := agent.ServeSegments(ctx, agent.SegmentsOptions{
+				Listen:        listen,
+				DestConn:      req.DstConn,
+				SSLCert:       req.DstCert,
+				SSLKey:        req.DstKey,
+				SSLCA:         req.DstCA,
+				Spec:          req.Spec,
+				Segments:      req.Segments,
+				Swap:          false,
+				AcceptTimeout: 5 * time.Minute,
+				StreamTimeout: 6 * time.Hour,
+			})
+			if err != nil {
+				serrCh <- err
+				return
+			}
+			sresCh <- res
+		}()
+	}
 	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		// Unblock the ServeSegments accept (ctx cancel does not close the
-		// listener): dial + close a probe connection.
-		if c, lerr := net.Dial("tcp", listen); lerr == nil {
-			_ = c.Close()
+		// Unblock the dest agent's accept (ctx cancel does not close the
+		// listener): dial + close a probe connection (D times in direct mode).
+		probes := 1
+		if req.DirectWrite {
+			probes = int(req.DirectLaunch.D)
+		}
+		for i := 0; i < probes; i++ {
+			if c, lerr := net.Dial("tcp", listen); lerr == nil {
+				_ = c.Close()
+			}
 		}
 		select {
 		case <-serrCh:
 		case <-sresCh:
+		case <-dresCh:
 		case <-time.After(2 * time.Second):
 		}
 		return 0, 0, 0, fmt.Errorf(format, a...)
 	}
 
-	// 2. Instruct the source agent to run the ON SEGMENT dispatch. The
-	//    segreceivers retry their dial while the destination is still binding.
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch (unchanged
+	//    for the fast-path: the kernel streams the same content-tagged slices).
+	//    The segreceivers retry their dial while the destination is binding.
 	o := req.OnSegmentReq
 	o.DestAddr = listen
 	oresp, err := r.ctrl.OnSegment(o)
@@ -814,6 +888,8 @@ func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmen
 	select {
 	case serr := <-serrCh:
 		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): %w", o.UnitID, serr)
+	case dres := <-dresCh:
+		return dres.Rows, dres.Wire, dres.Logical, nil
 	case sres := <-sresCh:
 		return sres.Rows, sres.Wire, sres.Logical, nil
 	case <-time.After(6*time.Hour + time.Minute):

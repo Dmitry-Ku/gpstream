@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: `direct_1to1` fast-path write (P8)
+
+When the planner proves a table's route is `direct_1to1` (source and
+destination have the same number of up primary segments, both tables are
+`DISTRIBUTED BY` the same keys in the same order, same GP major version,
+non-legacy hashops), `--copy-mode on_segment` now takes the **fast-path
+write**: the destination agent loads the N content-tagged segment slices with
+N per-segment utility-mode COPYs (one per destination segment, routed by
+content-id) instead of merging them into one coordinator COPY. No SliceMux,
+no destination re-distribution. The source side is the same ON SEGMENT
+dispatch (the kernel streams the same content-tagged slices either way).
+Each such table logs `direct_1to1_fastpath` to the run event stream. A
+partitioned parent, or a live destination segment-count mismatch (a primary
+down since planning), degrades to the on_segment merge path — the copy is
+always correct, only the speed changes. Measured on GP6 (4 segments,
+3.2 GB): the fast-path removes the coordinator from the write path
+(~1.5× warm) and the read already runs per-segment (~3.5× vs coordinator),
+so end-to-end ≈ 1.5–1.8× at 4 segments and higher at larger segment counts.
+
 ### Removed: `--topology` flag — the two-agent data path is now the only one
 
 The single-controller data path (the ADR-002 debt) is fully removed.

@@ -197,7 +197,14 @@ gpstream-dest-agent path on the DESTINATION host (required for
 .TP
 .BR --copy-mode
 coordinator|on_segment|direct
-Data path (default coordinator).
+Data path (default coordinator). coordinator = one COPY through each
+coordinator; on_segment = the source segments stream in parallel (ON SEGMENT
+dispatch) and the destination merges them; direct = rows are routed to the
+destination segments (per-segment utility COPYs, dest coordinator out of the
+write path). When the planner proves a table is direct_1to1 (same segment
+count, equal distribution keys, same GP major), on_segment writes directly
+into the destination segments (no merge, no re-distribution) — logged as
+direct_1to1_fastpath.
 .TP
 .B --seg-listen
 HOST:PORT

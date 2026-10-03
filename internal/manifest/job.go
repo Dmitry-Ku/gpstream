@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -86,8 +87,13 @@ type Unit struct {
 	// non-empty value means the unit must fail early at run time: a
 	// string-keyed parent without a DEFAULT partition on a collation-
 	// different destination would abort the whole COPY mid-stream.
-	PartitionGuard string    `json:"partition_guard,omitempty"`
-	Updated        time.Time `json:"updated"`
+	PartitionGuard string `json:"partition_guard,omitempty"`
+	// RouteMode (P8, M4/T4b): how this table's data lands on the destination
+	// (direct_1to1 vs router_full), copied from the plan's table at unit build.
+	// The two-agent on_segment data path uses it to pick the direct_1to1
+	// fast-path (per-segment utility COPYs) over the merge path.
+	RouteMode route.Mode `json:"route_mode,omitempty"`
+	Updated   time.Time  `json:"updated"`
 }
 
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier

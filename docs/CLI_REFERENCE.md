@@ -254,7 +254,12 @@ the on-wire agent-to-agent volume.
 `--seg-binary`; the source GUC `ycmdb.yc_allow_copy_to_program` must be `on`.
 `direct` (R5) routes rows to destination segments directly (dest coordinator
 out of the write path) and degrades to the coordinator per table when a table
-can't be routed. See [PERFORMANCE.md](PERFORMANCE.md).
+can't be routed. When the planner proves a table's route is `direct_1to1`
+(S==D primaries, equal hash keys, same GP major, non-legacy hashops),
+`on_segment` takes the **fast-path write** automatically: the destination
+loads the N content-tagged slices with N per-segment utility COPYs (no merge,
+no re-distribution) — the run logs `direct_1to1_fastpath` per such table. See
+[PERFORMANCE.md](PERFORMANCE.md).
 
 ### Indexes (F-17)
 | Flag | Config field | Default |
