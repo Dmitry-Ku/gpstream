@@ -63,6 +63,45 @@ func TestRouteDirect1to1(t *testing.T) {
 	}
 }
 
+// TestRouteDirect1to1FirstCopy verifies the P8 first-copy fallback: on a
+// fresh migration the destination table does not exist yet at plan time, so
+// its distribution policy is absent from the destination catalog. The manager
+// always creates the dest table as a faithful copy of the source's
+// distribution, so the plan must fall back to the source layout and still
+// resolve direct_1to1 — otherwise the fast-path never fires on its primary
+// use case (a first copy into an empty destination).
+func TestRouteDirect1to1FirstCopy(t *testing.T) {
+	cfg := config.Default()
+	cfg.Source = "host=src"
+	cfg.Dest = "host=dst"
+
+	src := gpFake(2, "90426", "id")
+	dst := gpFake(2, "90426", "id")
+	// The destination table does not exist yet: no distribution policy row for
+	// it in the destination catalog (first copy into an empty destination).
+	dst.On("gs-route-dist", [][]any{})
+
+	p, err := Build(context.Background(), &cfg, src, dst)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(p.Units) != 1 {
+		t.Fatalf("units = %d, want 1", len(p.Units))
+	}
+	u := p.Units[0]
+	if u.RouteMode != route.Direct1to1 {
+		t.Errorf("RouteMode = %q, want direct_1to1 (first-copy fallback to source layout)", u.RouteMode)
+	}
+	if u.RoutePairs != 2 {
+		t.Errorf("RoutePairs = %d, want 2", u.RoutePairs)
+	}
+	// The cluster summary must still be fully resolved (both sides are GP).
+	if !p.Route.Resolved || !p.Route.GPVersionEqual || !p.Route.PossibleDirect1to1 {
+		t.Errorf("summary resolved=%v versionEqual=%v direct1to1=%v, want true/true/true",
+			p.Route.Resolved, p.Route.GPVersionEqual, p.Route.PossibleDirect1to1)
+	}
+}
+
 // TestRouteFullOnSegmentMismatch verifies M4: S!=D forces router_full even
 // with equal keys (JCH is not modular — all SxD pairs eligible).
 func TestRouteFullOnSegmentMismatch(t *testing.T) {

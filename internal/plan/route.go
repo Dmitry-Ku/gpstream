@@ -85,9 +85,20 @@ func attachRouteMode(ctx context.Context, src, dst pg.Querier, srcC, dstC cluste
 	for i := range tabs {
 		t := &tabs[i]
 		srcL, srcOK := srcDist[t.Schema+"."+t.Name]
+		if !srcOK {
+			continue // source layout unknown -> not determined
+		}
+		// Destination layout: use the destination table's actual policy when
+		// it already exists. On a first copy the destination table does not
+		// exist yet at plan time; the manager always creates it as a faithful
+		// copy of the source's distribution (dist is read from the source and
+		// passed to CreateTable/CreateStaging), so the source layout is the
+		// destination's future layout. Without this fallback the fast-path
+		// (direct_1to1) would never fire on a fresh migration — its primary
+		// use case — because the plan is built before the dest table exists.
 		dstL, dstOK := dstDist[t.DstSchema+"."+t.DstName]
-		if !srcOK || !dstOK {
-			continue // not determined -> RouteMode stays ""
+		if !dstOK {
+			dstL = srcL // first copy: dest will mirror the source's distribution
 		}
 		res, err := route.ResolveMode(route.ModeInput{
 			SrcSegments:     sum.SrcSegments,
