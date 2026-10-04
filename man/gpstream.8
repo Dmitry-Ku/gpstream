@@ -153,7 +153,18 @@ Total throughput ceiling; accepts bps/mbit/gbit (default: none).
 .TP
 .BR --workers
 N
-Workers per host-pair (default 2).
+Workers per host-pair (default 2). In the routed segment-to-segment data
+path (on_segment with different segment counts, or unequal distribution
+keys) this also sets the sub-stream fan-out per (source segment,
+destination segment) pair: the cluster carries S x D x N segment-to-segment
+TCP connections, and a table's rows are split across them round-robin
+(after the per-row hash places each row on its destination segment).
+.TP
+.B --no-routed-write
+Disable the routed segment-to-segment data path for S!=D topologies:
+on_segment then always merges the source slices through the destination
+coordinator (SliceMux) instead of routing in the segreceivers. Off by
+default (the routed path is used automatically when available).
 .TP
 .BR --small-table-threshold
 size
@@ -199,12 +210,16 @@ gpstream-dest-agent path on the DESTINATION host (required for
 coordinator|on_segment|direct
 Data path (default coordinator). coordinator = one COPY through each
 coordinator; on_segment = the source segments stream in parallel (ON SEGMENT
-dispatch) and the destination merges them; direct = rows are routed to the
-destination segments (per-segment utility COPYs, dest coordinator out of the
-write path). When the planner proves a table is direct_1to1 (same segment
-count, equal distribution keys, same GP major), on_segment writes directly
-into the destination segments (no merge, no re-distribution) — logged as
-direct_1to1_fastpath.
+dispatch); direct = rows are routed to the destination segments
+(per-segment utility COPYs, dest coordinator out of the write path).
+When the planner proves a table is direct_1to1 (same segment count, equal
+distribution keys, same GP major), on_segment writes directly into the
+destination segments (no merge, no re-distribution) — logged as
+direct_1to1_fastpath. When the segment counts differ (or the keys
+differ), on_segment uses the routed segment-to-segment path: each source
+segment routes its rows to the destination segments by the distribution
+key (S x D x --workers connections) and NEITHER cluster coordinator is in
+the data path — logged as routed_write.
 .TP
 .B --seg-listen
 HOST:PORT

@@ -267,6 +267,8 @@ func parseConfig(args []string) (config.Config, error) {
 			cfg.NoIndexes = true
 		case "--no-constraints":
 			cfg.NoConstraints = true
+		case "--no-routed-write":
+			cfg.NoRoutedWrite = true
 		case "--index-priority":
 			i++
 			cfg.IndexPriority = args[i]
@@ -1558,6 +1560,9 @@ Performance:
   --index-priority size|fifo       index build order (default size: largest first)
   --no-indexes                     skip index creation entirely
   --no-constraints                 skip the FK/CHECK constraint-restore pass
+  --no-routed-write                P9: disable the routed segment-to-segment
+                                   data path for S!=D (merge through the
+                                   destination coordinator instead)
 
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)

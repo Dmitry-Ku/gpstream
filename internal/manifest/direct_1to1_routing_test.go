@@ -20,6 +20,9 @@ type directDecisionRunner struct {
 	segCalled    bool
 	segDirect    bool // the segment request carried DirectWrite (ServeDirect write)
 	directCalled bool
+	routedCalled bool // the routed S×D×W segment-to-segment path (P9)
+	routedR      bool // the routed request carried OnSegmentReq.Routed
+	routedW      int  // the routed request's RouteWorkers
 	directD      int32
 	directKeys   int
 }
@@ -44,6 +47,12 @@ func (f *directDecisionRunner) StreamDirect(_ context.Context, req unitDirectReq
 	f.directCalled = true
 	f.directD = req.D
 	f.directKeys = len(req.KeyIdx)
+	return 42, 0, 0, nil
+}
+func (f *directDecisionRunner) StreamRouted(_ context.Context, req unitRoutedRequest) (int64, uint64, uint64, error) {
+	f.routedCalled = true
+	f.routedR = req.OnSegmentReq.Routed
+	f.routedW = req.RouteWorkers
 	return 42, 0, 0, nil
 }
 
@@ -101,16 +110,19 @@ var directTestCols = []pg.Column{
 }
 var directTestDist = pg.Distribution{Kind: "hash", Keys: []string{"id"}}
 
-// TestDirect1to1ReadFastPathRouting is the P8-1 (direct-branch read fast-path)
-// acceptance at the controller level: when the plan proves a table's route is
-// direct_1to1 AND the ON SEGMENT dispatch is available (--seg-binary +
-// --seg-listen), streamTwoAgentDirect must select the ON SEGMENT read
-// (StreamSegment) instead of the coordinator COPY + RowRouter read
-// (StreamDirect) — the per-row hash is pure overhead for direct_1to1 (d==s for
-// every row). The write side is the same ServeDirect per-segment utility COPYs
-// (DirectWrite on the segment request), preserving the R5 endgame. A
-// router_full table, or a direct run without the seg config, keeps the
-// coordinator + RowRouter path.
+// TestDirect1to1ReadFastPathRouting is the direct-branch data-path decision
+// acceptance at the controller level:
+//   - direct_1to1 + seg-config: the ON SEGMENT read (StreamSegment) with the
+//     per-segment utility COPYs (DirectWrite) — the P8-1 fast-path (d==s for
+//     every row, the RowRouter's per-row hash is pure overhead).
+//   - direct_1to1 without seg-config: coordinator COPY + RowRouter read
+//     (StreamDirect).
+//   - router_full + seg-config (P9): the routed segment-to-segment path
+//     (StreamRouted) — the ON SEGMENT read with the S×D×W fan-out and NEITHER
+//     cluster coordinator in the data path; strictly better than the
+//     coordinator COPY + RowRouter read.
+//   - router_full without seg-config: coordinator COPY + RowRouter read
+//     (StreamDirect), the fallback.
 func TestDirect1to1ReadFastPathRouting(t *testing.T) {
 	ctx := context.Background()
 
@@ -162,7 +174,7 @@ func TestDirect1to1ReadFastPathRouting(t *testing.T) {
 		_ = rows
 	})
 
-	t.Run("router_full -> coordinator + RowRouter read (no fast-path)", func(t *testing.T) {
+	t.Run("router_full + seg-config -> routed segment-to-segment (P9)", func(t *testing.T) {
 		m, fake := directTestSetup(t, func(c *config.Config) {
 			c.SegBinary = "/usr/local/bin/gpstream-segreceiver"
 			c.SegListen = "10.0.0.5:9432"
@@ -172,11 +184,32 @@ func TestDirect1to1ReadFastPathRouting(t *testing.T) {
 		if err != nil {
 			t.Fatalf("streamTwoAgentDirect: %v", err)
 		}
-		if fake.segCalled {
-			t.Fatalf("router_full must not take the direct_1to1 ON SEGMENT fast-path")
+		if !fake.routedCalled {
+			t.Fatalf("router_full + seg-config: expected the routed segment-to-segment path (StreamRouted)")
+		}
+		if fake.segCalled || fake.directCalled {
+			t.Fatalf("routed path must not fall to StreamSegment/StreamDirect")
+		}
+		if !fake.routedR {
+			t.Fatalf("expected OnSegmentReq.Routed on the routed request")
+		}
+	})
+
+	t.Run("router_full WITHOUT seg-config -> coordinator + RowRouter read (fallback)", func(t *testing.T) {
+		m, fake := directTestSetup(t, nil) // no SegBinary/SegListen
+		_, _, _, err := m.streamTwoAgentDirect(ctx, directTestTable(), directTestUnit(route.RouterFull),
+			"_gs_orders_1", "public", "orders", directTestCols, directTestDist, pg.PartitionSpec{})
+		if err != nil {
+			t.Fatalf("streamTwoAgentDirect: %v", err)
+		}
+		if fake.segCalled || fake.routedCalled {
+			t.Fatalf("no seg-config: must not use the ON SEGMENT read or the routed path")
 		}
 		if !fake.directCalled {
 			t.Fatalf("expected the coordinator + RowRouter read (StreamDirect)")
+		}
+		if fake.directD != 2 {
+			t.Fatalf("RowRouter D = %d, want 2 (the destination's up primaries)", fake.directD)
 		}
 	})
 }

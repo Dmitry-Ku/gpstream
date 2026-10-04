@@ -63,6 +63,16 @@ type OnSegmentReq struct {
 	DataTLSCert string `json:"data_tls_cert,omitempty"`
 	DataTLSKey  string `json:"data_tls_key,omitempty"`
 	DataTLSCA   string `json:"data_tls_ca,omitempty"`
+	// P9 routed mode (S≠D): when Routed, the segreceivers do not stream one
+	// slice to a destination agent; they route every row to its destination
+	// segment (cdbhash + jump-consistent-hash over RouteKey) and fan each
+	// (source-seg,dest-seg) pair over RouteWorkers sub-streams, dialing
+	// DestAddr (the destination agent) D×W times. DestAddr carries the
+	// destination agent's listen address in both modes.
+	Routed       bool   `json:"routed,omitempty"`
+	RouteKey     string `json:"route_key,omitempty"` // "oid:pos,oid:pos"
+	RouteD       int32  `json:"route_d,omitempty"`
+	RouteWorkers int    `json:"route_workers,omitempty"`
 }
 
 // OnSegmentResp is the source agent's report after the ON SEGMENT COPY

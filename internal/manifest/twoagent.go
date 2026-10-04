@@ -58,6 +58,16 @@ type TwoAgentRunner interface {
 	// authoritative (destination) row count + the on-network wire volume +
 	// the logical volume. The swap is NOT performed (the Manager decides it).
 	StreamDirect(ctx context.Context, req unitDirectRequest) (rows int64, wire, logical uint64, err error)
+	// StreamRouted launches a destination agent in ROUTED mode (P9, S≠D)
+	// and instructs the source agent to trigger the ON SEGMENT dispatch with
+	// routing enabled: each source segreceiver routes its slice to its
+	// destination segment (cdbhash + JCH over the distribution key) and fans
+	// each (source-seg,dest-seg) pair over W sub-streams (S×D×W segment-to-
+	// segment connections). NEITHER cluster coordinator is in the data path.
+	// The destination agent merges the S×W sub-streams addressed to each
+	// segment and performs D utility-mode per-segment COPYs. It returns the
+	// authoritative (destination) row count + the wire + logical volume.
+	StreamRouted(ctx context.Context, req unitRoutedRequest) (rows int64, wire, logical uint64, err error)
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
@@ -213,6 +223,29 @@ type unitDirectRequest struct {
 	DstCert, DstKey, DstCA string
 	// DataTLS is the agent<->agent data-plane TLS (source = client, dest =
 	// server). Reuses the data TLS config (empty = plain TCP).
+	DataTLSCert, DataTLSKey, DataTLSCA string
+}
+
+// unitRoutedRequest is the Manager's per-unit instruction for the P9 routed
+// (S≠D) data path: the source agent triggers the ON SEGMENT dispatch with
+// routing (the segreceivers route each row to its destination segment and
+// fan each pair over W sub-streams); the destination agent (routed mode)
+// merges the per-segment sub-streams and performs D utility-mode COPYs.
+type unitRoutedRequest struct {
+	agent.OnSegmentReq // Routed=true, RouteKey/RouteD/RouteWorkers set
+	// Launch is the destination agent's routed launch payload (staging
+	// shape + S + D + W + per-segment DSNs).
+	Launch agent.RoutedLaunch
+	// Segments is the number of source primary segments (S).
+	Segments int
+	// SegListen is the routable base listen address the segreceivers dial;
+	// the destination agent binds SegListen's host with port base+unitID.
+	SegListen string
+	// DstConn is the destination COORDINATOR conn (staging DDL + swap); the
+	// per-segment data COPYs use Launch.DstDSNs.
+	DstConn                string
+	DstCert, DstKey, DstCA string
+	// DataTLS is the agent<->agent data-plane TLS (segreceivers = clients).
 	DataTLSCert, DataTLSKey, DataTLSCA string
 }
 
@@ -473,6 +506,95 @@ func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegme
 		}
 	}
 	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (segment) report unit %d: %s", o.UnitID, dstderr.String())
+}
+
+// StreamRouted (P9) launches a destination agent in ROUTED mode (S≠D),
+// instructs the source agent to trigger the ON SEGMENT dispatch with routing
+// (each segreceiver routes its slice to its destination segment and fans each
+// (s,d) pair over W sub-streams), and waits for the destination to finish its
+// D utility-mode per-segment COPYs. Neither cluster coordinator is in the
+// data path. The destination is the authoritative row-count source.
+func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedRequest) (int64, uint64, uint64, error) {
+	// 1. Bind the segment data port (routable: the segreceivers run on the
+	// source segment hosts).
+	listen, err := segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: routed listen %q: %w", req.SegListen, err)
+	}
+	var dstderr bytes.Buffer
+	launchJSON, lerr := json.Marshal(req.Launch)
+	if lerr != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: marshal routed launch: %w", lerr)
+	}
+	dargs := []string{
+		"--dest", req.DstConn,
+		"--listen", listen,
+		"--routed-spec", string(launchJSON),
+		"--accept-timeout", "5m",
+	}
+	if req.DstCert != "" {
+		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
+	}
+	if req.DstCA != "" {
+		dargs = append(dargs, "--ssl-ca", req.DstCA)
+	}
+	if req.DataTLSCert != "" {
+		dargs = append(dargs, "--data-tls-cert", req.DataTLSCert, "--data-tls-key", req.DataTLSKey)
+	}
+	if req.DataTLSCA != "" {
+		dargs = append(dargs, "--data-tls-ca", req.DataTLSCA)
+	}
+	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
+	dcmd.Stderr = &dstderr
+	dcmd.Stdout = io.Discard
+	if err := dcmd.Start(); err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent (routed): %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- dcmd.Wait() }()
+	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
+		_ = dcmd.Process.Kill()
+		<-done
+		return 0, 0, 0, fmt.Errorf(format, a...)
+	}
+
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch with
+	// routing. The segreceivers retry their dials while the destination is
+	// still binding (the dial-retry loop in runRouted).
+	o := req.OnSegmentReq
+	o.DestAddr = listen
+	oresp, err := r.ctrl.OnSegment(o)
+	if err != nil {
+		return fail("two-agent: onsegment (routed) unit %d: %w", o.UnitID, err)
+	}
+	if !oresp.Ok {
+		return fail("two-agent: source agent onsegment (routed) unit %d: %s", o.UnitID, oresp.Error)
+	}
+
+	// 3. Wait for the destination to finish the COPY.
+	var werr error
+	select {
+	case werr = <-done:
+	case <-time.After(r.streamDeadline()):
+		_ = dcmd.Process.Kill()
+		<-done
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): timed out", o.UnitID)
+	}
+	if werr != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): %v (stderr: %s)", o.UnitID, werr, dstderr.String())
+	}
+
+	// 4. Parse the destination report: "gpstream-dest-agent: unit=N rows=R
+	// logical=L wire=W <verdict> ok".
+	for _, line := range strings.Split(dstderr.String(), "\n") {
+		var unit, rows, logical, wire int64
+		var verdict string
+		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok",
+			&unit, &rows, &logical, &wire, &verdict); perr == nil && n == 5 {
+			return rows, uint64(wire), uint64(logical), nil
+		}
+	}
+	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (routed) report unit %d: %s", o.UnitID, dstderr.String())
 }
 
 // StreamDirect (P5) launches a destination agent in DIRECT mode, instructs the
@@ -982,6 +1104,82 @@ func (r *InProcTwoAgentRunner) StreamDirect(ctx context.Context, req unitDirectR
 }
 
 // Checksum asks the in-process source agent (FR-02 snapshot) for the checksum.
+// StreamRouted (P9, in-proc) launches an in-process destination agent
+// (agent.ServeRouted) on a pre-bound listen address, instructs the in-process
+// source agent to trigger the ON SEGMENT dispatch with routing (a no-op on
+// plain PG — the test drives fake routed segreceivers), and waits for the
+// destination to finish its D utility-mode per-segment COPYs.
+func (r *InProcTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedRequest) (int64, uint64, uint64, error) {
+	var listen string
+	var err error
+	if req.SegListen != "" {
+		listen, err = segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
+	} else {
+		listen, err = prebindLoopback()
+	}
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: routed data port: %w", err)
+	}
+	dresCh := make(chan agent.RoutedResult, 1)
+	serrCh := make(chan error, 1)
+	go func() {
+		res, err := agent.ServeRouted(ctx, agent.RoutedOptions{
+			Listen:        listen,
+			DestConn:      req.DstConn,
+			SSLCert:       req.DstCert,
+			SSLKey:        req.DstKey,
+			SSLCA:         req.DstCA,
+			DataTLSCert:   req.DataTLSCert,
+			DataTLSKey:    req.DataTLSKey,
+			DataTLSCA:     req.DataTLSCA,
+			Launch:        req.Launch,
+			Swap:          false,
+			AcceptTimeout: 5 * time.Minute,
+			StreamTimeout: 6 * time.Hour,
+		})
+		if err != nil {
+			serrCh <- err
+			return
+		}
+		dresCh <- res
+	}()
+	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
+		// Unblock the dest agent's accept: dial S×D×W probe connections.
+		probes := int(req.Launch.SourceSegments) * int(req.Launch.D) * req.Launch.Workers
+		for i := 0; i < probes; i++ {
+			if c, lerr := net.Dial("tcp", listen); lerr == nil {
+				_ = c.Close()
+			}
+		}
+		select {
+		case <-serrCh:
+		case <-dresCh:
+		case <-time.After(2 * time.Second):
+		}
+		return 0, 0, 0, fmt.Errorf(format, a...)
+	}
+
+	// Instruct the source agent to run the ON SEGMENT dispatch with routing.
+	o := req.OnSegmentReq
+	o.DestAddr = listen
+	oresp, err := r.ctrl.OnSegment(o)
+	if err != nil {
+		return fail("two-agent: onsegment (routed) unit %d: %w", o.UnitID, err)
+	}
+	if !oresp.Ok {
+		return fail("two-agent: source agent onsegment (routed) unit %d: %s", o.UnitID, oresp.Error)
+	}
+
+	select {
+	case serr := <-serrCh:
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): %w", o.UnitID, serr)
+	case dres := <-dresCh:
+		return dres.Rows, dres.Wire, dres.Logical, nil
+	case <-time.After(6*time.Hour + time.Minute):
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): timed out", o.UnitID)
+	}
+}
+
 func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {
 	if r.srv == nil {
 		return "", fmt.Errorf("two-agent: source agent not started")

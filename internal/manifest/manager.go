@@ -1457,7 +1457,139 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 			}
 		}
 	}
+	// P9 routed write (S≠D, or S==D with unequal keys): the plan proved
+	// router_full, and the ON SEGMENT dispatch is available. The segreceivers
+	// route every row to its destination segment (cdbhash + JCH over the
+	// destination distribution key) and fan each (source-seg,dest-seg) pair
+	// over --workers sub-streams: S×D×W segment-to-segment TCP connections,
+	// NEITHER cluster coordinator in the data path (the source coordinator
+	// only dispatched the read, the destination coordinator only built the
+	// staging DDL / swaps it). A table that cannot be routed degrades to the
+	// merge path (SliceMux through the destination coordinator — correct,
+	// just not segment-to-segment).
+	if u.RouteMode == route.RouterFull && part.Spec == "" &&
+		m.cfg.SegBinary != "" && m.cfg.SegListen != "" && !m.cfg.NoRoutedWrite {
+		rr, rwire, rlogical, rerr := m.streamTwoAgentRouted(ctx, t, u, target, ds, dn, cols, dist, part,
+			compStr, jobID, overwrite, n)
+		if isDirectDegraded(rerr) {
+			m.events.Log("routed_degraded",
+				"table", t.Schema+"."+t.Name,
+				"reason", rerr.Error())
+			// fall through to the merge path
+		} else {
+			return rr, rwire, rlogical, rerr
+		}
+	}
 	return m.twoAgent.StreamSegment(ctx, req)
+}
+
+// streamTwoAgentRouted runs the P9 routed (S≠D) data path: the source agent
+// triggers the ON SEGMENT dispatch with routing enabled (each segreceiver
+// routes its slice to its destination segment and fans each (s,d) pair over
+// W sub-streams); the destination agent (routed mode) merges the per-segment
+// sub-streams and performs D utility-mode per-segment COPYs. The controller
+// computes the routing key (the source distribution key, mapped to its column
+// positions + type OIDs) and the per-segment destination DSNs (a catalog
+// read on the dest — control plane). A table that cannot be routed (non-hash
+// distribution, unsupported key, a key column absent from the source, or a
+// non-Greenplum destination) returns a *directDegradedError; the caller falls
+// back to the merge path. The swap is the controller's decision (runUnit).
+func (m *Manager) streamTwoAgentRouted(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, compStr string, jobID uint32, overwrite bool, S int) (int64, uint64, uint64, error) {
+	// 1. Destination topology: the up primaries in content order.
+	segs, err := m.destSegments(ctx)
+	if err != nil {
+		return 0, 0, 0, &directDegradedError{reason: err.Error()}
+	}
+	D := int32(len(segs))
+	// 2. The routing key: the table's distribution policy. The staging/final
+	// table is created with the source's distribution (a faithful copy), so
+	// the destination's placement key is the source's dist key — route by it.
+	if dist.Kind != "hash" || len(dist.Keys) == 0 {
+		return 0, 0, 0, &directDegradedError{
+			reason: fmt.Sprintf("distribution policy %q (no hash key) cannot be routed", dist.Kind),
+		}
+	}
+	colBy := map[string]int{}
+	for i, c := range cols {
+		colBy[c.Name] = i
+	}
+	keyIdx := make([]int, 0, len(dist.Keys))
+	keyOid := make([]uint32, 0, len(dist.Keys))
+	routeKey := ""
+	for i, k := range dist.Keys {
+		idx, ok := colBy[k]
+		if !ok {
+			return 0, 0, 0, &directDegradedError{
+				reason: fmt.Sprintf("dist-key column %q is not in the source table", k),
+			}
+		}
+		keyIdx = append(keyIdx, idx)
+		keyOid = append(keyOid, cols[idx].Oid)
+		pair := fmt.Sprintf("%d:%d", cols[idx].Oid, idx)
+		if i == 0 {
+			routeKey = pair
+		} else {
+			routeKey += "," + pair
+		}
+	}
+	// 3. Per-segment utility-mode DSNs (content 0..D-1).
+	dstDSNs := make([]string, 0, D)
+	for _, seg := range segs {
+		dsn, derr := segmentDSN(m.cfg.Dest, seg)
+		if derr != nil {
+			return 0, 0, 0, &directDegradedError{reason: derr.Error()}
+		}
+		dstDSNs = append(dstDSNs, dsn)
+	}
+	W := m.cfg.WorkersPerPair
+	m.events.Log("routed_write",
+		"table", t.Schema+"."+t.Name,
+		"src_segments", S,
+		"dst_segments", int(D),
+		"workers", W,
+		"connections", S*int(D)*W,
+		"reason", "S!=D (or unequal keys): segreceivers route to destination segments; S*D*W segment-to-segment streams, no coordinator in the data path")
+	return m.twoAgent.StreamRouted(ctx, unitRoutedRequest{
+		OnSegmentReq: agent.OnSegmentReq{
+			Op:           "onsegment",
+			Schema:       t.Schema,
+			Table:        t.Name,
+			JobID:        jobID,
+			UnitID:       uint32(u.UnitID),
+			SegBinary:    m.cfg.SegBinary,
+			Compress:     compStr,
+			DataTLSCert:  m.cfg.SegTLSCert,
+			DataTLSKey:   m.cfg.SegTLSKey,
+			DataTLSCA:    m.cfg.SegTLSCA,
+			Routed:       true,
+			RouteKey:     routeKey,
+			RouteD:       D,
+			RouteWorkers: W,
+		},
+		Launch: agent.RoutedLaunch{
+			DirectLaunch: agent.DirectLaunch{
+				UnitID:    uint32(u.UnitID),
+				Schema:    ds,
+				Table:     dn,
+				Staging:   target,
+				Overwrite: overwrite,
+				Compress:  compStr,
+				Cols:      cols,
+				Dist:      dist,
+				Part:      part,
+				D:         D,
+				DstDSNs:   dstDSNs,
+			},
+			SourceSegments: int32(S),
+			Workers:        W,
+		},
+		Segments:  S,
+		SegListen: m.cfg.SegListen,
+		DstConn:   m.cfg.Dest,
+		DstCert:   m.cfg.SSLCert,
+		DstKey:    m.cfg.SSLKey,
+		DstCA:     m.cfg.SSLCA,
+	})
 }
 
 // streamTwoAgentDirect runs the P5 direct data path through the agents (R5
@@ -1502,6 +1634,29 @@ func (m *Manager) streamTwoAgentDirect(ctx context.Context, t plan.Table, u *Uni
 			"table", t.Schema+"."+t.Name,
 			"reason", "direct mode: source read via ON SEGMENT dispatch (0 hashing, d==s for every row) instead of coordinator COPY + RowRouter; write = per-segment utility COPYs")
 		return m.streamTwoAgentSegment(ctx, t, u, target, ds, dn, cols, dist, part)
+	}
+	// P9 (router_full READ+WRITE fast-path): when the plan proves router_full
+	// (S≠D or unequal keys) AND the ON SEGMENT dispatch is available, the
+	// source read uses the kernel's ON SEGMENT dispatch and the write is the
+	// routed segment-to-segment fan-out (S×D×W streams, NEITHER cluster
+	// coordinator in the data path) — strictly better than the coordinator
+	// COPY + RowRouter (which reads through the source coordinator). A table
+	// that cannot be routed, or a run without --seg-binary/--seg-listen (or
+	// with --no-routed-write), keeps the coordinator COPY + RowRouter path
+	// below (correct, just not segment-to-segment).
+	if u.RouteMode == route.RouterFull && m.cfg.SegBinary != "" && m.cfg.SegListen != "" && !m.cfg.NoRoutedWrite {
+		S, serr := m.primarySegmentCount(ctx)
+		if serr == nil {
+			uc, _ := m.unitCompressors(t)
+			rr, rwire, rlogical, rerr := m.streamTwoAgentRouted(ctx, t, u, target, ds, dn, cols, dist, part,
+				m.twoAgentCompressString(uc), jobIDFromHash(u.JobID),
+				m.cfg.ConflictAction == config.Overwrite || u.Conflict, S)
+			if !isDirectDegraded(rerr) {
+				return rr, rwire, rlogical, rerr
+			}
+			// degradable (non-hash key, non-GP dest, ...): fall through to
+			// the coordinator COPY + RowRouter path.
+		}
 	}
 	// 1. Destination topology: the up primaries in content order (a catalog
 	// read on the dest — the controller's control plane; the single-controller

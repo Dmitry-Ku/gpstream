@@ -152,20 +152,35 @@ func (rr *RowRouter) PerSegment() []int64 { return rr.perSeg }
 // data/isNull are per key (aligned with rr.keyIdx); each datum's wire bytes
 // are converted to the kernel's hkey by type, then combined per cdbhash().
 func (rr *RowRouter) hashSeg(data [][]byte, isNull []bool) (int32, error) {
+	seg, err := RouteKeySegment(rr.keyIdx, rr.keyOid, rr.numSeg, data, isNull)
+	if err != nil {
+		return 0, fmt.Errorf("rowrouter: %w", err)
+	}
+	return seg, nil
+}
+
+// RouteKeySegment computes the destination segment a row belongs to under the
+// destination kernel's placement algorithm: each key field's wire bytes are
+// converted to the kernel's hkey by type, combined per cdbhash (rotl1 ^
+// hashfunc; NULL = rotl1 only), then jump-consistent-hashed over numSegments.
+// data/isNull are per key (aligned with keyIdx). Shared by the RowRouter (P5)
+// and the segreceiver's routing mode (P9), so the two paths place rows
+// identically.
+func RouteKeySegment(keyIdx []int, keyOid []uint32, numSegments int32, data [][]byte, isNull []bool) (int32, error) {
 	var h uint32
-	for i, idx := range rr.keyIdx {
+	for i, idx := range keyIdx {
 		if isNull[i] {
 			// NULL attribute: rotl1 only, no XOR.
 			h = route.Combine(h, 0, true)
 			continue
 		}
-		hkey, err := route.HashKeyDatum(rr.keyOid[i], data[i])
+		hkey, err := route.HashKeyDatum(keyOid[i], data[i])
 		if err != nil {
-			return 0, fmt.Errorf("rowrouter: key col %d: %w", idx, err)
+			return 0, fmt.Errorf("route: key col %d: %w", idx, err)
 		}
 		h = route.Combine(h, hkey, false)
 	}
-	return route.JumpConsistentHash(uint64(h), rr.numSeg), nil
+	return route.JumpConsistentHash(uint64(h), numSegments), nil
 }
 
 // Run drains the source stream, routing every row to its destination segment.

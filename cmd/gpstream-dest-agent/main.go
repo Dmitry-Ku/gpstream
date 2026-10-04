@@ -57,6 +57,12 @@ func main() {
 	// The agent accepts D content-tagged compressed slice connections and
 	// performs D utility-mode per-segment COPYs into the staging table.
 	directSpec := flag.String("direct-spec", "", "P5 direct mode: DirectLaunch JSON (the controller serialises it)")
+	// P9 routed mode (S≠D): the controller passes the routed launch payload
+	// (staging shape + S + D + W + per-segment utility-mode DSNs) as a single
+	// RoutedLaunch JSON. The agent accepts S×D×W sub-stream connections and
+	// performs D utility-mode per-segment COPYs (per-segment sub-stream
+	// merge).
+	routedSpec := flag.String("routed-spec", "", "P9 routed mode (S≠D): RoutedLaunch JSON (the controller serialises it)")
 	// Timeouts.
 	acceptTO := flag.Duration("accept-timeout", 5*time.Minute, "wait for the source agent's connection")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
@@ -81,6 +87,43 @@ func main() {
 	// COPY and the socket cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if *routedSpec != "" {
+		// P9 routed mode (S≠D): accept S×D×W sub-stream connections (one per
+		// (source segment, destination segment, worker) pair, each
+		// content-tagged with its destination segment) and perform D
+		// utility-mode per-segment COPYs with a per-segment sub-stream merge.
+		var launch agent.RoutedLaunch
+		if err := json.Unmarshal([]byte(*routedSpec), &launch); err != nil {
+			fail("parse --routed-spec: %v", err)
+		}
+		res, err := agent.ServeRouted(ctx, agent.RoutedOptions{
+			Listen:        *listen,
+			DestConn:      *dest,
+			SSLCert:       *sslCert,
+			SSLKey:        *sslKey,
+			SSLCA:         *sslCA,
+			SSLMinTLS:     *sslMinTLS,
+			DataTLSCert:   *dataCert,
+			DataTLSKey:    *dataKey,
+			DataTLSCA:     *dataCA,
+			DataTLSMinTLS: *dataMinTLS,
+			Launch:        launch,
+			Swap:          *swap,
+			AcceptTimeout: *acceptTO,
+			StreamTimeout: *streamTO,
+		})
+		if err != nil {
+			fail("%v", err)
+		}
+		verdict := "loaded"
+		if res.Swapped {
+			verdict = "swapped"
+		}
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok\n",
+			res.Launch.UnitID, res.Rows, res.Logical, res.Wire, verdict)
+		return
+	}
 
 	if *directSpec != "" {
 		// P5 direct mode: accept D content-tagged compressed slice connections

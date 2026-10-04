@@ -47,6 +47,9 @@ func (f *fakeBenchRunner) StreamSegment(context.Context, unitSegmentRequest) (in
 func (f *fakeBenchRunner) StreamDirect(context.Context, unitDirectRequest) (int64, uint64, uint64, error) {
 	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamDirect unused in bench")
 }
+func (f *fakeBenchRunner) StreamRouted(context.Context, unitRoutedRequest) (int64, uint64, uint64, error) {
+	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamRouted unused in bench")
+}
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")
 }

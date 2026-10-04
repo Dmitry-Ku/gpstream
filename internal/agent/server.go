@@ -229,8 +229,15 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StreamTimeout)
 	defer cancel()
-	prog, err := segstream.ProgramCommandFull(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
-		req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress)
+	var prog string
+	var err error
+	if req.Routed {
+		prog, err = segstream.ProgramCommandRouted(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+			req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, req.RouteKey, int(req.RouteD), req.RouteWorkers)
+	} else {
+		prog, err = segstream.ProgramCommandFull(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+			req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress)
+	}
 	if err != nil {
 		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("build program: %v", err)}
 	}

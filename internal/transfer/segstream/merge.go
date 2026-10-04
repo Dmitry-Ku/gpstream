@@ -246,6 +246,56 @@ func (sp *sliceParser) feed(p []byte, w io.Writer) (int, error) {
 	return off, nil
 }
 
+// BinaryHeaderBytes is the fixed 19-byte binary-COPY header (11B signature +
+// int32 remainingHeaderSize=0 + int32 flags=0) — the stream prefix a
+// `COPY ... FROM STDIN (FORMAT binary)` expects before the first row.
+func BinaryHeaderBytes() []byte {
+	h := make([]byte, 19)
+	copy(h, bcopySig)
+	return h
+}
+
+// WriteBinaryHeader writes the 19-byte binary-COPY header to w.
+func WriteBinaryHeader(w io.Writer) error {
+	_, err := w.Write(BinaryHeaderBytes())
+	return err
+}
+
+// WriteBinaryEOF writes the int16 -1 end-of-stream marker to w.
+func WriteBinaryEOF(w io.Writer) error {
+	var eof [2]byte
+	binary.BigEndian.PutUint16(eof[:], 0xFFFF)
+	_, err := w.Write(eof[:])
+	return err
+}
+
+// SliceStripper (P9 routed dest) consumes ONE binary-COPY slice stream
+// (a self-contained header + rows + EOF) and forwards only the row bytes to
+// w — one Write per complete row, so concurrent Stripper writers sharing the
+// same w (a per-segment io.Pipe) cannot interleave inside a row. It is the
+// per-sub-stream parser of the routed (S≠D) destination load, where every
+// sub-stream addressed to one destination segment feeds that segment's pipe.
+type SliceStripper struct {
+	w  io.Writer
+	sp *sliceParser
+}
+
+// NewSliceStripper returns a stripper over one slice stream writing to w.
+func NewSliceStripper(w io.Writer) *SliceStripper {
+	return &SliceStripper{w: w, sp: newSliceParser()}
+}
+
+// Write consumes the next bytes of the slice stream, forwarding complete
+// rows to w. It returns an error on a malformed stream.
+func (s *SliceStripper) Write(p []byte) error {
+	_, err := s.sp.feed(p, s.w)
+	return err
+}
+
+// Done reports whether the slice's end-of-stream marker was consumed (the
+// stream is complete).
+func (s *SliceStripper) Done() bool { return s.sp.done }
+
 // SliceMux merges N slice streams into a single binary-COPY stream on w.
 type SliceMux struct {
 	w      io.Writer

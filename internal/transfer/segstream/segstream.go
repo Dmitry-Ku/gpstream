@@ -361,6 +361,57 @@ func ProgramCommandFull(binPath, listen string, jobID, unitID uint32, cert, key,
 	return cmd, nil
 }
 
+// ProgramCommandRouted (P9) builds the shell command the kernel executes on
+// each source segment in the routed (S≠D) data path: the segreceiver routes
+// its slice to D destination segments (cdbhash + jump-consistent-hash over
+// the distribution key) and fans each (source-seg,dest-seg) pair over
+// workers sub-streams, dialing destAddr D×W times. NEITHER cluster
+// coordinator is in the data path. Only internal values are embedded
+// (listen address, ids, key OIDs/positions, segment count) — no user input —
+// so there is no injection surface (ANSWER-T01-APPROACH-AB §2.4.5).
+// routeKey is "oid:pos,oid:pos" (digits and ':' only — validated).
+func ProgramCommandRouted(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode, routeKey string, routeD, workers int) (string, error) {
+	if binPath == "" || listenBinChars(binPath) {
+		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
+	}
+	if !validListen(destAddr) {
+		return "", fmt.Errorf("segstream: bad dest address %q (want host:port)", destAddr)
+	}
+	if routeD < 1 || workers < 1 {
+		return "", fmt.Errorf("segstream: bad routed topology d=%d workers=%d (want >= 1)", routeD, workers)
+	}
+	if routeKey == "" {
+		return "", fmt.Errorf("segstream: routed mode requires a route key")
+	}
+	for i := 0; i < len(routeKey); i++ {
+		c := routeKey[i]
+		if !((c >= '0' && c <= '9') || c == ':' || c == ',') {
+			return "", fmt.Errorf("segstream: bad route key %q (want digits, ':', ',')", routeKey)
+		}
+	}
+	cmd := fmt.Sprintf("%s --dest-addr %s --job %d --unit %d --content <SEGID> --route-key %s --route-d %d --route-workers %d",
+		binPath, destAddr, jobID, unitID, routeKey, routeD, workers)
+	switch {
+	case cert != "" && key != "":
+		if listenBinChars(cert) || listenBinChars(key) || (ca != "" && listenBinChars(ca)) {
+			return "", fmt.Errorf("segstream: unsafe TLS path set (cert=%q key=%q ca=%q)", cert, key, ca)
+		}
+		cmd += fmt.Sprintf(" --ssl-cert %s --ssl-key %s", cert, key)
+		if ca != "" {
+			cmd += fmt.Sprintf(" --ssl-ca %s", ca)
+		}
+	case cert != "" || key != "":
+		return "", fmt.Errorf("segstream: TLS enabled with only one of --ssl-cert/--ssl-key (cert=%q key=%q); provide both or neither", cert, key)
+	}
+	if compressMode != "" {
+		if !validCompressMode(compressMode) {
+			return "", fmt.Errorf("segstream: bad compress mode %q", compressMode)
+		}
+		cmd += " --compress " + compressMode
+	}
+	return cmd, nil
+}
+
 // validCompressMode accepts the compression tokens the controller may embed in
 // the segreceiver program string (a fixed set, not arbitrary user input).
 func validCompressMode(s string) bool {

@@ -145,6 +145,10 @@ type Config struct {
 	NoIndexes     bool
 	IndexPriority string // "size" | "fifo"
 
+	// NoRoutedWrite (P9) disables the routed segment-to-segment data path for
+	// S≠D topologies: on_segment then always merges through the destination
+	// coordinator (SliceMux) instead of routing in the segreceivers.
+	NoRoutedWrite bool
 	// NoConstraints disables the F-11 constraint-restore pass (foreign keys
 	// and user CHECK constraints) on the destination. Off by default: the
 	// pass is non-fatal and idempotent, so keeping metadata complete is the

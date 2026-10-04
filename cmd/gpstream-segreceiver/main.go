@@ -25,12 +25,21 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
+
+// P9 routed mode: when --dest-addr is set, this segreceiver does not stream
+// its slice to a destination agent as one content-tagged slice; it routes
+// every row to its destination segment (cdbhash + jump-consistent-hash over
+// the distribution key, the destination kernel's placement) and fans the
+// (s,d) pair out over --route-workers sub-streams, so the cluster carries
+// S×D×W segment-to-segment streams and NEITHER cluster coordinator is in the
+// data path.
 
 func main() {
 	listen := flag.String("listen", "", "controller listen address host:port (required)")
@@ -49,6 +58,17 @@ func main() {
 	// decoder. Empty = plain (uncompressed) frames (the single-controller
 	// path, pre-P4 behavior).
 	compressMode := flag.String("compress", "", "per-slice compression mode: none|zlib|zstd[:level]")
+	// P9 routed mode (S≠D): the destination agent's listen address. When set,
+	// this segreceiver routes its slice to D destination segments (--route-d),
+	// fanning each (s,d) pair over --route-workers sub-streams (S×D×W
+	// connections cluster-wide; neither cluster coordinator is in the data
+	// path). --route-key is the destination distribution key's column type
+	// OIDs (comma-separated, in key order) — internal values embedded by the
+	// controller, no user input.
+	destAddr := flag.String("dest-addr", "", "P9 routed mode: destination agent listen address host:port (enables routing)")
+	routeKey := flag.String("route-key", "", "P9 routed mode: distribution-key type OIDs, comma-separated")
+	routeD := flag.Int("route-d", 0, "P9 routed mode: number of destination primary segments")
+	routeWorkers := flag.Int("route-workers", 1, "P9 routed mode: sub-streams per (source-seg,dest-seg) pair")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -65,8 +85,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gpstream-segreceiver: ok (check)")
 		os.Exit(0)
 	}
-	if *listen == "" {
-		fail("--listen host:port is required")
+	routed := *destAddr != ""
+	if !routed && *listen == "" {
+		fail("--listen host:port is required (or --dest-addr for routed mode)")
+	}
+	if routed {
+		if *routeD < 1 {
+			fail("--route-d must be >= 1 in routed mode")
+		}
+		if *routeWorkers < 1 {
+			fail("--route-workers must be >= 1 in routed mode")
+		}
+		if *routeKey == "" {
+			fail("--route-key (distribution-key OIDs) is required in routed mode")
+		}
 	}
 	jobID, err := strconv.ParseUint(*job, 10, 32)
 	if err != nil {
@@ -86,6 +118,11 @@ func main() {
 	// cannot hang the segment forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
+
+	if routed {
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA)
+		return
+	}
 
 	// The destination agent may still be binding its listen socket (the
 	// controller launches it right before the source agent triggers the
@@ -153,4 +190,129 @@ func hostOf(listen string) (string, error) {
 		return "", err
 	}
 	return host, nil
+}
+
+// runRouted is the P9 routed mode: this segreceiver (running on source
+// segment s) routes its local slice to D destination segments, fanning each
+// (s,d) pair over W sub-streams, and streams them (compressed, content-tagged
+// with the DESTINATION segment id) to the destination agent. It dials
+// destAddr D×W times (retrying while the agent binds), then hands the
+// connection grid to the RoutedSender. Exit 0 on a clean stream; exit 1
+// otherwise (a non-zero exit fails the kernel's COPY, so there is no silent
+// partial stream).
+func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA string) {
+	D := routeD
+	W := routeWorkers
+	// The routing key is embedded by the controller as "oid:pos,oid:pos" —
+	// the distribution key's column type OIDs and their positions in the row
+	// (internal values, no user input). Single-column keys are "oid:pos".
+	keyIdx := make([]int, 0, 8)
+	keyOid := make([]uint32, 0, 8)
+	for _, part := range strings.Split(routeKey, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		i := strings.IndexByte(part, ':')
+		if i < 0 {
+			fail("route-key: bad key spec %q (want oid:pos[,oid:pos...])", part)
+		}
+		oid, perr1 := strconv.ParseUint(part[:i], 10, 32)
+		pos, perr2 := strconv.Atoi(part[i+1:])
+		if perr1 != nil || perr2 != nil || pos < 0 {
+			fail("route-key: bad oid:pos pair %q", part)
+		}
+		keyOid = append(keyOid, uint32(oid))
+		keyIdx = append(keyIdx, pos)
+	}
+	if len(keyOid) == 0 {
+		fail("route-key: no keys parsed")
+	}
+
+	mode, level, perr := compress.Parse(compressMode)
+	if perr != nil {
+		if compressMode == "" {
+			mode, level = compress.ModeNone, 0
+		} else {
+			fail("compress %q: %v", compressMode, perr)
+		}
+	}
+
+	// Dial the destination agent D×W times (one sub-stream per (d,w)). The
+	// agent may still be binding its listen socket (the controller launches
+	// it right before the source agent triggers the ON SEGMENT dispatch), so
+	// retry the dials briefly.
+	conns := make([][]net.Conn, D)
+	open := 0
+	dialAll := func() error {
+		for d := 0; d < D; d++ {
+			conns[d] = make([]net.Conn, W)
+			for w := 0; w < W; w++ {
+				raw, derr := net.DialTimeout("tcp", destAddr, 10*time.Second)
+				if derr != nil {
+					return derr
+				}
+				var conn net.Conn = raw
+				if transfer.TLSEnabled(sslCert, sslKey, sslCA) {
+					host, herr := hostOf(destAddr)
+					if herr != nil {
+						_ = raw.Close()
+						return fmt.Errorf("tls: bad --dest-addr %q: %v", destAddr, herr)
+					}
+					ccfg, cerr := transfer.ClientTLSConfig(host, sslCert, sslKey, sslCA, "")
+					if cerr != nil {
+						_ = raw.Close()
+						return fmt.Errorf("tls: %v", cerr)
+					}
+					tc := tls.Client(raw, ccfg)
+					if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+						_ = raw.Close()
+						return fmt.Errorf("tls handshake with destination agent: %v", hsErr)
+					}
+					conn = tc
+				}
+				conns[d][w] = conn
+				open++
+			}
+		}
+		return nil
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := dialAll(); err == nil {
+			break
+		} else {
+			// Close any partially opened connections before retrying.
+			for d := 0; d < D; d++ {
+				for w := 0; w < W; w++ {
+					if conns[d] != nil && conns[d][w] != nil {
+						_ = conns[d][w].Close()
+					}
+				}
+			}
+			open = 0
+			if time.Now().After(deadline) {
+				fail("connect %s (retries exhausted): %v", destAddr, err)
+			}
+			select {
+			case <-ctx.Done():
+				fail("connect %s: %v", destAddr, ctx.Err())
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	defer func() {
+		for d := 0; d < D; d++ {
+			for w := 0; w < W; w++ {
+				_ = conns[d][w].Close()
+			}
+		}
+	}()
+
+	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, conns)
+	rows, err := sender.Run()
+	if err != nil {
+		fail("route: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: routed content=%d rows=%d dest=%d workers=%d ok\n", contentID, rows, D, W)
 }
