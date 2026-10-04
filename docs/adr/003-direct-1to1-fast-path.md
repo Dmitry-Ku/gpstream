@@ -4,6 +4,13 @@
 - **Date:** 2026-10-03
 - **Part of:** ADR-001 (two-agent data path), ADR-002 (remediated debt)
 - **Supersedes:** none
+> SUPERSEDED (2026-10-04): the copy-mode surface is now TWO modes —
+`coordinator` and `on_segment`. The `direct` mode described here is removed
+as redundant; the `direct_1to1` fast-path survives as the per-table 1:1
+write sub-path of `on_segment` (auto-selected when S==D with equal hash
+keys), alongside the routed (S!=D) and merge (non-routable) sub-paths. See
+docs/plans/two-agent-transport.md (v2 note) and the target-architecture
+section of that plan.
 
 ## Context
 

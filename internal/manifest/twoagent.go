@@ -50,14 +50,6 @@ type TwoAgentRunner interface {
 	// wire volume + the logical (decompressed) volume. The swap is NOT
 	// performed (the Manager decides it).
 	StreamSegment(ctx context.Context, req unitSegmentRequest) (rows int64, wire, logical uint64, err error)
-	// StreamDirect launches a destination agent in DIRECT mode (P5, R5) and
-	// instructs the source agent to run the direct data path: the source
-	// agent routes each row to one of D destination segments and streams D
-	// per-segment compressed slices; the destination agent performs D
-	// utility-mode per-segment COPYs into the staging table. It returns the
-	// authoritative (destination) row count + the on-network wire volume +
-	// the logical volume. The swap is NOT performed (the Manager decides it).
-	StreamDirect(ctx context.Context, req unitDirectRequest) (rows int64, wire, logical uint64, err error)
 	// StreamRouted launches a destination agent in ROUTED mode (P9, S≠D)
 	// and instructs the source agent to trigger the ON SEGMENT dispatch with
 	// routing enabled: each source segreceiver routes its slice to its
@@ -203,27 +195,6 @@ type unitSegmentRequest struct {
 	// DirectLaunch carries the per-segment destination DSNs + D for ServeDirect.
 	DirectWrite  bool
 	DirectLaunch agent.DirectLaunch
-}
-
-// unitDirectRequest is the Manager's per-unit instruction for the P5 direct
-// data path (R5 through the agents). The source agent routes each row to one
-// of D destination segments and streams D per-segment compressed slices; the
-// destination agent performs D utility-mode per-segment COPYs. The controller
-// (control plane) computes the routing key (KeyIdx/KeyOid/D) and the per-
-// segment destination DSNs and hands both agents their halves.
-type unitDirectRequest struct {
-	agent.DirectReq
-	// Launch is the destination agent's launch payload (staging shape +
-	// per-segment DSNs + D). The controller builds it from the plan.
-	Launch agent.DirectLaunch
-	// DstConn is the destination COORDINATOR conn (staging DDL + swap); the
-	// per-segment data COPYs use Launch.DstDSNs.
-	DstConn string
-	// DstTLS are the dest agent's pg-plane TLS settings.
-	DstCert, DstKey, DstCA string
-	// DataTLS is the agent<->agent data-plane TLS (source = client, dest =
-	// server). Reuses the data TLS config (empty = plain TCP).
-	DataTLSCert, DataTLSKey, DataTLSCA string
 }
 
 // unitRoutedRequest is the Manager's per-unit instruction for the P9 routed
@@ -597,101 +568,6 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (routed) report unit %d: %s", o.UnitID, dstderr.String())
 }
 
-// StreamDirect (P5) launches a destination agent in DIRECT mode, instructs the
-// source agent to run the direct data path (route each row to a destination
-// segment + stream D per-segment compressed slices), and waits for the
-// destination to finish its D utility-mode per-segment COPYs. Both agents run
-// on the controller host, so the agent<->agent data socket is loopback; the
-// destination agent's per-segment COPYs reach the destination segments
-// (cross-host utility). The destination is the authoritative row-count source;
-// the wire volume is the on-network byte volume it read from the D slice
-// connections. The swap is NOT performed — the Manager decides it.
-func (r *processTwoAgentRunner) StreamDirect(ctx context.Context, req unitDirectRequest) (int64, uint64, uint64, error) {
-	// 1. Pre-bind a loopback data port (the agents are co-located on the
-	// controller host, so loopback is reachable). The source agent dials it D
-	// times (once per destination segment); the dest agent accepts D.
-	listen, err := prebindLoopback()
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: direct data port: %w", err)
-	}
-	launchJSON, err := json.Marshal(req.Launch)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: marshal direct launch: %w", err)
-	}
-	var dstderr bytes.Buffer
-	dargs := []string{
-		"--dest", req.DstConn,
-		"--listen", listen,
-		"--direct-spec", string(launchJSON),
-		"--accept-timeout", "5m",
-	}
-	if req.DstCert != "" {
-		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
-	}
-	if req.DstCA != "" {
-		dargs = append(dargs, "--ssl-ca", req.DstCA)
-	}
-	if req.DataTLSCert != "" {
-		dargs = append(dargs, "--data-tls-cert", req.DataTLSCert, "--data-tls-key", req.DataTLSKey)
-	}
-	if req.DataTLSCA != "" {
-		dargs = append(dargs, "--data-tls-ca", req.DataTLSCA)
-	}
-	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
-	dcmd.Stderr = &dstderr
-	dcmd.Stdout = io.Discard
-	if err := dcmd.Start(); err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent (direct): %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- dcmd.Wait() }()
-	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf(format, a...)
-	}
-
-	// 2. Instruct the source agent to run the direct data path. The source
-	// retries its dial while the destination is still binding (dialDestRetry).
-	d := req.DirectReq
-	d.DestAddr = listen
-	d.DataTLSCert = req.DataTLSCert
-	d.DataTLSKey = req.DataTLSKey
-	d.DataTLSCA = req.DataTLSCA
-	dresp, err := r.ctrl.Direct(d)
-	if err != nil {
-		return fail("two-agent: direct unit %d: %w", d.UnitID, err)
-	}
-	if !dresp.Ok {
-		return fail("two-agent: source agent direct unit %d: %s", d.UnitID, dresp.Error)
-	}
-
-	// 3. Wait for the destination to finish the D per-segment COPYs.
-	var werr error
-	select {
-	case werr = <-done:
-	case <-time.After(r.streamDeadline()):
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (direct): timed out", d.UnitID)
-	}
-	if werr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (direct): %v (stderr: %s)", d.UnitID, werr, dstderr.String())
-	}
-
-	// 4. Parse the destination report: "gpstream-dest-agent: unit=N rows=R
-	// logical=L wire=W <verdict> ok".
-	for _, line := range strings.Split(dstderr.String(), "\n") {
-		var unit, rows, logical, wire int64
-		var verdict string
-		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok",
-			&unit, &rows, &logical, &wire, &verdict); perr == nil && n == 5 {
-			return rows, uint64(wire), uint64(logical), nil
-		}
-	}
-	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (direct) report unit %d: %s", d.UnitID, dstderr.String())
-}
-
 // Checksum asks the source agent (FR-02 snapshot) for the table's checksum.
 func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {
 	resp, err := r.ctrl.Checksum(schema, table)
@@ -1030,76 +906,6 @@ func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmen
 		return sres.Rows, sres.Wire, sres.Logical, nil
 	case <-time.After(6*time.Hour + time.Minute):
 		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): timed out", o.UnitID)
-	}
-}
-
-// StreamDirect (P5, in-proc) launches an in-process destination agent
-// (agent.ServeDirect) on a pre-bound loopback port, instructs the in-process
-// source agent (SourceServer) to run the direct data path, and waits for the
-// destination to finish its D utility-mode per-segment COPYs. The data flows
-// over a real loopback TCP socket (source agent -> destination agent), exactly
-// as in the binary path. The destination is the authoritative row-count source.
-func (r *InProcTwoAgentRunner) StreamDirect(ctx context.Context, req unitDirectRequest) (int64, uint64, uint64, error) {
-	listen, err := prebindLoopback()
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: direct data port: %w", err)
-	}
-	// 1. Launch the per-unit in-process destination agent (direct mode).
-	dresCh := make(chan agent.DirectResult, 1)
-	derrCh := make(chan error, 1)
-	go func() {
-		res, err := agent.ServeDirect(ctx, agent.DirectOptions{
-			Listen:        listen,
-			DestConn:      req.DstConn,
-			SSLCert:       req.DstCert,
-			SSLKey:        req.DstKey,
-			SSLCA:         req.DstCA,
-			Launch:        req.Launch,
-			Swap:          false,
-			AcceptTimeout: 5 * time.Minute,
-			StreamTimeout: 6 * time.Hour,
-		})
-		if err != nil {
-			derrCh <- err
-			return
-		}
-		dresCh <- res
-	}()
-	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		// Unblock the ServeDirect accept (dial + close a probe connection).
-		for i := 0; i < int(req.Launch.D); i++ {
-			if c, lerr := net.Dial("tcp", listen); lerr == nil {
-				_ = c.Close()
-			}
-		}
-		select {
-		case <-derrCh:
-		case <-dresCh:
-		case <-time.After(2 * time.Second):
-		}
-		return 0, 0, 0, fmt.Errorf(format, a...)
-	}
-
-	// 2. Instruct the in-process source agent to run the direct data path. The
-	// source retries its dial while the destination is still binding.
-	d := req.DirectReq
-	d.DestAddr = listen
-	dresp, err := r.ctrl.Direct(d)
-	if err != nil {
-		return fail("two-agent: direct unit %d: %w", d.UnitID, err)
-	}
-	if !dresp.Ok {
-		return fail("two-agent: source agent direct unit %d: %s", d.UnitID, dresp.Error)
-	}
-
-	// 3. Wait for the destination to finish the D per-segment COPYs.
-	select {
-	case derr := <-derrCh:
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (direct): %w", d.UnitID, derr)
-	case dres := <-dresCh:
-		return dres.Rows, dres.Wire, dres.Logical, nil
-	case <-time.After(6*time.Hour + time.Minute):
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (direct): timed out", d.UnitID)
 	}
 }
 

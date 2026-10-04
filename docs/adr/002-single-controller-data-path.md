@@ -3,6 +3,14 @@
 - **Status:** Closed (remediated by the two-agent data path — the only data path since the `--topology` flag was removed; ADR-001)
 - **Date:** 2026-10-02
 - **Supersedes (partially):** ADR-001 data-path section
+> NOTE (2026-10-04): this ADR is historical (the debt is closed). Its
+"Two-agent design" section describes THREE copy modes and agents launched
+locally by the controller — both superseded by the target architecture:
+TWO modes (`coordinator`, `on_segment` with per-table 1:1/routed/merge
+sub-paths) and agents running on the CLUSTER HOSTS where their pg
+connections open (source agent on the source master, dest agent on the
+destination coordinator or segments). See
+docs/plans/two-agent-transport.md (v2 note).
 - **Remediated:** 2026-10-02 — the two-agent data path is live for all three
   copy modes (`coordinator` P3, `on_segment` P4, `direct` P5); see the
   "Resolution" section at the end.

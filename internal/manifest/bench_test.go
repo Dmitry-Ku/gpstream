@@ -44,9 +44,6 @@ func (f *fakeBenchRunner) Stream(context.Context, unitStreamRequest) (int64, uin
 func (f *fakeBenchRunner) StreamSegment(context.Context, unitSegmentRequest) (int64, uint64, uint64, error) {
 	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamSegment unused in bench")
 }
-func (f *fakeBenchRunner) StreamDirect(context.Context, unitDirectRequest) (int64, uint64, uint64, error) {
-	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamDirect unused in bench")
-}
 func (f *fakeBenchRunner) StreamRouted(context.Context, unitRoutedRequest) (int64, uint64, uint64, error) {
 	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamRouted unused in bench")
 }
@@ -136,7 +133,7 @@ func TestBenchAllEmptyUnits(t *testing.T) {
 	}
 }
 
-// TestBenchAllRejectsSegmentModes: P7 — on_segment / direct measure the
+// TestBenchAllRejectsSegmentModes: P7 — on_segment measures the
 // per-segment source read, which needs a real Greenplum source (gp_segment_id
 // + ON SEGMENT / routing); on a non-GP source they are refused with a clear
 // message pointing at the lab.
@@ -145,8 +142,8 @@ func TestBenchAllRejectsSegmentModes(t *testing.T) {
 	if _, err := m.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
 		t.Fatal("benchall(on_segment): want the real-GP error")
 	}
-	m2 := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyDirect })
+	m2 := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyOnSegment })
 	if _, err := m2.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
-		t.Fatal("benchall(direct): want the real-GP error")
+		t.Fatal("benchall(on_segment): want the real-GP error")
 	}
 }

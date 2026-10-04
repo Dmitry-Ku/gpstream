@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -160,13 +159,6 @@ func (s *SourceServer) serveControl(l net.Listener) {
 				continue
 			}
 			_ = SendLine(conn, s.handleOnSegment(req))
-		case "direct":
-			var req DirectReq
-			if uerr := json.Unmarshal(line, &req); uerr != nil {
-				_ = SendLine(conn, DirectResp{Ok: false, Error: uerr.Error()})
-				continue
-			}
-			_ = SendLine(conn, s.handleDirect(req))
 		case "checksum":
 			var req ChecksumReq
 			if uerr := json.Unmarshal(line, &req); uerr != nil {
@@ -251,150 +243,6 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
 	}
 	return OnSegmentResp{Ok: true, Rows: rows}
-}
-
-// handleDirect runs the P5 direct data path on the source agent's FR-02
-// snapshot connection. The source reads the table with `COPY ... TO STDOUT`,
-// routes each row to one of D destination segments (the RowRouter reproduces
-// the kernel's cdbhash + jump-consistent-hash over the distribution key, so
-// each row lands on the segment the destination kernel would place it on), and
-// streams D per-segment COMPRESSED slices (content-tagged) to the destination
-// agent over D connections. The destination agent performs the D utility-mode
-// per-segment COPYs. The source agent never touches the destination cluster;
-// it only owns the source snapshot + the routing. It returns the router's row
-// count + per-segment distribution (a cross-check; the authoritative count is
-// the destination agent's).
-func (s *SourceServer) handleDirect(req DirectReq) DirectResp {
-	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StreamTimeout)
-	defer cancel()
-	D := req.D
-	if D < 1 {
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct: D %d < 1", D)}
-	}
-	if len(req.KeyIdx) == 0 || len(req.KeyIdx) != len(req.KeyOid) {
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct: bad routing key (key_idx %d, key_oid %d)", len(req.KeyIdx), len(req.KeyOid))}
-	}
-	mode, level, perr := compress.Parse(req.Compress)
-	if perr != nil {
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct: compress %q: %v", req.Compress, perr)}
-	}
-	// 1. Dial the destination agent D times (one content-tagged connection per
-	//    destination segment). The destination agent (direct mode) accepts
-	//    exactly D connections, so a refused dial is retried while it binds.
-	// Each conn is wrapped to count the bytes actually written to the socket
-	// (the on-wire volume the source reports).
-	conns := make([]net.Conn, 0, D)
-	counters := make([]*countingWriteConn, D)
-	failConns := func(format string, a ...any) DirectResp {
-		for _, c := range conns {
-			_ = c.Close()
-		}
-		s.heal(ctx) // a failed unit may have aborted the snapshot tx (F-06)
-		return DirectResp{Ok: false, Error: fmt.Sprintf(format, a...)}
-	}
-	for i := 0; i < int(D); i++ {
-		c, derr := s.dialDestTLS(ctx, req.DestAddr)
-		if derr != nil {
-			return failConns("direct: dial dest (segment %d): %v", i, derr)
-		}
-		wc := &countingWriteConn{Conn: c}
-		conns = append(conns, wc)
-		counters[i] = wc
-	}
-	defer func() {
-		for _, c := range conns {
-			_ = c.Close()
-		}
-	}()
-	// 2. Per-segment in-memory pipes: the RowRouter writes each segment's
-	//    binary-COPY stream to pw[s]; the sender goroutine reads pr[s] and
-	//    pushes it compressed over conns[s]. Back-pressure: a full pipe
-	//    blocks the router until that segment's sender drains it.
-	segReaders := make([]*io.PipeReader, D)
-	segWriters := make([]io.Writer, D)
-	for i := 0; i < int(D); i++ {
-		pr, pw := io.Pipe()
-		segReaders[i] = pr
-		segWriters[i] = pw
-	}
-	// 3. The source COPY stream (on the pinned FR-02 snapshot connection) feeds
-	//    the RowRouter, which routes each row to its destination segment.
-	srcPipeR, srcPipeW := io.Pipe()
-	router, rerr := transfer.NewRowRouter(srcPipeR, req.KeyIdx, req.KeyOid, D, segWriters)
-	if rerr != nil {
-		for i := 0; i < int(D); i++ {
-			_ = segWriters[i].(io.Closer).Close()
-		}
-		_ = srcPipeW.Close()
-		s.heal(ctx)
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct: row router: %v", rerr)}
-	}
-	// 4. One sender per destination segment: read that segment's slice from
-	//    its pipe and stream it compressed (content-tagged) to the agent. The
-	//    sender closes the pipe reader on exit so that if the destination
-	//    connection dies, the router does not block forever writing to that
-	//    segment (its next Write returns an error and it unwinds).
-	var (
-		sentWG   sync.WaitGroup
-		sendErrs = make(chan error, D)
-	)
-	for i := 0; i < int(D); i++ {
-		sentWG.Add(1)
-		go func(i int) {
-			defer sentWG.Done()
-			defer func() { _ = segReaders[i].Close() }()
-			_, eerr := segstream.SendCompressed(ctx, conns[i], segReaders[i], req.JobID, req.UnitID, int16(i), mode, level)
-			if eerr != nil {
-				sendErrs <- fmt.Errorf("segment %d: %v", i, eerr)
-			}
-		}(i)
-	}
-	// The source COPY runs in its own goroutine; the RowRouter (main) consumes
-	// its output and routes it.
-	copied := make(chan error, 1)
-	go func() {
-		_, cerr := source.New(s.copyQuerier()).CopyToStream(ctx, req.Schema, req.Table, srcPipeW)
-		_ = srcPipeW.Close() // end-of-copy for the router (even on error)
-		copied <- cerr
-	}()
-	// Run the router (routes every row; writes per-segment streams).
-	routeRows, rerr := router.Run()
-	// 5. Shutdown: close the source pipe (unblocks the COPY if the router
-	//    exited early) and the per-segment pipes (end-of-slice for each
-	//    sender), then wait for all senders to finish.
-	_ = srcPipeW.Close()
-	for i := 0; i < int(D); i++ {
-		_ = segWriters[i].(io.Closer).Close()
-	}
-	sentWG.Wait()
-	close(sendErrs)
-	cerr := <-copied
-	// Wire volume: the sum of the bytes the senders actually wrote to the
-	// D agent<->agent sockets (compressed, framed) — the bytes on the wire.
-	var wire uint64
-	for _, c := range counters {
-		wire += c.Bytes()
-	}
-	// First root cause wins: a segment send error is the cause; a source COPY
-	// error that followed the abort is its consequence.
-	if rerr != nil {
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct route: %v", rerr)}
-	}
-	var sendErr error
-	for e := range sendErrs {
-		if sendErr == nil {
-			sendErr = e
-		}
-	}
-	if sendErr != nil {
-		s.heal(ctx)
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct send: %v", sendErr)}
-	}
-	if cerr != nil {
-		s.heal(ctx)
-		return DirectResp{Ok: false, Error: fmt.Sprintf("direct source copy %s.%s: %v", req.Schema, req.Table, cerr)}
-	}
-	return DirectResp{Ok: true, Rows: routeRows, Wire: wire, PerSeg: router.PerSegment()}
 }
 
 // countingWriteConn wraps a net.Conn and counts every byte written to it (the

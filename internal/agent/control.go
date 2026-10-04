@@ -261,28 +261,6 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 	return resp, nil
 }
 
-// Direct instructs the source agent to run the P5 direct data path for one
-// unit: it reads the source table, routes each row to one of D destination
-// segments, and streams D per-segment compressed slices to the destination
-// agent (which runs the D utility-mode per-segment COPYs). It blocks until all
-// D slices are streamed and returns the router's row count (a cross-check; the
-// authoritative count is the destination agent's).
-func (c *ControlClient) Direct(req DirectReq) (DirectResp, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var resp DirectResp
-	if err := SendLine(c.w, req); err != nil {
-		return resp, err
-	}
-	if err := c.w.Flush(); err != nil {
-		return resp, fmt.Errorf("control: flush: %w", err)
-	}
-	if err := recvLine(c.r, &resp); err != nil {
-		return resp, fmt.Errorf("control: read direct response: %w", err)
-	}
-	return resp, nil
-}
-
 // Checksum asks the source agent (which holds the FR-02 snapshot) for the
 // content checksum of a table.
 func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {

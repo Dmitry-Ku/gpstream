@@ -1,5 +1,11 @@
 # gpstream — Configuration Reference
 
+> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
+> coordinator and on_segment. The direct mode described in this document is
+> redundant (its per-segment write is subsumed by on_segment's auto-selected
+> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
+> still describes the CURRENT (shipped) behavior.
+
 This document is the configuration reference for **gpstream**, the open-source
 Go tool that performs high-throughput **LOGICAL** data copy between two
 Greenplum 6 clusters over a direct, high-speed network via `COPY (binary)`

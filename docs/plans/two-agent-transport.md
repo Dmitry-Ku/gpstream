@@ -4,6 +4,23 @@
 - **Date:** 2026-10-02
 - **Remediates:** ADR-002 (single-controller data path)
 - **Restores:** ADR-001 data path (source agent ↔ dest agent stream)
+> SUPERSEDED v2 (2026-10-04): the phase plan below (P0–P6) is executed and
+historical. The TARGET architecture it must be read against is: (1) TWO
+copy modes only — `coordinator` and `on_segment`; the `direct` mode (P5)
+is removed, its per-segment write survives as the per-table AUTO
+sub-paths of `on_segment` — 1:1 (S==D, equal hash keys), routed (S!=D,
+hash key), merge (non-routable fallback: non-hash distribution, non-GP
+destination, partitioned parents); (2) agents run on the CLUSTER HOSTS
+where their pg connections open — source agent on the source master
+(long-lived, FR-02 snapshot, ON SEGMENT dispatch), dest agent on the
+destination coordinator (coordinator mode) or destination segments
+(on_segment sub-paths), launched remotely by the controller (SSH/daemon)
+— NOT as local controller subprocesses; (3) ports: each long-lived agent
+binds one data + one control port (auto `:0`, real address reported to the
+controller in the control handshake and embedded in the ON SEGMENT
+ProgramCommand); units multiplex by unit_id frames on the listener —
+per-unit ports (base+unitID) are removed. The WAN leg carries only the
+compressed framed stream; the controller holds no data connections.
 
 ## Goal
 
