@@ -68,7 +68,7 @@ func Send(ctx context.Context, conn net.Conn, in io.Reader, jobID, unitID uint32
 	buf := make([]byte, chunkSize)
 	var seq uint64
 	for {
-		n, rerr := rc.Read(buf)
+		n, rerr := readChunkCoalesced(rc, buf)
 		if n > 0 {
 			h.Write(buf[:n])
 			if werr := transfer.WriteFrame(conn, &transfer.Frame{
@@ -92,6 +92,29 @@ func Send(ctx context.Context, conn net.Conn, in io.Reader, jobID, unitID uint32
 	copy(tr.SHA256[:], h.Sum(nil))
 	tr.Rows = rc.Rows()
 	return rc.Rows(), transfer.WriteFrame(conn, transfer.NewTrailerFrame(jobID, unitID, seq, content, tr))
+}
+
+// readChunkCoalesced reads up to len(buf) bytes from rc, coalescing the
+// partial reads RowCounter returns (it yields as soon as one complete row is
+// available, so an unbuffered io.Pipe yields one row per Read). Without this
+// the send loop frames one row at a time; when compressed, each frame re-
+// initialises a zstd encoder (~13MB allocation), a churn that livelocks the
+// source agent at >=300k rows (P5: source agent pegged at 2 CPU, 0 rows on
+// the destination). It keeps framing at chunkSize granularity, blocks on
+// backpressure (no busy loop), and returns the first underlying error
+// (possibly together with the partial bytes already read).
+func readChunkCoalesced(rc *transfer.RowCounter, buf []byte) (int, error) {
+	total := 0
+	for total < len(buf) {
+		n, err := rc.Read(buf[total:])
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // SliceResult is what the controller collected from one segment stream.

@@ -93,7 +93,7 @@ func SendCompressed(ctx context.Context, conn net.Conn, in io.Reader, jobID, uni
 	buf := make([]byte, chunkSize)
 	var seq uint64
 	for {
-		n, rerr := rc.Read(buf)
+		n, rerr := readChunkCoalesced(rc, buf)
 		if n > 0 {
 			h.Write(buf[:n])
 			// Compress the chunk (FR-12): the wire carries the compressed
