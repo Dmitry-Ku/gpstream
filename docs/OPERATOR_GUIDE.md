@@ -162,7 +162,7 @@ swap, indexes) and holds **no data connections**. `gpstream_bytes_total` is
 the on-wire agent-to-agent volume, compression genuinely reduces
 inter-cluster bandwidth, and the
 controller is a control-plane trust root only. It requires
-`--source-agent-binary` / `--dest-agent-binary` (the agent paths on the peer
+the agent binaries resolve by convention (packaged install: all four in `/usr/bin`; override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` for dev builds) —
 hosts). See `docs/adr/002-single-controller-data-path.md`.
 
 ---

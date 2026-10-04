@@ -195,16 +195,32 @@ Skip the FK/CHECK constraint-restore pass on the destination.
 The data path is the two-agent transport (ADR-002): the source agent reads
 the table and pushes a compressed stream over a real socket to the dest
 agent; the controller is control plane only (no data connections).
-.TP
-.B --source-agent-binary
-PATH
-gpstream-source-agent path on the SOURCE host (required for
-.BR run / bench ).
-.TP
-.B --dest-agent-binary
-PATH
-gpstream-dest-agent path on the DESTINATION host (required for
-.BR run / bench ).
+The agent and segment binaries
+.BR ( gpstream-source-agent ,
+.BR gpstream-dest-agent ,
+.B gpstream-segreceiver )
+are NOT selectable by flag: a packaged install always lays all four in the
+same directory, so the controller resolves them by convention — first the
+directory of the running
+.B gpstream
+binary, then the
+.B PATH .
+Override for dev builds or tarball installs (binaries not beside each other)
+via the environment
+.BR GPSTREAM_SOURCE_AGENT_BINARY /
+.BR GPSTREAM_DEST_AGENT_BINARY /
+.BR GPSTREAM_SEG_BINARY
+or the config file keys
+.BR source_agent_binary /
+.BR dest_agent_binary /
+.BR seg_binary .
+For
+.B --copy-mode on_segment
+the gpstream package must be installed on every SOURCE segment host (the
+kernel runs
+.B gpstream-segreceiver
+there); the package places it at
+.BR /usr/bin/gpstream-segreceiver .
 .TP
 .BR --copy-mode
 coordinator|on_segment|direct
@@ -223,16 +239,14 @@ the data path — logged as routed_write.
 .TP
 .B --seg-listen
 HOST:PORT
-Controller listen address the segreceivers dial (required with
+Base listen address the segreceivers dial, for
 .B --copy-mode
-on_segment).
-.TP
-.B --seg-binary
-PATH
-gpstream-segreceiver path on the SOURCE segment hosts (required with
-.B --copy-mode
-on_segment; install the gpstream package on every segment host, or copy the
-single static file; the package places it at /usr/bin/gpstream-segreceiver).
+on_segment. Optional: when omitted it auto-resolves to the controller's
+primary non-loopback IP plus a free port. Each unit binds
+.BR base-port + unitID
+(units copy in parallel, so the ports must not collide); the segreceivers on
+the source segment hosts dial that address, so the host must be routable from
+them — on a multi-homed controller set it explicitly.
 .TP
 .B --seg-tls-cert
 F

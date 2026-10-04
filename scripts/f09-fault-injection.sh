@@ -87,9 +87,7 @@ T0=$(date +%s)
 /usr/bin/gpstream run \
   --source "$SRC" --dest "$DST" \
   --dbs f09 --overwrite \
-  --source-agent-binary /usr/bin/gpstream-source-agent \
-  --dest-agent-binary /usr/bin/gpstream-dest-agent \
-  --operation-id $OP --state-dir $STATE \
+    --operation-id $OP --state-dir $STATE \
   --streams 4 --verify full 2>&1 | grep -vE "setlocale" | grep -E "units:|run:|conflicts:"
 T1=$(date +%s)
 echo "PHASE3_SECONDS=$((T1-T0))"

@@ -6,8 +6,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -194,16 +196,19 @@ type Config struct {
 	// Transport (T-B, DESIGN §1.3). CopyMode selects the source data path;
 	// the on_segment fields configure the segment-direct fast path.
 	CopyMode  CopyMode // default coordinator
-	SegListen string   // controller listen address the segreceivers dial (host:port)
-	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts
+	SegListen string   // base listen address the segreceivers dial (host:port); empty = auto (controller primary IP + free port, resolved at run start)
+	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts; empty = convention (sibling of the gpstream binary, then PATH)
 
 	// The data plane ALWAYS runs in the source/dest agents (ADR-002, P7): the
-	// controller orchestrates a source agent (on the source cluster) and a
-	// dest agent (on the destination cluster) over a real, compressed,
-	// optionally-TLS socket and holds no data connections. The agent
-	// binaries' paths on the peer hosts; required by run/bench.
-	SourceAgentBinary string // gpstream-source-agent path on the SOURCE host
-	DestAgentBinary   string // gpstream-dest-agent path on the DEST host
+	// controller orchestrates a source agent and a dest agent (both launched
+	// by the controller on ITS host) over a real, compressed, optionally-TLS
+	// socket and holds no data connections. The agent binaries resolve by
+	// convention (sibling of the gpstream binary, then PATH) so the packaged
+	// install needs no flags; set via GPSTREAM_SOURCE_AGENT_BINARY /
+	// GPSTREAM_DEST_AGENT_BINARY / GPSTREAM_SEG_BINARY (or the config file)
+	// to override (dev builds, tarball installs).
+	SourceAgentBinary string // gpstream-source-agent path; empty = convention
+	DestAgentBinary   string // gpstream-dest-agent path; empty = convention
 
 	// Data-plane TLS for the segment-direct (on_segment) hop (F-13 «TLS
 	// between sender/receiver»). Deliberately SEPARATE from the SSL*
@@ -317,11 +322,20 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown copy mode %q (want coordinator|on_segment|direct)", c.CopyMode)
 	}
-	if c.CopyMode == CopyOnSegment && c.SegBinary == "" {
-		return fmt.Errorf("--copy-mode on_segment requires --seg-binary (gpstream-segreceiver path on the segment hosts)")
-	}
-	if c.CopyMode == CopyOnSegment && c.SegListen == "" {
-		return fmt.Errorf("--copy-mode on_segment requires --seg-listen (controller listen address the segreceivers dial, e.g. 10.0.0.5:9432)")
+	// on_segment: SegBinary/SegListen may stay empty — they resolve by
+	// convention at run start (ResolveAgentBinaries / ResolveSegListen) and
+	// fail loud there if the binary is not installed. An explicitly given
+	// --seg-listen must already be a usable host:port (UnitListen adds
+	// unitID to the port per unit).
+	if c.SegListen != "" {
+		h, p, err := net.SplitHostPort(c.SegListen)
+		if err != nil || h == "" {
+			return fmt.Errorf("--seg-listen %q must be host:port", c.SegListen)
+		}
+		pn, err := strconv.Atoi(p)
+		if err != nil || pn < 1 || pn > 65535 {
+			return fmt.Errorf("--seg-listen %q must be host:port (numeric port 1-65535)", c.SegListen)
+		}
 	}
 	// Frame-ack (DESIGN §4.6, R2): validate the knob and normalise the
 	// defaults so the data path always sees a usable config.
@@ -410,6 +424,21 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("SSL_CA"); ok {
 		c.SSLCA = v
+	}
+	// Agent/segment binaries: convention by default (sibling of the gpstream
+	// binary, then PATH); these overrides are for dev builds and tarball
+	// installs where the binaries are not beside each other.
+	if v, ok := get("SOURCE_AGENT_BINARY"); ok {
+		c.SourceAgentBinary = v
+	}
+	if v, ok := get("DEST_AGENT_BINARY"); ok {
+		c.DestAgentBinary = v
+	}
+	if v, ok := get("SEG_BINARY"); ok {
+		c.SegBinary = v
+	}
+	if v, ok := get("SEG_LISTEN"); ok {
+		c.SegListen = v
 	}
 	// Data-plane TLS for the on_segment hop (F-13), separate from the PG
 	// SSL_* vars: the segment stream can be encrypted even when the PG
@@ -682,6 +711,14 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegTLSKey = v
 	case "seg_tls_ca":
 		c.SegTLSCA = v
+	case "source_agent_binary":
+		c.SourceAgentBinary = v
+	case "dest_agent_binary":
+		c.DestAgentBinary = v
+	case "seg_binary":
+		c.SegBinary = v
+	case "seg_listen":
+		c.SegListen = v
 	case "index_priority":
 		c.IndexPriority = v
 	case "timeout":
@@ -689,4 +726,125 @@ func assignConfigString(c *Config, key, v string) {
 			c.Timeout = d
 		}
 	}
+}
+
+// ResolveAgentBinaries fills the empty agent/segment binary paths by
+// convention so a packaged install (all four binaries in /usr/bin) needs no
+// flags: (1) sibling of the running gpstream binary (os.Executable's
+// directory), (2) PATH lookup. An explicitly configured value (CLI/config
+// file/env) is never clobbered. It fails loud when a binary cannot be found
+// — the on_segment path additionally needs the segreceiver to be installed
+// on the SOURCE SEGMENT HOSTS at the same path (the GP kernel executes it
+// there), which is verified by doctor and by the segreceivers' dial.
+func (c *Config) ResolveAgentBinaries() error {
+	var err error
+	if c.SourceAgentBinary == "" {
+		c.SourceAgentBinary, err = resolveSibling("gpstream-source-agent")
+		if err != nil {
+			return fmt.Errorf("resolve gpstream-source-agent: %w", err)
+		}
+	}
+	if c.DestAgentBinary == "" {
+		c.DestAgentBinary, err = resolveSibling("gpstream-dest-agent")
+		if err != nil {
+			return fmt.Errorf("resolve gpstream-dest-agent: %w", err)
+		}
+	}
+	// The segreceiver is needed only for on_segment (the kernel runs it on
+	// the source segments); other modes never reference it.
+	if c.CopyMode == CopyOnSegment && c.SegBinary == "" {
+		c.SegBinary, err = resolveSibling("gpstream-segreceiver")
+		if err != nil {
+			return fmt.Errorf("resolve gpstream-segreceiver: %w", err)
+		}
+	}
+	return nil
+}
+
+// resolveSibling finds name next to the running gpstream binary, then on the
+// PATH. It returns an absolute path (the GP kernel runs the segreceiver path
+// verbatim on the segment hosts, so a bare PATH name would not survive).
+func resolveSibling(name string) (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		cand := filepath.Join(filepath.Dir(exe), name)
+		if st, err := os.Stat(cand); err == nil && st.Mode().Perm()&0o111 != 0 {
+			return cand, nil
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("%s not found (looked next to %s and on PATH)", name, "the gpstream binary")
+}
+
+// ResolveSegBinaryOrEmpty is the soft variant for doctor: it resolves the
+// segreceiver by convention but returns "" (no error) when it is not found,
+// so the on_segment probe is skipped instead of failing the diagnostic.
+func ResolveSegBinaryOrEmpty() (string, error) {
+	p, err := resolveSibling("gpstream-segreceiver")
+	if err != nil {
+		return "", nil
+	}
+	return p, nil
+}
+
+// ResolveSegListen fills an empty --seg-listen (on_segment only) so the
+// operator does not have to name a controller address: the controller's
+// primary non-loopback IPv4 + a free port (prebound, so the base is almost
+// certainly free; each unit then binds base+unitID at its own start). The
+// host must be routable from the SOURCE segment hosts — a multi-homed
+// controller should set --seg-listen explicitly. nUnits is only used for a
+// clearer error if the free-port probe fails.
+func (c *Config) ResolveSegListen(nUnits int) error {
+	if c.SegListen != "" {
+		return nil
+	}
+	host, err := primaryIPv4()
+	if err != nil {
+		return fmt.Errorf("auto --seg-listen: %w (set --seg-listen HOST:PORT explicitly on a multi-homed controller)", err)
+	}
+	port, err := freePort(host)
+	if err != nil {
+		return fmt.Errorf("auto --seg-listen: no free port on %s for %d unit(s): %w (set --seg-listen HOST:PORT)", host, nUnits, err)
+	}
+	c.SegListen = net.JoinHostPort(host, strconv.Itoa(port))
+	return nil
+}
+
+// primaryIPv4 returns the first non-loopback, global IPv4 address of the
+// host (the one the source segments are most likely to reach).
+func primaryIPv4() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	var candidate string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || !ipn.IP.To4().IsGlobalUnicast() {
+			continue
+		}
+		// Prefer the most common LAN ranges, then anything else: on a
+		// multi-NIC box the first global unicast is usually the default one.
+		if candidate == "" {
+			candidate = ipn.IP.String()
+		}
+	}
+	if candidate == "" {
+		return "", fmt.Errorf("no non-loopback IPv4 address found")
+	}
+	return candidate, nil
+}
+
+// freePort prebinds a throwaway listener on host:0 and returns the port, the
+// same "bind :0, read, release" trick prebindLoopback uses for loopback. The
+// tiny release/rebind race is acceptable: a collision surfaces as a clear
+// per-unit bind error, not silent data corruption.
+func freePort(host string) (int, error) {
+	l, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
 }

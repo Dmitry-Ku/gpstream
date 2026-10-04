@@ -159,7 +159,7 @@ are **implemented and live-verified** on the lab:
   measured **~2–3.5× on the source-read side** (the coordinator is the
   read bottleneck; grows with segment count). Requirements: the
   `gpstream-segreceiver` binary on the source segment hosts
-  (`--seg-binary`, `--seg-listen`) and, on the open-gpdb 6.x fork, the GUC
+  (the `gpstream` package on every source segment host, optionally `--seg-listen`) and, on the open-gpdb 6.x fork, the GUC
   `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream doctor`
   reports the capability as `on_segment` (PASS / WARN — WARN only degrades
   the *option*, the coordinator path always works).

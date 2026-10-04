@@ -66,8 +66,8 @@ from the flags or the file.
 ### 1.6a Transport (two-agent, ADR-002)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `SourceAgentBinary` | string | `""` | `--source-agent-binary` (CLI only) | gpstream-source-agent path **on the source host**; **required** for `run` / `bench`. |
-| `DestAgentBinary` | string | `""` | `--dest-agent-binary` (CLI only) | gpstream-dest-agent path **on the destination host**; **required** for `run` / `bench`. |
+| `SourceAgentBinary` | string | `""` → resolved | `source_agent_binary` / `GPSTREAM_SOURCE_AGENT_BINARY` | gpstream-source-agent path. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `run` / `bench`. |
+| `DestAgentBinary` | string | `""` → resolved | `dest_agent_binary` / `GPSTREAM_DEST_AGENT_BINARY` | gpstream-dest-agent path. Resolved by convention as above. |
 
 The data path is always the two-agent transport: the data plane lives in the
 agents, the controller holds no data connections.
@@ -122,8 +122,8 @@ place.
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `on_segment` \| `direct`. |
-| `SegListen` | string | `""` | `--seg-listen` | Controller listen address; **required** for `on_segment`. |
-| `SegBinary` | string | `""` | `--seg-binary` | gpstream-segreceiver path; **required** for `on_segment`. |
+| `SegListen` | string | `""` → auto | `--seg-listen` / `seg_listen` / `GPSTREAM_SEG_LISTEN` | Base listen address for `on_segment`: each unit binds `base+unitID`. When empty, auto-resolved to the controller's primary non-loopback IP + a free port (must be routable from the source segment hosts). |
+| `SegBinary` | string | `""` → resolved | `seg_binary` / `GPSTREAM_SEG_BINARY` | gpstream-segreceiver path on the SOURCE segment hosts. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `on_segment` runs. |
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
 | `SegTLSKey` | string | `""` | `--seg-tls-key` / env / file | Controller serving key. |
 | `SegTLSCA` | string | `""` | `--seg-tls-ca` / env / file | CA for the segment data plane. |
@@ -304,7 +304,7 @@ failed validation aborts the command.
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `on`/`off` | `unknown verify mode "…"` |
-| copy-mode on_segment | requires `--seg-binary` and `--seg-listen` | `--copy-mode on_segment requires --seg-binary …` / `… --seg-listen …` |
+| copy-mode on_segment | `--seg-listen` must be a valid `host:port` when given (auto-resolved when empty); the segreceiver binary must resolve | `--seg-listen must be host:port` / `on_segment: gpstream-segreceiver not found` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |
 

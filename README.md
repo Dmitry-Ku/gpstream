@@ -60,7 +60,7 @@ gpstream run
   [--compress none|zlib|zstd[:level]] [--zstd-level N]
   [--small-table-threshold SIZE]                       # F-12, default 1MiB
   [--copy-mode coordinator|on_segment|direct]
-  [--seg-listen HOST:PORT] [--seg-binary PATH]
+  [--seg-listen HOST:PORT]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
   [--workers N] [--rate-limit <Gbps>]
   [--auto-resume N]

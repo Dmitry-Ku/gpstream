@@ -20,7 +20,7 @@ Grounded in `internal/doctor/doctor.go` and
 | 2 | `version` | source, dest | `SELECT version()` | Query failed (privilege or connection) | — |
 | 3 | `segments` | source, dest | `gp_segment_configuration` present? count of `status='u'` | Catalog unreadable, or **0 up segments** (cannot copy) | Not a Greenplum cluster (plain PostgreSQL single-node mode — expected for the kernel PoC) |
 | 4 | `route` | src→dst | segment counts S, D; eligible (s,d) pair count; S==D? | — (never fails) | Endpoint is plain PostgreSQL — no route to report (coordinator path only) |
-| 5 | `on_segment` | source | the 3-prerequisite probe below (only when `--seg-binary` is supplied) | — (never fails the doctor) | Capability degraded — the job runs on the coordinator path instead |
+| 5 | `on_segment` | source | the 3-prerequisite probe below (only when the segreceiver binary resolves) | — (never fails the doctor) | Capability degraded — the job runs on the coordinator path instead |
 | 6 | `disk` | dest | disk probe (sentinel in the test bench; live = free space on the dest) | Probe failed / no data | — |
 | 7 | `permissions` | source, dest | `has_database_privilege(current_database(), 'CREATE')` / `'CONNECT'` | — | Role lacks CREATE/CONNECT — `GRANT CREATE, CONNECT ON DATABASE` |
 | 8 | `collation` | network | `datcollate` source vs dest | — | `LC_COLLATE` differs — affects routing; review before start (FR-10) |
@@ -87,7 +87,7 @@ overall: PASS (no FAIL)
 controller (`COPY ... TO PROGRAM ... ON SEGMENT` under the coordinator's
 snapshot, delivered by `gpstream-segreceiver` on the segment hosts),
 while the destination write still goes through the dest coordinator.
-Doctor probes it **only when `--seg-binary` is supplied** (the binary
+Doctor probes it **only when the segreceiver binary resolves** (the binary
 path on the segment hosts) and **only on a Greenplum source**.
 
 It composes from **three prerequisites**, all reported in the check
@@ -114,7 +114,7 @@ is green.
 | Situation | Use |
 |-----------|-----|
 | Doctor `on_segment` = **PASS** | `--copy-mode on_segment` — source segments stream directly (the fast path) |
-| Doctor `on_segment` = **WARN** (or no `--seg-binary`) | default coordinator path — correct, slower on the source side |
+| Doctor `on_segment` = **WARN** (or the segreceiver does not resolve) | default coordinator path — correct, slower on the source side |
 | Plain PostgreSQL endpoint | coordinator path only — there are no segments to read from |
 
 ## 3. How to read a doctor run
@@ -123,7 +123,7 @@ is green.
 $ gpstream doctor \
     --source "host=prod-coordinator   port=5432 user=gpstream dbname=postgres" \
     --dest   "host=preprod-coordinator  port=5432 user=gpstream dbname=postgres" \
-    --seg-binary /usr/bin/gpstream-segreceiver
+    # the segreceiver path resolves by convention (sibling of the gpstream binary); pass it via GPSTREAM_SEG_BINARY only for non-standard installs
 ```
 
 - **Any FAIL** → fix before running. The recommendation string names the

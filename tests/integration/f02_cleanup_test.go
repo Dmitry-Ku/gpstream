@@ -69,7 +69,8 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	cmd := exec.Command(bin.gpstream, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-		"--source-agent-binary", bin.srcAgent, "--dest-agent-binary", bin.destAgent,
+		// agent binaries resolve by convention (sibling of the controller binary)
+
 		"--workers", "1", "--verify", "on")
 	var runErr strings.Builder
 	cmd.Stderr = &runErr
@@ -155,7 +156,8 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	rr := exec.Command(bin.gpstream, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-		"--source-agent-binary", bin.srcAgent, "--dest-agent-binary", bin.destAgent)
+	// agent binaries resolve by convention (sibling of the controller binary)
+	)
 	rrOut, err := rr.CombinedOutput()
 	if err != nil {
 		t.Fatalf("re-run: %v\n%s", err, rrOut)

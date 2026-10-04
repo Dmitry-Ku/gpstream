@@ -167,7 +167,7 @@ single-controller in-memory data path is gone). The source agent runs on the
 controller host by default and reads the source cluster; the dest agent runs
 on the controller host and writes the destination cluster (or, for a true
 cross-host placement, on the destination cluster host). The controller is
-control plane only. Point `--source-agent-binary` / `--dest-agent-binary` at
+control plane only. The agent binaries are resolved by convention (the packaged install puts all four in `/usr/bin`, beside each other) — no flags to set.
 the agent paths (the package places both at `/usr/bin/gpstream-source-agent`
 and `/usr/bin/gpstream-dest-agent`), so a single package install on the
 controller host is enough for the default layout. The network carries the
@@ -177,14 +177,14 @@ connections.
 **Recommended:** install the full `gpstream` package on the controller host
 *and* on every source segment host (for `on_segment`). The package places all
 four binaries under `/usr/bin`, giving one canonical path for
-`--seg-binary` / `--source-agent-binary` / `--dest-agent-binary` and one
+the agent/segment binaries by convention (all four land in `/usr/bin`) and one
 version-control surface (`rpm -qa gpstream` / `dnf upgrade gpstream` on every
 host) — today there is no version handshake between controller and agents, so
 the package is the only practical way to keep them in lockstep.
 
 **Minimal-footprint alternative (on_segment):** copy the single static
 `gpstream-segreceiver` file to every source segment host (one file,
-unprivileged, no root) and point `--seg-binary` at that path. This is the
+unprivileged, no root); set `GPSTREAM_SEG_BINARY` to that path. This is the
 F-15 "install = copy one file" mode; use it only if you deliberately want no
 package on the segment hosts.
 
@@ -193,11 +193,9 @@ package on the segment hosts.
 rpm -i gpstream-<ver>-amd64.rpm            # or .deb
 # on_segment: also on every source segment host
 rpm -i gpstream-<ver>-amd64.rpm
-gpstream doctor --config /etc/gpstream/gpstream.toml --seg-binary /usr/bin/gpstream-segreceiver
+gpstream doctor --config /etc/gpstream/gpstream.toml
 # default layout: both agents on the controller host
 gpstream run --config /etc/gpstream/gpstream.toml \
-  --source-agent-binary /usr/bin/gpstream-source-agent \
-  --dest-agent-binary /usr/bin/gpstream-dest-agent
 ```
 
 `doctor` probes the segreceiver on **every** segment host

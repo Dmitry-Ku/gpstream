@@ -242,7 +242,7 @@ func (r *Report) checkOnSegment(side string, q pg.Querier, binPath string) {
 	if pg.RowStr(context.Background(), q, "SELECT to_regclass('gp_segment_configuration')::text") == "" {
 		r.Add(Check{Name: "on_segment", Side: side, Sev: Warn,
 			Msg: "segment-direct capability: not a Greenplum cluster (coordinator path only)",
-			Rec: "expected on plain PostgreSQL; on GP6 install gpstream-segreceiver on the segment hosts and set --seg-binary"})
+			Rec: "expected on plain PostgreSQL; on GP6 install the gpstream package (or gpstream-segreceiver) on the segment hosts"})
 		return
 	}
 	p := segstream.CheckOnSegment(context.Background(), q, binPath)

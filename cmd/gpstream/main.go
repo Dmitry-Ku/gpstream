@@ -234,18 +234,15 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--copy-mode":
 			i++
 			cfg.CopyMode = config.CopyMode(args[i])
-		case "--source-agent-binary":
-			i++
-			cfg.SourceAgentBinary = args[i]
-		case "--dest-agent-binary":
-			i++
-			cfg.DestAgentBinary = args[i]
 		case "--seg-listen":
 			i++
 			cfg.SegListen = args[i]
-		case "--seg-binary":
-			i++
-			cfg.SegBinary = args[i]
+		// The agent/segment binary paths are NOT flags: a packaged install
+		// always lays all four binaries in /usr/bin, so they resolve by
+		// convention (sibling of the gpstream binary, then PATH). Override
+		// for dev builds / tarball installs via GPSTREAM_SOURCE_AGENT_BINARY /
+		// GPSTREAM_DEST_AGENT_BINARY / GPSTREAM_SEG_BINARY or the config file
+		// (source_agent_binary / dest_agent_binary / seg_binary).
 		// Data-plane TLS for the on_segment hop (F-13). Separate from
 		// --ssl-* (which configures the PG connections): the segment stream
 		// can be encrypted even when the PG connections are not.
@@ -437,7 +434,14 @@ func cmdDoctor(args []string) error {
 	srcQ := diagnoseConn(ctx, cfg, "source")
 	dstQ := diagnoseConn(ctx, cfg, "dest")
 
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: cfg.SegBinary})
+	// Resolve the segreceiver by convention (sibling of the gpstream binary,
+	// then PATH) so doctor probes the segment-direct capability without a
+	// flag; when it cannot be found the on_segment probe is simply skipped.
+	segBin := cfg.SegBinary
+	if segBin == "" {
+		segBin, _ = config.ResolveSegBinaryOrEmpty()
+	}
+	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin})
 	printReport(rep)
 	if !rep.Healthy {
 		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())
@@ -1287,10 +1291,13 @@ func cmdRun(args []string) error {
 		}
 		return err
 	}
-	// P7: the data path is always two-agent, so the agent binaries are
-	// required (the controller launches them; it holds no data connection).
-	if cfg.SourceAgentBinary == "" || cfg.DestAgentBinary == "" {
-		return fmt.Errorf("run requires --source-agent-binary and --dest-agent-binary (the data path is two-agent; the controller holds no data connections)")
+	// The data path is always two-agent (P7): the controller launches the
+	// source/dest agents itself. Their binaries (and the segreceiver's, for
+	// on_segment) resolve by convention — sibling of the gpstream binary,
+	// then PATH — so a packaged install needs no flags. Fail loud here if
+	// they are not installed.
+	if err := cfg.ResolveAgentBinaries(); err != nil {
+		return fmt.Errorf("run: %w", err)
 	}
 
 	ctx := context.Background()
@@ -1334,6 +1341,16 @@ func cmdRun(args []string) error {
 	if len(p.Units) == 0 {
 		fmt.Println("\nrun: plan empty; nothing to copy.")
 		return nil
+	}
+	// on_segment: an empty --seg-listen resolves to the controller's primary
+	// non-loopback IP + a prebound free port (each unit then binds
+	// base+unitID). The host must be routable from the SOURCE segment hosts;
+	// a multi-homed controller should pass --seg-listen explicitly.
+	if cfg.CopyMode == config.CopyOnSegment {
+		if err := cfg.ResolveSegListen(len(p.Units)); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+		fmt.Printf("seg-listen:     %s (auto; base+unitID per unit)\n", cfg.SegListen)
 	}
 
 	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
@@ -1566,10 +1583,9 @@ Performance:
 
 Transport / resilience:
   --copy-mode coordinator|on_segment|direct   data path (default coordinator)
-  --source-agent-binary PATH                   gpstream-source-agent path on the source host (required for run/bench)
-  --dest-agent-binary PATH                     gpstream-dest-agent path on the destination host (required for run/bench)
-  --seg-listen HOST:PORT           controller listen addr for the segreceivers
-  --seg-binary PATH                gpstream-segreceiver path on the SOURCE segment hosts (package or copied file; required with --copy-mode on_segment)
+  --seg-listen HOST:PORT           on_segment base listen addr the segreceivers
+                                   dial (default: auto = controller primary IP +
+                                   a free port; each unit binds base+unitID)
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop

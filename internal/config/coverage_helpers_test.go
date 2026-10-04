@@ -160,8 +160,8 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
-	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegBinary = "" }, "on_segment-no-binary")
-	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegBinary = "/x"; c.SegListen = "" }, "on_segment-no-listen")
+	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegListen = "not-a-port" }, "on_segment-bad-listen")
+	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegListen = "host:0" }, "on_segment-port-zero")
 	fail(func(c *Config) { c.FrameAck = "maybe" }, "frame-ack")
 	fail(func(c *Config) { c.AckTimeout = "banana" }, "ack-timeout")
 

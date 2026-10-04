@@ -63,8 +63,9 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			"--source", srcCl.URL(), "--dest", dstCl.URL(),
 			"--operation-id", opID, "--state-dir", stateDir,
 			"--dbs", "srcdb",
-			"--source-agent-binary", bin.srcAgent,
-			"--dest-agent-binary", bin.destAgent,
+			// no agent-binary flags: the agents sit next to the controller
+			// binary in the temp dir, so convention resolution (sibling of
+			// the gpstream binary) finds them.
 			"--workers", "1",
 			"--resolve-conflicts", "overwrite",
 		}

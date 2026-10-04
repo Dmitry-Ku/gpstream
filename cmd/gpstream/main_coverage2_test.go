@@ -125,7 +125,6 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 		"--max-reconnects", "5",
 		"--retransmit-buffer-max", "64M",
 		"--copy-mode", "on_segment", "--seg-listen", "10.0.0.5:9432",
-		"--seg-binary", "/tmp/segreceiver",
 		"--seg-tls-cert", "/c.pem", "--seg-tls-key", "/k.pem", "--seg-tls-ca", "/ca.pem",
 		"--index-workers", "4", "--no-constraints",
 		"--zstd-level", "5",
@@ -160,8 +159,8 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	if c.FrameAck != "off" || c.AckTimeout != "30s" || c.MaxReconnects != 5 {
 		t.Errorf("frame-ack trio = %q/%q/%d", c.FrameAck, c.AckTimeout, c.MaxReconnects)
 	}
-	if c.CopyMode != config.CopyOnSegment || c.SegListen != "10.0.0.5:9432" || c.SegBinary != "/tmp/segreceiver" {
-		t.Errorf("on_segment trio = %q/%q/%q", c.CopyMode, c.SegListen, c.SegBinary)
+	if c.CopyMode != config.CopyOnSegment || c.SegListen != "10.0.0.5:9432" || c.SegBinary != "" {
+		t.Errorf("on_segment = %q/%q/%q (seg binary resolves by convention, not a flag)", c.CopyMode, c.SegListen, c.SegBinary)
 	}
 	if c.SegTLSCert != "/c.pem" || c.SegTLSKey != "/k.pem" || c.SegTLSCA != "/ca.pem" {
 		t.Error("seg-tls trio not bound")
@@ -189,9 +188,11 @@ func TestParseConfigFlagErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--include", "bogus"}); err == nil {
 		t.Error("removed --include: want unknown-flag error")
 	}
-	// on_segment without the required pair is rejected by Validate.
-	if _, err := parseConfig([]string{"--copy-mode", "on_segment"}); err == nil {
-		t.Error("copy-mode on_segment without seg-listen/seg-binary: want error")
+	// on_segment: seg-listen/seg-binary are convention-resolved (sibling of
+	// the gpstream binary / auto base address), so a bare --copy-mode is now
+	// valid config; an unresolvable binary surfaces at run time instead.
+	if _, err := parseConfig([]string{"--copy-mode", "on_segment"}); err != nil {
+		t.Errorf("copy-mode on_segment (binaries resolve by convention): unexpected error: %v", err)
 	}
 }
 

@@ -39,6 +39,11 @@ func cmdBench(args []string) error {
 	if cfg.MetadataOnly {
 		return fmt.Errorf("bench: --metadata-only has no data to measure; run it without the flag")
 	}
+	// The benchmark drives the real source agent binary; resolve it by
+	// convention (sibling of the gpstream binary, then PATH) — no flag.
+	if err := cfg.ResolveAgentBinaries(); err != nil {
+		return fmt.Errorf("bench: %w", err)
+	}
 
 	ctx := context.Background()
 	// Same pool sizing as a run: the data path runs WorkersPerPair parallel

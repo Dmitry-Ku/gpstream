@@ -219,8 +219,7 @@ Conflict policy semantics:
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--source-agent-binary <path>` | `SourceAgentBinary` | `""` (gpstream-source-agent path **on the source host**; **required** for `run` / `bench`) |
-| `--dest-agent-binary <path>` | `DestAgentBinary` | `""` (gpstream-dest-agent path **on the destination host**; **required** for `run` / `bench`) |
+There are no `--source-agent-binary` / `--dest-agent-binary` flags: a packaged install always lays all four binaries in the same directory, so the controller resolves the agent binaries by convention (sibling of the `gpstream` binary, then `PATH`). Override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` (or config keys `source_agent_binary` / `dest_agent_binary`) for dev builds where the binaries are not beside each other.
 
 The data path is always the two-agent transport: the source agent reads the
 table and pushes a compressed (optionally TLS) stream over a real socket to
@@ -240,8 +239,7 @@ the on-wire agent-to-agent volume.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--copy-mode coordinator\|on_segment\|direct` | `CopyMode` | `""` → coordinator (source-direct + dest-coordinator) |
-| `--seg-listen <addr>` | `SegListen` | `""` (controller listen address the segreceivers dial; **required** for `on_segment`) |
-| `--seg-binary <path>` | `SegBinary` | `""` (gpstream-segreceiver path on the SOURCE segment hosts; **required** for `on_segment`) |
+| `--seg-listen <addr>` | `SegListen` | `""` (auto: controller primary non-loopback IP + a free port; each unit binds `base+unitID`) |
 | `--seg-tls-cert <F>` | `SegTLSCert` | `""` (controller serving cert for the segment data plane) |
 | `--seg-tls-key <F>` | `SegTLSKey` | `""` (controller serving key) |
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
@@ -250,8 +248,11 @@ the on-wire agent-to-agent volume.
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
 
-`on_segment` (T-B segment-direct transport) requires both `--seg-listen` and
-`--seg-binary`; the source GUC `ycmdb.yc_allow_copy_to_program` must be `on`.
+`on_segment` (T-B segment-direct transport) requires the `gpstream` package on
+every SOURCE segment host (the kernel runs `gpstream-segreceiver` there); the
+source GUC `ycmdb.yc_allow_copy_to_program` must be `on`. The
+`--seg-listen` address must be routable from the segment hosts (auto-resolved
+to the controller's primary IP when omitted).
 `direct` (R5) routes rows to destination segments directly (dest coordinator
 out of the write path) and degrades to the coordinator per table when a table
 can't be routed. When the planner proves a table's route is `direct_1to1`
