@@ -123,7 +123,6 @@ The `packaging/` tree holds the distribution artifacts:
 | Path | Contents |
 | --- | --- |
 | `packaging/deb/` | Debian package `control` file (package `gpstream`, v0.1.0, `database` section). Built from the cross-compiled static binary. |
-| `packaging/rpm/` | RPM spec (`gpstream.spec`, v0.1.0, License Apache-2.0). |
 | `packaging/systemd/` | systemd unit file `gpstream.service`. |
 | `packaging/logrotate.conf` | logrotate configuration for gpstream logs. |
 | `packaging/examples/` | Example configuration `gpstream.toml`. |
