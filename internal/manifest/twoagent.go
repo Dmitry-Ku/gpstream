@@ -1,15 +1,12 @@
 package manifest
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -227,349 +224,323 @@ type unitRoutedRequest struct {
 // loopback port for each socket and hands it to the agent, so it never has to
 // parse the agent's output to learn an address.
 type processTwoAgentRunner struct {
-	cfg       *config.Config
+	cfg *config.Config
+	// Source agent (long-lived; owns the FR-02 snapshot).
 	ctrl      *agent.ControlClient
 	srcCmd    *exec.Cmd
 	srcCancel context.CancelFunc
+	// Destination agent (long-lived; design 04.10 port economy — one data +
+	// one control listener for the whole run, units multiplex by unit_id).
+	destCtrl     *agent.DestControlClient
+	destCmd      *exec.Cmd
+	destCancel   context.CancelFunc
+	destDataAddr string // the dest agent's real data address (from its hello)
 }
 
 func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
 	return &processTwoAgentRunner{cfg: cfg}
 }
 
-// Start launches the long-lived source agent (--serve) and connects the control
-// client to its control socket (a pre-bound loopback port).
+// Start launches the long-lived source agent (--serve) and the long-lived
+// destination agent (--serve, design 04.10 port economy) and connects the
+// control clients to both. The destination agent binds ONE data + ONE
+// control listener for the whole run; its hello reports the real data
+// address the source agent / segreceivers must dial. Both agents are
+// subprocesses on the controller's host (the local layout); the remote
+// (SSH) launch is Inc2c.
 func (r *processTwoAgentRunner) Start(ctx context.Context) error {
-	ctrlAddr, err := prebindLoopback()
+	// --- source agent (long-lived; the FR-02 snapshot) ----------------
+	srcCtrlAddr, err := prebindLoopback()
 	if err != nil {
-		return fmt.Errorf("two-agent: pre-bind control port: %w", err)
+		return fmt.Errorf("two-agent: pre-bind source control port: %w", err)
 	}
-	sctx, cancel := context.WithCancel(ctx)
-	r.srcCancel = cancel
-	args := []string{
+	sctx, srcCancel := context.WithCancel(ctx)
+	r.srcCancel = srcCancel
+	srcArgs := []string{
 		"--src", r.cfg.Source,
 		"--snapshot", r.snapshotMode(),
-		"--serve", ctrlAddr,
+		"--serve", srcCtrlAddr,
 		"--connect-timeout", "10s",
 	}
 	if r.cfg.SSLCert != "" {
-		args = append(args, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
+		srcArgs = append(srcArgs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
 	}
 	if r.cfg.SSLCA != "" {
-		args = append(args, "--ssl-ca", r.cfg.SSLCA)
+		srcArgs = append(srcArgs, "--ssl-ca", r.cfg.SSLCA)
 	}
-	cmd := exec.CommandContext(sctx, r.cfg.SourceAgentBinary, args...)
-	// The agent's report lines are not needed on the control plane (they carry
-	// the same data), but discarding stderr entirely hides a failed agent from
-	// the operator (a crash, a panic, or a SIGQUIT goroutine dump on a hang).
-	// When GPSTREAM_AGENT_STDERR is set to a path, the source agent's stderr is
-	// appended there for diagnosis; otherwise it is discarded as before.
-	if p := os.Getenv("GPSTREAM_AGENT_STDERR"); p != "" {
-		if f, ferr := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
-			cmd.Stderr = f
-		} else {
-			cmd.Stderr = io.Discard
-		}
-	} else {
-		cmd.Stderr = io.Discard
+	// Data-plane TLS for the source->dest data socket (source = client; the
+	// dest agent serves it). Same keypair as the on_segment hop (F-13).
+	if r.cfg.SegTLSCert != "" {
+		srcArgs = append(srcArgs, "--data-tls-cert", r.cfg.SegTLSCert, "--data-tls-key", r.cfg.SegTLSKey)
 	}
-	if err := cmd.Start(); err != nil {
-		cancel()
+	if r.cfg.SegTLSCA != "" {
+		srcArgs = append(srcArgs, "--data-tls-ca", r.cfg.SegTLSCA)
+	}
+	srcCmd := exec.CommandContext(sctx, r.cfg.SourceAgentBinary, srcArgs...)
+	srcCmd.Stderr = agentStderr()
+	if err := srcCmd.Start(); err != nil {
+		srcCancel()
 		return fmt.Errorf("two-agent: start source agent: %w", err)
 	}
-	r.srcCmd = cmd
-
-	// The source agent binds ctrlAddr and starts accepting; dial it. The bind
-	// is fast, but dial with a short retry to tolerate the agent's startup.
-	client, err := dialControlRetry(ctx, ctrlAddr, 15*time.Second, agent.ControlTLS{
-		Cert: r.cfg.ControlTLSCert,
-		Key:  r.cfg.ControlTLSKey,
-		CA:   r.cfg.ControlTLSCA,
-	})
+	r.srcCmd = srcCmd
+	srcClient, err := dialControlRetry(ctx, srcCtrlAddr, 15*time.Second, r.controlTLS())
 	if err != nil {
-		_ = cmd.Process.Kill()
-		cancel()
-		return fmt.Errorf("two-agent: control dial %s: %w", ctrlAddr, err)
+		_ = srcCmd.Process.Kill()
+		srcCancel()
+		return fmt.Errorf("two-agent: source control dial %s: %w", srcCtrlAddr, err)
 	}
-	r.ctrl = client
+	r.ctrl = srcClient
+
+	// --- destination agent (long-lived; one data + one control listener) --
+	dataAddr, err := prebindLoopback()
+	if err != nil {
+		return r.stopSource()
+	}
+	destCtrlAddr, err := prebindLoopback()
+	if err != nil {
+		return r.stopSource()
+	}
+	dctx, destCancel := context.WithCancel(ctx)
+	r.destCancel = destCancel
+	// --dest comes FIRST so the agent stays identifiable by its conn string
+	// (the crash-recovery test finds it via pgrep "<bin> --dest ").
+	dargs := []string{
+		"--dest", r.cfg.Dest,
+		"--serve",
+		"--data-listen", dataAddr,
+		"--control-listen", destCtrlAddr,
+		"--accept-timeout", "5m",
+		"--stream-timeout", "6h",
+	}
+	if r.cfg.SSLCert != "" {
+		dargs = append(dargs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
+	}
+	if r.cfg.SSLCA != "" {
+		dargs = append(dargs, "--ssl-ca", r.cfg.SSLCA)
+	}
+	if r.cfg.SegTLSCert != "" {
+		dargs = append(dargs, "--data-tls-cert", r.cfg.SegTLSCert, "--data-tls-key", r.cfg.SegTLSKey)
+	}
+	if r.cfg.SegTLSCA != "" {
+		dargs = append(dargs, "--data-tls-ca", r.cfg.SegTLSCA)
+	}
+	dcmd := exec.CommandContext(dctx, r.cfg.DestAgentBinary, dargs...)
+	dcmd.Stderr = agentStderr()
+	dcmd.Stdout = io.Discard
+	if err := dcmd.Start(); err != nil {
+		destCancel()
+		return r.stopSource()
+	}
+	r.destCmd = dcmd
+	destClient, err := dialDestControlRetry(ctx, destCtrlAddr, 15*time.Second, r.controlTLS())
+	if err != nil {
+		_ = dcmd.Process.Kill()
+		destCancel()
+		return r.stopSource()
+	}
+	r.destCtrl = destClient
+	// The hello reports the real bound data address (auto :0 mode). For the
+	// pre-bound local layout it equals dataAddr; use it as the authoritative
+	// endpoint the source / segreceivers dial.
+	r.destDataAddr = destClient.Hello.Data
+	if r.destDataAddr == "" {
+		r.destDataAddr = dataAddr
+	}
 	return nil
 }
 
-// Stream launches a per-unit destination agent on a pre-bound port, waits for
-// it to actually be listening, instructs the source agent to stream the unit to
-// it, and waits for the destination to finish the COPY. The destination agent
-// is the authoritative row-count source (the single-controller path uses the
-// destination's count too); the wire volume comes from the source agent (the
-// bytes it actually wrote to the socket). The swap is NOT performed here — the
-// Manager decides it.
-func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, error) {
-	// 1. Pre-bind a loopback port and launch the per-unit destination agent.
-	listen, err := prebindLoopback()
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: pre-bind data port: %w", err)
+// controlTLS is the controller's control-channel TLS client settings (both
+// agents verify against the same CA; empty = plain TCP, the lab layout).
+func (r *processTwoAgentRunner) controlTLS() agent.ControlTLS {
+	return agent.ControlTLS{
+		Cert: r.cfg.ControlTLSCert,
+		Key:  r.cfg.ControlTLSKey,
+		CA:   r.cfg.ControlTLSCA,
 	}
-	var dstderr bytes.Buffer
-	dargs := []string{
-		"--dest", req.DstConn,
-		"--listen", listen,
-		"--accept-timeout", "5m",
-	}
-	if req.DstCert != "" {
-		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
-	}
-	if req.DstCA != "" {
-		dargs = append(dargs, "--ssl-ca", req.DstCA)
-	}
-	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
-	dcmd.Stderr = &dstderr
-	dcmd.Stdout = io.Discard
-	if err := dcmd.Start(); err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent: %w", err)
-	}
-	// Reap the dest agent once it exits (it exits after serving one unit).
-	done := make(chan error, 1)
-	go func() { done <- dcmd.Wait() }()
-	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf(format, a...)
-	}
+}
 
-	// 2. Instruct the source agent to stream this unit to the destination agent.
-	//    The source agent retries its dial while the destination is still
-	//    binding its listen socket (dialDestRetry), so there is no launch/dial
-	//    race to wait out here.
+// stopSource tears down the source agent (used when the dest launch fails).
+func (r *processTwoAgentRunner) stopSource() error {
+	var cerr error
+	if r.ctrl != nil {
+		_, _ = r.ctrl.Release()
+		_ = r.ctrl.Close()
+		r.ctrl = nil
+	}
+	if r.srcCmd != nil {
+		done := make(chan struct{})
+		go func() { _ = r.srcCmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = r.srcCmd.Process.Kill()
+		}
+		r.srcCmd = nil
+	}
+	if r.srcCancel != nil {
+		r.srcCancel()
+		r.srcCancel = nil
+	}
+	return cerr
+}
+
+// agentStderr returns the agent stderr sink: GPSTREAM_AGENT_STDERR (a path,
+// appended) when set for diagnosis, else io.Discard.
+func agentStderr() io.Writer {
+	if p := os.Getenv("GPSTREAM_AGENT_STDERR"); p != "" {
+		if f, ferr := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+			return f
+		}
+	}
+	return io.Discard
+}
+
+// Stream (coordinator) drives one unit through the LONG-LIVED destination
+// agent (design 04.10 port economy): the agent is already up (Start bound
+// its one data + one control listener). The controller tells it to serve the
+// unit on the shared data listener (BeginServe, acked immediately), then
+// instructs the source agent to stream the unit to the agent's data address
+// (from its hello), then waits for the unit-done report. The destination is
+// the authoritative row-count source; the wire volume comes from the source
+// agent (the bytes it wrote to the socket). The swap is NOT performed here —
+// the Manager decides it.
+func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, error) {
+	if r.destCtrl == nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
+	}
+	// 1. Tell the long-lived dest agent to serve this unit on the shared data
+	//    listener. The ack returns immediately (the serve is running,
+	//    accepting the source agent's connection).
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator"})
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
+	}
+	if !ack.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
+	}
+	// 2. Instruct the source agent to stream the unit to the dest agent's
+	//    data address (the shared listener; unit_id rides the frames).
 	sreq := req.StreamReq
-	sreq.DestAddr = listen
+	sreq.DestAddr = r.destDataAddr
 	resp, err := r.ctrl.Stream(sreq)
 	if err != nil {
-		return fail("two-agent: stream unit %d: %w", sreq.UnitID, err)
+		// Drain the in-flight serve so the next unit's BeginServe is clean.
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
-		return fail("two-agent: source agent stream unit %d: %s", sreq.UnitID, resp.Error)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
-
-	// 4. Wait for the destination to finish the COPY (it exits after serving).
-	var werr error
-	select {
-	case werr = <-done:
-	case <-time.After(r.streamDeadline()):
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d: timed out", sreq.UnitID)
+	// 3. Wait for the destination to finish the COPY (the unit-done report).
+	done, err := r.destCtrl.WaitUnitDone()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
 	}
-	if werr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d: %v (stderr: %s)", sreq.UnitID, werr, dstderr.String())
+	if !done.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
 	}
-
-	// 5. The destination is the authoritative row-count source; the wire volume
-	// comes from the source agent (the bytes it wrote to the socket).
-	drows, dlogical, perr := parseDestReport(dstderr.String())
-	if perr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: parse dest report unit %d: %v (stderr: %s)", sreq.UnitID, perr, dstderr.String())
-	}
-	return drows, resp.Wire, dlogical, nil
+	return done.Rows, resp.Wire, done.Logical, nil
 }
 
-// StreamSegment (P4) launches a destination agent in SEGMENT mode, instructs
-// the source agent to trigger the ON SEGMENT dispatch (the kernel launches the
-// segreceiver on every primary source segment; each streams its slice
-// compressed to the destination agent), and waits for the destination to
-// finish merging + loading. The destination is the authoritative row-count
-// source; the wire volume is the raw on-network byte volume it read from the
-// N segment connections. The swap is NOT performed — the Manager decides it.
+// StreamSegment (P4 on_segment) drives one unit through the LONG-LIVED
+// destination agent: the kernel launches the segreceiver on every primary
+// source segment; each streams its compressed slice to the dest agent's
+// shared data address (from its hello — no per-unit port). The dest agent
+// either merges the N slices (ServeSegments, sub-path (c)) or loads them
+// with per-segment utility COPYs (ServeDirect, the direct_1to1 fast-path
+// (a)). The destination is the authoritative row-count source; the wire
+// volume is the raw on-network byte volume it read. The swap is NOT
+// performed — the Manager decides it.
 func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmentRequest) (int64, uint64, uint64, error) {
-	// 1. Bind the segment data port. The segreceivers run on the SOURCE
-	//    segment hosts (a different machine than this destination agent), so
-	//    the port must be reachable over the network: bind the --seg-listen
-	//    host with port base+unitID (the same address the kernel's COPY ON
-	//    SEGMENT embeds in the segreceiver --listen flag).
-	listen, err := segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: segment listen %q: %w", req.SegListen, err)
+	if r.destCtrl == nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
 	}
-	var dstderr bytes.Buffer
-	var dargs []string
+	// 1. Tell the long-lived dest agent to serve this unit. Kind selects the
+	//    load method: direct_1to1 (a) = per-segment utility COPYs; else
+	//    segments (c) = SliceMux merge -> one coordinator COPY.
+	kind := "segments"
+	dreq := agent.DestServeReq{
+		Kind:     kind,
+		Spec:     &req.Spec,
+		Segments: req.Segments,
+	}
 	if req.DirectWrite {
-		// P8 direct_1to1 fast-path: the destination loads the N content-tagged
-		// slices with N per-segment utility-mode COPYs (ServeDirect) — no
-		// merge, no re-distribution. The source side is the same ON SEGMENT
-		// dispatch (the kernel streams the same content-tagged slices).
-		launchJSON, lerr := json.Marshal(req.DirectLaunch)
-		if lerr != nil {
-			return 0, 0, 0, fmt.Errorf("two-agent: marshal direct launch (1to1): %w", lerr)
-		}
-		dargs = []string{
-			"--dest", req.DstConn,
-			"--listen", listen,
-			"--direct-spec", string(launchJSON),
-			"--accept-timeout", "5m",
-		}
-	} else {
-		specJSON, serr := json.Marshal(req.Spec)
-		if serr != nil {
-			return 0, 0, 0, fmt.Errorf("two-agent: marshal segment spec: %w", serr)
-		}
-		dargs = []string{
-			"--dest", req.DstConn,
-			"--listen", listen,
-			"--segments", strconv.Itoa(req.Segments),
-			"--spec", string(specJSON),
-			"--accept-timeout", "5m",
-		}
+		kind = "direct"
+		dreq = agent.DestServeReq{Kind: "direct", Direct: &req.DirectLaunch}
 	}
-	if req.DstCert != "" {
-		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
+	ack, err := r.destCtrl.BeginServe(dreq)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (%s) unit %d: %w", kind, req.UnitID, err)
 	}
-	if req.DstCA != "" {
-		dargs = append(dargs, "--ssl-ca", req.DstCA)
+	if !ack.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (%s) unit %d: %s", kind, req.UnitID, ack.Error)
 	}
-	if req.DataTLSCert != "" {
-		dargs = append(dargs, "--data-tls-cert", req.DataTLSCert, "--data-tls-key", req.DataTLSKey)
-	}
-	if req.DataTLSCA != "" {
-		dargs = append(dargs, "--data-tls-ca", req.DataTLSCA)
-	}
-	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
-	dcmd.Stderr = &dstderr
-	dcmd.Stdout = io.Discard
-	if err := dcmd.Start(); err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent (segment): %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- dcmd.Wait() }()
-	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf(format, a...)
-	}
-
-	// 2. Instruct the source agent to run the ON SEGMENT dispatch. The
-	//    segreceivers retry their dial while the destination is still binding
-	//    (dialDestRetry in the segreceiver), so there is no launch/dial race.
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch; the
+	//    segreceivers dial the dest agent's shared data address.
 	o := req.OnSegmentReq
-	o.DestAddr = listen
+	o.DestAddr = r.destDataAddr
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
-		return fail("two-agent: onsegment unit %d: %w", o.UnitID, err)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: onsegment unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
-		return fail("two-agent: source agent onsegment unit %d: %s", o.UnitID, oresp.Error)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: source agent onsegment unit %d: %s", o.UnitID, oresp.Error)
 	}
-
-	// 3. Wait for the destination to finish the COPY (it exits after serving).
-	var werr error
-	select {
-	case werr = <-done:
-	case <-time.After(r.streamDeadline()):
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): timed out", o.UnitID)
+	// 3. Wait for the destination to finish (the unit-done report).
+	done, err := r.destCtrl.WaitUnitDone()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest unit-done (%s) unit %d: %w", kind, o.UnitID, err)
 	}
-	if werr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (segment): %v (stderr: %s)", o.UnitID, werr, dstderr.String())
+	if !done.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (%s): %s", o.UnitID, kind, done.Error)
 	}
-
-	// 4. Parse the destination report: "gpstream-dest-agent: unit=N rows=R
-	// logical=L wire=W <verdict> ok".
-	for _, line := range strings.Split(dstderr.String(), "\n") {
-		var unit, rows, logical, wire int64
-		var verdict string
-		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok",
-			&unit, &rows, &logical, &wire, &verdict); perr == nil && n == 5 {
-			return rows, uint64(wire), uint64(logical), nil
-		}
-	}
-	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (segment) report unit %d: %s", o.UnitID, dstderr.String())
+	return done.Rows, done.Wire, done.Logical, nil
 }
 
-// StreamRouted (P9) launches a destination agent in ROUTED mode (S≠D),
-// instructs the source agent to trigger the ON SEGMENT dispatch with routing
-// (each segreceiver routes its slice to its destination segment and fans each
-// (s,d) pair over W sub-streams), and waits for the destination to finish its
-// D utility-mode per-segment COPYs. Neither cluster coordinator is in the
-// data path. The destination is the authoritative row-count source.
+// StreamRouted (P9, S≠D) drives one unit through the LONG-LIVED destination
+// agent in ROUTED mode: each source segreceiver routes its slice to its
+// destination segment and fans each (s,d) pair over W sub-streams to the
+// dest agent's shared data address (from its hello). The dest agent merges
+// the per-segment sub-streams and performs D utility-mode per-segment COPYs.
+// Neither cluster coordinator is in the data path. The destination is the
+// authoritative row-count source.
 func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedRequest) (int64, uint64, uint64, error) {
-	// 1. Bind the segment data port (routable: the segreceivers run on the
-	// source segment hosts).
-	listen, err := segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
+	if r.destCtrl == nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
+	}
+	// 1. Tell the long-lived dest agent to serve this unit in routed mode.
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "routed", Routed: &req.Launch})
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: routed listen %q: %w", req.SegListen, err)
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (routed) unit %d: %w", req.UnitID, err)
 	}
-	var dstderr bytes.Buffer
-	launchJSON, lerr := json.Marshal(req.Launch)
-	if lerr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: marshal routed launch: %w", lerr)
+	if !ack.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (routed) unit %d: %s", req.UnitID, ack.Error)
 	}
-	dargs := []string{
-		"--dest", req.DstConn,
-		"--listen", listen,
-		"--routed-spec", string(launchJSON),
-		"--accept-timeout", "5m",
-	}
-	if req.DstCert != "" {
-		dargs = append(dargs, "--ssl-cert", req.DstCert, "--ssl-key", req.DstKey)
-	}
-	if req.DstCA != "" {
-		dargs = append(dargs, "--ssl-ca", req.DstCA)
-	}
-	if req.DataTLSCert != "" {
-		dargs = append(dargs, "--data-tls-cert", req.DataTLSCert, "--data-tls-key", req.DataTLSKey)
-	}
-	if req.DataTLSCA != "" {
-		dargs = append(dargs, "--data-tls-ca", req.DataTLSCA)
-	}
-	dcmd := exec.CommandContext(ctx, r.cfg.DestAgentBinary, dargs...)
-	dcmd.Stderr = &dstderr
-	dcmd.Stdout = io.Discard
-	if err := dcmd.Start(); err != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: start dest agent (routed): %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- dcmd.Wait() }()
-	fail := func(format string, a ...any) (int64, uint64, uint64, error) {
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf(format, a...)
-	}
-
 	// 2. Instruct the source agent to run the ON SEGMENT dispatch with
-	// routing. The segreceivers retry their dials while the destination is
-	// still binding (the dial-retry loop in runRouted).
+	//    routing; the segreceivers dial the dest agent's shared data address.
 	o := req.OnSegmentReq
-	o.DestAddr = listen
+	o.DestAddr = r.destDataAddr
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
-		return fail("two-agent: onsegment (routed) unit %d: %w", o.UnitID, err)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: onsegment (routed) unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
-		return fail("two-agent: source agent onsegment (routed) unit %d: %s", o.UnitID, oresp.Error)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, fmt.Errorf("two-agent: source agent onsegment (routed) unit %d: %s", o.UnitID, oresp.Error)
 	}
-
-	// 3. Wait for the destination to finish the COPY.
-	var werr error
-	select {
-	case werr = <-done:
-	case <-time.After(r.streamDeadline()):
-		_ = dcmd.Process.Kill()
-		<-done
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): timed out", o.UnitID)
+	// 3. Wait for the destination to finish (the unit-done report).
+	done, err := r.destCtrl.WaitUnitDone()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest unit-done (routed) unit %d: %w", o.UnitID, err)
 	}
-	if werr != nil {
-		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): %v (stderr: %s)", o.UnitID, werr, dstderr.String())
+	if !done.Ok {
+		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): %s", o.UnitID, done.Error)
 	}
-
-	// 4. Parse the destination report: "gpstream-dest-agent: unit=N rows=R
-	// logical=L wire=W <verdict> ok".
-	for _, line := range strings.Split(dstderr.String(), "\n") {
-		var unit, rows, logical, wire int64
-		var verdict string
-		if n, perr := fmt.Sscanf(line, "gpstream-dest-agent: unit=%d rows=%d logical=%d wire=%d %s ok",
-			&unit, &rows, &logical, &wire, &verdict); perr == nil && n == 5 {
-			return rows, uint64(wire), uint64(logical), nil
-		}
-	}
-	return 0, 0, 0, fmt.Errorf("two-agent: parse dest (routed) report unit %d: %s", o.UnitID, dstderr.String())
+	return done.Rows, done.Wire, done.Logical, nil
 }
 
 // Checksum asks the source agent (FR-02 snapshot) for the table's checksum.
@@ -587,9 +558,36 @@ func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table stri
 // Release ends the run (commits the source snapshot) and stops the agents.
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
+	// Destination agent (long-lived): release over its control socket (it
+	// closes both listeners and exits); kill as a last resort.
+	if r.destCtrl != nil {
+		if _, err := r.destCtrl.Release(); err != nil {
+			if cerr == nil {
+				cerr = err
+			}
+		}
+		_ = r.destCtrl.Close()
+		r.destCtrl = nil
+	}
+	if r.destCmd != nil {
+		done := make(chan struct{})
+		go func() { _ = r.destCmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = r.destCmd.Process.Kill()
+		}
+		r.destCmd = nil
+	}
+	if r.destCancel != nil {
+		r.destCancel()
+		r.destCancel = nil
+	}
 	if r.ctrl != nil {
 		if _, err := r.ctrl.Release(); err != nil {
-			cerr = err
+			if cerr == nil {
+				cerr = err
+			}
 		}
 		_ = r.ctrl.Close()
 		r.ctrl = nil
@@ -649,6 +647,28 @@ func dialControlRetry(ctx context.Context, addr string, deadline time.Duration, 
 	var lastErr error
 	for {
 		client, err := agent.DialControlTLS(deadlineCtx, addr, tls)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+		select {
+		case <-deadlineCtx.Done():
+			return nil, fmt.Errorf("%w (last: %v)", deadlineCtx.Err(), lastErr)
+		case <-time.After(backoff):
+		}
+	}
+}
+
+// dialDestControlRetry dials a long-lived dest agent's control socket until
+// it succeeds or the deadline passes (the agent binds its control listener
+// shortly after it starts), reading the hello.
+func dialDestControlRetry(ctx context.Context, addr string, deadline time.Duration, tls agent.ControlTLS) (*agent.DestControlClient, error) {
+	deadlineCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	const backoff = 50 * time.Millisecond
+	var lastErr error
+	for {
+		client, err := agent.DialDestControlTLS(deadlineCtx, addr, tls)
 		if err == nil {
 			return client, nil
 		}

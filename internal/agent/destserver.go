@@ -244,10 +244,9 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 	done.Op = "unit-done"
 	switch req.Kind {
 	case "coordinator":
-		if req.Spec == nil {
-			done.Error = "serve-unit kind=coordinator: missing spec"
-			return done
-		}
+		// The UnitSpec rides the data connection (the source agent writes it
+		// as the first thing after dialing), so it is not in the control
+		// request.
 		res, err := Serve(ctx, DestOptions{
 			SharedListen:  s.dataListener(),
 			DestConn:      s.opts.DestConn,
