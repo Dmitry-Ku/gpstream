@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -254,7 +255,20 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 		args = append(args, "--ssl-ca", r.cfg.SSLCA)
 	}
 	cmd := exec.CommandContext(sctx, r.cfg.SourceAgentBinary, args...)
-	cmd.Stderr = io.Discard // the agent's report lines are not needed (control carries them)
+	// The agent's report lines are not needed on the control plane (they carry
+	// the same data), but discarding stderr entirely hides a failed agent from
+	// the operator (a crash, a panic, or a SIGQUIT goroutine dump on a hang).
+	// When GPSTREAM_AGENT_STDERR is set to a path, the source agent's stderr is
+	// appended there for diagnosis; otherwise it is discarded as before.
+	if p := os.Getenv("GPSTREAM_AGENT_STDERR"); p != "" {
+		if f, ferr := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+			cmd.Stderr = f
+		} else {
+			cmd.Stderr = io.Discard
+		}
+	} else {
+		cmd.Stderr = io.Discard
+	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return fmt.Errorf("two-agent: start source agent: %w", err)
