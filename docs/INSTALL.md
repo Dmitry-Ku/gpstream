@@ -122,31 +122,32 @@ The `packaging/` tree holds the distribution artifacts:
 
 | Path | Contents |
 | --- | --- |
-| `packaging/deb/` | Debian package `control` file (package `gpstream`, v0.1.0, `database` section). Built from the cross-compiled static binary. |
 | `packaging/systemd/` | systemd unit file `gpstream.service`. |
 | `packaging/logrotate.conf` | logrotate configuration for gpstream logs. |
 | `packaging/examples/` | Example configuration `gpstream.toml`. |
+| `packaging/scripts/` | Package lifecycle scripts (post-install/pre-upgrade/post-remove). |
 
 ### 6.1 Install the RPM
 
-The RPM spec builds the static binary and installs it to `%{_bindir}`
-(typically `/usr/local/bin/gpstream`), the systemd unit to `%{_unitdir}`,
-the example config to `/etc/gpstream/gpstream.toml`, and the man page
-(`gpstream.8`) to `%{_mandir}/man8`. It sets the proxy fallback for the build
-step (`export GOPROXY=https://proxy.golang.org,direct`; `go build -o bin/gpstream ./cmd/gpstream`).
-Its `%post` / `%preun` / `%postun` scripts wire the systemd unit in and out via
-`%systemd_post`, `%systemd_preun`, and `%systemd_postun`, so service management
-is automatic.
+The RPM is built by `scripts/package.sh` (goreleaser v1.24 + nfpms, driven by
+`.goreleaser.yaml`), not by a checked-in spec. It installs all four binaries
+(`gpstream`, `gpstream-source-agent`, `gpstream-dest-agent`,
+`gpstream-segreceiver`) to `/usr/bin`, the systemd unit to
+`/usr/lib/systemd/system`, the example config to `/etc/gpstream/gpstream.toml`
+(a `%config(noreplace)` file — upgrades keep operator edits), the logrotate
+rule to `/etc/logrotate.d/gpstream`, and the man pages to
+`/usr/share/man/man8`. Post-install/upgrade scripts (`packaging/scripts/`)
+reload the systemd unit; the unit is enabled but not started, so the operator
+starts it after configuring the TOML.
 
 ### 6.2 Install the Debian package
 
-The `packaging/deb/control` file describes the `gpstream` package
-(`Section: database`, `Priority: optional`, `Architecture: amd64`,
-`Depends: ${misc:Depends}`). Build the `.deb` from the cross-compiled static
-binary using the deb packaging flow, then install with your package manager
-(e.g. `dpkg -i gpstream_*.deb`), which places the binary, the systemd unit,
-the example config, and the man page. The binary is static, so it installs
-cleanly on a wide range of Debian/Ubuntu hosts with a Linux 6.1+ kernel.
+The `.deb` is produced by the same `scripts/package.sh` flow (nfpms metadata
+lives in `.goreleaser.yaml`). It places the same set of files as the RPM;
+install with `dpkg -i gpstream-<ver>-amd64.deb` (or `apt install ./...`).
+The binary is static (CGO_ENABLED=0), so the package carries no library
+dependencies and installs cleanly on a wide range of Debian/Ubuntu hosts
+with a Linux 6.1+ kernel.
 
 ## 6.3 Deployment model: what goes where
 
