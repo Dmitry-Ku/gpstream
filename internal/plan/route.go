@@ -43,6 +43,11 @@ type RouteSummary struct {
 	// Resolved — true if the segments of both sides are determined (otherwise the summary
 	// is incomplete: on plain PG).
 	Resolved bool `json:"resolved"`
+	// LegacyHashops — either cluster runs with gp_use_legacy_hashops=on
+	// (a post-upgrade mode): its cdbhash differs from the non-legacy JCH, so
+	// segment-to-segment placement (direct_1to1 / router_full) is impossible
+	// and the affected tables merge through the destination coordinator.
+	LegacyHashops bool `json:"legacy_hashops,omitempty"`
 }
 
 // routeLayout — distribution of a single table: type + keys.
@@ -51,10 +56,12 @@ type routeLayout struct {
 	keys []string // distribution column names (empty for randomly/replicated)
 }
 
-// clusterRoute — segments and major version of one side (src/dest).
+// clusterRoute — segments, major version and hashops generation of one
+// side (src/dest).
 type clusterRoute struct {
 	segments int32 // 0 if not GP
 	major    int   // server_version_num/10000; 0 if unavailable
+	legacy   bool  // gp_use_legacy_hashops=on (non-GP -> false)
 }
 
 // resolveRoutes computes the RouteSummary (cluster-level) and the RouteMode per unit.
@@ -72,6 +79,7 @@ func resolveRoutes(ctx context.Context, src, dst pg.Querier, tabs []Table) Route
 		return s
 	}
 	s.GPVersionEqual = srcC.major > 0 && srcC.major == dstC.major
+	s.LegacyHashops = srcC.legacy || dstC.legacy
 	s.PossibleDirect1to1 = s.SrcSegments == s.DstSegments
 	s.EligiblePairs = route.PairCount(s.SrcSegments, s.DstSegments)
 	attachRouteMode(ctx, src, dst, srcC, dstC, s, tabs)
@@ -108,18 +116,57 @@ func attachRouteMode(ctx context.Context, src, dst pg.Querier, srcC, dstC cluste
 			SrcHashKeys:     srcL.keys,
 			DstHashKeys:     dstL.keys,
 			GPMajorEqual:    sum.GPVersionEqual,
+			LegacyHashops:   srcC.legacy || dstC.legacy,
 		})
 		if err != nil {
 			continue
 		}
 		t.RouteMode = res.Mode
 		t.RoutePairs = len(res.Pairs)
+		t.SrcReplicated = srcL.dist == "replicated"
+		if res.Mode == route.Merge {
+			t.RouteReason = mergeReason(srcC, dstC, sum, srcL, dstL)
+		}
 	}
 }
 
-// clusterRouteOf — segments + major version of one side; 0 when unavailable.
+// mergeReason explains why a hash-distributed table cannot take a
+// segment-to-segment sub-path ((a) 1:1 / (b) routed) and merges through the
+// destination coordinator instead (design 04.10, question 5 + hash-mismatch
+// guard). The manager logs it as routed_fallback / hash_mismatch_fallback.
+func mergeReason(srcC, dstC clusterRoute, sum RouteSummary, srcL, dstL routeLayout) string {
+	if srcC.legacy || dstC.legacy {
+		return "hash-mismatch: legacy hashops (gp_use_legacy_hashops=on)"
+	}
+	if !sum.GPVersionEqual {
+		return "hash-mismatch: different GP major versions"
+	}
+	if srcL.dist != "hash" || len(srcL.keys) == 0 {
+		return "non-hash source distribution (" + srcL.dist + ")"
+	}
+	if dstL.dist != "hash" || len(dstL.keys) == 0 {
+		return "non-hash destination distribution (" + dstL.dist + ")"
+	}
+	return "no deterministic segment placement"
+}
+
+// clusterRouteOf — segments + major version + hashops generation of one
+// side; zero values when unavailable.
 func clusterRouteOf(ctx context.Context, q pg.Querier) clusterRoute {
-	return clusterRoute{segments: segmentCount(ctx, q), major: routeMajor(ctx, q)}
+	return clusterRoute{
+		segments: segmentCount(ctx, q),
+		major:    routeMajor(ctx, q),
+		legacy:   legacyHashops(ctx, q),
+	}
+}
+
+// legacyHashops reports whether the cluster runs with
+// gp_use_legacy_hashops=on (a post-upgrade mode whose cdbhash differs from
+// the non-legacy JCH). On plain PostgreSQL the GUC does not exist and
+// current_setting returns "" (missing_ok), so the answer is false.
+func legacyHashops(ctx context.Context, q pg.Querier) bool {
+	v := pg.RowStr(ctx, q, `SELECT current_setting('gp_use_legacy_hashops') /* gs-route-legacy */`)
+	return strings.TrimSpace(v) == "on"
 }
 
 // segmentCount — the number of logical (distinct content) segments; 0 if not GP.

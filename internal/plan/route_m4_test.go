@@ -148,9 +148,11 @@ func TestRouteFullOnKeyMismatch(t *testing.T) {
 	}
 }
 
-// TestRouteFullOnMajorMismatch verifies M4: S==D, equal keys, but different
-// kernel majors -> router_full (JCH is only identical within one major line).
-func TestRouteFullOnMajorMismatch(t *testing.T) {
+// TestRouteMergeOnMajorMismatch verifies the redesign (04.10, hash-mismatch
+// guard): S==D, equal keys, but different kernel majors -> merge (the
+// destination kernel hashes differently; segment-to-segment placement would
+// misplace rows, so the destination places them itself).
+func TestRouteMergeOnMajorMismatch(t *testing.T) {
 	cfg := config.Default()
 	cfg.Source = "host=src"
 	cfg.Dest = "host=dst"
@@ -159,11 +161,14 @@ func TestRouteFullOnMajorMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if p.Units[0].RouteMode != route.RouterFull {
-		t.Errorf("RouteMode = %q, want router_full (majors differ)", p.Units[0].RouteMode)
+	if p.Units[0].RouteMode != route.Merge {
+		t.Errorf("RouteMode = %q, want merge (majors differ)", p.Units[0].RouteMode)
 	}
 	if p.Route.GPVersionEqual {
 		t.Errorf("GPVersionEqual = true for 90426 vs 120001, want false")
+	}
+	if p.Units[0].RouteReason == "" {
+		t.Errorf("RouteReason empty, want a hash-mismatch explanation")
 	}
 }
 
@@ -198,10 +203,10 @@ func TestRoutePlainPGDegrades(t *testing.T) {
 	}
 }
 
-// TestRouteRandomlyDest verifies M4: a DISTRIBUTED RANDOMLY destination has
-// no hash keys; the mode is still resolvable (router_full, all pairs) as long
-// as the destination is a GP cluster — the actual landing is decided by the
-// destination's own layout, not by the source hash.
+// TestRouteRandomlyDest verifies the redesign (04.10): a DISTRIBUTED
+// RANDOMLY destination has no hash keys, so no segment-to-segment placement
+// is possible — the mode resolves to merge (the destination places the rows
+// itself) as long as both sides are GP clusters.
 func TestRouteRandomlyDest(t *testing.T) {
 	cfg := config.Default()
 	cfg.Source = "host=src"
@@ -215,10 +220,64 @@ func TestRouteRandomlyDest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if p.Units[0].RouteMode != route.RouterFull {
-		t.Errorf("RouteMode = %q, want router_full (randomly dest)", p.Units[0].RouteMode)
+	if p.Units[0].RouteMode != route.Merge {
+		t.Errorf("RouteMode = %q, want merge (randomly dest)", p.Units[0].RouteMode)
 	}
 	if !p.Route.Resolved {
 		t.Errorf("summary Resolved = false, want true (both are GP)")
+	}
+}
+
+// TestRouteReplicatedSource verifies the redesign (04.10, question 5): a
+// DISTRIBUTED REPLICATED source is flagged SrcReplicated (the manager must
+// read it through the coordinator — an ON SEGMENT read would stream S
+// identical copies) and resolves to merge (coordinator write).
+func TestRouteReplicatedSource(t *testing.T) {
+	cfg := config.Default()
+	cfg.Source = "host=src"
+	cfg.Dest = "host=dst"
+
+	src := gpFake(2, "90426", "id")
+	dst := gpFake(2, "90426", "id")
+	src.On("gs-route-dist", [][]any{{"s", "orders", "r", ""}}) // replicated
+	dst.On("gs-route-dist", [][]any{{"s", "orders", "p", "id"}})
+
+	p, err := Build(context.Background(), &cfg, src, dst)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !p.Units[0].SrcReplicated {
+		t.Errorf("SrcReplicated = false, want true")
+	}
+	if p.Units[0].RouteMode != route.Merge {
+		t.Errorf("RouteMode = %q, want merge (replicated source)", p.Units[0].RouteMode)
+	}
+}
+
+// TestRouteLegacyHashops verifies the redesign (04.10, hash-mismatch guard):
+// a source running with gp_use_legacy_hashops=on cannot be placed
+// segment-to-segment (the destination kernel hashes differently) — the table
+// merges through the destination coordinator.
+func TestRouteLegacyHashops(t *testing.T) {
+	cfg := config.Default()
+	cfg.Source = "host=src"
+	cfg.Dest = "host=dst"
+
+	src := gpFake(2, "90426", "id")
+	src.On("gs-route-legacy", [][]any{{"on"}})
+	dst := gpFake(2, "90426", "id")
+
+	p, err := Build(context.Background(), &cfg, src, dst)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !p.Route.LegacyHashops {
+		t.Errorf("summary LegacyHashops = false, want true")
+	}
+	if p.Units[0].RouteMode != route.Merge {
+		t.Errorf("RouteMode = %q, want merge (legacy hashops)", p.Units[0].RouteMode)
+	}
+	if p.Units[0].RouteReason == "" {
+		t.Errorf("RouteReason empty, want a hash-mismatch explanation")
 	}
 }

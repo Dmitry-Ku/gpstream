@@ -237,6 +237,9 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--seg-listen":
 			i++
 			cfg.SegListen = args[i]
+		case "--data-port-range":
+			i++
+			cfg.DataPortRange = args[i]
 		// The agent/segment binary paths are NOT flags: a packaged install
 		// always lays all four binaries in /usr/bin, so they resolve by
 		// convention (sibling of the gpstream binary, then PATH). Override
@@ -408,6 +411,15 @@ func cmdDryRun(args []string) error {
 			return err
 		}
 		return fmt.Errorf("dry-run: %w", err)
+	}
+
+	// Design 04.10: verify the --data-port-range size against the mode's
+	// requirement (the plan resolved the destination topology, so D is known
+	// at dry-run time).
+	if cfg.CopyMode != "" && p.Route.Resolved {
+		if err := cfg.CheckDataPortRange(int(p.Route.DstSegments)); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println("gpstream dry-run")
@@ -642,25 +654,30 @@ func routeSummaryLine(p *plan.Plan) string {
 	if !p.Route.Resolved {
 		return "not resolvable (plain-PostgreSQL or no segments) — coordinator path only"
 	}
-	direct, router := 0, 0
+	direct, router, merge := 0, 0, 0
 	for _, u := range p.Units {
 		switch u.RouteMode {
 		case "direct_1to1":
 			direct++
 		case "router_full":
 			router++
+		case "merge":
+			merge++
 		}
 	}
 	ver := "same-major"
 	if !p.Route.GPVersionEqual {
 		ver = "mixed-major"
 	}
+	if p.Route.LegacyHashops {
+		ver += "+legacy-hashops"
+	}
 	d1 := "router_full (S!=D)"
 	if p.Route.PossibleDirect1to1 {
 		d1 = "direct_1to1 possible"
 	}
-	return fmt.Sprintf("src=%d dst=%d segs, %s, %d eligible pair(s), %s; units: %d direct_1to1 / %d router_full",
-		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router)
+	return fmt.Sprintf("src=%d dst=%d segs, %s, %d eligible pair(s), %s; units: %d direct_1to1 / %d router_full / %d merge",
+		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router, merge)
 }
 
 // rateLimitNote renders the rate-limit expectation for the dry-run. The
@@ -1342,6 +1359,13 @@ func cmdRun(args []string) error {
 		fmt.Println("\nrun: plan empty; nothing to copy.")
 		return nil
 	}
+	// Design 04.10: verify the --data-port-range size against the mode's
+	// requirement (fail fast, before any agent starts).
+	if cfg.CopyMode != "" && p.Route.Resolved {
+		if err := cfg.CheckDataPortRange(int(p.Route.DstSegments)); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+	}
 	// on_segment: an empty --seg-listen resolves to the controller's primary
 	// non-loopback IP + a prebound free port (each unit then binds
 	// base+unitID). The host must be routable from the SOURCE segment hosts;
@@ -1582,10 +1606,16 @@ Performance:
                                    destination coordinator instead)
 
 Transport / resilience:
-  --copy-mode coordinator|on_segment|direct   data path (default coordinator)
+  --copy-mode coordinator|on_segment          data path (default coordinator)
   --seg-listen HOST:PORT           on_segment base listen addr the segreceivers
                                    dial (default: auto = controller primary IP +
                                    a free port; each unit binds base+unitID)
+  --data-port-range LO-HI          restrict the auto data/control port
+                                   allocation to an allowed range (strict
+                                   firewall); default auto = agent binds :0 +
+                                   handshake. Size is checked vs the mode's
+                                   requirement at run/dry-run (coordinator: 3,
+                                   on_segment: 2*dst-segs+1)
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop

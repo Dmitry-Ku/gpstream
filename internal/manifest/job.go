@@ -89,11 +89,21 @@ type Unit struct {
 	// different destination would abort the whole COPY mid-stream.
 	PartitionGuard string `json:"partition_guard,omitempty"`
 	// RouteMode (P8, M4/T4b): how this table's data lands on the destination
-	// (direct_1to1 vs router_full), copied from the plan's table at unit build.
-	// The two-agent on_segment data path uses it to pick the direct_1to1
-	// fast-path (per-segment utility COPYs) over the merge path.
+	// (direct_1to1 vs router_full vs merge), copied from the plan's table at
+	// unit build. The two-agent on_segment data path uses it to pick the
+	// direct_1to1 fast-path (per-segment utility COPYs) or the routed
+	// segment-to-segment path over the merge path.
 	RouteMode route.Mode `json:"route_mode,omitempty"`
-	Updated   time.Time  `json:"updated"`
+	// SrcReplicated (design 04.10, question 5): the source table is
+	// DISTRIBUTED REPLICATED — an ON SEGMENT read would stream S identical
+	// full copies (S× rows on the destination), so the unit takes the
+	// coordinator data path (read through the source coordinator, write
+	// through the destination coordinator) instead of on_segment.
+	SrcReplicated bool `json:"src_replicated,omitempty"`
+	// RouteReason (design 04.10): when RouteMode==merge, why (hash-mismatch
+	// / non-hash distribution) — the manager logs it as a fallback event.
+	RouteReason string    `json:"route_reason,omitempty"`
+	Updated     time.Time `json:"updated"`
 }
 
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier

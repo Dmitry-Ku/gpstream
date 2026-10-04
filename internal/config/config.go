@@ -198,6 +198,17 @@ type Config struct {
 	CopyMode  CopyMode // default coordinator
 	SegListen string   // base listen address the segreceivers dial (host:port); empty = auto (controller primary IP + free port, resolved at run start)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts; empty = convention (sibling of the gpstream binary, then PATH)
+	// DataPortRange restricts the auto data/control port allocation to an
+	// allowed range "LO-HI" (or a single "LO" base) for environments with a
+	// strict firewall (the operator opens exactly that range). Empty = fully
+	// automatic: every long-lived agent binds :0 and reports its real address
+	// in the control handshake. When set, the controller assigns ports
+	// deterministically inside the range BEFORE the agents start and the
+	// range size is checked against the mode's requirement (coordinator: 3,
+	// on_segment: 2D+1, D = destination segment count) at run/dry-run time.
+	DataPortRange string // "LO-HI" or "LO" (base); empty = auto :0 + handshake
+	DataPortLo    int    // parsed low end of DataPortRange (0 = automatic)
+	DataPortHi    int    // parsed high end of DataPortRange (0 = automatic)
 
 	// The data plane ALWAYS runs in the source/dest agents (ADR-002, P7): the
 	// controller orchestrates a source agent and a dest agent (both launched
@@ -359,6 +370,76 @@ func (c *Config) Validate() error {
 	if c.RetransmitBufferMax <= 0 {
 		c.RetransmitBufferMax = 64 << 20
 	}
+	if c.DataPortRange != "" {
+		lo, hi, err := parsePortRange(c.DataPortRange)
+		if err != nil {
+			return fmt.Errorf("invalid --data-port-range %q: %w", c.DataPortRange, err)
+		}
+		c.DataPortLo, c.DataPortHi = lo, hi
+	}
+	return nil
+}
+
+// parsePortRange parses "LO-HI" (a range) or "LO" (a single base port) into
+// (lo, hi). Both ends must be valid TCP ports.
+func parsePortRange(s string) (int, int, error) {
+	s = strings.TrimSpace(s)
+	dash := strings.Index(s, "-")
+	loStr, hiStr := s, s
+	if dash >= 0 {
+		loStr, hiStr = s[:dash], s[dash+1:]
+	}
+	lo, err := strconv.Atoi(strings.TrimSpace(loStr))
+	if err != nil || lo < 1 || lo > 65535 {
+		return 0, 0, fmt.Errorf("low port %q must be 1-65535", loStr)
+	}
+	hi, err := strconv.Atoi(strings.TrimSpace(hiStr))
+	if err != nil || hi < 1 || hi > 65535 {
+		return 0, 0, fmt.Errorf("high port %q must be 1-65535", hiStr)
+	}
+	if hi < lo {
+		return 0, 0, fmt.Errorf("high port %d < low port %d", hi, lo)
+	}
+	return lo, hi, nil
+}
+
+// DataPortRangeSize returns the number of ports in the configured range (0
+// when the range is empty = automatic).
+func (c *Config) DataPortRangeSize() int {
+	if c.DataPortLo == 0 {
+		return 0
+	}
+	return c.DataPortHi - c.DataPortLo + 1
+}
+
+// RequiredDataPorts returns how many data/control ports the copy mode needs
+// for D destination segments: coordinator = 3 (source control + dest data +
+// dest control); on_segment = 2D+1 (source control + D dest agents × (data +
+// control)). --workers does NOT add ports (substreams reuse the data port).
+func (c *Config) RequiredDataPorts(dstSegments int) int {
+	if c.CopyMode == CopyOnSegment {
+		if dstSegments < 1 {
+			dstSegments = 1
+		}
+		return 2*dstSegments + 1
+	}
+	return 3
+}
+
+// CheckDataPortRange verifies the configured range (if any) is large enough
+// for the copy mode's requirement. Callers pass the destination segment
+// count (from the catalog, so it works at dry-run time). Returns a clear
+// error naming the required vs available count.
+func (c *Config) CheckDataPortRange(dstSegments int) error {
+	if c.DataPortLo == 0 {
+		return nil // automatic: nothing to check
+	}
+	need := c.RequiredDataPorts(dstSegments)
+	have := c.DataPortRangeSize()
+	if have < need {
+		return fmt.Errorf("--data-port-range %s has %d port(s) but %s needs %d (source control + %d dest agent(s) × 2); widen the range or lower the destination segment count",
+			c.DataPortRange, have, c.CopyMode, need, dstSegments)
+	}
 	return nil
 }
 
@@ -439,6 +520,9 @@ func (c *Config) ApplyEnv() {
 	}
 	if v, ok := get("SEG_LISTEN"); ok {
 		c.SegListen = v
+	}
+	if v, ok := get("DATA_PORT_RANGE"); ok {
+		c.DataPortRange = v
 	}
 	// Data-plane TLS for the on_segment hop (F-13), separate from the PG
 	// SSL_* vars: the segment stream can be encrypted even when the PG
@@ -719,6 +803,8 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegBinary = v
 	case "seg_listen":
 		c.SegListen = v
+	case "data_port_range":
+		c.DataPortRange = v
 	case "index_priority":
 		c.IndexPriority = v
 	case "timeout":

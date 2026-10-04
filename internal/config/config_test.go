@@ -110,3 +110,79 @@ func TestParseSizeValue(t *testing.T) {
 		t.Error("parseSizeValue(abc): want error")
 	}
 }
+
+func TestDataPortRangeValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantLo  int
+		wantHi  int
+		wantErr bool
+	}{
+		{"single base", "9000", 9000, 9000, false},
+		{"range", "9000-9010", 9000, 9010, false},
+		{"lo>hi", "9010-9000", 0, 0, true},
+		{"bad lo", "0-100", 0, 0, true},
+		{"bad hi", "1-70000", 0, 0, true},
+		{"garbage", "abc", 0, 0, true},
+		{"empty", "", 0, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lo, hi, err := parsePortRange(c.in)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got lo=%d hi=%d", lo, hi)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if lo != c.wantLo || hi != c.wantHi {
+				t.Fatalf("got (%d,%d), want (%d,%d)", lo, hi, c.wantLo, c.wantHi)
+			}
+		})
+	}
+}
+
+func TestDataPortRangeCheck(t *testing.T) {
+	// coordinator: needs 3 ports
+	cfg := Default()
+	cfg.CopyMode = CopyCoordinator
+	cfg.DataPortRange = "9000-9002"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckDataPortRange(3); err != nil {
+		t.Fatalf("coordinator 3-port range should pass: %v", err)
+	}
+	small := Default()
+	small.CopyMode = CopyCoordinator
+	small.DataPortRange = "9000-9001"
+	if err := small.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := small.CheckDataPortRange(3); err == nil {
+		t.Fatal("coordinator 2-port range should fail")
+	}
+	// on_segment: needs 2D+1
+	cfg = Default()
+	cfg.CopyMode = CopyOnSegment
+	cfg.DataPortRange = "9000-9007"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckDataPortRange(3); err != nil {
+		t.Fatalf("on_segment D=3 needs 7, range 8 should pass: %v", err)
+	}
+	if err := cfg.CheckDataPortRange(4); err == nil {
+		t.Fatal("on_segment D=4 needs 9, range 8 should fail")
+	}
+	// auto (no range): always passes
+	auto := Default()
+	auto.CopyMode = CopyOnSegment
+	if err := auto.CheckDataPortRange(50); err != nil {
+		t.Fatalf("auto range should pass: %v", err)
+	}
+}

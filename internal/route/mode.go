@@ -10,11 +10,14 @@ package route
 // pairs (s,d) are reachable, and exactly two modes are valid:
 //
 //	direct_1to1 — S==D, distribution keys equal, both hash, same major
-//	    kernel version: segment = JCH(h, S) identically on both clusters,
-//	    s==d, streams 1:1, 0 CPU on hashing.
-//	router_full — in all other cases: per-row hash over K_dest
-//	    (JCH over the dest key), eligible narrowing = ALL S×D pairs (no false
-//	    congruence narrowing).
+//	    kernel version, non-legacy hashops: segment = JCH(h, S) identically
+//	    on both clusters, s==d, streams 1:1, 0 CPU on hashing.
+//	router_full — both sides hash-distributed with the same major + non-legacy
+//	    hashops: per-row hash over K_dest (JCH over the dest key), eligible
+//	    narrowing = ALL S×D pairs (no false congruence narrowing).
+//	merge — a non-hash distribution on either side, or a major / hashops
+//	    generation mismatch: no deterministic segment placement, the
+//	    destination coordinator places the rows (always correct).
 //
 // (For the legacy opclass (REDUCE_BITMASK/LAZYMOD) congruence mod g would work,
 // but gp_use_legacy_hashops is a post-upgrade mode; v0.1 does not support it —
@@ -33,6 +36,12 @@ const (
 	Direct1to1 Mode = "direct_1to1"
 	// RouterFull: per-row hash over K_dest; data from s can land on any d.
 	RouterFull Mode = "router_full"
+	// Merge: the table's rows cannot be placed deterministically on the
+	// destination segments (a non-hash distribution on either side, a major
+	// or hashops-generation mismatch between the clusters). The data is
+	// merged through the destination coordinator, which places the rows
+	// itself — always correct, just not segment-to-segment.
+	Merge Mode = "merge"
 )
 
 // Pair — a (source content, dest content) pair over which data flows.
@@ -64,6 +73,14 @@ type ModeInput struct {
 	// GPMajorEqual — src/dest kernel major versions match (the hash function
 	// non-legacy JCH is the same within one major branch).
 	GPMajorEqual bool
+	// LegacyHashops — the SOURCE cluster runs with gp_use_legacy_hashops=on
+	// (a post-upgrade mode): its cdbhash differs from the non-legacy JCH the
+	// destination kernel expects, so the destination cannot reproduce the
+	// source's placement. Both direct_1to1 and router_full require the
+	// destination kernel to place rows identically to the source kernel
+	// (a faithful copy keeps the source's distribution), so a legacy source
+	// degrades to Merge (the destination places the rows itself).
+	LegacyHashops bool
 }
 
 // EqualKeys — distribution keys are equal (order matters: cdbhash walks
@@ -107,29 +124,52 @@ func ResolveMode(in ModeInput) (ModeResult, error) {
 
 	g := gcd32(uint32(in.SrcSegments), uint32(in.DstSegments))
 
+	// Segment-to-segment placement (direct_1to1 or router_full) requires the
+	// DESTINATION kernel to place each row where the SOURCE kernel placed it:
+	// the destination table is a faithful copy (the source's distribution
+	// policy), and the data is written directly to the named segments
+	// (utility COPY) — the destination kernel never re-hashes it. That holds
+	// only when both kernels hash identically: the same major branch AND the
+	// non-legacy hash generation (JCH). A major mismatch or a legacy source
+	// degrades to Merge (the destination places the rows itself).
+	sameHash := in.GPMajorEqual && !in.LegacyHashops
 	// direct_1to1: only when both clusters are hash-distributed with EQUAL
-	// keys, S==D and one major version (same JCH). Then s==d.
-	if in.SrcSegments == in.DstSegments &&
+	// keys, S==D and identical hashing. Then s==d.
+	if sameHash &&
+		in.SrcSegments == in.DstSegments &&
 		in.SrcDistribution == "hash" && in.DstDistribution == "hash" &&
-		len(in.SrcHashKeys) > 0 && EqualKeys(in.SrcHashKeys, in.DstHashKeys) &&
-		in.GPMajorEqual {
+		len(in.SrcHashKeys) > 0 && EqualKeys(in.SrcHashKeys, in.DstHashKeys) {
 		pairs := make([]Pair, in.SrcSegments)
 		for s := int32(0); s < in.SrcSegments; s++ {
 			pairs[s] = Pair{SrcContent: s, DstContent: s}
 		}
 		return ModeResult{Mode: Direct1to1, Pairs: pairs, G: g}, nil
 	}
-
-	// In all other cases — router_full: per-row hash over K_dest
-	// (or without hash, if dest is randomly/replicated — actual acceptance is
-	// determined by the plan; eligible narrowing = ALL S×D pairs, since JCH gives no congruence).
+	// router_full: both sides hash-distributed (a routable source key) and
+	// identical hashing: per-row hash over K_dest, eligible narrowing = ALL
+	// S×D pairs (JCH gives no congruence narrowing).
+	if sameHash &&
+		in.SrcDistribution == "hash" && len(in.SrcHashKeys) > 0 &&
+		in.DstDistribution == "hash" && len(in.DstHashKeys) > 0 {
+		pairs := make([]Pair, 0, in.SrcSegments*in.DstSegments)
+		for s := int32(0); s < in.SrcSegments; s++ {
+			for d := int32(0); d < in.DstSegments; d++ {
+				pairs = append(pairs, Pair{SrcContent: s, DstContent: d})
+			}
+		}
+		return ModeResult{Mode: RouterFull, Pairs: pairs, G: g}, nil
+	}
+	// Merge: no deterministic segment-to-segment placement (non-hash
+	// distribution on either side, or the kernels hash differently). The
+	// destination coordinator places the rows; the S×D pair list is metadata
+	// (nothing is routed per pair).
 	pairs := make([]Pair, 0, in.SrcSegments*in.DstSegments)
 	for s := int32(0); s < in.SrcSegments; s++ {
 		for d := int32(0); d < in.DstSegments; d++ {
 			pairs = append(pairs, Pair{SrcContent: s, DstContent: d})
 		}
 	}
-	return ModeResult{Mode: RouterFull, Pairs: pairs, G: g}, nil
+	return ModeResult{Mode: Merge, Pairs: pairs, G: g}, nil
 }
 
 func gcd32(a, b uint32) int32 {

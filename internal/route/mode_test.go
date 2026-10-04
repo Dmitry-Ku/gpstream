@@ -19,77 +19,92 @@ func TestResolveModeTable(t *testing.T) {
 	}{
 		{
 			name:     "direct_1to1: S==D, keys equal, same major",
-			in:       ModeInput{2, 2, "hash", "hash", hash1, hash1, true},
+			in:       ModeInput{2, 2, "hash", "hash", hash1, hash1, true, false},
 			wantMode: Direct1to1, wantPairs: 2, wantG: 2, identPairs: true,
 		},
 		{
 			name:     "direct_1to1: keys case-insensitive",
-			in:       ModeInput{4, 4, "hash", "hash", []string{"ID"}, []string{"id"}, true},
+			in:       ModeInput{4, 4, "hash", "hash", []string{"ID"}, []string{"id"}, true, false},
 			wantMode: Direct1to1, wantPairs: 4, wantG: 4, identPairs: true,
 		},
 		{
 			name:     "router_full: S==D but keys differ",
-			in:       ModeInput{2, 2, "hash", "hash", hash1, []string{"other"}, true},
+			in:       ModeInput{2, 2, "hash", "hash", hash1, []string{"other"}, true, false},
 			wantMode: RouterFull, wantPairs: 4, wantG: 2,
 		},
 		{
 			name:     "router_full: S!=D (4->2)",
-			in:       ModeInput{4, 2, "hash", "hash", hash1, hash1, true},
+			in:       ModeInput{4, 2, "hash", "hash", hash1, hash1, true, false},
 			wantMode: RouterFull, wantPairs: 8, wantG: 2,
 		},
 		{
 			name:     "router_full: DISPROVEN fan-in (10->5) — no fast-path",
-			in:       ModeInput{10, 5, "hash", "hash", hash1, hash1, true},
+			in:       ModeInput{10, 5, "hash", "hash", hash1, hash1, true, false},
 			wantMode: RouterFull, wantPairs: 50, wantG: 5,
 		},
 		{
 			name:     "router_full: DISPROVEN congruence (4->6, g=2) — no fast-path",
-			in:       ModeInput{4, 6, "hash", "hash", hash1, hash1, true},
+			in:       ModeInput{4, 6, "hash", "hash", hash1, hash1, true, false},
 			wantMode: RouterFull, wantPairs: 24, wantG: 2,
 		},
 		{
-			name:     "router_full: different major versions",
-			in:       ModeInput{2, 2, "hash", "hash", hash1, hash1, false},
-			wantMode: RouterFull, wantPairs: 4, wantG: 2,
+			name:     "merge: different major versions (hash mismatch)",
+			in:       ModeInput{2, 2, "hash", "hash", hash1, hash1, false, false},
+			wantMode: Merge, wantPairs: 4, wantG: 2,
 		},
 		{
-			name:     "router_full: src randomly",
-			in:       ModeInput{2, 2, "randomly", "hash", nil, hash1, true},
-			wantMode: RouterFull, wantPairs: 4, wantG: 2,
+			name:     "merge: legacy hashops on the source",
+			in:       ModeInput{2, 2, "hash", "hash", hash1, hash1, true, true},
+			wantMode: Merge, wantPairs: 4, wantG: 2,
 		},
 		{
-			name:     "router_full: dst randomly",
-			in:       ModeInput{2, 2, "hash", "randomly", hash1, nil, true},
-			wantMode: RouterFull, wantPairs: 4, wantG: 2,
+			name:     "merge: legacy hashops (S!=D, would have been router_full)",
+			in:       ModeInput{3, 2, "hash", "hash", hash1, hash1, true, true},
+			wantMode: Merge, wantPairs: 6, wantG: 1,
+		},
+		{
+			name:     "merge: src randomly",
+			in:       ModeInput{2, 2, "randomly", "hash", nil, hash1, true, false},
+			wantMode: Merge, wantPairs: 4, wantG: 2,
+		},
+		{
+			name:     "merge: src replicated",
+			in:       ModeInput{2, 2, "replicated", "hash", nil, hash1, true, false},
+			wantMode: Merge, wantPairs: 4, wantG: 2,
+		},
+		{
+			name:     "merge: dst randomly",
+			in:       ModeInput{2, 2, "hash", "randomly", hash1, nil, true, false},
+			wantMode: Merge, wantPairs: 4, wantG: 2,
 		},
 		{
 			name:     "router_full: multi-attr keys differ in order",
-			in:       ModeInput{2, 2, "hash", "hash", hash2, []string{"b", "a"}, true},
+			in:       ModeInput{2, 2, "hash", "hash", hash2, []string{"b", "a"}, true, false},
 			wantMode: RouterFull, wantPairs: 4, wantG: 2,
 		},
 		{
 			name:    "err: zero src segments",
-			in:      ModeInput{0, 2, "hash", "hash", hash1, hash1, true},
+			in:      ModeInput{0, 2, "hash", "hash", hash1, hash1, true, false},
 			wantErr: "src segments",
 		},
 		{
 			name:    "err: zero dst segments",
-			in:      ModeInput{2, 0, "hash", "hash", hash1, hash1, true},
+			in:      ModeInput{2, 0, "hash", "hash", hash1, hash1, true, false},
 			wantErr: "dst segments",
 		},
 		{
 			name:    "err: dst hash without keys",
-			in:      ModeInput{2, 2, "hash", "hash", hash1, nil, true},
+			in:      ModeInput{2, 2, "hash", "hash", hash1, nil, true, false},
 			wantErr: "no hash keys",
 		},
 		{
 			name:    "err: unknown dst distribution",
-			in:      ModeInput{2, 2, "hash", "weird", hash1, hash1, true},
+			in:      ModeInput{2, 2, "hash", "weird", hash1, hash1, true, false},
 			wantErr: "unknown dst distribution",
 		},
 		{
 			name:    "err: unknown src distribution",
-			in:      ModeInput{2, 2, "weird", "hash", hash1, hash1, true},
+			in:      ModeInput{2, 2, "weird", "hash", hash1, hash1, true, false},
 			wantErr: "unknown src distribution",
 		},
 	}
@@ -143,7 +158,7 @@ func TestResolveModeAllPairsCovered(t *testing.T) {
 	// router_full for any (S,D): coverage = exactly S×D unique pairs.
 	for _, s := range []int32{1, 2, 3, 4, 6, 8, 10} {
 		for _, d := range []int32{1, 2, 3, 4, 6, 8, 12} {
-			got, err := ResolveMode(ModeInput{s, d, "hash", "hash", []string{"k"}, []string{"k"}, true})
+			got, err := ResolveMode(ModeInput{s, d, "hash", "hash", []string{"k"}, []string{"k"}, true, false})
 			if err != nil {
 				t.Fatalf("S=%d D=%d: %v", s, d, err)
 			}

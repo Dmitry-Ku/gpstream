@@ -330,6 +330,8 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			Partition:      t.Partition,
 			PartitionGuard: t.PartitionGuard,
 			RouteMode:      t.RouteMode,
+			SrcReplicated:  t.SrcReplicated,
+			RouteReason:    t.RouteReason,
 		}
 		// Fall back to the source names when a rename did not supply a
 		// destination (applyRename defaults them, but a hand-built plan may
@@ -1165,6 +1167,17 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"reason", "small-table auto-disable (F-12)")
 	}
 	switch {
+	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment && t.SrcReplicated:
+		// Design 04.10 (question 5): a DISTRIBUTED REPLICATED source table
+		// holds a FULL copy on every source segment, so an ON SEGMENT read
+		// would stream S identical copies (S× rows on the destination). The
+		// unit takes the coordinator data path instead (one COPY through the
+		// source coordinator, write through the destination coordinator) —
+		// the only correct read for a replicated table.
+		m.events.Log("replicated_fallback",
+			"table", t.Schema+"."+t.Name,
+			"reason", "DISTRIBUTED REPLICATED source: ON SEGMENT read would stream S identical full copies")
+		rows, wire, logical, err = m.streamTwoAgent(ctx, t, u, target, ds, dn)
 	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment:
 		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
 		// moves into the agents. The source agent triggers the ON SEGMENT
@@ -1387,6 +1400,19 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 	// root), so it stays on the merge path; a mismatch in the live destination
 	// segment count (a primary down since planning) also degrades to the merge
 	// path.
+	// Design 04.10 (hash-mismatch guard): the plan degraded this table to
+	// merge because the kernels cannot place rows identically (different
+	// major / legacy hashops) — log it so the operator sees why the table
+	// did not take a segment-to-segment sub-path.
+	if u.RouteReason != "" {
+		ev := "routed_fallback"
+		if strings.HasPrefix(u.RouteReason, "hash-mismatch") {
+			ev = "hash_mismatch_fallback"
+		}
+		m.events.Log(ev,
+			"table", t.Schema+"."+t.Name,
+			"reason", u.RouteReason)
+	}
 	var req unitSegmentRequest
 	req = unitSegmentRequest{
 		OnSegmentReq: agent.OnSegmentReq{

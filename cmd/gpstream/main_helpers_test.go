@@ -163,14 +163,14 @@ func TestPlanNotes(t *testing.T) {
 			{RouteMode: "coordinator"},
 		},
 	}
-	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, same-major, 2 eligible pair(s), router_full (S!=D); units: 2 direct_1to1 / 1 router_full" {
+	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, same-major, 2 eligible pair(s), router_full (S!=D); units: 2 direct_1to1 / 1 router_full / 0 merge" {
 		t.Errorf("routeSummaryLine resolved = %q", got)
 	}
 
 	// Mixed-major + direct-eligible variant.
 	p.Route.GPVersionEqual = false
 	p.Route.PossibleDirect1to1 = true
-	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, mixed-major, 2 eligible pair(s), direct_1to1 possible; units: 2 direct_1to1 / 1 router_full" {
+	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, mixed-major, 2 eligible pair(s), direct_1to1 possible; units: 2 direct_1to1 / 1 router_full / 0 merge" {
 		t.Errorf("routeSummaryLine mixed = %q", got)
 	}
 

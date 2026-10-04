@@ -75,6 +75,17 @@ type Table struct {
 	RouteMode route.Mode `json:"route_mode,omitempty"`
 	// RoutePairs: number of eligible (src,dst) content pairs for this unit.
 	RoutePairs int `json:"route_pairs,omitempty"`
+	// SrcReplicated (design 04.10, question 5): the SOURCE table is
+	// DISTRIBUTED REPLICATED — every source segment holds a FULL copy, so an
+	// ON SEGMENT read would stream S identical copies (S× rows on the
+	// destination). The manager must read this table through the source
+	// coordinator (one COPY) instead of ON SEGMENT; the write goes through
+	// the destination coordinator as well (RouteMode=merge).
+	SrcReplicated bool `json:"src_replicated,omitempty"`
+	// RouteReason (design 04.10): when RouteMode==merge, why the table cannot
+	// take a segment-to-segment sub-path (hash-mismatch / non-hash
+	// distribution). Logged by the manager as a fallback event.
+	RouteReason string `json:"route_reason,omitempty"`
 }
 
 // Plan is the deterministic transfer plan (FR-10).
