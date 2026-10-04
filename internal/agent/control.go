@@ -3,11 +3,15 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+	"time"
+
+	"github.com/gpstream/gpstream/internal/transfer"
 )
 
 // This file is the controller<->agent CONTROL protocol (ADR-002 plan, P3).
@@ -195,6 +199,15 @@ func recvLine(r *bufio.Reader, out any) error {
 	return io.ErrUnexpectedEOF
 }
 
+// ControlTLS carries the controller's control-channel TLS client settings
+// (design 04.10: the control channel crosses the WAN in the two-agent
+// layout, so it must be encrypted like every other channel). CA is required
+// to enable verification; cert/key (when set) present the controller's
+// client certificate to an mTLS agent (agent --control-tls-ca set).
+type ControlTLS struct {
+	Cert, Key, CA string
+}
+
 // ControlClient is the controller's side of the agent control protocol (P3):
 // it connects to the long-lived source agent's control socket and drives the
 // run — one Stream per unit (the source dials the destination agent and
@@ -212,12 +225,41 @@ type ControlClient struct {
 	mu   sync.Mutex
 }
 
-// DialControl connects the controller to a source agent's control socket.
+// DialControl connects the controller to a source agent's control socket
+// (plain TCP — the pre-redesign local layout).
 func DialControl(ctx context.Context, addr string) (*ControlClient, error) {
+	return DialControlTLS(ctx, addr, ControlTLS{})
+}
+
+// DialControlTLS connects the controller to an agent control socket,
+// optionally over TLS (the agent's --control-tls-* flags; the controller
+// verifies the agent's certificate against CA — ServerName is the dial
+// host, so the agent certificate must cover it).
+func DialControlTLS(ctx context.Context, addr string, t ControlTLS) (*ControlClient, error) {
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("control: dial %s: %w", addr, err)
+	}
+	if t.CA != "" {
+		host, _, herr := net.SplitHostPort(addr)
+		if herr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("control: bad addr %q: %w", addr, herr)
+		}
+		ccfg, cerr := transfer.ClientTLSConfig(host, t.Cert, t.Key, t.CA, "")
+		if cerr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("control: tls config %s: %w", addr, cerr)
+		}
+		hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
+		defer hcancel()
+		tc := tls.Client(conn, ccfg)
+		if terr := tc.HandshakeContext(hctx); terr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("control: tls handshake %s: %w", addr, terr)
+		}
+		conn = tc
 	}
 	return &ControlClient{conn: conn, w: bufio.NewWriter(conn), r: bufio.NewReader(conn)}, nil
 }

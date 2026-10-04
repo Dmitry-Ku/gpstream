@@ -58,6 +58,11 @@ type RoutedOptions struct {
 	// AcceptTimeout bounds the wait for the first sub-stream connection;
 	// StreamTimeout bounds the whole serve.
 	AcceptTimeout, StreamTimeout time.Duration
+	// SharedListen, when non-nil, is the agent long-lived data listener
+	// (design 04.10: one data port per agent; units multiplex by unit_id).
+	// The serve accepts its connections from it and does NOT close it on
+	// exit (the long-lived server owns it).
+	SharedListen net.Listener
 }
 
 // RoutedResult is what the destination agent reports after a routed serve.
@@ -200,13 +205,19 @@ func ServeRouted(ctx context.Context, o RoutedOptions) (RoutedResult, error) {
 
 	// 3. Listen for the S×D×W sub-stream connections (optionally a TLS
 	// server). Each source segreceiver dials this address D×W times.
-	rawL, lerr := net.Listen("tcp", o.Listen)
-	if lerr != nil {
-		_ = closePipesErr(pws, fmt.Errorf("listen: %w", lerr))
-		_, _, _ = collectDirectCopies(copyRes, D)
-		return out, fmt.Errorf("routed dest: listen %s: %w", o.Listen, lerr)
+	var rawL net.Listener
+	var lerr error
+	if o.SharedListen != nil {
+		rawL = o.SharedListen // long-lived: the server closes it, not the serve
+	} else {
+		rawL, lerr = net.Listen("tcp", o.Listen)
+		if lerr != nil {
+			_ = closePipesErr(pws, fmt.Errorf("listen: %w", lerr))
+			_, _, _ = collectDirectCopies(copyRes, D)
+			return out, fmt.Errorf("routed dest: listen %s: %w", o.Listen, lerr)
+		}
+		defer rawL.Close()
 	}
-	defer rawL.Close()
 	l := net.Listener(rawL)
 	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
 		scfg, serr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)

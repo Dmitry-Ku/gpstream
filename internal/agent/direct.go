@@ -45,6 +45,11 @@ type DirectOptions struct {
 	// AcceptTimeout bounds the wait for the first slice connection;
 	// StreamTimeout bounds the whole serve.
 	AcceptTimeout, StreamTimeout time.Duration
+	// SharedListen, when non-nil, is the agent long-lived data listener
+	// (design 04.10: one data port per agent; units multiplex by unit_id).
+	// The serve accepts its connections from it and does NOT close it on
+	// exit (the long-lived server owns it).
+	SharedListen net.Listener
 }
 
 // DirectResult is what the destination agent reports after a direct serve (the
@@ -184,13 +189,19 @@ func ServeDirect(ctx context.Context, o DirectOptions) (DirectResult, error) {
 
 	// 3. Listen for the D slice connections (optionally a TLS server). The
 	// source dials this address once per destination segment.
-	rawL, lerr := net.Listen("tcp", o.Listen)
-	if lerr != nil {
-		_ = closePipesErr(pws, fmt.Errorf("listen: %w", lerr))
-		_, _, _ = collectDirectCopies(copyRes, D)
-		return out, fmt.Errorf("direct dest: listen %s: %w", o.Listen, lerr)
+	var rawL net.Listener
+	var lerr error
+	if o.SharedListen != nil {
+		rawL = o.SharedListen // long-lived: the server closes it, not the serve
+	} else {
+		rawL, lerr = net.Listen("tcp", o.Listen)
+		if lerr != nil {
+			_ = closePipesErr(pws, fmt.Errorf("listen: %w", lerr))
+			_, _, _ = collectDirectCopies(copyRes, D)
+			return out, fmt.Errorf("direct dest: listen %s: %w", o.Listen, lerr)
+		}
+		defer rawL.Close()
 	}
-	defer rawL.Close()
 	l := net.Listener(rawL)
 	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
 		scfg, serr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)

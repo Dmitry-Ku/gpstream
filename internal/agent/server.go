@@ -55,6 +55,9 @@ type ServerOptions struct {
 	Listen string
 	// Data-plane TLS for the agent<->agent socket (source = client).
 	DataTLSCert, DataTLSKey, DataTLSCA string
+	// ControlTLS for the control socket (this agent = server). CA present =
+	// mTLS (require + verify the controller's client cert).
+	ControlTLSCert, ControlTLSKey, ControlTLSCA string
 	// ConnectTimeout bounds the per-unit dest dial; StreamTimeout the stream.
 	ConnectTimeout, StreamTimeout time.Duration
 }
@@ -111,6 +114,17 @@ func (s *SourceServer) startControl() (string, error) {
 			s.pool.Close()
 		}
 		return "", fmt.Errorf("source server: control listen %s: %w", s.opts.Listen, err)
+	}
+	if transfer.TLSEnabled(s.opts.ControlTLSCert, s.opts.ControlTLSKey, s.opts.ControlTLSCA) {
+		cfg, terr := transfer.ServerTLSConfig(s.opts.ControlTLSCert, s.opts.ControlTLSKey, s.opts.ControlTLSCA, "")
+		if terr != nil {
+			_ = l.Close()
+			if s.pool != nil {
+				s.pool.Close()
+			}
+			return "", fmt.Errorf("source server: control tls config: %w", terr)
+		}
+		l = tls.NewListener(l, cfg)
 	}
 	s.ctrlAddr = l.Addr().String()
 	go s.serveControl(l)

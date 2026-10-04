@@ -59,6 +59,12 @@ func main() {
 	dataCert := flag.String("data-tls-cert", "", "agent-stream client certificate PEM")
 	dataKey := flag.String("data-tls-key", "", "agent-stream client key PEM")
 	dataCA := flag.String("data-tls-ca", "", "agent-stream trusted CA bundle PEM (enables mTLS)")
+	// Control-channel TLS (the controller's dial to this agent's control
+	// socket; this agent = server). CA present = mTLS (require the
+	// controller's client certificate).
+	ctrlCert := flag.String("control-tls-cert", "", "control-socket serving certificate PEM")
+	ctrlKey := flag.String("control-tls-key", "", "control-socket serving key PEM")
+	ctrlCA := flag.String("control-tls-ca", "", "control-socket trusted CA bundle PEM (enables mTLS)")
 	// Timeouts.
 	connectTO := flag.Duration("connect-timeout", 10*time.Second, "socket dial timeout")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
@@ -100,6 +106,9 @@ func main() {
 			DataTLSCert:    *dataCert,
 			DataTLSKey:     *dataKey,
 			DataTLSCA:      *dataCA,
+			ControlTLSCert: *ctrlCert,
+			ControlTLSKey:  *ctrlKey,
+			ControlTLSCA:   *ctrlCA,
 			ConnectTimeout: *connectTO,
 			StreamTimeout:  *streamTO,
 		})

@@ -41,6 +41,12 @@ func main() {
 	dataKey := flag.String("data-tls-key", "", "agent-stream serving key PEM")
 	dataCA := flag.String("data-tls-ca", "", "agent-stream trusted CA bundle PEM (enables mTLS: require the source's client cert)")
 	dataMinTLS := flag.String("data-tls-min-tls", "1.2", "agent-stream minimum TLS version")
+	// Control-channel TLS (the controller's dial to this agent's control
+	// socket; this agent = server). CA present = mTLS (require the
+	// controller's client certificate).
+	ctrlCert := flag.String("control-tls-cert", "", "control-socket serving certificate PEM")
+	ctrlKey := flag.String("control-tls-key", "", "control-socket serving key PEM")
+	ctrlCA := flag.String("control-tls-ca", "", "control-socket trusted CA bundle PEM (enables mTLS)")
 	// Swap is a controller decision (the journal's terminal-state semantics
 	// live in the controller, ADR-002 plan).
 	swap := flag.Bool("swap", false, "perform the atomic swap (rename staging -> final) after the load")
@@ -69,6 +75,13 @@ func main() {
 	// Doctor probe: print a marker and exit 0 (no serve), proving the binary
 	// is installed on the destination host.
 	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
+	// --serve = LONG-LIVED mode (design 04.10): the agent binds ONE data
+	// listener + ONE control listener for the whole run (port economy) and
+	// serves units over the control protocol (hello / serve-unit /
+	// unit-done / release) instead of one-shot single-unit modes.
+	serve := flag.Bool("serve", false, "long-lived mode: serve units over the control protocol (one data + one control listener for the run)")
+	dataListen := flag.String("data-listen", "0.0.0.0:0", "long-lived mode: data listener address host:port (0 = pick a free port; the real address is reported in the hello)")
+	ctrlListen := flag.String("control-listen", "0.0.0.0:0", "long-lived mode: control listener address host:port (0 = pick a free port)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -79,14 +92,56 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gpstream-dest-agent: ok (check)")
 		os.Exit(0)
 	}
-	if *dest == "" || *listen == "" {
-		fail("--dest and --listen are required")
-	}
 
 	// SIGINT/SIGTERM cancels the serve so a controller-side stop unwinds the
 	// COPY and the socket cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if *serve {
+		// Long-lived mode: one data + one control listener for the run.
+		if *dest == "" {
+			fail("--dest is required")
+		}
+		srv, err := agent.NewDestServer(agent.DestServerOptions{
+			DataListen:     *dataListen,
+			ControlListen:  *ctrlListen,
+			DestConn:       *dest,
+			SSLCert:        *sslCert,
+			SSLKey:         *sslKey,
+			SSLCA:          *sslCA,
+			SSLMinTLS:      *sslMinTLS,
+			DataTLSCert:    *dataCert,
+			DataTLSKey:     *dataKey,
+			DataTLSCA:      *dataCA,
+			DataTLSMinTLS:  *dataMinTLS,
+			ControlTLSCert: *ctrlCert,
+			ControlTLSKey:  *ctrlKey,
+			ControlTLSCA:   *ctrlCA,
+			AcceptTimeout:  *acceptTO,
+			StreamTimeout:  *streamTO,
+		})
+		if err != nil {
+			fail("start long-lived dest server: %v", err)
+		}
+		// Report the real bound addresses (auto :0 mode: the operator or
+		// the remote launch reads this line to learn the data endpoint).
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: serve data=%s control=%s ready\n",
+			srv.DataAddr(), srv.ControlAddr())
+		// Block until the run ends (release / controller disconnect) or a
+		// signal.
+		select {
+		case <-ctx.Done():
+		case <-srv.Done():
+		}
+		srv.Close()
+		fmt.Fprintln(os.Stderr, "gpstream-dest-agent: serve stopped")
+		os.Exit(0)
+	}
+
+	if *dest == "" || *listen == "" {
+		fail("--dest and --listen are required")
+	}
 
 	if *routedSpec != "" {
 		// P9 routed mode (S≠D): accept S×D×W sub-stream connections (one per

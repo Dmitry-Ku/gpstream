@@ -259,6 +259,19 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.SegTLSCA = args[i]
 
+		// Control-channel TLS (the controller's dials to the agents'
+		// control sockets; the agents serve with --control-tls-*, the
+		// controller verifies against --control-tls-ca).
+		case "--control-tls-cert":
+			i++
+			cfg.ControlTLSCert = args[i]
+		case "--control-tls-key":
+			i++
+			cfg.ControlTLSKey = args[i]
+		case "--control-tls-ca":
+			i++
+			cfg.ControlTLSCA = args[i]
+
 		// Indexes (FR-17).
 		case "--index-workers":
 			i++

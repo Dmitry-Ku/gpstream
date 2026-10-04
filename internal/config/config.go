@@ -226,6 +226,16 @@ type Config struct {
 	SegTLSKey  string
 	SegTLSCA   string
 
+	// ControlTLS is the controller's control-channel TLS client settings
+	// (design 04.10: the control channel crosses the WAN in the two-agent
+	// layout). The controller verifies each agent's control-socket
+	// certificate against ControlTLSCA (the agents serve with
+	// --control-tls-cert/key; their --control-tls-ca enables mTLS, in which
+	// case the controller presents ControlTLSCert/ControlTLSKey).
+	ControlTLSCert string
+	ControlTLSKey  string
+	ControlTLSCA   string
+
 	// Frame-level ACK and RST-resume (DESIGN §4.6, Tier-1, R2-approved).
 	// FrameAck is "on" by default; "off" falls back to the plain pipe.
 	// AckTimeout "adaptive" = 3x median RTT (min 1s), else a fixed duration.
@@ -528,6 +538,17 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("SEG_TLS_CA"); ok {
 		c.SegTLSCA = v
 	}
+	// Control-channel TLS (the controller's dials to the agents' control
+	// sockets).
+	if v, ok := get("CONTROL_TLS_CERT"); ok {
+		c.ControlTLSCert = v
+	}
+	if v, ok := get("CONTROL_TLS_KEY"); ok {
+		c.ControlTLSKey = v
+	}
+	if v, ok := get("CONTROL_TLS_CA"); ok {
+		c.ControlTLSCA = v
+	}
 	// Frame-ack (§4.6).
 	if v, ok := get("FRAME_ACK"); ok {
 		c.FrameAck = v
@@ -787,6 +808,12 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegTLSKey = v
 	case "seg_tls_ca":
 		c.SegTLSCA = v
+	case "control_tls_cert":
+		c.ControlTLSCert = v
+	case "control_tls_key":
+		c.ControlTLSKey = v
+	case "control_tls_ca":
+		c.ControlTLSCA = v
 	case "source_agent_binary":
 		c.SourceAgentBinary = v
 	case "dest_agent_binary":

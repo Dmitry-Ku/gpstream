@@ -281,7 +281,11 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 
 	// The source agent binds ctrlAddr and starts accepting; dial it. The bind
 	// is fast, but dial with a short retry to tolerate the agent's startup.
-	client, err := dialControlRetry(ctx, ctrlAddr, 15*time.Second)
+	client, err := dialControlRetry(ctx, ctrlAddr, 15*time.Second, agent.ControlTLS{
+		Cert: r.cfg.ControlTLSCert,
+		Key:  r.cfg.ControlTLSKey,
+		CA:   r.cfg.ControlTLSCA,
+	})
 	if err != nil {
 		_ = cmd.Process.Kill()
 		cancel()
@@ -635,14 +639,16 @@ func prebindLoopback() (string, error) {
 }
 
 // dialControlRetry dials addr until it succeeds or the deadline passes (the
-// source agent binds the control socket shortly after it starts).
-func dialControlRetry(ctx context.Context, addr string, deadline time.Duration) (*agent.ControlClient, error) {
+// source agent binds the control socket shortly after it starts). tls is the
+// control-channel TLS client settings (design 04.10; empty = plain TCP, the
+// pre-redesign local layout).
+func dialControlRetry(ctx context.Context, addr string, deadline time.Duration, tls agent.ControlTLS) (*agent.ControlClient, error) {
 	deadlineCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	const backoff = 50 * time.Millisecond
 	var lastErr error
 	for {
-		client, err := agent.DialControl(deadlineCtx, addr)
+		client, err := agent.DialControlTLS(deadlineCtx, addr, tls)
 		if err == nil {
 			return client, nil
 		}
@@ -714,7 +720,7 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 		return fmt.Errorf("two-agent: start in-proc source agent: %w", err)
 	}
 	r.srv = srv
-	client, err := agent.DialControl(ctx, ctrlAddr)
+	client, err := agent.DialControl(ctx, ctrlAddr) // in-proc test: plain control
 	if err != nil {
 		srv.Close()
 		cancel()

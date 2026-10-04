@@ -49,6 +49,11 @@ type SegmentsOptions struct {
 	// AcceptTimeout bounds the wait for the first segment connection;
 	// StreamTimeout bounds the whole serve.
 	AcceptTimeout, StreamTimeout time.Duration
+	// SharedListen, when non-nil, is the agent long-lived data listener
+	// (design 04.10: one data port per agent; units multiplex by unit_id).
+	// The serve accepts its connections from it and does NOT close it on
+	// exit (the long-lived server owns it).
+	SharedListen net.Listener
 }
 
 // SegmentsResult is what the destination agent reports after an on_segment
@@ -154,11 +159,16 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 	}
 
 	// 4. Listen for the N segment connections (optionally a TLS server).
-	rawL, err := net.Listen("tcp", o.Listen)
-	if err != nil {
-		return out, fmt.Errorf("dest agent: listen %s: %w", o.Listen, err)
+	var rawL net.Listener
+	if o.SharedListen != nil {
+		rawL = o.SharedListen // long-lived: the server closes it, not the serve
+	} else {
+		rawL, err = net.Listen("tcp", o.Listen)
+		if err != nil {
+			return out, fmt.Errorf("dest agent: listen %s: %w", o.Listen, err)
+		}
+		defer rawL.Close()
 	}
-	defer rawL.Close()
 	l := net.Listener(rawL)
 	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
 		scfg, serr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
