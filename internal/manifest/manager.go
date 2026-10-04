@@ -1483,6 +1483,26 @@ func (m *Manager) streamTwoAgentDirect(ctx context.Context, t plan.Table, u *Uni
 			reason: "partitioned parent: utility-mode COPY FROM is not supported on partition-hierarchy roots; using the coordinator path (parent-COPY)",
 		}
 	}
+	// P8-1 (direct_1to1 READ fast-path): when the plan proves this table's
+	// route is direct_1to1 (S==D, equal hash keys, same major, non-legacy) AND
+	// the ON SEGMENT dispatch is available (the segreceiver is deployed on the
+	// source segment hosts: --seg-binary + --seg-listen), the source read uses
+	// the kernel's ON SEGMENT dispatch — each source segment streams its own
+	// slice, 0 CPU on hashing. For direct_1to1, source segment s's rows ==
+	// destination segment s's rows, so the RowRouter's per-row hash (cdbhash +
+	// JCH) is pure overhead: every row hashes to d==s. The write side is the
+	// same ServeDirect per-segment utility COPYs (coordinator out of the write
+	// path — the R5 endgame is preserved). This reuses the proven on_segment +
+	// DirectWrite machinery (streamTwoAgentSegment) so the direct branch gets
+	// the read fast-path without a second implementation. A router_full table,
+	// or a direct run without --seg-binary/--seg-listen, keeps the current
+	// coordinator COPY + RowRouter path (correct, just hashed).
+	if u.RouteMode == route.Direct1to1 && m.cfg.SegBinary != "" && m.cfg.SegListen != "" {
+		m.events.Log("direct_1to1_read_fastpath",
+			"table", t.Schema+"."+t.Name,
+			"reason", "direct mode: source read via ON SEGMENT dispatch (0 hashing, d==s for every row) instead of coordinator COPY + RowRouter; write = per-segment utility COPYs")
+		return m.streamTwoAgentSegment(ctx, t, u, target, ds, dn, cols, dist, part)
+	}
 	// 1. Destination topology: the up primaries in content order (a catalog
 	// read on the dest — the controller's control plane; the single-controller
 	// direct path does the same read to build its per-segment pipes).
