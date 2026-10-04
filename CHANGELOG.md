@@ -25,6 +25,28 @@ always correct, only the speed changes. Measured on GP6 (4 segments,
 (~1.5× warm) and the read already runs per-segment (~3.5× vs coordinator),
 so end-to-end ≈ 1.5–1.8× at 4 segments and higher at larger segment counts.
 
+### Added: `direct_1to1` read fast-path in the `direct` branch (P8-1)
+
+The `--copy-mode direct` branch reads `direct_1to1` tables through the
+coordinator (`COPY TO STDOUT`) and re-hashes every row with the RowRouter
+(cdbhash + jump-consistent-hash, ~19 ns/row) — pure overhead for
+`direct_1to1`, where source segment *s* maps to destination segment *s* for
+every row. When the plan proves `direct_1to1` **and** the ON SEGMENT dispatch
+is available (`--seg-binary` + `--seg-listen`, i.e. the segreceiver is deployed
+on the source segment hosts), the source read now uses the kernel's ON SEGMENT
+dispatch — each source segment streams its own slice, **0 CPU on hashing** —
+and the write is the same per-segment utility-mode COPYs (the R5 endgame,
+coordinator out of the write path, is preserved). A `router_full` table, or a
+`direct` run without the seg config, keeps the coordinator + RowRouter path.
+Each fast-path table logs `direct_1to1_read_fastpath` to the run event stream.
+
+Live-validated on the lab (S==D=3 pair, 1.29M rows / 180 MB,
+`DISTRIBUTED BY (id)`): the fast path completed in 6 s (~30 MB/s) with the
+per-segment hash placement on the destination **identical** to the source
+(430147/429563/430290 on both) and the distribution key preserved — the
+`d==s` invariant for every row that the read fast-path relies on.
+
+
 ### Removed: `--topology` flag — the two-agent data path is now the only one
 
 The single-controller data path (the ADR-002 debt) is fully removed.
