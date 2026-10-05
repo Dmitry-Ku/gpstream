@@ -275,11 +275,16 @@ func liveDBCreate(dsn string) error {
 	}
 	defer c.Close()
 	db := dsnDBName(dsn)
+	// DROP first: the same (port) maps to the same database name, and test
+	// port pairs collide across the suite (e.g. 5681/5721/5731 are reused).
+	// A hard-killed prior test (kill -9 skips t.Cleanup) leaves its tables
+	// behind, so "CREATE ... already exists" must start from an EMPTY db,
+	// not the previous test's leftovers.
+	if _, err := c.Exec(context.Background(), fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, db)); err != nil {
+		return fmt.Errorf("live drop %s: %w", db, err)
+	}
 	if _, err := c.Exec(context.Background(), fmt.Sprintf(`CREATE DATABASE %s`, db)); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			return nil
-		}
-		return err
+		return fmt.Errorf("live create %s: %w", db, err)
 	}
 	return nil
 }

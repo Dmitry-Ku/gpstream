@@ -347,6 +347,17 @@ type twoAgentBins struct {
 
 func buildTwoAgentBinaries(t *testing.T) twoAgentBins {
 	t.Helper()
+	// Live mode: the binaries are the DEPLOYED package on the controller
+	// host (/usr/bin) — no repo / go build needed. The paths are used for
+	// the pgrep patterns (base names) and, in live mode, the controller
+	// itself is exec'd via liveControllerBinary.
+	if pgtest.LiveMode() {
+		return twoAgentBins{
+			gpstream:  "/usr/bin/gpstream",
+			srcAgent:  "/usr/bin/gpstream-source-agent",
+			destAgent: "/usr/bin/gpstream-dest-agent",
+		}
+	}
 	root, err := findRepoRoot()
 	if err != nil {
 		t.Fatalf("find repo root: %v", err)

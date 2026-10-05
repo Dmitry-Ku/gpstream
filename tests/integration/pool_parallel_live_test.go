@@ -44,8 +44,14 @@ func TestPoolParallelWorkersLive(t *testing.T) {
 	}
 
 	// Plan against the real clusters, selecting the three tables explicitly.
+	// The DB segment is the live cluster's actual database name (srcdb_<port>
+	// in live mode); matchTable treats it as a glob that must match exactly.
 	cfg := config.Default()
-	cfg.Tables = []string{"srcdb.public.orders", "srcdb.public.customers", "srcdb.public.invoices"}
+	cfg.Tables = []string{
+		srcCl.DB + ".public.orders",
+		srcCl.DB + ".public.customers",
+		srcCl.DB + ".public.invoices",
+	}
 	cfg.ConflictAction = config.Overwrite // staging + swap path (E1 layout)
 	cfg.WorkersPerPair = 4                // parallel stream workers (FR-03)
 	p, err := plan.Build(ctx, &cfg, src, dst)

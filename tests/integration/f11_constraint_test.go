@@ -99,7 +99,7 @@ func TestConstraintRestoreFKCheckRename(t *testing.T) {
 // sibling CHECK constraint is still applied, and a constraint_restore_failed
 // event is logged (F-04) so the operator can see the dangling reference.
 func TestConstraintRestoreExternalRef(t *testing.T) {
-	src, dst, _, _ := startPGPair(t, 5721, 5722)
+	src, dst, srcCl, _ := startPGPair(t, 5721, 5722)
 	defer func() { src.Close(); dst.Close() }()
 
 	// An anchor table that will NOT be migrated (it stays on the source only).
@@ -115,8 +115,10 @@ func TestConstraintRestoreExternalRef(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.WorkersPerPair = 1
-	// Migrate ONLY public.kids (public.anchors is left behind).
-	cfg.Tables = []string{"srcdb.public.kids"}
+	// Migrate ONLY public.kids (public.anchors is left behind). The DB
+	// segment is the live cluster's actual database name (srcdb_<port> in
+	// live mode; matchTable treats it as advisory, but keep it exact).
+	cfg.Tables = []string{srcCl.DB + ".public.kids"}
 
 	p := buildPlan(t, cfg, src, dst)
 	if len(p.Units) != 1 {
