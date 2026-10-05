@@ -15,11 +15,6 @@ redistribution accounting, and a fully deterministic
 .BR --dry-run
 plan.
 
-NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-coordinator and on_segment. The direct mode described in this document is
-redundant (its per-segment write is subsumed by on_segment's auto-selected
-per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-still describes the CURRENT (shipped) behavior.
 .SH COMMANDS
 .TP
 .B run
@@ -234,11 +229,10 @@ there); the package places it at
 .BR /usr/bin/gpstream-segreceiver .
 .TP
 .BR --copy-mode
-coordinator|on_segment|direct
+coordinator|on_segment
 Data path (default coordinator). coordinator = one COPY through each
 coordinator; on_segment = the source segments stream in parallel (ON SEGMENT
-dispatch); direct = rows are routed to the destination segments
-(per-segment utility COPYs, dest coordinator out of the write path).
+dispatch) and pick per table:
 When the planner proves a table is direct_1to1 (same segment count, equal
 distribution keys, same GP major), on_segment writes directly into the
 destination segments (no merge, no re-distribution) — logged as

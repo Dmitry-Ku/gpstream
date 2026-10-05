@@ -1,11 +1,5 @@
 # gpstream — Quick Start
 
-> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-> coordinator and on_segment. The direct mode described in this document is
-> redundant (its per-segment write is subsumed by on_segment's auto-selected
-> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-> still describes the CURRENT (shipped) behavior.
-
 `gpstream` streams logical data between two Greenplum 6 clusters over a direct
 high-speed network, **without any intermediate storage**. This guide is the
 minimal path to a copy: set the endpoints, choose a scope, dry-run first, run,
@@ -290,7 +284,7 @@ per database (F-02), so the whole copy sees a single point in time.
 | Rename | `--map-db`, `--map-schema`, `--map-table` |
 | Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
 | Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
-| Copy mode | `--copy-mode coordinator\|on_segment\|direct`, `--seg-listen` (optional; auto when omitted) |
+| Copy mode | `--copy-mode coordinator\|on_segment`, `--seg-listen` (optional; auto when omitted) |
 | Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify on\|off`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | always on: one run-wide REPEATABLE READ snapshot per database (F-02) |

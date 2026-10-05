@@ -1,11 +1,5 @@
 # gpstream — Performance & Throughput (v2)
 
-> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-> coordinator and on_segment. The direct mode described in this document is
-> redundant (its per-segment write is subsumed by on_segment's auto-selected
-> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-> still describes the CURRENT (shipped) behavior.
-
 This document covers the performance characteristics of the gpstream data
 path and the controls that shape throughput. It is grounded in the v2
 implementation (`internal/stream`, `internal/limiter`, `internal/compress`,
@@ -169,16 +163,7 @@ are **implemented and live-verified** on the lab:
   `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream doctor`
   reports the capability as `on_segment` (PASS / WARN — WARN only degrades
   the *option*, the coordinator path always works).
-- **`--copy-mode direct` (P5, dest-segment write)** — the source agent reads
-  with one coordinator `COPY ... TO STDOUT` and the RowRouter hashes each row
-  to one of the D destination segments, streaming D per-segment compressed
-  slices; the destination agent performs D utility-mode per-segment COPYs
-  into the staging table. The dest coordinator is out of the write path. A
-  table that cannot be routed (no distribution key, a partitioned parent, or a
-  destination without all primaries up) **degrades to the coordinator path**
-  (correct, just not direct) and the run logs `direct_degraded`.
-
-- **`direct_1to1` fast-path (P8)** — when the planner proves a table's route
+- **`direct_1to1` fast-path** — when the planner proves a table's route
   is `direct_1to1` (S==D primaries, both tables `DISTRIBUTED BY` the same
   keys in the same order, same GP major, non-legacy hashops), `--copy-mode
   on_segment` additionally takes the **fast-path write**: the destination

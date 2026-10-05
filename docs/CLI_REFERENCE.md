@@ -1,11 +1,5 @@
 # gpstream — CLI Reference
 
-> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-> coordinator and on_segment. The direct mode described in this document is
-> redundant (its per-segment write is subsumed by on_segment's auto-selected
-> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-> still describes the CURRENT (shipped) behavior.
-
 This is the complete command and flag reference for **gpstream**, an open-source
 Go tool that performs high-throughput **LOGICAL** data copy between two
 Greenplum 6 clusters over a direct, high-speed network. gpstream streams
@@ -230,8 +224,8 @@ There are no `--source-agent-binary` / `--dest-agent-binary` flags: a packaged i
 The data path is always the two-agent transport: the source agent reads the
 table and pushes a compressed (optionally TLS) stream over a real socket to
 the dest agent; the controller orchestrates (plan, journal, verify, swap,
-indexes) and holds no data connections. Works with all three `--copy-mode`
-values (`coordinator` / `on_segment` / `direct`); `gpstream_bytes_total` is
+indexes) and holds no data connections. Works with both `--copy-mode`
+values (`coordinator` / `on_segment`); `gpstream_bytes_total` is
 the on-wire agent-to-agent volume.
 
 ### Resilience (F-06/F-07)
@@ -244,7 +238,7 @@ the on-wire agent-to-agent volume.
 ### Transport / frame-ack (T-B, §4.6)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--copy-mode coordinator\|on_segment\|direct` | `CopyMode` | `""` → coordinator (source-direct + dest-coordinator) |
+| `--copy-mode coordinator\|on_segment` | `CopyMode` | `""` → coordinator (one COPY through each coordinator) |
 | `--seg-listen <addr>` | `SegListen` | `""` (auto: controller primary non-loopback IP + a free port; each unit binds `base+unitID`) |
 | `--seg-tls-cert <F>` | `SegTLSCert` | `""` (controller serving cert for the segment data plane) |
 | `--seg-tls-key <F>` | `SegTLSKey` | `""` (controller serving key) |

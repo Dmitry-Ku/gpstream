@@ -194,6 +194,11 @@ func TestParseConfigFlagErrors(t *testing.T) {
 	if _, err := parseConfig([]string{"--copy-mode", "on_segment"}); err != nil {
 		t.Errorf("copy-mode on_segment (binaries resolve by convention): unexpected error: %v", err)
 	}
+	// the direct copy-mode was removed (2026-10-04): its per-segment write is
+	// subsumed by on_segment's auto-selected sub-paths (1:1 / routed / merge).
+	if _, err := parseConfig([]string{"--copy-mode", "direct"}); err == nil {
+		t.Error("removed copy-mode direct: want validation error")
+	}
 }
 
 // TestParseConfigFromFile covers the --config file layer (file values form the

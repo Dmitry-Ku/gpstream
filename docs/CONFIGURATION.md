@@ -1,11 +1,5 @@
 # gpstream — Configuration Reference
 
-> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-> coordinator and on_segment. The direct mode described in this document is
-> redundant (its per-segment write is subsumed by on_segment's auto-selected
-> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-> still describes the CURRENT (shipped) behavior.
-
 This document is the configuration reference for **gpstream**, the open-source
 Go tool that performs high-throughput **LOGICAL** data copy between two
 Greenplum 6 clusters over a direct, high-speed network via `COPY (binary)`
@@ -127,7 +121,7 @@ place.
 ### 1.12 Transport (T-B, §1.3)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `on_segment` \| `direct`. |
+| `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `on_segment`. |
 | `SegListen` | string | `""` → auto | `--seg-listen` / `seg_listen` / `GPSTREAM_SEG_LISTEN` | Base listen address for `on_segment`: each unit binds `base+unitID`. When empty, auto-resolved to the controller's primary non-loopback IP + a free port (must be routable from the source segment hosts). |
 | `SegBinary` | string | `""` → resolved | `seg_binary` / `GPSTREAM_SEG_BINARY` | gpstream-segreceiver path on the SOURCE segment hosts. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `on_segment` runs. |
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |

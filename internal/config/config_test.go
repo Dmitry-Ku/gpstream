@@ -60,6 +60,7 @@ func TestValidateErrors(t *testing.T) {
 		{"both metadata and data", func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},
 		{"bad verify", func(c *Config) { c.Verify = "bogus" }},
+		{"removed copy-mode direct", func(c *Config) { c.CopyMode = "direct" }},
 		{"negative small-table threshold", func(c *Config) { c.SmallTableThreshold = -1 }},
 	}
 	for _, tc := range cases {
