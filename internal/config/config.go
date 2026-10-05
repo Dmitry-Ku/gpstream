@@ -236,6 +236,31 @@ type Config struct {
 	ControlTLSKey  string
 	ControlTLSCA   string
 
+	// Remote agent launch (design 04.10, Inc2d). An agent must run where it
+	// opens its pg connection (source master / a destination host). Empty
+	// SSH host = the agent runs as a local subprocess on the controller's
+	// host (the gp6lab / single-host layout).
+	SourceAgentSSH string // "user@host[:port]" the source agent runs on (source master); "" = local
+	DestAgentSSH   string // "user@host[:port]" the dest agent runs on (dest master / seg host); "" = local
+	AgentSSHKey    string // private key for key-based auth ("" = default ssh keys)
+	AgentSSHRunAs  string // "sudo -u <user>" ("" = the SSH user); lab: gpadmin
+	// AgentBinDir is the directory holding the agent binaries ON THE AGENT
+	// HOSTS (remote launch). Local launches use the convention-resolved
+	// SourceAgentBinary/DestAgentBinary instead. Default /usr/bin (the
+	// packaged install path).
+	AgentBinDir string
+	// DialFirst: adopt an already-running daemon (do NOT launch) and dial its
+	// control address. Requires the fixed Control/Data addr below.
+	SourceDialFirst bool
+	DestDialFirst   bool
+	// Fixed (routable) listen addresses for remote / dial-first agents.
+	// The CONTROL address must be fixed for a remote agent (the controller
+	// dials it); the DATA address may be empty (auto :0, reported in the
+	// agent's hello) or fixed for a strict firewall.
+	SourceControlAddr string
+	DestControlAddr   string
+	DestDataAddr      string
+
 	// Frame-level ACK and RST-resume (DESIGN §4.6, Tier-1, R2-approved).
 	// FrameAck is "on" by default; "off" falls back to the plain pipe.
 	// AckTimeout "adaptive" = 3x median RTT (min 1s), else a fixed duration.
@@ -263,6 +288,7 @@ func Default() Config {
 		Timeout:             120 * time.Second, // F-10 §6: default 120 s
 		IndexPriority:       "size",
 		SSLMinTLS:           "1.2",
+		AgentBinDir:         "/usr/bin",
 		WorkersPerPair:      2,
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
@@ -549,6 +575,37 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("CONTROL_TLS_CA"); ok {
 		c.ControlTLSCA = v
 	}
+	// Remote agent launch (Inc2d).
+	if v, ok := get("SOURCE_AGENT_SSH"); ok {
+		c.SourceAgentSSH = v
+	}
+	if v, ok := get("DEST_AGENT_SSH"); ok {
+		c.DestAgentSSH = v
+	}
+	if v, ok := get("AGENT_SSH_KEY"); ok {
+		c.AgentSSHKey = v
+	}
+	if v, ok := get("AGENT_SSH_RUNAS"); ok {
+		c.AgentSSHRunAs = v
+	}
+	if v, ok := get("AGENT_BIN_DIR"); ok {
+		c.AgentBinDir = v
+	}
+	if v, ok := getBool("SOURCE_DIAL_FIRST"); ok {
+		c.SourceDialFirst = v
+	}
+	if v, ok := getBool("DEST_DIAL_FIRST"); ok {
+		c.DestDialFirst = v
+	}
+	if v, ok := get("SOURCE_CONTROL_ADDR"); ok {
+		c.SourceControlAddr = v
+	}
+	if v, ok := get("DEST_CONTROL_ADDR"); ok {
+		c.DestControlAddr = v
+	}
+	if v, ok := get("DEST_DATA_ADDR"); ok {
+		c.DestDataAddr = v
+	}
 	// Frame-ack (§4.6).
 	if v, ok := get("FRAME_ACK"); ok {
 		c.FrameAck = v
@@ -814,6 +871,26 @@ func assignConfigString(c *Config, key, v string) {
 		c.ControlTLSKey = v
 	case "control_tls_ca":
 		c.ControlTLSCA = v
+	case "source_agent_ssh":
+		c.SourceAgentSSH = v
+	case "dest_agent_ssh":
+		c.DestAgentSSH = v
+	case "agent_ssh_key":
+		c.AgentSSHKey = v
+	case "agent_ssh_runas":
+		c.AgentSSHRunAs = v
+	case "agent_bin_dir":
+		c.AgentBinDir = v
+	case "source_dial_first":
+		c.SourceDialFirst = v == "true" || v == "1" || v == "on"
+	case "dest_dial_first":
+		c.DestDialFirst = v == "true" || v == "1" || v == "on"
+	case "source_control_addr":
+		c.SourceControlAddr = v
+	case "dest_control_addr":
+		c.DestControlAddr = v
+	case "dest_data_addr":
+		c.DestDataAddr = v
 	case "source_agent_binary":
 		c.SourceAgentBinary = v
 	case "dest_agent_binary":
@@ -952,4 +1029,13 @@ func freePort(host string) (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// getBool reads an env var as a boolean (true/1/on = true).
+func getBool(key string) (bool, bool) {
+	v, ok := os.LookupEnv("GPSTREAM_" + key)
+	if !ok {
+		return false, false
+	}
+	return v == "true" || v == "1" || v == "on", true
 }

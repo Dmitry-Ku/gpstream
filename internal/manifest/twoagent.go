@@ -6,12 +6,13 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/launch"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
@@ -227,13 +228,11 @@ type processTwoAgentRunner struct {
 	cfg *config.Config
 	// Source agent (long-lived; owns the FR-02 snapshot).
 	ctrl      *agent.ControlClient
-	srcCmd    *exec.Cmd
-	srcCancel context.CancelFunc
+	srcHandle *launch.Handle
 	// Destination agent (long-lived; design 04.10 port economy — one data +
 	// one control listener for the whole run, units multiplex by unit_id).
 	destCtrl     *agent.DestControlClient
-	destCmd      *exec.Cmd
-	destCancel   context.CancelFunc
+	destHandle   *launch.Handle
 	destDataAddr string // the dest agent's real data address (from its hello)
 }
 
@@ -241,21 +240,32 @@ func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
 	return &processTwoAgentRunner{cfg: cfg}
 }
 
-// Start launches the long-lived source agent (--serve) and the long-lived
-// destination agent (--serve, design 04.10 port economy) and connects the
-// control clients to both. The destination agent binds ONE data + ONE
-// control listener for the whole run; its hello reports the real data
-// address the source agent / segreceivers must dial. Both agents are
-// subprocesses on the controller's host (the local layout); the remote
-// (SSH) launch is Inc2c.
+// Start brings up both long-lived agents and connects the control clients.
+// Each agent is launched per the operator's config (Inc2d): a LOCAL
+// subprocess on the controller's host (the gp6lab / single-host layout), an
+// SSH remote launch on the agent's own host (the multi-host GP6 layout — the
+// agent runs where it opens its pg connection), or an adopted daemon
+// (dial-first: the operator pre-ran it; the controller just dials). The
+// destination agent binds ONE data + ONE control listener for the whole run;
+// its hello reports the real data address the source agent / segreceivers
+// dial.
 func (r *processTwoAgentRunner) Start(ctx context.Context) error {
-	// --- source agent (long-lived; the FR-02 snapshot) ----------------
-	srcCtrlAddr, err := prebindLoopback()
-	if err != nil {
-		return fmt.Errorf("two-agent: pre-bind source control port: %w", err)
+	if err := r.startSource(ctx); err != nil {
+		return err
 	}
-	sctx, srcCancel := context.WithCancel(ctx)
-	r.srcCancel = srcCancel
+	if err := r.startDest(ctx); err != nil {
+		return r.stopSource()
+	}
+	return nil
+}
+
+// startSource brings up the long-lived source agent (owns the FR-02 snapshot)
+// and dials its control socket.
+func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
+	srcCtrlAddr, err := r.controlListen(r.cfg.SourceAgentSSH, r.cfg.SourceDialFirst, r.cfg.SourceControlAddr)
+	if err != nil {
+		return err
+	}
 	srcArgs := []string{
 		"--src", r.cfg.Source,
 		"--snapshot", r.snapshotMode(),
@@ -268,40 +278,40 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 	if r.cfg.SSLCA != "" {
 		srcArgs = append(srcArgs, "--ssl-ca", r.cfg.SSLCA)
 	}
-	// Data-plane TLS for the source->dest data socket (source = client; the
-	// dest agent serves it). Same keypair as the on_segment hop (F-13).
+	// Data-plane TLS for the source->dest data socket (source = client).
 	if r.cfg.SegTLSCert != "" {
 		srcArgs = append(srcArgs, "--data-tls-cert", r.cfg.SegTLSCert, "--data-tls-key", r.cfg.SegTLSKey)
 	}
 	if r.cfg.SegTLSCA != "" {
 		srcArgs = append(srcArgs, "--data-tls-ca", r.cfg.SegTLSCA)
 	}
-	srcCmd := exec.CommandContext(sctx, r.cfg.SourceAgentBinary, srcArgs...)
-	srcCmd.Stderr = agentStderr()
-	if err := srcCmd.Start(); err != nil {
-		srcCancel()
-		return fmt.Errorf("two-agent: start source agent: %w", err)
-	}
-	r.srcCmd = srcCmd
-	srcClient, err := dialControlRetry(ctx, srcCtrlAddr, 15*time.Second, r.controlTLS())
+	h, err := launch.Ensure(ctx, r.target("gpstream-source-agent", srcArgs, srcCtrlAddr, r.cfg.SourceAgentSSH, r.cfg.SourceDialFirst))
 	if err != nil {
-		_ = srcCmd.Process.Kill()
-		srcCancel()
+		return fmt.Errorf("two-agent: launch source agent: %w", err)
+	}
+	r.srcHandle = h
+	client, err := dialControlRetry(ctx, srcCtrlAddr, 15*time.Second, r.controlTLS())
+	if err != nil {
+		h.Stop()
+		r.srcHandle = nil
 		return fmt.Errorf("two-agent: source control dial %s: %w", srcCtrlAddr, err)
 	}
-	r.ctrl = srcClient
+	r.ctrl = client
+	return nil
+}
 
-	// --- destination agent (long-lived; one data + one control listener) --
-	dataAddr, err := prebindLoopback()
+// startDest brings up the long-lived dest agent (one data + one control
+// listener) and dials its control socket (reading the hello for the data
+// address).
+func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
+	destCtrlAddr, err := r.controlListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, r.cfg.DestControlAddr)
 	if err != nil {
-		return r.stopSource()
+		return err
 	}
-	destCtrlAddr, err := prebindLoopback()
+	dataAddr, err := r.dataListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, r.cfg.DestDataAddr)
 	if err != nil {
-		return r.stopSource()
+		return err
 	}
-	dctx, destCancel := context.WithCancel(ctx)
-	r.destCancel = destCancel
 	// --dest comes FIRST so the agent stays identifiable by its conn string
 	// (the crash-recovery test finds it via pgrep "<bin> --dest ").
 	dargs := []string{
@@ -324,29 +334,103 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 	if r.cfg.SegTLSCA != "" {
 		dargs = append(dargs, "--data-tls-ca", r.cfg.SegTLSCA)
 	}
-	dcmd := exec.CommandContext(dctx, r.cfg.DestAgentBinary, dargs...)
-	dcmd.Stderr = agentStderr()
-	dcmd.Stdout = io.Discard
-	if err := dcmd.Start(); err != nil {
-		destCancel()
-		return r.stopSource()
-	}
-	r.destCmd = dcmd
-	destClient, err := dialDestControlRetry(ctx, destCtrlAddr, 15*time.Second, r.controlTLS())
+	h, err := launch.Ensure(ctx, r.target("gpstream-dest-agent", dargs, destCtrlAddr, r.cfg.DestAgentSSH, r.cfg.DestDialFirst))
 	if err != nil {
-		_ = dcmd.Process.Kill()
-		destCancel()
-		return r.stopSource()
+		return fmt.Errorf("two-agent: launch dest agent: %w", err)
 	}
-	r.destCtrl = destClient
-	// The hello reports the real bound data address (auto :0 mode). For the
-	// pre-bound local layout it equals dataAddr; use it as the authoritative
-	// endpoint the source / segreceivers dial.
-	r.destDataAddr = destClient.Hello.Data
+	r.destHandle = h
+	client, err := dialDestControlRetry(ctx, destCtrlAddr, 15*time.Second, r.controlTLS())
+	if err != nil {
+		h.Stop()
+		r.destHandle = nil
+		return fmt.Errorf("two-agent: dest control dial %s: %w", destCtrlAddr, err)
+	}
+	r.destCtrl = client
+	// The hello reports the real bound data address (auto :0 mode). It is the
+	// authoritative endpoint the source / segreceivers dial.
+	r.destDataAddr = client.Hello.Data
 	if r.destDataAddr == "" {
 		r.destDataAddr = dataAddr
 	}
 	return nil
+}
+
+// target builds a launch.Target for one agent. For a remote (SSH) launch the
+// binary path is the operator-configured install dir on the AGENT host; for a
+// local launch it is the convention-resolved binary on the controller's host.
+// dial-first agents are not launched (the operator pre-ran them), so the
+// binary is irrelevant (adopted before use).
+func (r *processTwoAgentRunner) target(base string, args []string, controlAddr, sshHost string, dialFirst bool) launch.Target {
+	bin := r.cfg.SourceAgentBinary
+	if base == "gpstream-dest-agent" {
+		bin = r.cfg.DestAgentBinary
+	}
+	if sshHost != "" && !dialFirst {
+		bin = filepath.Join(r.cfg.AgentBinDir, base)
+	}
+	return launch.Target{
+		Binary:      bin,
+		Args:        args,
+		ControlAddr: controlAddr,
+		SSHHost:     sshHost,
+		SSHKey:      r.cfg.AgentSSHKey,
+		RunAs:       r.cfg.AgentSSHRunAs,
+		DialFirst:   dialFirst,
+		LogPath:     agentLogPath(base),
+		WaitTimeout: 30 * time.Second,
+	}
+}
+
+// controlListen returns the control address to use. A remote or dial-first
+// agent needs a FIXED routable address (the controller dials it); a local
+// agent gets a pre-bound loopback port.
+func (r *processTwoAgentRunner) controlListen(sshHost string, dialFirst bool, fixed string) (string, error) {
+	if sshHost != "" || dialFirst {
+		if fixed == "" {
+			return "", fmt.Errorf("two-agent: a remote/dial-first agent needs a fixed control address (source_control_addr / dest_control_addr)")
+		}
+		return fixed, nil
+	}
+	return prebindLoopback()
+}
+
+// dataListen returns the data address for the dest agent. A local agent gets a
+// pre-bound loopback port (auto :0, reported in the hello); a remote/dial-first
+// agent uses its fixed address, or "0.0.0.0:0" (auto :0, the hello carries the
+// real port).
+func (r *processTwoAgentRunner) dataListen(sshHost string, dialFirst bool, fixed string) (string, error) {
+	if sshHost != "" || dialFirst {
+		if fixed == "" {
+			return "0.0.0.0:0", nil
+		}
+		return fixed, nil
+	}
+	return prebindLoopback()
+}
+
+// agentLogPath is the agent's stderr sink path (GPSTREAM_AGENT_STDERR when set
+// for diagnosis, else a per-agent default under /tmp). Remote agents append
+// here; local agents use the same path for parity.
+func agentLogPath(base string) string {
+	if p := os.Getenv("GPSTREAM_AGENT_STDERR"); p != "" {
+		return p
+	}
+	return filepath.Join(os.TempDir(), base+".log")
+}
+
+// stopSource tears down the source agent (used when the dest launch fails).
+func (r *processTwoAgentRunner) stopSource() error {
+	var cerr error
+	if r.ctrl != nil {
+		_, _ = r.ctrl.Release()
+		_ = r.ctrl.Close()
+		r.ctrl = nil
+	}
+	if r.srcHandle != nil {
+		r.srcHandle.Stop()
+		r.srcHandle = nil
+	}
+	return cerr
 }
 
 // controlTLS is the controller's control-channel TLS client settings (both
@@ -360,30 +444,6 @@ func (r *processTwoAgentRunner) controlTLS() agent.ControlTLS {
 }
 
 // stopSource tears down the source agent (used when the dest launch fails).
-func (r *processTwoAgentRunner) stopSource() error {
-	var cerr error
-	if r.ctrl != nil {
-		_, _ = r.ctrl.Release()
-		_ = r.ctrl.Close()
-		r.ctrl = nil
-	}
-	if r.srcCmd != nil {
-		done := make(chan struct{})
-		go func() { _ = r.srcCmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = r.srcCmd.Process.Kill()
-		}
-		r.srcCmd = nil
-	}
-	if r.srcCancel != nil {
-		r.srcCancel()
-		r.srcCancel = nil
-	}
-	return cerr
-}
-
 // agentStderr returns the agent stderr sink: GPSTREAM_AGENT_STDERR (a path,
 // appended) when set for diagnosis, else io.Discard.
 func agentStderr() io.Writer {
@@ -559,7 +619,8 @@ func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table stri
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
 	// Destination agent (long-lived): release over its control socket (it
-	// closes both listeners and exits); kill as a last resort.
+	// closes both listeners and exits); the launch handle's Stop is the
+	// last-resort kill (local) / remote pkill (SSH).
 	if r.destCtrl != nil {
 		if _, err := r.destCtrl.Release(); err != nil {
 			if cerr == nil {
@@ -569,19 +630,9 @@ func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 		_ = r.destCtrl.Close()
 		r.destCtrl = nil
 	}
-	if r.destCmd != nil {
-		done := make(chan struct{})
-		go func() { _ = r.destCmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = r.destCmd.Process.Kill()
-		}
-		r.destCmd = nil
-	}
-	if r.destCancel != nil {
-		r.destCancel()
-		r.destCancel = nil
+	if r.destHandle != nil {
+		r.destHandle.Stop()
+		r.destHandle = nil
 	}
 	if r.ctrl != nil {
 		if _, err := r.ctrl.Release(); err != nil {
@@ -592,19 +643,9 @@ func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 		_ = r.ctrl.Close()
 		r.ctrl = nil
 	}
-	if r.srcCmd != nil {
-		done := make(chan struct{})
-		go func() { _ = r.srcCmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = r.srcCmd.Process.Kill()
-		}
-		r.srcCmd = nil
-	}
-	if r.srcCancel != nil {
-		r.srcCancel()
-		r.srcCancel = nil
+	if r.srcHandle != nil {
+		r.srcHandle.Stop()
+		r.srcHandle = nil
 	}
 	return cerr
 }
