@@ -219,6 +219,13 @@ type rpLink struct {
 	// sender's blocked Write must then fail fast instead of reconnecting
 	// (the peer is gone; replaying to a dead destination would hang).
 	aborted atomic.Bool
+	// done is closed by the network accept loop (NewReliablePipeTCPPair) when
+	// the server side stops re-accepting (an app-level Close). The receiver's
+	// waitSwap then yields "sender gone" so Read can terminate; it is distinct
+	// from a transport break, where the accept loop keeps running so the
+	// sender's RST-resume re-dial lands (the pipe's whole point).
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // NewReliablePipePair builds a connected in-memory pair: the sender end S and
@@ -268,6 +275,7 @@ func NewReliablePipePair(cfg ReliablePipeConfig) (s, r *ReliablePipe) {
 }
 
 func newReliablePipe(role rpRole, cfg ReliablePipeConfig, link *rpLink, conn dupConn) *ReliablePipe {
+	link.doneOnce.Do(func() { link.done = make(chan struct{}) })
 	rp := &ReliablePipe{
 		role:      role,
 		cfg:       cfg,
@@ -333,8 +341,13 @@ func (rp *ReliablePipe) Abort() error {
 	l.swapCv.Broadcast()
 	l.mu.Unlock()
 	a, b := l.a, l.b
-	_ = a.Close()
-	_ = b.Close()
+	if a != nil {
+		_ = a.Close()
+	}
+	if b != nil {
+		_ = b.Close()
+	}
+	rp.CloseTransport() // TCP mode: sever the current transport (a/b are nil)
 	return nil
 }
 
@@ -346,8 +359,13 @@ func (rp *ReliablePipe) Break() {
 	l.mu.Lock()
 	a, b := l.a, l.b
 	l.mu.Unlock()
-	_ = a.Close()
-	_ = b.Close()
+	if a != nil {
+		_ = a.Close()
+	}
+	if b != nil {
+		_ = b.Close()
+	}
+	rp.CloseTransport() // TCP mode: sever the current transport (a/b are nil)
 }
 
 // SetCorruptor installs an in-flight corruptor (tests): every data frame the
@@ -369,10 +387,41 @@ func (rp *ReliablePipe) Close() error {
 	if rp.role == rpSender {
 		_ = rp.sendCtrl(ctrlFin, nil) // best effort; order on the wire is kept
 	}
+	l := rp.link
+	l.doneOnce.Do(func() { close(l.done) }) // the network accept loop stops re-accepting
 	rp.markDead()
 	c, _ := rp.currentConn()
 	_ = c.Close()
 	return nil
+}
+
+// linkGone marks the link permanently gone (the accept loop stopped, or the
+// in-memory peer's app closed): the receiver's waitSwap then yields "sender
+// gone". Idempotent.
+func (rp *ReliablePipe) linkGone() {
+	l := rp.link
+	l.mu.Lock()
+	l.gone = true
+	l.swapCv.Broadcast()
+	l.mu.Unlock()
+}
+
+// CloseTransport severs the CURRENT transport without finishing the pipe:
+// the sender keeps its ring and will RST-resume (re-dial + replay) on the next
+// Write; the receiver keeps its dedup state and re-accepts. This is the
+// test/operational analogue of an RST. (Close, by contrast, is the app-level
+// clean end-of-stream.)
+func (rp *ReliablePipe) CloseTransport() {
+	c, _ := rp.currentConn()
+	_ = c.Close()
+}
+
+// BreakConn severs the receiver's current transport (the sender re-dials; the
+// re-accept loop swaps the fresh conn in). In-memory tests use Break instead;
+// this is the network variant.
+func (rp *ReliablePipe) BreakConn() {
+	c, _ := rp.currentConn()
+	_ = c.Close()
 }
 
 // ---- sender: Write ----
