@@ -1,11 +1,5 @@
 <p align="center"><img src="assets/logo.svg" alt="gpstream" width="180"></p>
 
-> NOTE (2026-10-04): the copy-mode surface is being simplified to TWO modes —
-> coordinator and on_segment. The direct mode described in this document is
-> redundant (its per-segment write is subsumed by on_segment's auto-selected
-> per-table sub-paths: 1:1, routed, merge) and will be removed. This page
-> still describes the CURRENT (shipped) behavior.
-
 # gpstream
 
 High-throughput **logical** data copy between two Greenplum 6 clusters over a
@@ -72,7 +66,7 @@ gpstream run
   [--map-db src=dst] [--map-schema src=dst] [--map-table src=dst]
   [--compress none|zlib|zstd[:level]] [--zstd-level N]
   [--small-table-threshold SIZE]                       # F-12, default 1MiB
-  [--copy-mode coordinator|on_segment|direct]
+  [--copy-mode coordinator|on_segment]
   [--seg-listen HOST:PORT]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
   [--workers N] [--rate-limit <Gbps>]
@@ -127,13 +121,13 @@ gpstream/
 ├── cmd/gpstream/            # main, subcommands, flag parsing, help
 ├── internal/
 │   ├── plan/                # plan, volume estimate, routing, collation, conflicts
-│   ├── route/               # copy-mode routing (coordinator/on_segment/direct)
+│   ├── route/               # GPDB 6.x hash-distribution reproduction (T0-2)
 │   ├── topology/            # cluster/segment discovery
 │   ├── transfer/            # framing, reliable pipe, stream engine
 │   │   ├── pg/              # COPY TO/FROM, schema DDL, conn pool
 │   │   ├── source/          # source-side read path
 │   │   ├── dest/            # dest-side write path, segment balance
-│   │   ├── segstream/       # segment-direct data plane (on_segment/direct)
+│   │   ├── segstream/       # segment-direct data plane (on_segment)
 │   │   └── compress/        # zstd/zlib
 │   ├── manifest/            # operation manifest, dest objects, resume
 │   ├── monitor/             # metrics, events, /metrics

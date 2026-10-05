@@ -232,7 +232,7 @@ clusters; **do not cite the perf suite as evidence for the target.**
 | Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` (the limiter auto-degrades, F-14) |
 | Push a fast link, let it adapt         | `--rate-limit` high, let the limiter auto-degrade |
 | Many small tables / more concurrency   | `--workers N` up |
-| Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel) + `--copy-mode direct` (per-segment writes); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
+| Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
 | Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a post-copy checksum of both sides) |
 
