@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/pgtest"
+	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -89,7 +91,12 @@ func TestLiveSegreceiverCrossCheck(t *testing.T) {
 	}
 	addr := l.Addr().String()
 
-	// Segment side: the real binary, stdin = the COPY stream.
+	// Segment side: the real binary, stdin = the COPY stream, frame-ack ON
+	// (the production on_segment default). The controller side receives with
+	// the production frame-ack stack (ResumeRouter + ReliablePipe receiver),
+	// exactly as the dest server's serveSegmentsFrameAck does, so this
+	// exercises the real segreceiver binary end to end in its default
+	// transport.
 	seg := exec.Command(bin, "--listen", addr, "--job", "1", "--unit", "1", "--content", "0")
 	seg.Stdin = bytes.NewReader(stream.Bytes())
 	var segErr bytes.Buffer
@@ -98,10 +105,21 @@ func TestLiveSegreceiverCrossCheck(t *testing.T) {
 		t.Fatalf("start segreceiver: %v", err)
 	}
 
+	// Controller side: the production frame-ack receive stack (one pool slot,
+	// one slice). The router owns the listener and closes it on Close.
+	router := transfer.NewResumeRouter(l)
+	go router.Run()
+	defer router.Close()
+	slot := router.NewPoolSlot()
+	rp, rerr := transfer.NewReliablePipeReceiverOnSlot(transfer.DefaultReliablePipeConfig(), slot, 5*time.Minute)
+	if rerr != nil {
+		t.Fatalf("frame-ack receiver: %v", rerr)
+	}
 	rctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	var got []byte
-	results, rerr := Receive(rctx, l, 1, func(contentID int16, p []byte) error {
+	res := &SliceResult{}
+	rerr = ReadStreamCompressed(rctx, rp, res, compress.ModeNone, func(contentID int16, p []byte) error {
 		if contentID != 0 {
 			t.Errorf("content %d, want 0", contentID)
 		}
@@ -112,26 +130,22 @@ func TestLiveSegreceiverCrossCheck(t *testing.T) {
 		t.Fatalf("segreceiver exit: %v\nstderr: %s", waitErr, segErr.String())
 	}
 	if rerr != nil {
-		t.Fatalf("Receive: %v", rerr)
+		t.Fatalf("ReadStreamCompressed: %v", rerr)
 	}
-	if len(results) != 1 {
-		t.Fatalf("results = %d, want 1", len(results))
+	if res.Err != nil {
+		t.Fatalf("slice err: %v", res.Err)
 	}
-	r := results[0]
-	if r.Err != nil {
-		t.Fatalf("slice err: %v", r.Err)
-	}
-	if r.Rows != n {
-		t.Fatalf("trailer rows = %d, want %d", r.Rows, n)
+	if res.Rows != n {
+		t.Fatalf("trailer rows = %d, want %d", res.Rows, n)
 	}
 	if !bytes.Equal(got, stream.Bytes()) {
 		t.Fatalf("payload not byte-transparent: %d vs %d bytes", len(got), stream.Len())
 	}
 	wantSum := sha256.Sum256(stream.Bytes())
-	if r.SHA256 != wantSum {
-		t.Fatalf("trailer sha256 mismatch: %x vs %x", r.SHA256, wantSum)
+	if res.SHA256 != wantSum {
+		t.Fatalf("trailer sha256 mismatch: %x vs %x", res.SHA256, wantSum)
 	}
-	fmt.Printf("live segreceiver: %d rows, %d bytes, trailer verified\n", r.Rows, len(got))
+	fmt.Printf("live segreceiver: %d rows, %d bytes, trailer verified (frame-ack)\n", res.Rows, len(got))
 }
 
 // TestLiveSegreceiverBadContent: a segreceiver launched with a garbage
