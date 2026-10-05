@@ -13,6 +13,7 @@ import (
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/pgtest"
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
@@ -135,16 +136,16 @@ func TestTwoAgentRoutedServe(t *testing.T) {
 	for s := 0; s < S; s++ {
 		go func(s int) {
 			// Dial D×W connections (one per (d, w) sub-stream).
-			conns := make([][]net.Conn, D)
+			conns := make([][]transfer.Pipe, D)
 			for d := 0; d < D; d++ {
-				conns[d] = make([]net.Conn, W)
+				conns[d] = make([]transfer.Pipe, W)
 				for w := 0; w < W; w++ {
 					c, derr := net.Dial("tcp", listen)
 					if derr != nil {
 						errCh <- fmt.Errorf("fake segreceiver %d dial (d%d w%d): %w", s, d, w, derr)
 						return
 					}
-					conns[d][w] = c
+					conns[d][w] = c // net.Conn satisfies transfer.Pipe
 				}
 			}
 			sender := segstream.NewRoutedSender(ctx, bytes.NewReader(slices[s]), []int{0}, []uint32{23}, D, W,

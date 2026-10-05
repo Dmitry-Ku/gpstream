@@ -258,7 +258,20 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	defer cancel()
 	var prog string
 	var err error
-	if req.Routed {
+	if req.FrameAck != "off" {
+		// Inc3: the segreceivers ride the frame-ack transport (identity
+		// HELLO per slice); the destination agent was launched with the
+		// matching parameters by the controller.
+		if req.Routed {
+			prog, err = segstream.ProgramCommandRoutedFrameAck(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, req.RouteKey, int(req.RouteD), req.RouteWorkers,
+				req.FrameAck, req.AckTimeout, req.MaxReconnects, req.RetransmitMax)
+		} else {
+			prog, err = segstream.ProgramCommandFullFrameAck(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress,
+				req.FrameAck, req.AckTimeout, req.MaxReconnects, req.RetransmitMax)
+		}
+	} else if req.Routed {
 		prog, err = segstream.ProgramCommandRouted(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
 			req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, req.RouteKey, int(req.RouteD), req.RouteWorkers)
 	} else {

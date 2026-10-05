@@ -69,6 +69,17 @@ func main() {
 	routeKey := flag.String("route-key", "", "P9 routed mode: distribution-key type OIDs, comma-separated")
 	routeD := flag.Int("route-d", 0, "P9 routed mode: number of destination primary segments")
 	routeWorkers := flag.Int("route-workers", 1, "P9 routed mode: sub-streams per (source-seg,dest-seg) pair")
+	// Inc3: frame-level ACK + RST-resume on the segment<->agent data links
+	// (DESIGN §4.6). When on, each slice rides a ReliablePipe: a broken
+	// link re-dials the agent's data port and replays the un-ACKed frames;
+	// the destination's router routes the re-dial to this slice's own
+	// receiver-pipe (identity HELLO), so the unit self-heals within the
+	// --max-reconnects budget. The destination agent is launched with the
+	// matching --frame-ack by the controller.
+	frameAck := flag.String("frame-ack", "on", "frame-level ACK + RST-resume on the data link: on|off (default on)")
+	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
+	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per slice")
+	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -120,7 +131,7 @@ func main() {
 	defer cancel()
 
 	if routed {
-		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA)
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck))
 		return
 	}
 
@@ -164,6 +175,11 @@ func main() {
 		}
 		conn = tc
 	}
+	// Inc3: frame-ack transport (identity HELLO: this slice's StreamID).
+	// The pipe owns the conn (clean FIN on close), so the raw conn is not
+	// closed separately.
+	dataConn := wrapFrameAck(ctx, fail, conn, *listen, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck),
+		transfer.StreamID{JobID: uint32(jobID), UnitID: uint32(unitID), Content: int16(contentID)})
 	var rows int64
 	if *compressMode != "" {
 		// P4: the two-agent on_segment path — the destination agent
@@ -172,14 +188,62 @@ func main() {
 		if perr != nil {
 			fail("compress %q: %v", *compressMode, perr)
 		}
-		rows, err = segstream.SendCompressed(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level)
+		rows, err = segstream.SendCompressed(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level)
 	} else {
-		rows, err = segstream.Send(ctx, conn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
+		rows, err = segstream.Send(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
 	}
 	if err != nil {
 		fail("stream: %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: content=%d rows=%d ok\n", contentID, rows)
+}
+
+// frameAckOn reports whether the frame-ack transport is in effect.
+func frameAckOn(v string) bool { return v != "off" }
+
+// wrapFrameAck upgrades a dialed data connection to a frame-ack ReliablePipe
+// (identity HELLO: job/unit/content so the destination's router can route a
+// resume re-dial to this slice's own pipe). The dialer reproduces the full
+// connection setup (dial + TLS) for ONE attempt on a break — the destination
+// receiver is already blocked in its resume accept (ResumeTimeout window), so
+// a live destination accepts and a dead one refuses, which must fail the
+// slice fast (no retry storm). With frame-ack off it returns the plain conn.
+func wrapFrameAck(ctx context.Context, fail func(string, ...any), raw net.Conn, addr, cert, key, ca, ackTimeout string, maxReconnects int, retransmitMax int64, on bool, id transfer.StreamID) transfer.Pipe {
+	if !on {
+		return raw
+	}
+	dialOnce := func() (transfer.DupConn, error) {
+		r, err := net.DialTimeout("tcp", addr, 10*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		var conn net.Conn = r
+		if transfer.TLSEnabled(cert, key, ca) {
+			host, herr := hostOf(addr)
+			if herr != nil {
+				_ = r.Close()
+				return nil, fmt.Errorf("tls: bad address %q: %v", addr, herr)
+			}
+			ccfg, cerr := transfer.ClientTLSConfig(host, cert, key, ca, "")
+			if cerr != nil {
+				_ = r.Close()
+				return nil, fmt.Errorf("tls: %v", cerr)
+			}
+			tc := tls.Client(r, ccfg)
+			if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+				_ = r.Close()
+				return nil, fmt.Errorf("tls handshake: %v", hsErr)
+			}
+			conn = tc
+		}
+		return conn, nil
+	}
+	rp, err := transfer.NewReliablePipeSenderOnConnID(
+		transfer.NewReliablePipeConfig(ackTimeout, maxReconnects, retransmitMax), raw, dialOnce, id)
+	if err != nil {
+		fail("frame-ack transport: %v", err)
+	}
+	return rp
 }
 
 // hostOf returns the host part of a host:port listen address (the value the
@@ -200,7 +264,7 @@ func hostOf(listen string) (string, error) {
 // connection grid to the RoutedSender. Exit 0 on a clean stream; exit 1
 // otherwise (a non-zero exit fails the kernel's COPY, so there is no silent
 // partial stream).
-func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA string) {
+func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA, ackTimeout string, maxReconnects int, retransmitMax int64, on bool) {
 	D := routeD
 	W := routeWorkers
 	// The routing key is embedded by the controller as "oid:pos,oid:pos" —
@@ -309,7 +373,18 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 		}
 	}()
 
-	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, conns)
+	// Inc3: frame-ack transport per sub-stream (identity HELLO:
+	// (src-content, dst-content=d, worker=w) so the destination's router
+	// routes each re-dial to its own pipe).
+	dataConns := make([][]transfer.Pipe, D)
+	for d := 0; d < D; d++ {
+		dataConns[d] = make([]transfer.Pipe, W)
+		for w := 0; w < W; w++ {
+			dataConns[d][w] = wrapFrameAck(ctx, fail, conns[d][w], destAddr, sslCert, sslKey, sslCA, ackTimeout, maxReconnects, retransmitMax, on,
+				transfer.StreamID{JobID: uint32(jobID), UnitID: uint32(unitID), Content: int16(contentID), DstContent: int16(d), Worker: int32(w)})
+		}
+	}
+	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, dataConns)
 	rows, err := sender.Run()
 	if err != nil {
 		fail("route: %v", err)

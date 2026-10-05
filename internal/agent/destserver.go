@@ -285,6 +285,8 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			Spec:          *req.Spec,
 			Segments:      req.Segments,
 			Swap:          req.Swap,
+			FrameAck:      s.opts.FrameAck,
+			ReliablePipe:  s.opts.ReliablePipe,
 		})
 		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
 		done.Ok = err == nil
@@ -325,6 +327,8 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			StreamTimeout: s.opts.StreamTimeout,
 			Launch:        *req.Routed,
 			Swap:          req.Swap,
+			FrameAck:      s.opts.FrameAck,
+			ReliablePipe:  s.opts.ReliablePipe,
 		})
 		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
 		done.Ok = err == nil

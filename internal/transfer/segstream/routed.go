@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"sync"
 
 	"github.com/gpstream/gpstream/internal/transfer"
@@ -55,7 +54,7 @@ type RoutedSender struct {
 	level   int
 	// conns[d][w] is the connected sub-stream to destination segment d,
 	// sub-stream w (already dialled + TLS'd by the caller).
-	conns [][]net.Conn
+	conns [][]transfer.Pipe
 
 	rows   int64
 	perSeg []int64
@@ -63,7 +62,7 @@ type RoutedSender struct {
 
 // NewRoutedSender builds a sender over the segment slice in. conns must have
 // len(conns) == numDest and len(conns[d]) == workers.
-func NewRoutedSender(ctx context.Context, in io.Reader, keyIdx []int, keyOid []uint32, numDest int32, workers int, jobID, unitID uint32, content int16, mode compress.Mode, level int, conns [][]net.Conn) *RoutedSender {
+func NewRoutedSender(ctx context.Context, in io.Reader, keyIdx []int, keyOid []uint32, numDest int32, workers int, jobID, unitID uint32, content int16, mode compress.Mode, level int, conns [][]transfer.Pipe) *RoutedSender {
 	return &RoutedSender{
 		ctx:     ctx,
 		in:      in,

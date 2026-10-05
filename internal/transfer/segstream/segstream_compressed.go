@@ -85,7 +85,7 @@ func annMode(f *transfer.Frame) compress.Mode {
 // (the UnitSpec carries it), so it can decompress from the first data frame;
 // the trailer's flags carry the mode as a consistency check (a mismatch is an
 // error, catching a mis-configured agent pair).
-func SendCompressed(ctx context.Context, conn net.Conn, in io.Reader, jobID, unitID uint32, content int16, m compress.Mode, level int) (int64, error) {
+func SendCompressed(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16, m compress.Mode, level int) (int64, error) {
 	defer conn.Close()
 	comp := compress.New(m, level)
 	rc := transfer.NewRowCounter(in)

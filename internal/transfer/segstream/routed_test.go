@@ -84,11 +84,11 @@ func TestRoutedSenderSplitsDisjointAndComplete(t *testing.T) {
 			grid[d][w] = end{sender: a, reader: b}
 		}
 	}
-	conns := make([][]net.Conn, D)
+	conns := make([][]transfer.Pipe, D)
 	for d := 0; d < D; d++ {
-		conns[d] = make([]net.Conn, W)
+		conns[d] = make([]transfer.Pipe, W)
 		for w := 0; w < W; w++ {
-			conns[d][w] = grid[d][w].sender
+			conns[d][w] = grid[d][w].sender // net.Conn satisfies transfer.Pipe
 		}
 	}
 

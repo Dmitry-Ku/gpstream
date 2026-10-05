@@ -54,6 +54,14 @@ type SegmentsOptions struct {
 	// The serve accepts its connections from it and does NOT close it on
 	// exit (the long-lived server owns it).
 	SharedListen net.Listener
+	// FrameAck enables the frame-level ACK + RST-resume transport on the
+	// segment<->agent data links (DESIGN §4.6, Inc3): each slice is its own
+	// ReliablePipe, a broken slice's re-dial is routed to its own pipe by
+	// the ResumeRouter (identity HELLO), and the destination's merged COPY
+	// keeps reading the in-order stream across the break (no re-COPY).
+	// Requires ReliablePipe for the transport parameters.
+	FrameAck     bool
+	ReliablePipe transfer.ReliablePipeConfig
 }
 
 // SegmentsResult is what the destination agent reports after an on_segment
@@ -216,62 +224,91 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 	// into the mux. Each drain is bounded by sctx; a segment that never
 	// connects is caught by the stream deadline (the controller kills the
 	// agent).
-	type sliceOut struct {
-		res  *segstream.SliceResult
-		wire uint64
-		err  error
-	}
-	results := make(chan sliceOut, o.Segments)
-	acceptDone := make(chan error, 1)
-	go func() {
-		for i := 0; i < o.Segments; i++ {
-			c, aerr := l.Accept()
-			if aerr != nil {
-				acceptDone <- aerr
-				return
-			}
-			cc := &countingConn{c: c}
-			res := &segstream.SliceResult{}
-			// Drain this slice in its own goroutine so all N flow in
-			// parallel (the mux serialises writes; the io.Pipe serialises
-			// the COPY).
-			go func(cc *countingConn, res *segstream.SliceResult) {
-				derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, mux.Write)
-				results <- sliceOut{res: res, wire: cc.Bytes(), err: derr}
-			}(cc, res)
-		}
-		close(acceptDone)
-	}()
-
-	// Wait for either an accept failure or all N drains to finish.
-	var accErr error
-	select {
-	case accErr = <-acceptDone:
-		if accErr != nil {
-			// An accept error before all N were accepted: fail the unit.
-			_ = pw.CloseWithError(fmt.Errorf("accept: %w", accErr))
-			<-copyDone
-			return out, fmt.Errorf("dest agent: accept segment connection: %w", accErr)
-		}
-		// All N accepted: fall through to collect the drains.
-	case <-sctx.Done():
-		_ = pw.CloseWithError(sctx.Err())
-		<-copyDone
-		return out, fmt.Errorf("dest agent: accept segments: %w", sctx.Err())
-	}
-
 	var trailerRows int64
 	var firstErr error
 	var wire uint64
-	for i := 0; i < o.Segments; i++ {
-		s := <-results
-		wire += s.wire
-		if s.err != nil && firstErr == nil {
-			firstErr = s.err
+	var accErr error
+	var faWire uint64
+	if o.FrameAck {
+		// Inc3: each slice is its own ReliablePipe; the ResumeRouter routes
+		// the initial + resume connections (identity HELLO) to their own
+		// pipes, so a broken slice's re-dial reaches its own pipe and the
+		// merged COPY keeps reading the in-order stream.
+		results := make(chan frameAckSliceOut, o.Segments)
+		accErr, faWire = serveSegmentsFrameAck(sctx, o, l, mux, mode, results)
+		if accErr == nil {
+			for i := 0; i < o.Segments; i++ {
+				s := <-results
+				if s.err != nil && firstErr == nil {
+					firstErr = s.err
+				}
+				if s.res.Trailer != nil && s.res.Err == nil {
+					trailerRows += s.res.Rows
+				}
+			}
+			// The frame-ack path carries the bytes inside the ReliablePipe
+			// transport: the router's raw-network counter is the on-wire
+			// volume (FR-04 / ADR-002 acceptance #1).
+			wire = faWire
 		}
-		if s.res.Trailer != nil && s.res.Err == nil {
-			trailerRows += s.res.Rows
+	} else {
+		type sliceOut struct {
+			res  *segstream.SliceResult
+			wire uint64
+			err  error
 		}
+		results := make(chan sliceOut, o.Segments)
+		acceptDone := make(chan error, 1)
+		go func() {
+			for i := 0; i < o.Segments; i++ {
+				c, aerr := l.Accept()
+				if aerr != nil {
+					acceptDone <- aerr
+					return
+				}
+				cc := &countingConn{c: c}
+				res := &segstream.SliceResult{}
+				// Drain this slice in its own goroutine so all N flow in
+				// parallel (the mux serialises writes; the io.Pipe serialises
+				// the COPY).
+				go func(cc *countingConn, res *segstream.SliceResult) {
+					derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, mux.Write)
+					results <- sliceOut{res: res, wire: cc.Bytes(), err: derr}
+				}(cc, res)
+			}
+			close(acceptDone)
+		}()
+
+		// Wait for either an accept failure or all N accepted.
+		select {
+		case accErr = <-acceptDone:
+			if accErr != nil {
+				// An accept error before all N were accepted: fail the unit.
+				_ = pw.CloseWithError(fmt.Errorf("accept: %w", accErr))
+				<-copyDone
+				return out, fmt.Errorf("dest agent: accept segment connection: %w", accErr)
+			}
+			// All N accepted: fall through to collect the drains.
+		case <-sctx.Done():
+			_ = pw.CloseWithError(sctx.Err())
+			<-copyDone
+			return out, fmt.Errorf("dest agent: accept segments: %w", sctx.Err())
+		}
+		for i := 0; i < o.Segments; i++ {
+			s := <-results
+			wire += s.wire
+			if s.err != nil && firstErr == nil {
+				firstErr = s.err
+			}
+			if s.res.Trailer != nil && s.res.Err == nil {
+				trailerRows += s.res.Rows
+			}
+		}
+	}
+	if accErr != nil {
+		_ = pw.CloseWithError(fmt.Errorf("accept: %w", accErr))
+		<-copyDone
+		return out, fmt.Errorf("dest agent: accept segment connection: %w", accErr)
 	}
 
 	// 7. All slices done: close the merged stream (mux EOF) so the COPY FROM
@@ -304,4 +341,65 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 		out.Swapped = true
 	}
 	return out, nil
+}
+
+// frameAckSliceOut is one slice's result on the frame-ack path (the router
+// counts the raw network bytes, so wire is always 0 here).
+type frameAckSliceOut struct {
+	res  *segstream.SliceResult
+	wire uint64
+	err  error
+}
+
+// serveSegmentsFrameAck runs the Inc3 frame-ack data path for one on_segment
+// unit: each of the S slices is its own ReliablePipe, and a ResumeRouter over
+// the unit's data listener routes the initial + resume connections (identity
+// HELLO) to their own pipes. The destination does NOT know the source segment
+// content ids (the kernel substitutes <SEGID>), so it pre-creates S pool slots
+// and the router binds a StreamID to a free slot on first sight of that
+// StreamID's connection. A broken slice's re-dial reaches its own pipe (not a
+// sibling's), and the merged COPY keeps reading the in-order stream (no
+// re-COPY, no re-UnitSpec). It returns the raw network bytes the router read
+// (FR-04 wire volume) and an error if a slice's pipe fails to establish or
+// the stream deadline elapses.
+func serveSegmentsFrameAck(sctx context.Context, o SegmentsOptions, l net.Listener, mux *segstream.SliceMux, mode compress.Mode, results chan frameAckSliceOut) (error, uint64) {
+	router := transfer.NewResumeRouter(l)
+	go router.Run()
+	// The per-unit listener is closed by the router; the long-lived listener
+	// (SharedListen) is owned by the dest server, not the serve.
+	closer := router.Stop
+	if o.SharedListen == nil {
+		closer = router.Close
+	}
+	defer closer()
+
+	acceptTO := o.AcceptTimeout
+	if acceptTO <= 0 {
+		acceptTO = 5 * time.Minute
+	}
+	finished := make(chan struct{}, o.Segments)
+	for i := 0; i < o.Segments; i++ {
+		slot := router.NewPoolSlot()
+		go func(slot <-chan transfer.DupConn) {
+			res := &segstream.SliceResult{}
+			rp, err := transfer.NewReliablePipeReceiverOnSlot(o.ReliablePipe, slot, acceptTO)
+			if err != nil {
+				res.Err = err
+				results <- frameAckSliceOut{res: res, wire: 0, err: err}
+				finished <- struct{}{}
+				return
+			}
+			derr := segstream.ReadStreamCompressed(sctx, rp, res, mode, mux.Write)
+			results <- frameAckSliceOut{res: res, wire: 0, err: derr}
+			finished <- struct{}{}
+		}(slot)
+	}
+	for i := 0; i < o.Segments; i++ {
+		select {
+		case <-finished:
+		case <-sctx.Done():
+			return sctx.Err(), 0
+		}
+	}
+	return nil, router.WireBytes()
 }

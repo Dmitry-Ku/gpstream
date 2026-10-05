@@ -39,7 +39,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
+	"time"
 	"strings"
 	"sync"
 
@@ -61,7 +63,7 @@ var ErrFrameAfterTrailer = errors.New("segstream: frame after trailer")
 // (a binary COPY slice stream) through a RowCounter + sha256, frames the
 // bytes (v2, content-tagged) and writes them to conn, finishing with a
 // Trailer frame. It returns the slice row count. in may be os.Stdin.
-func Send(ctx context.Context, conn net.Conn, in io.Reader, jobID, unitID uint32, content int16) (int64, error) {
+func Send(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16) (int64, error) {
 	defer conn.Close()
 	rc := transfer.NewRowCounter(in)
 	h := sha256.New()
@@ -260,6 +262,12 @@ func (h *handshakeFilter) Accept() (net.Conn, error) {
 		if errors.Is(err, net.ErrClosed) {
 			return nil, err
 		}
+		if os.IsTimeout(err) {
+			// A read deadline the caller set on the listener fired (e.g. the
+			// frame-ack router polling for a Stop). It is not a stray-handshake
+			// error: surface it so the caller can re-check its stop flag.
+			return nil, err
+		}
 		// Handshake/auth failure on a stray connection: drop it and keep
 		// waiting for the legitimate segment streams.
 		if c != nil {
@@ -270,6 +278,31 @@ func (h *handshakeFilter) Accept() (net.Conn, error) {
 
 func (h *handshakeFilter) Addr() net.Addr { return h.l.Addr() }
 func (h *handshakeFilter) Close() error   { return h.l.Close() }
+
+// SetReadDeadline / SetWriteDeadline / SetDeadline forward to the wrapped
+// listener when it supports them (a net.Listener and a tls.Listener do). The
+// frame-ack ResumeRouter uses SetReadDeadline to bound each Accept so a Stop
+// is honored promptly WITHOUT closing the (possibly long-lived shared)
+// listener. When the wrapped listener does not support deadlines these are
+// no-ops.
+func (h *handshakeFilter) SetReadDeadline(t time.Time) error {
+	if d, ok := h.l.(interface{ SetReadDeadline(time.Time) error }); ok {
+		return d.SetReadDeadline(t)
+	}
+	return nil
+}
+func (h *handshakeFilter) SetWriteDeadline(t time.Time) error {
+	if d, ok := h.l.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return d.SetWriteDeadline(t)
+	}
+	return nil
+}
+func (h *handshakeFilter) SetDeadline(t time.Time) error {
+	if d, ok := h.l.(interface{ SetDeadline(time.Time) error }); ok {
+		return d.SetDeadline(t)
+	}
+	return nil
+}
 
 // validListen accepts "host:port" with a 0<port<65536 (the only external
 // value embedded in the program string — see ProgramCommand).
@@ -327,6 +360,39 @@ func ProgramCommandTLS(binPath, listen string, jobID, unitID uint32, cert, key, 
 // chunks before framing (FR-12), and the destination agent decompresses. The
 // mode is a fixed token from the controller (not user input), so it is
 // validated against the allowed set and rejected on any other character.
+// frameAckFlags builds the segreceiver's frame-ack command-line suffix
+// (Inc3: the frame-ack transport parameters are controller-internal values —
+// a fixed token set + integers — so there is no injection surface).
+func frameAckFlags(frameAck, ackTimeout string, maxReconnects int, retransmitMax int64) (string, error) {
+	switch frameAck {
+	case "", "on":
+	case "off":
+		return " --frame-ack off", nil
+	default:
+		return "", fmt.Errorf("segstream: bad frame-ack %q (want on|off)", frameAck)
+	}
+	var b strings.Builder
+	b.WriteString(" --frame-ack on")
+	switch ackTimeout {
+	case "15s", "30s", "adaptive":
+	case "":
+	default:
+		return "", fmt.Errorf("segstream: bad ack-timeout %q (want 15s|30s|adaptive)", ackTimeout)
+	}
+	if ackTimeout != "" {
+		b.WriteString(" --ack-timeout " + ackTimeout)
+	}
+	if maxReconnects < 1 || maxReconnects > 1000 {
+		return "", fmt.Errorf("segstream: bad max-reconnects %d (want 1..1000)", maxReconnects)
+	}
+	b.WriteString(fmt.Sprintf(" --max-reconnects %d", maxReconnects))
+	if retransmitMax < 1<<20 || retransmitMax > 1<<32 {
+		return "", fmt.Errorf("segstream: bad retransmit-buffer-max %d (want 1MiB..4GiB)", retransmitMax)
+	}
+	b.WriteString(fmt.Sprintf(" --retransmit-buffer-max %d", retransmitMax))
+	return b.String(), nil
+}
+
 func ProgramCommandFull(binPath, listen string, jobID, unitID uint32, cert, key, ca, compressMode string) (string, error) {
 	if binPath == "" || listenBinChars(binPath) {
 		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
@@ -359,6 +425,21 @@ func ProgramCommandFull(binPath, listen string, jobID, unitID uint32, cert, key,
 		cmd += " --compress " + compressMode
 	}
 	return cmd, nil
+}
+
+// ProgramCommandFullFrameAck is ProgramCommandFull with the Inc3 frame-ack
+// transport flags (the destination agent is launched with the matching
+// parameters by the controller).
+func ProgramCommandFullFrameAck(binPath, listen string, jobID, unitID uint32, cert, key, ca, compressMode, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64) (string, error) {
+	cmd, err := ProgramCommandFull(binPath, listen, jobID, unitID, cert, key, ca, compressMode)
+	if err != nil {
+		return "", err
+	}
+	fa, err := frameAckFlags(frameAck, ackTimeout, maxReconnects, retransmitMax)
+	if err != nil {
+		return "", err
+	}
+	return cmd + fa, nil
 }
 
 // ProgramCommandRouted (P9) builds the shell command the kernel executes on
@@ -410,6 +491,20 @@ func ProgramCommandRouted(binPath, destAddr string, jobID, unitID uint32, cert, 
 		cmd += " --compress " + compressMode
 	}
 	return cmd, nil
+}
+
+// ProgramCommandRoutedFrameAck is ProgramCommandRouted with the Inc3
+// frame-ack transport flags.
+func ProgramCommandRoutedFrameAck(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode, routeKey string, routeD, workers int, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64) (string, error) {
+	cmd, err := ProgramCommandRouted(binPath, destAddr, jobID, unitID, cert, key, ca, compressMode, routeKey, routeD, workers)
+	if err != nil {
+		return "", err
+	}
+	fa, err := frameAckFlags(frameAck, ackTimeout, maxReconnects, retransmitMax)
+	if err != nil {
+		return "", err
+	}
+	return cmd + fa, nil
 }
 
 // validCompressMode accepts the compression tokens the controller may embed in

@@ -176,6 +176,8 @@ func main() {
 			Swap:          *swap,
 			AcceptTimeout: *acceptTO,
 			StreamTimeout: *streamTO,
+			FrameAck:      *frameAck != "off",
+			ReliablePipe:  transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 		})
 		if err != nil {
 			fail("%v", err)
@@ -248,7 +250,9 @@ func main() {
 			Swap:          *swap,
 			AcceptTimeout: *acceptTO,
 			StreamTimeout: *streamTO,
-		})
+			FrameAck:      *frameAck != "off",
+			ReliablePipe:  transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
+			})
 		if err != nil {
 			fail("%v", err)
 		}

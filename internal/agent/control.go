@@ -77,6 +77,15 @@ type OnSegmentReq struct {
 	RouteKey     string `json:"route_key,omitempty"` // "oid:pos,oid:pos"
 	RouteD       int32  `json:"route_d,omitempty"`
 	RouteWorkers int    `json:"route_workers,omitempty"`
+	// Inc3: frame-level ACK + RST-resume on the segment<->agent data links
+	// (DESIGN §4.6). The source agent embeds the matching --frame-ack /
+	// --ack-timeout / --max-reconnects / --retransmit-buffer-max flags in the
+	// segreceiver program string; the destination agent is launched with the
+	// same parameters by the controller.
+	FrameAck        string `json:"frame_ack,omitempty"`        // on|off
+	AckTimeout      string `json:"ack_timeout,omitempty"`      // 15s|30s|adaptive
+	MaxReconnects   int    `json:"max_reconnects,omitempty"`
+	RetransmitMax   int64  `json:"retransmit_buffer_max,omitempty"`
 }
 
 // OnSegmentResp is the source agent's report after the ON SEGMENT COPY

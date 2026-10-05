@@ -63,6 +63,12 @@ type RoutedOptions struct {
 	// The serve accepts its connections from it and does NOT close it on
 	// exit (the long-lived server owns it).
 	SharedListen net.Listener
+	// FrameAck enables the frame-level ACK + RST-resume transport on the
+	// S×D×W sub-stream links (Inc3): each sub-stream is its own
+	// ReliablePipe, routed by its identity HELLO (src/dst/worker) to its own
+	// receiver-pipe. Requires ReliablePipe for the transport parameters.
+	FrameAck     bool
+	ReliablePipe transfer.ReliablePipeConfig
 }
 
 // RoutedResult is what the destination agent reports after a routed serve.
@@ -251,74 +257,107 @@ func ServeRouted(ctx context.Context, o RoutedOptions) (RoutedResult, error) {
 		err  error
 	}
 	var logicalN atomic.Uint64
-	results := make(chan subOut, nTotal)
-	acceptDone := make(chan error, 1)
-	go func() {
-		for i := 0; i < nTotal; i++ {
-			c, aerr := l.Accept()
-			if aerr != nil {
-				acceptDone <- aerr
-				return
-			}
-			cc := &countingConn{c: c}
-			res := &segstream.SliceResult{}
-			go func(cc *countingConn, res *segstream.SliceResult) {
-				// The sub-stream's content id is its DESTINATION segment;
-				// the (s,w) position is irrelevant to the load — every
-				// sub-stream addressed to a segment feeds that segment's
-				// merged stream. The stripper is assigned lazily on the
-				// first data frame (a zero-row sub-stream sends only a
-				// trailer and never allocates one).
-				var (
-					stripOnce sync.Once
-					strip     *segstream.SliceStripper
-				)
-				writer := func(contentID int16, p []byte) error {
-					d := int(contentID)
-					if d < 0 || d >= D {
-						return fmt.Errorf("routed dest: sub-stream content %d out of range (0..%d)", contentID, D-1)
-					}
-					stripOnce.Do(func() { strip = segstream.NewSliceStripper(segs[d].mw) })
-					logicalN.Add(uint64(len(p)))
-					return strip.Write(p)
-				}
-				derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, writer)
-				results <- subOut{res: res, wire: cc.Bytes(), err: derr}
-			}(cc, res)
-		}
-		close(acceptDone)
-	}()
-
-	// Wait for either an accept failure or all S×D×W accepted.
+	var trailerRows int64
+	var firstErr error
+	var wire uint64
 	var accErr error
-	select {
-	case accErr = <-acceptDone:
-		if accErr != nil {
-			_ = closePipesErr(pws, fmt.Errorf("accept: %w", accErr))
-			_, _, _ = collectDirectCopies(copyRes, D)
-			return out, fmt.Errorf("routed dest: accept sub-stream: %w", accErr)
+	var faWire uint64
+	// drainSubStream drains one sub-stream (a Pipe: the raw conn in plain
+	// mode, a ReliablePipe in frame-ack mode) into its destination
+	// segment's merged stream. The sub-stream's content id is its
+	// DESTINATION segment; the (s,w) position is irrelevant to the load —
+	// every sub-stream addressed to a segment feeds that segment's merged
+	// stream. The stripper is assigned lazily on the first data frame (a
+	// zero-row sub-stream sends only a trailer and never allocates one).
+	// It returns the drain error (the per-sub-stream SliceResult is sent to
+	// results by the caller).
+	drainSubStream := func(conn transfer.Pipe, res *segstream.SliceResult) error {
+		var (
+			stripOnce sync.Once
+			strip     *segstream.SliceStripper
+		)
+		writer := func(contentID int16, p []byte) error {
+			d := int(contentID)
+			if d < 0 || d >= D {
+				return fmt.Errorf("routed dest: sub-stream content %d out of range (0..%d)", contentID, D-1)
+			}
+			stripOnce.Do(func() { strip = segstream.NewSliceStripper(segs[d].mw) })
+			logicalN.Add(uint64(len(p)))
+			return strip.Write(p)
 		}
-	case <-sctx.Done():
-		_ = closePipesErr(pws, sctx.Err())
-		_, _, _ = collectDirectCopies(copyRes, D)
-		return out, fmt.Errorf("routed dest: accept sub-streams: %w", sctx.Err())
+		return segstream.ReadStreamCompressed(sctx, conn, res, mode, writer)
 	}
+	if o.FrameAck {
+		// Inc3: each sub-stream is its own ReliablePipe; the ResumeRouter
+		// routes the initial + resume connections (identity HELLO:
+		// src/dst/worker) to their own pipes, so a broken sub-stream's
+		// re-dial reaches its own pipe.
+		results := make(chan routedFrameAckOut, nTotal)
+		accErr, faWire = serveRoutedFrameAck(sctx, o, l, nTotal, results, drainSubStream)
+		if accErr == nil {
+			for i := 0; i < nTotal; i++ {
+				s := <-results
+				if s.err != nil && firstErr == nil {
+					firstErr = s.err
+				}
+				if s.res.Trailer != nil && s.res.Err == nil {
+					trailerRows += s.res.Rows
+				}
+			}
+			// The frame-ack path carries the bytes inside the ReliablePipe
+			// transport: the router's raw-network counter is the on-wire
+			// volume (FR-04).
+			wire = faWire
+		}
+	} else {
+		results := make(chan subOut, nTotal)
+		acceptDone := make(chan error, 1)
+		go func() {
+			for i := 0; i < nTotal; i++ {
+				c, aerr := l.Accept()
+				if aerr != nil {
+					acceptDone <- aerr
+					return
+				}
+				cc := &countingConn{c: c}
+				res := &segstream.SliceResult{}
+				go func(cc *countingConn, res *segstream.SliceResult) {
+					derr := drainSubStream(cc, res)
+					results <- subOut{res: res, wire: cc.Bytes(), err: derr}
+				}(cc, res)
+			}
+			close(acceptDone)
+		}()
 
-	// 6. Collect the S×D×W drains (exactly-once).
-	var (
-		trailerRows int64
-		firstErr    error
-		wire        uint64
-	)
-	for i := 0; i < nTotal; i++ {
-		s := <-results
-		wire += s.wire
-		if s.err != nil && firstErr == nil {
-			firstErr = s.err
+		// Wait for either an accept failure or all S×D×W accepted.
+		select {
+		case accErr = <-acceptDone:
+			if accErr != nil {
+				_ = closePipesErr(pws, fmt.Errorf("accept: %w", accErr))
+				_, _, _ = collectDirectCopies(copyRes, D)
+				return out, fmt.Errorf("routed dest: accept sub-stream: %w", accErr)
+			}
+			// All S×D×W accepted: fall through to collect the drains.
+		case <-sctx.Done():
+			_ = closePipesErr(pws, sctx.Err())
+			_, _, _ = collectDirectCopies(copyRes, D)
+			return out, fmt.Errorf("routed dest: accept sub-streams: %w", sctx.Err())
 		}
-		if s.res.Trailer != nil && s.res.Err == nil {
-			trailerRows += s.res.Rows
+		for i := 0; i < nTotal; i++ {
+			s := <-results
+			wire += s.wire
+			if s.err != nil && firstErr == nil {
+				firstErr = s.err
+			}
+			if s.res.Trailer != nil && s.res.Err == nil {
+				trailerRows += s.res.Rows
+			}
 		}
+	}
+	if accErr != nil {
+		_ = closePipesErr(pws, fmt.Errorf("accept: %w", accErr))
+		_, _, _ = collectDirectCopies(copyRes, D)
+		return out, fmt.Errorf("routed dest: accept sub-stream: %w", accErr)
 	}
 
 	// 7. Close each segment's merged stream (EOF marker), then the pipes,
@@ -359,4 +398,60 @@ func ServeRouted(ctx context.Context, o RoutedOptions) (RoutedResult, error) {
 		out.Swapped = true
 	}
 	return out, nil
+}
+
+// routedFrameAckOut is one sub-stream's result on the frame-ack path (the
+// router counts the raw network bytes, so wire is always 0 here).
+type routedFrameAckOut struct {
+	res  *segstream.SliceResult
+	wire uint64
+	err  error
+}
+
+// serveRoutedFrameAck runs the Inc3 frame-ack data path for one routed
+// (S≠D) unit: each of the S×D×W sub-streams is its own ReliablePipe, and a
+// ResumeRouter over the unit's data listener routes the initial + resume
+// connections (identity HELLO: src/dst/worker) to their own pipes. The
+// destination pre-creates one pool slot per expected sub-stream and the
+// router binds a StreamID to a free slot on first sight. It returns the raw
+// network bytes the router read (FR-04) and an error on deadline / setup
+// failure.
+func serveRoutedFrameAck(sctx context.Context, o RoutedOptions, l net.Listener, nTotal int, results chan routedFrameAckOut, drain func(conn transfer.Pipe, res *segstream.SliceResult) error) (error, uint64) {
+	router := transfer.NewResumeRouter(l)
+	go router.Run()
+	closer := router.Stop
+	if o.SharedListen == nil {
+		closer = router.Close
+	}
+	defer closer()
+
+	acceptTO := o.AcceptTimeout
+	if acceptTO <= 0 {
+		acceptTO = 5 * time.Minute
+	}
+	finished := make(chan struct{}, nTotal)
+	for i := 0; i < nTotal; i++ {
+		slot := router.NewPoolSlot()
+		go func(slot <-chan transfer.DupConn) {
+			res := &segstream.SliceResult{}
+			rp, err := transfer.NewReliablePipeReceiverOnSlot(o.ReliablePipe, slot, acceptTO)
+			if err != nil {
+				res.Err = err
+				results <- routedFrameAckOut{res: res, wire: 0, err: err}
+				finished <- struct{}{}
+				return
+			}
+			derr := drain(rp, res)
+			results <- routedFrameAckOut{res: res, wire: 0, err: derr}
+			finished <- struct{}{}
+		}(slot)
+	}
+	for i := 0; i < nTotal; i++ {
+		select {
+		case <-finished:
+		case <-sctx.Done():
+			return sctx.Err(), 0
+		}
+	}
+	return nil, router.WireBytes()
 }
