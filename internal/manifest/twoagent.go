@@ -261,9 +261,31 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 		return err
 	}
 	if err := r.startDest(ctx); err != nil {
-		return r.stopSource()
+		// Surface the real startDest error (dial failure, launch failure) —
+		// stopSource is cleanup, not the cause. Swallowing it (the old
+		// `return r.stopSource()`) turned every dest-start failure into the
+		// misleading "destination agent not started" at stream time.
+		stopErr := r.stopSource()
+		if stopErr != nil {
+			return fmt.Errorf("start dest: %w (source stop: %v)", err, stopErr)
+		}
+		return err
 	}
 	return nil
+}
+
+// controlDialDeadline bounds the bounded-retry dial after an agent launch.
+// A remote (SSH-launched) agent pays for the SSH round-trip PLUS its own PG
+// connect to the Greenplum coordinator before it binds the control listener —
+// on the lab stand that is ~10-20s, so the local 15s margin is too tight
+// (the agent becomes ready a few seconds AFTER the dial gives up, then exits
+// on its one-shot control timeout). 90s is generous without hiding a real
+// hang (the launch itself is separately bounded by launch.Ensure's WaitTimeout).
+func controlDialDeadline(sshHost string) time.Duration {
+	if sshHost != "" {
+		return 90 * time.Second
+	}
+	return 15 * time.Second
 }
 
 // startSource brings up the long-lived source agent (owns the FR-02 snapshot)
@@ -301,7 +323,7 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		return fmt.Errorf("two-agent: launch source agent: %w", err)
 	}
 	r.srcHandle = h
-	client, err := dialControlRetry(ctx, srcCtrlAddr, 15*time.Second, r.controlTLS())
+	client, err := dialControlRetry(ctx, srcCtrlAddr, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.srcHandle = nil
@@ -362,7 +384,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		return fmt.Errorf("two-agent: launch dest agent: %w", err)
 	}
 	r.destHandle = h
-	client, err := dialDestControlRetry(ctx, destCtrlAddr, 15*time.Second, r.controlTLS())
+	client, err := dialDestControlRetry(ctx, destCtrlAddr, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.destHandle = nil
