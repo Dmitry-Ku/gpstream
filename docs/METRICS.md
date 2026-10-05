@@ -156,15 +156,15 @@ Summary of the series:
 - **`gpstream_eta_seconds`** — remaining volume divided by the recent
   throughput; `0` until enough samples exist to be meaningful.
 - **`gpstream_rate_limit_gbits`** — set by the limiter on every rate change
-  via `SetRateLimit(to)` (F-14), so an adaptive degradation is visible as
-  a gauge movement.
+  via `SetRateLimit(to)` (F-14), so the AIMD movement is visible as a gauge
+  movement. Diagnostic only until the pacer is wired in (see PERFORMANCE.md).
 - **`gpstream_receive_write_latency_ms`** — the destination's receive queue
   as the controller observes it (F-14 "receive queue … COPY metrics"): the
   average time a source-side frame write takes to drain into the
   destination over the last second (the data path is an unbuffered pipe).
-  Refreshed by the limiter sampler each tick; a rising value means the
-  receiver is falling behind and (above 50 ms) will trigger an adaptive
-  reduction with reason `dest-receive-queue`.
+  **Not populated in the two-agent data path yet** (the agent send loops do
+  not feed the hook), so it reads 0 until the pacer work wires it in; it is
+  then the reduce signal with reason `dest-receive-queue` (above 50 ms).
 - **`gpstream_compression_level` / `gpstream_compression_mode`** — set by
   `SetCompression` on each compression-mode / level change (F-12/F-14
   auto-degradation); the change is **counted and observable** (F-04).

@@ -2,9 +2,9 @@
 
 This document covers the performance characteristics of the gpstream data
 path and the controls that shape throughput. It is grounded in the v2
-implementation (`internal/stream`, `internal/limiter`, `internal/compress`,
-`internal/job/manager.go`) and in the performance-characterization tests
-(`tests/perf/perf_test.go`).
+implementation (`internal/transfer`, `internal/ratelimit`,
+`internal/manifest`) and in the `gp6lab`-tagged integration tests
+(`tests/integration`).
 
 ## The target — and an honest caveat
 
@@ -16,10 +16,11 @@ The stated performance target is:
 
 **This target is a live-stand goal, not a verified number.** gpstream
 cannot be benchmarked against a real 100 Gbps channel without a live stand,
-and none is claimed here. The `tests/perf` suite does **not** measure
+and none is claimed here. The `gp6lab` integration suite does **not** measure
 100 Gbit/s throughput; it characterizes the *behaviour* the data path must
-have (rate-limiting, batch completion, positive throughput) using a
-**faked SQL layer**. See the "What the perf tests do and do not prove"
+have (completion in each copy mode, batch under the worker pool, crash
+recovery, positive throughput) against **real Greenplum clusters** on the lab
+stand. See the "What the perf tests do and do not prove"
 section and `RC-CHECKLIST.md` (CR-7) for the honest limits.
 
 Treat the figures in this document as **design intent and controls**, and
@@ -48,8 +49,9 @@ The `FramedPipe` is both the `io.Writer` (source) and the `io.Reader`
 (destination) over one connected pair. If the destination (or the network)
 slows, the source `COPY ... TO STDOUT` blocks on the pipe write —
 backpressure propagates naturally, so gpstream never over-buffers a slow
-receiver into disk. The limiter's pacer adds a second, rate-based form of
-backpressure (below).
+receiver into disk. This backpressure is currently the *only* form of flow
+pacing (see "Rate limiting" below for the status of the planned token-bucket
+pacer).
 
 ### CRC framing (corruption without a re-copy)
 
@@ -60,64 +62,71 @@ and **decompresses**; a CRC mismatch yields `ErrCorrupt`, which is
 
 ## Rate limiting
 
-### `--rate-limit <Gbps>`
+### `--rate-limit <rate>`
 
-Caps the total flow at a ceiling, in **Gbps**. The flag accepts `bps`,
-`mbit`, and `gbit` units (e.g. `50gbit`, `40000mbit`). Default is **0** —
-**no ceiling** (unlimited).
+Sets a **baseline** in **Gbps** (the flag accepts `bps`, `mbit`, and `gbit`
+units, e.g. `50gbit`, `40000mbit`). Default is **0** — no baseline.
+
+**What it does today (honest status):** the value drives the **ETA estimate**
+in the dry-run plan and seeds the **adaptive load diagnostics** below. It does
+**not** cap the actual flow: the data path is paced by **backpressure only**
+(the unbuffered pipe blocks the source when the destination lags). The
+token-bucket pacer that would enforce the ceiling is implemented and
+unit-tested, but it is **not wired into the two-agent data path yet** (backlog;
+see "Enforced pacing (backlog)").
+
+### Adaptive load diagnostics (FR-14)
 
 When a rate-limit is set, `NewManager` builds an adaptive limiter over the
-host metrics provider and a pacer that throttles the data path (FR-14):
+controller host's metrics provider (`internal/ratelimit`):
 
 ```
 if cfg.RateLimit > 0 {
-    lim   := limiter.New(limiter.Options{Baseline: cfg.RateLimit, Provider: ...})
-    pacer := limiter.NewPacer(lim)   // throttles the source write
+    lim := ratelimit.New(ratelimit.Options{Baseline: cfg.RateLimit, Provider: ratelimit.NewProcProvider()})
 }
 ```
 
-When `RateLimit == 0` the pacer is a **no-op** (unlimited), so an
-unbounded copy is never accidentally throttled.
-
-### Adaptive rate limit (FR-14)
-
-The limiter (`internal/limiter/limiter.go`) reads **host load** and adapts
-the *current* rate, independent of the raw network. It samples, on a live
-host, from `/proc/stat` (CPU iowait), `/proc/diskstats` (disk await /
+Every second a sampler calls `lim.Update()`, which reads the **controller
+host's** load from `/proc/stat` (CPU iowait), `/proc/diskstats` (disk await /
 util), and TCP retransmits (decoupled via a `Provider` interface so it is
-unit-testable).
-
-Behaviour:
+unit-testable), and moves the *current* rate by AIMD:
 
 - **Reduce** by a **~25% step** (floor **~1 Gbps**) on sustained overload:
   - CPU **iowait > 30%**,
-  - **disk util > 90%**, or
-  - **TCP retransmits > 100/s**.
+  - **disk util > 90%**,
+  - **TCP retransmits > 100/s**, or
+  - a destination **receive-queue write-latency > 50 ms** (recovery only
+    above **20 ms** — hysteresis).
 - **Recover** by **~10% per healthy interval** back toward the baseline,
-  never exceeding the baseline.
-- Every change is a **diagnostic message** carrying the metric values,
-  emitted to the metrics collector (FR-04) — so a rate change is
-  observable as `gpstream_rate_limit_gbits`.
+  never exceeding it.
+- Every change is a **diagnostic event** (`rate_limit_shift` with
+  from/to/reason + the metric values) in `events.jsonl` and a gauge movement
+  on `gpstream_rate_limit_gbits` (FR-04) — so load pressure on the controller
+  host is observable.
 
-The **pacer** (`internal/limiter/pacer.go`) is a token bucket that
-refills at the limiter's **current** rate. Burst ≈ 1 second of the current
-rate (minimum 1 MiB). When the limiter reduces the rate on host overload,
-the pacer slows the data flow; when load subsides, it recovers. It never
-throttles to 0 (a ~1 byte/s floor avoids a permanent stall) and honours
-context cancellation.
+Two honest caveats until the pacer is wired in: the metrics come from the
+**controller** host (the copy load sits on the **agent** hosts), and the
+receive-queue signal is not fed from the agent data path — so the reduce
+reasons that can fire today are the controller-host ones.
 
-The adaptive behaviour is **always active** (F-14) — there is no
-`--adaptive-rate-limit` flag; without a rate-limit the limiter still
-builds, it simply has no ceiling to enforce and only manages back-pressure
-and the diagnostic rate-shift events.
+### Enforced pacing (backlog)
+
+The **pacer** (`internal/ratelimit/pacer.go`) is a token bucket that refills
+at the limiter's **current** rate (burst ≈ 1 second of the current rate,
+minimum 1 MiB); it never throttles to 0 and honours context cancellation.
+Wiring it into the agent send loops — with each agent sampling **its own**
+host's metrics, so the ceiling is enforced where the load actually is — is
+backlog work; the correct home is the agents (ADR-002 moved the data path out
+of the controller).
 
 ## Workers per pair
 
 `--workers N` controls the **bounded worker pool** (FR-03).
 `Manager.Run` dispatches `N` workers over a channel of units; `N` is
-validated (a value `< 1` is clamped to `1`). When a rate-limit is set,
-**all workers share one pacer**, so the *total* flow across the pool
-stays under the ceiling (FR-14) rather than each worker racing to it.
+validated (a value `< 1` is clamped to `1`). The flow is paced by
+backpressure; the planned shared pacer (one for the whole pool, so the
+*total* flow — not each worker — stays under the ceiling) is backlog work
+(FR-14).
 
 A higher `--workers` spreads more tables across the connection
 pool (useful for the "many small tables" case); a lower value limits
@@ -126,20 +135,24 @@ to live workers (FR-06).
 
 ## Measuring the input stream (`gpstream bench`)
 
-To isolate the **source-side** ceiling from the link/destination, `gpstream
+To isolate the **source-side** rate from the link/destination, `gpstream
 bench` streams the selected source tables through the real data path (read →
-frame → compress → adaptive rate limiter) and **discards** the payload — no
+frame → compress) and **discards** the payload — no
 destination is opened. It applies the same selection and performance options
-as `run` (`--workers`, `--compress`, `--rate-limit`), and
+as `run` (`--workers`, `--compress`; `--rate-limit` is accepted and reported
+but does **not** throttle the benchmark — the pacer is not wired into the
+data path yet), and
 prints per-table and total rows, wire/logical bytes, elapsed and MB/s.
 `--timeout S` bounds the benchmark wall-time. Use it to answer "how fast can
 the source feed the pipeline?" before committing to a full run.
 
 ## Data ports
 
-There is **no `--data-port-range` flag** — the stream manages its own data
-ports per **host-pair** connection (source-host → destination-host)
-internally, bounded by the worker pool (`--workers`).
+Data ports are allocated automatically: every long-lived agent binds `:0`
+and reports its real (routable) address in the control handshake, so the
+stream needs no pre-planned port. For strict firewalls, restrict the
+auto-allocated range with `--data-port-range <LO-HI>` (see
+`TROUBLESHOOTING.md`).
 
 **Status:** the two-agent data path (source agent + destination agent, the
 controller holds no data connection) is the only data path. Two copy modes
@@ -186,15 +199,14 @@ lives on as the per-table auto sub-paths of `on_segment`):
 the destination **decompresses**; only compressed bytes travel the wire.
 
 - Default is **zstd**, **level 3** (config default `ZstdLevel=3`).
-- Compression is **auto-degraded on CPU saturation** (FR-12/FR-14): the
-  level can drop under load, and that change is **observable as a metric**
-  (`gpstream_compression_level` / `gpstream_compression_mode`).
-- Higher levels reduce wire bytes but cost CPU; the adaptive limiter and
-  compression degrade together so a saturated host sheds compression
-  before it sheds throughput.
+- Higher levels reduce wire bytes but cost CPU. **Auto-degrading the level
+  under CPU saturation is not implemented yet** (backlog): the level is
+  static for a run. The `gpstream_compression_level` /
+  `gpstream_compression_mode` gauges exist and will report the level once the
+  degrade path is wired in.
 
 The metrics collector records both **wire bytes** (compressed) and
-**decoded bytes** (logical) so a compression change is visible
+**decoded bytes** (logical) so the compression ratio is visible
 (`gpstream_bytes_total` vs `gpstream_bytes_decoded_total`). In the two-agent
 transport (the only data path) the wire counter is the on-wire agent-to-agent
 volume, so the ratio between the two counters is the real inter-cluster
@@ -204,33 +216,35 @@ compression ratio.
 
 The data-path characteristics are exercised by the `gp6lab`-tagged
 integration suite (real clusters, real agent sockets; the in-controller
-data path no longer exists in P7):
+data path no longer exists — ADR-002). The relevant ones:
 
-- **`TestBatchManyUnitsComplete`** — a batch of 50 units over 4 workers
-  all complete, data is copied, nothing fails (FR-01/FR-03). This is the
-  "many small tables" characteristic, reduced to a fast, deterministic
-  batch.
-- **`TestRateLimitBoundsDataPath`** — with a 100 Gbps ceiling (floor 10,
-  step 0.25) and a sustained iowait of 90%, the limiter holds the current
-  rate at or below the ceiling and **steps down below baseline**, then
-  **recovers** on a healthy interval without exceeding the baseline
-  (FR-14).
-- **`TestThroughputIsPositive`** — a real copy produces **positive**
-  throughput and records bytes (not a fake "no bytes transferred")
-  (FR-04).
+- **`TestTwoAgentManagerRun`** / **`TestTwoAgentOnSegmentServe`** /
+  **`TestTwoAgentRoutedServe`** / **`TestTwoAgentDirect1to1Serve`** — real
+  copies over the two-agent data path in each copy mode / sub-path; data is
+  copied and verified, nothing fails (FR-01/FR-02).
+- **`TestPoolParallelWorkersLive`** — a bounded worker pool over a live
+  pair completes a batch of units (FR-03), the "many small tables" case.
+- **`TestTwoAgentCrashRecoveryMatrix`** / **`TestSoakThroughputLive`** —
+  crash-recovery and a live throughput soak (positive bytes, no stall).
+- The **rate-limit limiter** itself (AIMD reduce/recover, floor, hysteresis)
+  is covered by **unit** tests in `internal/ratelimit` with a faked
+  `Provider` (deterministic iowait/util/retransmit inputs). Those prove the
+  *limiter logic*; they do **not** prove the limiter bounds the data path,
+  because the pacer is not wired in (backlog, above).
 
 **These are not a 100 Gbit/s / 100 TB–1 PB benchmark.** They prove the
-*shape* of the data path (that a rate-limit actually bounds it, that a
-batch completes, that bytes moved). Validating the absolute target
-requires a live stand on a real 100 Gbps link between two Greenplum 6
-clusters; **do not cite the perf suite as evidence for the target.**
+*shape* of the data path (that copies complete in each mode, that a batch
+finishes under the worker pool, that bytes moved, that crash/recovery
+holds). Validating the absolute target requires a live stand on a real
+100 Gbps link between two Greenplum 6 clusters; **do not cite the perf
+suite as evidence for the target.**
 
 ## Tuning cheatsheet
 
 | Goal                                   | Knobs |
 |----------------------------------------|-------------------------------------------|
-| Cap a link so it doesn't starve prod  | `--rate-limit <Gbps>` (the limiter auto-degrades, F-14) |
-| Push a fast link, let it adapt         | `--rate-limit` high, let the limiter auto-degrade |
+| Reduce load on a side (prod protection) | `--workers N` down, `--compress` level up, schedule the run (an enforced `--rate-limit` ceiling is backlog) |
+| Push a fast link, let it adapt         | `--workers N` up; with `--rate-limit` set, watch `rate_limit_shift` events for controller-host load |
 | Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
@@ -240,8 +254,10 @@ clusters; **do not cite the perf suite as evidence for the target.**
 
 - The 100 Gbps / 100 TB–1 PB numbers are a **live-stand target**, not
   measured here.
-- The perf suite uses a **faked SQL path**; it characterises behaviour,
-  not absolute throughput.
+- The `gp6lab` integration suite runs against **real Greenplum clusters** on
+  the lab stand (real `postgres://` DSNs, real agent sockets); it
+  characterises behaviour (completeness, recovery, concurrency), not
+  absolute throughput on a production-grade link.
 - Absolute throughput, latency, and the interaction of rate-limit +
   compression + backpressure on a real 100 Gbps link must be validated on
   a live stand before being quoted.

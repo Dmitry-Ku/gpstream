@@ -25,11 +25,13 @@ Plan the copy without executing (\fB--timeout\fR S bounds the plan; the plan JSO
 .TP
 .B bench
 Measure the input stream: stream the selected source tables through the real
-data path (\fBCOPY ... TO STDOUT\fR \-> frame v2 \-> compression \->
-adaptive rate limiter) and discard the payload instead of writing a
+data path (\fBCOPY ... TO STDOUT\fR \-> frame v2 \-> compression) and discard
+the payload instead of writing a
 destination. It reports the source's production rate \emph{before} the
 network/destination hop, so the operator can size \fB--workers\fR and
-\fB--rate-limit\fR against the input ceiling. Only the source is used;
+compare the input rate against \fB--rate-limit\fR (the value does not
+throttle the benchmark — the pacer is not wired into the data path yet).
+Only the source is used;
 \fB--dest\fR (if given) is ignored. Per-table and total rows, wire and
 logical bytes, elapsed and MB/s are printed. \fB--timeout\fR S is the
 benchmark wall-time limit (unlimited when not passed); all other
@@ -155,7 +157,10 @@ zstd level 1-19 (default 3).
 .TP
 .BR --rate-limit
 rate
-Total throughput ceiling; accepts bps/mbit/gbit (default: none).
+Baseline for the ETA estimate and the adaptive load diagnostics; accepts
+bps/mbit/gbit (default: none). It does \fBnot\fR cap the flow — the data path
+is paced by backpressure only; an enforced ceiling (token-bucket pacer in the
+agents) is backlog work (see PERFORMANCE.md).
 .TP
 .BR --workers
 N

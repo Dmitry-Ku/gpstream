@@ -363,7 +363,7 @@ func WriteFrameCounted(w Pipe, f *Frame, counter *uint64) error {
 // counter (FR-04). It never stores data to disk in the middle (FR-01).
 type Session struct {
 	pipe  Pipe
-	rate  float64 // Gbps ceiling (FR-14)
+	rate  float64 // Gbps baseline (FR-14; informational — pacing is backpressure)
 	mu    sync.Mutex
 	bytes uint64
 }

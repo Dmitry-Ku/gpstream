@@ -130,7 +130,7 @@ defaults**.
 
 | Knob | Flag / env | Default | Notes |
 |------|-----------|---------|-------|
-| Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | 0 (no ceiling) | adaptive AIMD is always active (F-14) |
+| Rate limit | `--rate-limit <rate>` (`GPSTREAM_RATE_LIMIT`) | 0 (none) | ETA baseline + adaptive load diagnostics; does not cap throughput (backpressure paces the flow; enforced ceiling is backlog) |
 | Workers | `--workers N` (`GPSTREAM_WORKERS`) | 2 | parallel workers per host-pair |
 | Compression | `--compress` (`GPSTREAM_COMPRESS`) | `zstd` | `none`/`zlib`/`zstd[:level]` |
 | zstd level | `--zstd-level N` (or `--compress zstd:N`) | 3 | 1–19 |

@@ -60,14 +60,21 @@ that died — resume is the correct mechanism.
 
 | Knob | Flag / env | What it does |
 |------|-----------|--------------|
-| Rate limit | `--rate-limit <Gbps>` (`GPSTREAM_RATE_LIMIT`) | caps throughput (accepts `bps`/`mbit`/`gbit`) |
+| Rate limit | `--rate-limit <rate>` (`GPSTREAM_RATE_LIMIT`) | baseline for the ETA + adaptive load diagnostics (accepts `bps`/`mbit`/`gbit`); does not cap throughput — the flow is paced by backpressure |
 | Workers | `--workers N` (default `2`) | parallelism per host-pair |
 | Compression | `--compress` (default `zstd`, level 3) | reduces wire bytes |
 
-The adaptive limiter (F-14) is **always active**: it samples source host
-load and the destination's receive queue, reduces the rate on sustained
-overload and recovers when load subsides. There is no `--adaptive-rate-limit`
-flag to enable it — it is built in. Data ports are allocated automatically
+Throughput is bounded by the link and by backpressure (a slow destination
+blocks the source). To actually reduce the load on a side, lower
+`--workers`, raise `--compress` levels, or schedule the run; an enforced
+`--rate-limit` ceiling (token-bucket pacer in the agents) is backlog work.
+
+The adaptive limiter (F-14) is built when a rate-limit is set: it samples
+the **controller host's** load every second, moves the current rate by AIMD
+on sustained overload, and records each shift as a `rate_limit_shift` event
+(diagnostic — it does not cap the flow until the pacer is wired in, see
+`PERFORMANCE.md`). There is no `--adaptive-rate-limit` flag to enable it —
+it is built in. Data ports are allocated automatically
 (every long-lived agent binds `:0` and reports its real address in the
 control handshake); for strict firewalls, restrict them with
 `--data-port-range <LO-HI>`.
@@ -75,8 +82,9 @@ control handshake); for strict firewalls, restrict them with
 Diagnose with the metrics endpoint (see `METRICS.md`): `gpstream_bytes_total`,
 `gpstream_bytes_decoded_total` (compression ratio), `gpstream_throughput_bytes`,
 and `gpstream_errors_total`. A drop in throughput with `Errors` climbing points
-to a network/CPU/disk bottleneck; the adaptive limiter backs off and recovers
-automatically (each shift is logged to `events.jsonl` as `rate_limit_shift`).
+to a network/CPU/disk bottleneck; with a rate-limit set, the limiter's
+`rate_limit_shift` events in `events.jsonl` show how the controller host's
+load was trending at the time (diagnostic — it does not cap the flow yet).
 
 ---
 

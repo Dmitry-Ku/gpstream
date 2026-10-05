@@ -175,10 +175,10 @@ func TestPlanNotes(t *testing.T) {
 	}
 
 	// rateLimitNote / overheadNote / backgroundIndexNote.
-	if got := rateLimitNote(config.Config{}); got != "no ceiling (full bandwidth)" {
+	if got := rateLimitNote(config.Config{}); got != "none (full bandwidth)" {
 		t.Errorf("rateLimitNote none = %q", got)
 	}
-	if got := rateLimitNote(config.Config{RateLimit: 80}); got != "80 Gbps ceiling (adaptive per host-pair)" {
+	if got := rateLimitNote(config.Config{RateLimit: 80}); got != "80 Gbps baseline (ETA + load diagnostics; the flow is paced by backpressure, not capped)" {
 		t.Errorf("rateLimitNote 80 = %q", got)
 	}
 	if got := overheadNote(config.Config{}); got != "off" {

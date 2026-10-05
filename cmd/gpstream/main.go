@@ -717,14 +717,16 @@ func routeSummaryLine(p *plan.Plan) string {
 		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router, merge)
 }
 
-// rateLimitNote renders the rate-limit expectation for the dry-run. The
-// limiter is adaptive (FR-14): it lowers the per-pair rate on a detected
-// receiver bottleneck and recovers when it stabilises.
+// rateLimitNote renders the rate-limit note for the dry-run. The value is a
+// baseline used for the ETA estimate and the adaptive load diagnostics
+// (FR-14); it does not cap the flow — the data path is paced by backpressure
+// only (the token-bucket pacer exists in internal/ratelimit but is not wired
+// into the two-agent data path yet — backlog).
 func rateLimitNote(cfg config.Config) string {
 	if cfg.RateLimit > 0 {
-		return fmt.Sprintf("%g Gbps ceiling (adaptive per host-pair)", cfg.RateLimit)
+		return fmt.Sprintf("%g Gbps baseline (ETA + load diagnostics; the flow is paced by backpressure, not capped)", cfg.RateLimit)
 	}
-	return "no ceiling (full bandwidth)"
+	return "none (full bandwidth)"
 }
 
 // overheadNote renders the TLS/compression overhead expectation (v2 §26, FR-12/FR-13).
@@ -826,7 +828,7 @@ func atof(s string) float64 {
 // parseRateLimit parses a rate-limit flag value. It accepts a bare Gbps number
 // ("50") or a unit-suffixed value ("80gbit", "80gb", "100gbps", "50mbit"). The
 // §26 success-criterion command uses "--rate-limit 80gbit", so a unit suffix
-// must parse to the Gbps ceiling (Config.RateLimit is always Gbps).
+// must parse to the Gbps baseline (Config.RateLimit is always Gbps).
 func parseRateLimit(s string) float64 {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "" {
@@ -1633,7 +1635,10 @@ Conflicts:
 Performance:
   --compress none|zlib|zstd[:1-19]  stream compression (default zstd level 3)
   --zstd-level N                   zstd level 1-19 (default 3)
-  --rate-limit rate                total bandwidth ceiling (bps/mbit/gbit)
+  --rate-limit rate                baseline for the ETA + adaptive load
+                                   diagnostics (bps/mbit/gbit); the flow is
+                                   paced by backpressure only (enforced
+                                   pacing: backlog)
   --workers N                      parallel workers per host-pair (default 2)
   --small-table-threshold size     tables smaller than this copy with compression
                                    off (default 1MiB; 0 disables)

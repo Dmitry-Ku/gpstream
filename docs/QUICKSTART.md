@@ -285,7 +285,7 @@ per database (F-02), so the whole copy sees a single point in time.
 | Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
 | Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|on_segment`, `--seg-listen` (optional; auto when omitted) |
-| Performance | `--workers N`, `--rate-limit <Gbps>` (adaptive AIMD always active) |
+| Performance | `--workers N`, `--rate-limit <rate>` (ETA baseline + load diagnostics; the flow is paced by backpressure) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify on\|off`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |
 | Consistency | always on: one run-wide REPEATABLE READ snapshot per database (F-02) |
 | Indexes | `--index-workers N`, `--no-indexes`, `--index-priority size\|fifo` (default `size`; F-17, on by default) |

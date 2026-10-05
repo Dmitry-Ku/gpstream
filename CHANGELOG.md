@@ -54,6 +54,24 @@ now lists exactly the 10 dispatch subcommands (`bench` added, `man` — the OS
 man page, not a dispatch entry — removed). Every flag parsed by the code is
 now documented in every surface; no dead or duplicated flags remain.
 
+### Known limitations (honest status, documented in PERFORMANCE.md)
+
+- **`--rate-limit` does not cap the flow yet.** The value drives the ETA
+  estimate and the adaptive load diagnostics (AIMD limiter over the
+  controller host's /proc, `rate_limit_shift` events +
+  `gpstream_rate_limit_gbits`); the token-bucket pacer that would enforce the
+  ceiling is implemented and unit-tested but not wired into the two-agent
+  data path. The flow is paced by backpressure only. Enforced pacing (pacer
+  in the agent send loops, per-agent host metrics) is backlog work. All docs
+  (`--help`, man, CLI_REFERENCE, PERFORMANCE, TROUBLESHOOTING, METRICS) now
+  state this.
+- **`gpstream_receive_write_latency_ms` reads 0** in the two-agent data path
+  (the agent send loops do not feed the hook); it becomes the
+  `dest-receive-queue` reduce signal once the pacer work wires it in.
+- **TLS is not exercised on a live GP6 cluster**: the lab gp6lab runs use
+  `sslmode=disable`; TLS coverage is real-PKI loopback tests (control + data
+  planes, mTLS rejection, verify-full).
+
 ### Removed: the `gpstream.service` systemd unit
 
 The packaged unit (`/usr/lib/systemd/system/gpstream.service`) is removed: it

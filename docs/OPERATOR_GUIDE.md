@@ -144,15 +144,16 @@ point in time.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--rate-limit` | `0` (no ceiling) | Total throughput ceiling in Gbps (accepts `bps`/`mbit`/`gbit` units). |
+| `--rate-limit` | `0` (none) | Baseline for the ETA + adaptive load diagnostics in Gbps (accepts `bps`/`mbit`/`gbit` units). Does not cap the flow — backpressure paces it; enforced ceiling is backlog (PERFORMANCE.md). |
 | `--workers` | `2` | Concurrent workers per host-pair. |
 | `--compress` | `zstd` | `none` / `zlib` / `zstd`. |
 | `--compress zstd:9` | level 3 | zstd level **1–19** (validated). |
 
 Default compression is **`zstd` at level 3**. A higher level compresses more
-but uses more CPU — the adaptive limiter (F-14, always active) will *degrade*
-the rate / compression level when the host is CPU-saturated, and that change
-is observable as a metric (see §8).
+but uses more CPU. **Auto-degrading the level under CPU saturation is not
+implemented yet** (backlog) — the level is static for a run. The
+`gpstream_compression_level` / `gpstream_compression_mode` gauges exist and
+will report the level once the degrade path is wired in (see §8).
 
 **Transport (two-agent, ADR-002):** the data plane lives in the agents: a
 source agent (source cluster) reads the table and pushes a **compressed**
@@ -173,27 +174,24 @@ The stream uses **back-pressure**: the source agent blocks when the destination
 cannot keep up, so gpstream never buffers the whole table in RAM — only small
 in-memory buffers. There is no intermediate disk.
 
-The adaptive limiter (F-14) is always active: one limiter runs per host-pair.
-It samples
-**source** host load (CPU iowait, disk await/utilisation, TCP retransmits)
-**and the destination's receive queue** — the data path is an unbuffered
-pipe, so the average time a source-side frame write takes to drain into the
-destination (the in-process COPY metrics, the destination host's own /proc
-is not readable from the controller) — and:
+The adaptive limiter (F-14) is built when a rate-limit is set. It samples
+the **controller host's** load (CPU iowait, disk await/utilisation, TCP
+retransmits) every second and moves the current rate by AIMD:
 
-- **reduces** the rate by a step (~25%, floor ~1 Gbps) on sustained overload;
+- **reduces** the rate by a step (~25%, floor ~1 Gbps) on sustained
+  overload;
 - **recovers** toward the baseline when load subsides (~10% per healthy
-  interval), and only when the destination's drain is also stable
-  (hysteresis: reduce above a 50 ms average write latency, recover below
-  20 ms, so a borderline receiver does not flap the rate).
+  interval).
 
-A reduction is a diagnostic message (it carries the triggering metric
-values), so "why did the run slow down?" has an answer in the logs and the
-metrics endpoint. Typical trigger thresholds: iowait > 30%, disk
-utilisation > 90%, TCP retransmits > 100/s, destination receive-queue
-write latency > 50 ms (reason `dest-receive-queue`). The current
-receive-queue depth is exposed as the `gpstream_receive_write_latency_ms`
-gauge.
+Honest status: until the pacer is wired into the data path (backlog), the
+limiter is **diagnostic only** — it does not cap the flow, and the metrics
+come from the controller host (the copy load sits on the agent hosts). The
+destination receive-queue signal (reason `dest-receive-queue`, the
+`gpstream_receive_write_latency_ms` gauge) is not populated in the two-agent
+path yet. A rate change is a diagnostic message (it carries the triggering
+metric values) in `events.jsonl` (`rate_limit_shift`) and the metrics
+endpoint, so "how was load trending?" has an answer. Typical trigger
+thresholds: iowait > 30%, disk utilisation > 90%, TCP retransmits > 100/s.
 
 ---
 

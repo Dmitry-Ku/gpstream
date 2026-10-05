@@ -11,6 +11,12 @@ import (
 // so when the limiter reduces the rate on host overload the pacer slows the
 // data flow, and when the load subsides the pacer recovers. When the baseline
 // is 0 the pacer is a no-op (unlimited, FR-14).
+//
+// NOTE (v0.2.0): the pacer is implemented and unit-tested, but it is NOT wired
+// into the two-agent data path yet — the agents do their own streaming and do
+// not consult it. Until it is, `--rate-limit` is a diagnostic/ETA baseline and
+// the flow is paced by backpressure only. Wiring it into the agent send loops
+// (with per-agent host metrics) is backlog work.
 type Pacer struct {
 	l    *Limiter
 	mu   sync.Mutex

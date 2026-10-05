@@ -92,10 +92,11 @@ subset of flags (listed per-command below) and ignore the rest.
   `<state-dir>/<operation-id>/plan.json`. `dry-run` is the command that used to
   be called `plan`.
 - **`bench`** — measures the **input stream** (F-14): streams the selected
-  source tables through the real data path (read → frame → compress →
-  adaptive rate limiter) and **discards** the payload instead of writing a
+  source tables through the real data path (read → frame → compress) and
+  **discards** the payload instead of writing a
   destination. Source only (`--dest`, if given, is ignored); all
-  selection/performance options as for `run`. Prints per-table and total
+  selection/performance options as for `run` (`--rate-limit` is reported but
+  does not throttle the benchmark). Prints per-table and total
   rows, wire/logical bytes, elapsed and MB/s. `--timeout S` is the benchmark
   wall-time limit (unlimited when not passed).
 - **`doctor`** — self-diagnoses src/dest clusters (F-05); full contract. Uses
@@ -215,7 +216,7 @@ Conflict policy semantics:
 | `--compress none\|zlib\|zstd[:1-19]` | `Compression` / `ZstdLevel` | `zstd` / `3` (`zstd:level` sets the level, 1–19) |
 | `--zstd-level <1-19>` | `ZstdLevel` | `3` |
 | `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
-| `--rate-limit <rate>` | `RateLimit` | `0` (no ceiling; accepts `40`, `40gbps`, `400mbps`, …) |
+| `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbps`, …). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
 | `--workers <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
 
 ### Transport (two-agent, ADR-002)

@@ -14,8 +14,8 @@ import (
 
 // cmdBench runs `gpstream bench` (F-14 input-stream benchmark). It streams
 // the SELECTED source tables through the real data path (COPY ... TO STDOUT
-// -> frame v2 -> compression -> adaptive rate limiter) and DISCARDS the
-// payload instead of writing a destination, so the operator measures the
+// -> frame v2 -> compression) and DISCARDS the payload instead of writing a
+// destination, so the operator measures the
 // input stream's production rate (source read + framing + compression)
 // without a destination cluster. All selection/perf options (CLI > env >
 // toml) are honored exactly as for `run`; --dest is not used (and, if given,
@@ -68,7 +68,9 @@ func cmdBench(args []string) error {
 	comp := string(cfg.Compression)
 	limiter := "none"
 	if cfg.RateLimit > 0 {
-		limiter = fmt.Sprintf("%.3g Gbps (adaptive)", cfg.RateLimit)
+		// bench does not throttle (the pacer is not wired into the data path
+		// yet); the value is reported as a diagnostic/ETA baseline.
+		limiter = fmt.Sprintf("%.3g Gbps (baseline; not enforced)", cfg.RateLimit)
 	}
 	timeout := "unlimited"
 	if d := cfg.BenchTimeout(); d > 0 {

@@ -147,8 +147,12 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		m.monitor.SetIndexProgress(queueDepth, done)
 	})
 	// FR-14: when a rate-limit is set, build the adaptive limiter over the host
-	// metrics provider and the pacer that throttles the data path. A rate change
-	// is observable as a metric (FR-04) via the diagnostic callback.
+	// metrics provider. It tracks the controller host's load and publishes
+	// rate_shift diagnostics (FR-04) as a metric + event. NOTE: the
+	// token-bucket pacer (internal/ratelimit) is NOT wired into the two-agent
+	// data path yet (backlog) — so the limiter is diagnostic-only for now and
+	// the value's concrete effect is the ETA baseline; the flow is paced by
+	// backpressure only.
 	if cfg.RateLimit > 0 {
 		lim := ratelimit.New(ratelimit.Options{
 			Baseline: cfg.RateLimit,
@@ -196,9 +200,10 @@ func (m *Manager) unitCompressors(t plan.Table) (comp *compress.Compressor, dec 
 }
 
 // Run executes the copy for the plan (FR-01/FR-02). Units are processed through
-// a bounded worker pool of cfg.WorkersPerPair (FR-03); when the rate limiter is
-// set the pool shares a single pacer so the *total* flow stays under the
-// ceiling (FR-14). Each unit is fully journaled so the run is resumable
+// a bounded worker pool of cfg.WorkersPerPair (FR-03). The flow is paced by
+// backpressure; when a rate-limit is set the shared adaptive limiter runs
+// diagnostic-only (the token-bucket pacer is not wired into the data path yet —
+// backlog, FR-14). Each unit is fully journaled so the run is resumable
 // (FR-06/FR-07). A first unit failure is reported after the in-flight units
 // finish (the pool does not cancel the batch).
 // SetTwoAgentRunner injects the two-agent control-plane runner (the
@@ -304,8 +309,9 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	}
 	defer func() { _ = m.twoAgent.Release(context.Background()) }()
 
-	// FR-14: sample host load periodically so the limiter adapts the data-path
-	// rate (the pacer reads ratelimit.Current). No-op when no rate-limit is set.
+	// FR-14: sample controller-host load periodically so the limiter publishes
+	// rate-shift diagnostics. No-op when no rate-limit is set; the limiter is
+	// diagnostic-only until the pacer is wired into the data path (backlog).
 	stopSampler := m.startLimiterSampler(ctx)
 	if stopSampler != nil {
 		defer stopSampler()
