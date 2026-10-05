@@ -25,7 +25,6 @@ package launch
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,9 +56,9 @@ type Target struct {
 	// RunAs="gpadmin" makes the SSH command `sudo -u gpadmin <binary> …`.
 	RunAs string
 	// DialFirst adopts a daemon already listening on ControlAddr instead of
-	// launching. Bounded by AdoptTimeout.
-	DialFirst    bool
-	AdoptTimeout time.Duration
+	// launching (no probe — the control listener is one-shot; the caller's
+	// bounded retry dial is the readiness check).
+	DialFirst bool
 	// WaitTimeout bounds how long to wait for the control socket to become
 	// reachable after a launch.
 	WaitTimeout time.Duration
@@ -116,13 +115,17 @@ func Ensure(ctx context.Context, t Target) (*Handle, error) {
 	if t.WaitTimeout <= 0 {
 		t.WaitTimeout = 30 * time.Second
 	}
-	if t.AdoptTimeout <= 0 {
-		t.AdoptTimeout = 1500 * time.Millisecond
-	}
 	h := &Handle{target: t}
+	_ = ctx // readiness is the caller's bounded retry dial (one-shot control).
 
-	// 1. Dial-first: adopt a daemon already listening.
-	if t.DialFirst && controlReachable(ctx, t.ControlAddr, t.AdoptTimeout) {
+	// 1. Dial-first: adopt a daemon the operator already started. NO
+	// probe: the agent control listener is ONE-SHOT (a single Accept; the
+	// agent exits when that connection drops — the crash-recovery matrix
+	// depends on it), so a dial+close probe would consume the one accept
+	// and kill the agent's control before the controller's real dial. If
+	// the daemon is not actually up, the caller's bounded retry dial
+	// fails with a clean "connection refused" after the deadline.
+	if t.DialFirst {
 		h.adopted = true
 		return h, nil
 	}
@@ -145,58 +148,15 @@ func Ensure(ctx context.Context, t Target) (*Handle, error) {
 		h.cmd = cmd
 	}
 
-	// 3. Readiness. For a REMOTE (SSH) agent a same-host TCP probe is safe
-	// (the controller is a different source than nothing) and confirms the
-	// agent bound its control listener. For a LOCAL subprocess a probe would
-	// CONSUME the single accept on the agent's control listener (the control
-	// protocol is one connection per dial), so we do NOT probe: the caller
-	// dials with a short retry (dialControlRetry / dialDestControlRetry)
-	// which tolerates the agent's startup, exactly as the pre-redesign
-	// local launch did.
-	if h.remote {
-		if err := waitControl(ctx, t.ControlAddr, t.WaitTimeout); err != nil {
-			h.Stop()
-			return nil, fmt.Errorf("launch: wait control %s: %w", t.ControlAddr, err)
-		}
-	}
+	// 3. Readiness. NO probe on any path: the agent control listener is
+	// ONE-SHOT (a single Accept; the agent exits when that connection drops
+	// — the crash-recovery matrix depends on it), so a dial+close probe would
+	// consume the one accept and kill the agent's control before the
+	// controller's real dial. The caller dials with a bounded retry
+	// (dialControlRetry / dialDestControlRetry, 15s) which tolerates the
+	// agent's startup for local, SSH, and adopted daemons alike.
+	_ = ctx // WaitTimeout bounds the caller's retry dial, not this call.
 	return h, nil
-}
-
-// controlReachable reports whether the control address accepts a TCP
-// connection within timeout (a daemon is listening).
-func controlReachable(ctx context.Context, addr string, timeout time.Duration) bool {
-	d := net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// waitControl polls until the control address accepts a connection (the agent
-// binds its control listener shortly after it starts) or the deadline passes.
-func waitControl(ctx context.Context, addr string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	const backoff = 50 * time.Millisecond
-	var lastErr error
-	for {
-		d := net.Dialer{Timeout: 1 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %v (last: %v)", timeout, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-	}
 }
 
 // remoteStart launches the agent over SSH, detached (setsid+nohup) so it
@@ -243,9 +203,14 @@ func sshHostOnly(host string) string {
 
 // runSSH runs a non-interactive, key-based SSH command on t.SSHHost.
 func runSSH(ctx context.Context, t Target, remote string) error {
+	// StrictHostKeyChecking: use "no" (not "accept-new") for compatibility
+	// with the lab controller's OpenSSH 7.4 (CentOS 7), which predates
+	// accept-new (7.6+). Key-based auth + BatchMode=yes still prevents
+	// password/MITM-in-auth attacks. Production hardening: pre-populate
+	// known_hosts and switch to "yes" via a future config knob.
 	args := []string{
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "StrictHostKeyChecking=no",
 		"-o", "ConnectTimeout=10",
 		"-o", "NumberOfPasswordPrompts=0",
 	}

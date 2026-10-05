@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -158,33 +159,46 @@ func (s *SourceServer) serveControl(l net.Listener) {
 		if uerr := json.Unmarshal(line, &probe); uerr != nil {
 			continue
 		}
-		switch probe.Op {
-		case "stream":
-			var req StreamReq
-			if uerr := json.Unmarshal(line, &req); uerr != nil {
-				_ = SendLine(conn, StreamResp{Ok: false, Error: uerr.Error()})
-				continue
+		// A unit-level panic (e.g. a pg conn torn down mid-stream during a
+		// crash) reports THAT unit as failed instead of killing the agent:
+		// the run's resilience contract is per-unit, not per-process.
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					fmt.Fprintf(os.Stderr, "gpstream-source-agent: unit panic: %v\n", p)
+					_ = SendLine(conn, StreamResp{Ok: false, Error: fmt.Sprintf("unit panic: %v", p)})
+				}
+			}()
+			switch probe.Op {
+			case "stream":
+				var req StreamReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = SendLine(conn, StreamResp{Ok: false, Error: uerr.Error()})
+					return
+				}
+				_ = SendLine(conn, s.handleStream(req))
+			case "onsegment":
+				var req OnSegmentReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = SendLine(conn, OnSegmentResp{Ok: false, Error: uerr.Error()})
+					return
+				}
+				_ = SendLine(conn, s.handleOnSegment(req))
+			case "checksum":
+				var req ChecksumReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = SendLine(conn, ChecksumResp{Ok: false, Error: uerr.Error()})
+					return
+				}
+				_ = SendLine(conn, s.handleChecksum(req))
+			case "release":
+				_ = SendLine(conn, s.handleRelease())
+			default:
+				_ = SendLine(conn, StreamResp{Ok: false, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 			}
-			_ = SendLine(conn, s.handleStream(req))
-		case "onsegment":
-			var req OnSegmentReq
-			if uerr := json.Unmarshal(line, &req); uerr != nil {
-				_ = SendLine(conn, OnSegmentResp{Ok: false, Error: uerr.Error()})
-				continue
-			}
-			_ = SendLine(conn, s.handleOnSegment(req))
-		case "checksum":
-			var req ChecksumReq
-			if uerr := json.Unmarshal(line, &req); uerr != nil {
-				_ = SendLine(conn, ChecksumResp{Ok: false, Error: uerr.Error()})
-				continue
-			}
-			_ = SendLine(conn, s.handleChecksum(req))
-		case "release":
-			_ = SendLine(conn, s.handleRelease())
+		}()
+		if probe.Op == "release" {
 			return
-		default:
-			_ = SendLine(conn, StreamResp{Ok: false, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 		}
 	}
 }
@@ -410,6 +424,7 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 // handleRelease ends the run: commits the snapshot and signals stop.
 func (s *SourceServer) handleRelease() ReleaseResp {
 	ctx := context.Background()
+	s.healMu.Lock()
 	if s.snapTx && s.pinned != nil {
 		_, _ = s.pinned.Exec(ctx, "COMMIT")
 		s.snapTx = false
@@ -419,6 +434,7 @@ func (s *SourceServer) handleRelease() ReleaseResp {
 		s.pinRel = nil
 		s.pinned = nil
 	}
+	s.healMu.Unlock()
 	close(s.stop)
 	return ReleaseResp{Ok: true}
 }
@@ -427,13 +443,14 @@ func (s *SourceServer) handleRelease() ReleaseResp {
 // healSnapshot): probe the pinned conn; if the transaction is aborted, ROLLBACK
 // and begin a FRESH REPEATABLE READ on the same connection.
 func (s *SourceServer) heal(ctx context.Context) {
-	if !s.snapTx || s.pinned == nil {
-		return
-	}
+	// Every pinned-conn access (heal / Release / Close) is serialized on
+	// healMu: Close/Release may release the pinned conn concurrently with a
+	// failed unit's heal, and a released pgxpool.Conn nil-derefs in Conn()
+	// (observed as a live cross-VM crash).
 	s.healMu.Lock()
 	defer s.healMu.Unlock()
-	if !s.snapTx {
-		return
+	if !s.snapTx || s.pinned == nil {
+		return // already released (Close/Release won the race)
 	}
 	// Probe the pinned connection.
 	if _, err := s.pinned.Query(ctx, "SELECT 1"); err == nil {
@@ -446,6 +463,7 @@ func (s *SourceServer) heal(ctx context.Context) {
 
 // Close stops the source server (rolling back any open snapshot).
 func (s *SourceServer) Close() {
+	s.healMu.Lock()
 	if s.snapTx && s.pinned != nil {
 		_, _ = s.pinned.Exec(context.Background(), "ROLLBACK")
 		s.snapTx = false
@@ -455,6 +473,7 @@ func (s *SourceServer) Close() {
 		s.pinRel = nil
 		s.pinned = nil
 	}
+	s.healMu.Unlock()
 	select {
 	case <-s.stop:
 	default:
