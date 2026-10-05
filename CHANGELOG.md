@@ -31,8 +31,9 @@ On a mid-stream RST the receiver re-dials carrying its identity
 resume router on the destination maps the re-dial back to the correct pipe,
 so a torn connection resumes instead of failing the unit. `--frame-ack` is
 `on` by default and was confirmed throughput-neutral in a T7 soak A/B
-(28.09). The in-flight window is `--retransmit-buffer-max` (default 1 GiB per
-stream; lower it for short LAN hops).
+(28.09). The in-flight window is `--retransmit-buffer-max` (default
+**64 MiB** per stream, per `config.Validate`; raise it for long-haul WAN —
+50 Gbps x 100 ms RTT needs ~1 GiB).
 
 ### Fixed: agent reports a routable data address when the listener is a wildcard
 

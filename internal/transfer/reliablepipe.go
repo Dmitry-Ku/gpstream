@@ -112,11 +112,16 @@ type ReliablePipeConfig struct {
 // DefaultReliablePipeConfig is the R2-approved default set: --frame-ack on,
 // --ack-timeout 30s, --max-reconnects 20, --retransmit-buffer-max 1 GiB.
 //
+// NOTE: this is the internal fallback (unit tests, direct construction). The
+// CLI default is 64 MiB (config.Validate), and in production the controller
+// always passes its value to the agents / segreceivers via argv, so this
+// fallback is overridden on the production data path.
+//
 // The 1 GiB in-flight window is the §4.6 WAN-BDP figure (50 Gbps x 100 ms).
 // A T7 soak A/B (28.09, non-race) confirmed frame-ack is throughput-neutral
 // locally (42-43 MB/s for off, on+1G, and on+64M alike); the window is only
-// material on a high-BDP network, where 1 GiB is the right default. Lower it
-// with --retransmit-buffer-max if a smaller in-flight window is preferred.
+// material on a high-BDP network, where ~1 GiB is the right size — raise it
+// with --retransmit-buffer-max for long-haul WAN.
 func DefaultReliablePipeConfig() ReliablePipeConfig {
 	return ReliablePipeConfig{
 		AckTimeout:          30 * time.Second,
