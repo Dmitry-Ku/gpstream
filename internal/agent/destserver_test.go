@@ -103,6 +103,42 @@ func TestDestServerProtocol(t *testing.T) {
 	}
 }
 
+// TestDestServerWildcardDataAddr is the remote-launch (SSH) data-path bug:
+// the controller computes --data-listen 0.0.0.0:0 (it does not know the
+// agent host's IP), so the bound listener is [::]:port. DataAddr must report
+// a ROUTABLE address (the host's primary non-loopback IPv4), not the raw
+// wildcard bind — otherwise the source agent dials localhost and the data
+// connection is refused.
+func TestDestServerWildcardDataAddr(t *testing.T) {
+	srv, err := NewDestServer(DestServerOptions{
+		DataListen:    "0.0.0.0:0",
+		ControlListen: "127.0.0.1:0",
+		DestConn:      "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable",
+		AcceptTimeout: 2 * time.Second,
+		StreamTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewDestServer: %v", err)
+	}
+	defer srv.Close()
+
+	got := srv.DataAddr()
+	host, port, err := net.SplitHostPort(got)
+	if err != nil {
+		t.Fatalf("DataAddr %q not host:port: %v", got, err)
+	}
+	if host == "0.0.0.0" || host == "::" || host == "[::]" || host == "127.0.0.1" {
+		t.Fatalf("DataAddr = %q: wildcard/loopback host is not routable", got)
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.IsLoopback() || !ip.To4().IsGlobalUnicast() {
+		t.Fatalf("DataAddr host %q is not a global unicast IPv4", host)
+	}
+	// The port must be the real bound port (non-zero).
+	if port == "0" {
+		t.Fatalf("DataAddr port is 0: %q", got)
+	}
+}
+
 // TestDestServerBadKind reports the error as unit-done (a kind the server
 // accepts but cannot build a launch for).
 func TestDestServerBadKind(t *testing.T) {

@@ -176,9 +176,52 @@ func (s *DestServer) Hello() DestHello {
 	return DestHello{Op: "hello", Data: s.DataAddr(), Control: s.ControlAddr()}
 }
 
-// DataAddr / ControlAddr are the real bound listener addresses.
-func (s *DestServer) DataAddr() string    { return s.dataL.Addr().String() }
+// DataAddr / ControlAddr are the real bound listener addresses. DataAddr
+// reports a ROUTABLE address: when the data listener was bound on a wildcard
+// (0.0.0.0:0 / [::]:0 — the remote-launch auto mode, where the controller
+// does not know the agent host's IP), the host part is replaced with the
+// host's primary non-loopback IPv4, so the source agent / segreceivers can
+// dial it across the network (the raw [::]:port bind address is not
+// dialable from another host).
+func (s *DestServer) DataAddr() string {
+	raw := s.dataL.Addr().String()
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return raw
+	}
+	if host != "0.0.0.0" && host != "::" && host != "[::]" {
+		return raw
+	}
+	if ip, ierr := primaryIPv4(); ierr == nil {
+		return net.JoinHostPort(ip, port)
+	}
+	return raw
+}
 func (s *DestServer) ControlAddr() string { return s.ctrlL.Addr().String() }
+
+// primaryIPv4 returns the first non-loopback, global-unicast IPv4 address of
+// this host (the same heuristic config.ResolveSegListen uses for the
+// segreceivers' auto data address).
+func primaryIPv4() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+	var candidate string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || !ipn.IP.To4().IsGlobalUnicast() {
+			continue
+		}
+		if candidate == "" {
+			candidate = ipn.IP.String()
+		}
+	}
+	if candidate == "" {
+		return "", fmt.Errorf("no non-loopback IPv4 address found")
+	}
+	return candidate, nil
+}
 
 // Done is closed when the control loop exits (the controller disconnected,
 // the run was released, or the listeners failed).
