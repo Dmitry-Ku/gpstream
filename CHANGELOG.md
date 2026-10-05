@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed: `--copy-mode direct` (breaking)
+
+The `direct` (P5) copy-mode is removed from the user surface. Its per-segment
+write is subsumed by `on_segment`'s auto-selected per-table sub-paths
+(`direct_1to1` 1:1, `routed`, `merge`), so the capability is unchanged — only
+the redundant top-level mode is gone. `--copy-mode` now accepts exactly two
+values: `coordinator | on_segment`. `gpstream run --copy-mode direct` now
+fails at validation, and `config.Validate` rejects `CopyMode "direct"`
+(regression-tested). See the P5/P8-1 entries below for what the `direct`
+capability became.
+
+### Added: RST-resume (frame-ACK + RST-resume) on the production data paths
+
+The `ReliablePipe` transport (DESIGN §4.6 Tier-1: frame-level ACK + bounded
+retransmit window + RST-resume) is now wired into the **production** data
+paths, not just the test harness:
+- the coordinator two-agent path,
+- the `on_segment` merge path, and
+- the `on_segment` routed segment-to-segment path.
+
+On a mid-stream RST the receiver re-dials carrying its identity
+(`job_id` + `unit_id` + `content` + `last-acked Seq`); a multi-tenant
+resume router on the destination maps the re-dial back to the correct pipe,
+so a torn connection resumes instead of failing the unit. `--frame-ack` is
+`on` by default and was confirmed throughput-neutral in a T7 soak A/B
+(28.09). The in-flight window is `--retransmit-buffer-max` (default 1 GiB per
+stream; lower it for short LAN hops).
+
+### Fixed: agent reports a routable data address when the listener is a wildcard
+
+The remote-launch (SSH) path computes `--data-listen 0.0.0.0:0` (the
+controller does not know the agent host's IP), so the bound listener is
+`[::]:port` and the agent's hello reported `data=[::]:port`; the source agent
+then dialed the wildcard host as `localhost` and the data connection was
+refused (cross-VM SSH-launch A/B: `dial [::]:34595: connection refused`). The
+agent now reports its routable primary non-loopback IP in the hello.
+
+### Docs: CLI contract, man page, and `--help` reconciled with the code
+
+Full cross-surface audit (man for all four binaries, `--help` for all four,
+README/CLI_REFERENCE/docs vs `cmd/gpstream` + `internal/config`): added the
+missing `--control-tls-cert/key/ca` and `--data-port-range` to `gpstream
+--help` and the man page; removed a duplicate `--operation-id` definition;
+corrected a stale "no `--data-port-range` flag" claim; the `Commands` table
+now lists exactly the 10 dispatch subcommands (`bench` added, `man` — the OS
+man page, not a dispatch entry — removed). Every flag parsed by the code is
+now documented in every surface; no dead or duplicated flags remain.
+
 ### Removed: the `gpstream.service` systemd unit
 
 The packaged unit (`/usr/lib/systemd/system/gpstream.service`) is removed: it
@@ -35,6 +83,11 @@ always correct, only the speed changes. Measured on GP6 (4 segments,
 so end-to-end ≈ 1.5–1.8× at 4 segments and higher at larger segment counts.
 
 ### Added: `direct_1to1` read fast-path in the `direct` branch (P8-1)
+
+> **Superseded (v0.2.0):** the `direct` copy-mode and this read fast-path were
+> removed — `direct_1to1` reads now run through the `on_segment` ON SEGMENT
+> dispatch (see "Removed: `--copy-mode direct`"). This entry is kept as the
+> historical record of how the read fast-path was first built and validated.
 
 The `--copy-mode direct` branch reads `direct_1to1` tables through the
 coordinator (`COPY TO STDOUT`) and re-hashes every row with the RowRouter
@@ -176,6 +229,11 @@ the two-agent design "planned".
   is already in place.
 
 ### Added: direct data path through the agents (P5)
+
+> **Superseded (v0.2.0):** the `direct` copy-mode was removed (see "Removed:
+> `--copy-mode direct`"). The per-segment write capability lives on as the
+> `direct_1to1` fast-path sub-path of `on_segment`. Kept as the historical
+> record of the first fully segment-direct data path.
 
 The ADR-002 remediation reaches the fully segment-direct (`--copy-mode
 direct`, R5 endgame) path. In two-agent topology the controller no longer
