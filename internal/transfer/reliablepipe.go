@@ -63,6 +63,11 @@ const helloVer = 2
 // magics (GPST v1/v2).
 const magicCtrl uint32 = 0x4750_5341
 
+// CtrlMagic exposes the control-frame magic so a peer can tell a resume
+// connection (first frame = a ctrl HELLO) from a fresh one (first bytes = a
+// pre-stream header such as the UnitSpec) on a shared listener.
+func CtrlMagic() uint32 { return magicCtrl }
+
 // Control-frame kinds.
 const (
 	ctrlHello byte = 1 // body: version(4) | seq(8)
@@ -616,8 +621,10 @@ func (rp *ReliablePipe) receiveLoop() {
 				return
 			}
 			if rp.role == rpSender {
-				// The transport broke; reconnect (serialized, stale-gen
-				// guarded so a stale error is a no-op).
+				// The transport broke (a real break is an error; a clean EOF is
+				// the peer closing, which is also a break to resume from — the
+				// re-dial + rejection fast-death bound a dead/done peer).
+				// Serialized, stale-gen guarded so a stale error is a no-op.
 				if rp.connGeneration() == gen {
 					if rerr := rp.reconnect(gen); rerr != nil {
 						return
@@ -625,6 +632,12 @@ func (rp *ReliablePipe) receiveLoop() {
 				}
 				continue
 			}
+			// The receiver is the reconnect passive side. A clean EOF is NOT
+			// "the stream ended": a FIN (from a transport break) is
+			// indistinguishable from a clean close, and a resuming sender WILL
+			// re-dial. The re-accept below handles both: a finished/gone sender
+			// never re-dials (the bounded wait times out -> stream ends), a
+			// resuming one does (the wait swaps it in).
 			// The receiver is the reconnect passive side. Two modes:
 			//  - network (resumer set): accept ONE fresh connection on the
 			//    listener (bounded by ResumeTimeout) — the sender's re-dial.
