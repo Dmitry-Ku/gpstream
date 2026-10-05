@@ -59,3 +59,6 @@ r5probe2
 /env.sh
 /docs/TESTBED-PROVISION-RUNBOOK.md
 
+
+# stray TLS fixtures (tests must use t.TempDir())
+internal/agent/ca.pem

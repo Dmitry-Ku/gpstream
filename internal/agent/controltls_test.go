@@ -19,6 +19,16 @@ import (
 // genCA / genServerCert generate a self-signed CA and a server certificate
 // for 127.0.0.1 (the control-channel TLS test): the controller verifies the
 // agent's certificate against the CA (ServerName = the dial host).
+var caDir = func() string {
+	// Shared scratch dir for generated CA certs (kept OUT of the package
+	// dir so the test never drops stray PEM files into the repo).
+	d, err := os.MkdirTemp("", "gpstream-ca")
+	if err != nil {
+		panic(err)
+	}
+	return d
+}()
+
 func genCA(t *testing.T) (certPEM string, caDER []byte, key *ecdsa.PrivateKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -39,7 +49,7 @@ func genCA(t *testing.T) (certPEM string, caDER []byte, key *ecdsa.PrivateKey) {
 		t.Fatal(err)
 	}
 	caDER = der
-	certPEM = writeCertPEM(t, "ca.pem", der)
+	certPEM = writeCertPEM(t, filepath.Join(caDir, "ca.pem"), der)
 	return
 }
 
