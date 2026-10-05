@@ -1,6 +1,4 @@
 #!/bin/sh
-# gpstream preremove: stop the service if running (do not remove the unit yet).
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl stop gpstream.service >/dev/null 2>&1 || true
-fi
+# gpstream preremove: nothing to stop (gpstream is a foreground CLI, not a
+# service). Kept as a no-op for package-script symmetry.
 exit 0

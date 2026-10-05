@@ -146,8 +146,6 @@ nfpms:
     # nfpms does not auto-add libc6.
     dependencies: []
     contents:
-      - src: packaging/systemd/gpstream.service
-        dst: /usr/lib/systemd/system/gpstream.service
       - src: packaging/examples/gpstream.toml
         dst: /etc/gpstream/gpstream.toml
         type: config

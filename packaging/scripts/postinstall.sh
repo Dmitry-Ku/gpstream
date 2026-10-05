@@ -1,7 +1,5 @@
 #!/bin/sh
-# gpstream postinstall: enable (do not start) the service so the unit is
-# available; the operator starts it after configuring /etc/gpstream/gpstream.toml.
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload >/dev/null 2>&1 || true
-fi
+# gpstream postinstall: nothing to wire (no service unit; the CLI is a
+# foreground tool the operator runs per job). Kept as a no-op for
+# package-script symmetry.
 exit 0

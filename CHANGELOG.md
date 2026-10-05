@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Removed: the `gpstream.service` systemd unit
+
+The packaged unit (`/usr/lib/systemd/system/gpstream.service`) is removed: it
+wrapped a one-shot `gpstream run --config /etc/gpstream/gpstream.toml` and was
+not enabled anywhere (it is superseded by the controller + long-lived agent
+architecture, where runs are supervised externally). The package no longer
+ships the unit; the lifecycle scripts are no-ops. Unattended / periodic runs
+are scheduled by the operator's own cron / process manager.
+
 ### Added: `direct_1to1` fast-path write (P8)
 
 When the planner proves a table's route is `direct_1to1` (source and

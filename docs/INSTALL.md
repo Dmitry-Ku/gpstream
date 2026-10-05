@@ -6,7 +6,7 @@ copy between two Greenplum 6 clusters** over a direct high-speed network, with
 insensitive to OS / kernel / glibc differences between the two clusters.
 
 This guide covers prerequisites, building from source, cross-compilation,
-packaging for Linux, the systemd service, log rotation, and how to verify a
+packaging for Linux, log rotation, and how to verify a
 build.
 
 ---
@@ -112,7 +112,7 @@ make cross     # alias for amd64
 ```
 
 The resulting binary runs on any host with a Linux 6.1+ kernel; it is insensitive
-to the host's glibc / kernel version (see §8).
+to the host's glibc / kernel version (see §7).
 
 ---
 
@@ -122,7 +122,6 @@ The `packaging/` tree holds the distribution artifacts:
 
 | Path | Contents |
 | --- | --- |
-| `packaging/systemd/` | systemd unit file `gpstream.service`. |
 | `packaging/logrotate.conf` | logrotate configuration for gpstream logs. |
 | `packaging/examples/` | Example configuration `gpstream.toml`. |
 | `packaging/scripts/` | Package lifecycle scripts (post-install/pre-upgrade/post-remove). |
@@ -132,13 +131,10 @@ The `packaging/` tree holds the distribution artifacts:
 The RPM is built by `scripts/package.sh` (goreleaser v1.24 + nfpms, driven by
 `.goreleaser.yaml`), not by a checked-in spec. It installs all four binaries
 (`gpstream`, `gpstream-source-agent`, `gpstream-dest-agent`,
-`gpstream-segreceiver`) to `/usr/bin`, the systemd unit to
-`/usr/lib/systemd/system`, the example config to `/etc/gpstream/gpstream.toml`
-(a `%config(noreplace)` file — upgrades keep operator edits), the logrotate
-rule to `/etc/logrotate.d/gpstream`, and the man pages to
-`/usr/share/man/man8`. Post-install/upgrade scripts (`packaging/scripts/`)
-reload the systemd unit; the unit is enabled but not started, so the operator
-starts it after configuring the TOML.
+`gpstream-segreceiver`) to `/usr/bin`, the example config to
+`/etc/gpstream/gpstream.toml` (a `%config(noreplace)` file — upgrades keep
+operator edits), the logrotate rule to `/etc/logrotate.d/gpstream`, and the
+man pages to `/usr/share/man/man8`.
 
 ### 6.2 Install the Debian package
 
@@ -204,36 +200,7 @@ the hosts where it is missing.
 
 ---
 
-## 7. systemd service
-
-The service unit lives at `packaging/systemd/gpstream.service`. It runs a
-continuous copy from a configuration file:
-
-```ini
-[Service]
-Type=simple
-# Worker processes are children; a worker death does not kill the job (FR-06).
-ExecStart=/usr/local/bin/gpstream run --config /etc/gpstream/gpstream.toml
-Restart=on-failure
-RestartSec=3
-# Internal watchdog + systemd restart together provide resilience (FR-06).
-TimeoutStopSec=60
-```
-
-The unit is `WantedBy=multi-user.target` and `After=network-online.target`
-(network-aware). To enable and start it after install:
-
-```bash
-systemctl enable --now gpstream.service
-systemctl status gpstream.service
-```
-
-The RPM / deb packages install the unit and register it via the systemd
-`%post` scripts, so a package install wires the service automatically.
-
----
-
-## 8. logrotate
+## 7. logrotate
 
 The logrotate configuration is at `packaging/logrotate.conf`:
 
@@ -251,11 +218,11 @@ The logrotate configuration is at `packaging/logrotate.conf`:
 
 Install it (e.g. copy to `/etc/logrotate.d/gpstream`) and it will rotate
 gpstream logs under `/var/log/gpstream/` daily, keeping 14 rotations.
-`copytruncate` is used because the running service keeps the file open.
+`copytruncate` is used because the running gpstream process keeps the file open.
 
 ---
 
-## 9. Verify the install
+## 8. Verify the install
 
 Two built-in commands confirm a working build:
 
@@ -307,7 +274,7 @@ make doctor     # build, then gpstream doctor
 
 ---
 
-## 10. Configuration precedence
+## 9. Configuration precedence
 
 Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 (`--config`) > defaults**. A few defaults (from `internal/config`):
@@ -331,7 +298,7 @@ are shown commented with mode `0600` for the key file.
 
 ---
 
-## 11. Quick checklist
+## 10. Quick checklist
 
 - [ ] Go 1.27 toolchain present.
 - [ ] `export GOPROXY=https://proxy.golang.org,direct` set (proxy 403 fallback).

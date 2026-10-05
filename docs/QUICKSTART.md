@@ -306,7 +306,7 @@ Precedence: **CLI > env (`GPSTREAM_*`) > file > defaults**.
 - **`ADMIN_GUIDE`** — cluster-level setup, security/TLS, and administration.
 - **`CLI_REFERENCE`** — the full flag surface for every subcommand.
 - **`CONFIGURATION`** — the `gpstream.toml` config file, env variables, and precedence.
-- **`docs/INSTALL.md`** — building, cross-compiling, packaging, systemd, and logrotate.
+- **`docs/INSTALL.md`** — building, cross-compiling, packaging, and logrotate.
 - **`docs/METRICS.md`** — the Prometheus metric names and semantics.
 - **`man gpstream`** — the man page (installed to /usr/share/man/man8 by the package).
 - **`gpstream --help`** — commands and flags.

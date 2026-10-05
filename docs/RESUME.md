@@ -104,6 +104,15 @@ So the operator-visible guarantee is:
 kill, resume re-queued exactly 1 unit, re-run exit 0, final counts exact
 t1=100000 / t2=10000 / t3=1000, no leftover staging.)
 
+A crashed or supervised (e.g. cron / process-manager) job must keep its
+`--operation-id` **stable across restarts**: without an explicit id, `run`
+generates a timestamp id, so a restart starts a *new* operation instead of
+resuming the old one. If the source has changed since the crash (table
+created/dropped, grown, relayout), the plan hash differs and the old journal
+is not found — the restart is a fresh job, and tables already swapped on the
+destination surface as conflicts (default action = stop; `DELETE` + `VACUUM`
+does not restore the hash — only `VACUUM FULL` / `CLUSTER` does).
+
 ## 4. Operator procedure
 
 ### Resume a crashed job

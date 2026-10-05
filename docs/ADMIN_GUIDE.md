@@ -2,7 +2,7 @@
 
 This guide is for the person who deploys, configures, and maintains `gpstream`
 on the boxes that run the copy. It covers deployment, Linux 6.1+ compatibility,
-the systemd service, log rotation, the security model, and the upgrade path.
+log rotation, the security model, and the upgrade path.
 
 > Scope: administration and deployment. For the day-to-day operator, see
 > `OPERATOR_GUIDE.md`. For every flag, see `CLI_REFERENCE.md`. For the config
@@ -15,7 +15,6 @@ the systemd service, log rotation, the security model, and the upgrade path.
 | Concern | Owner |
 |---------|-------|
 | Install / package / upgrade | Admin (this guide) |
-| systemd unit, logrotate, restart policy | Admin |
 | Credentials, TLS material, connection strings | Admin |
 | Resource layout (ports, workers, rate-limit) | Admin |
 | Running a copy, watching progress | Operator (`OPERATOR_GUIDE.md`) |
@@ -23,15 +22,15 @@ the systemd service, log rotation, the security model, and the upgrade path.
 
 `gpstream` is a single Go binary plus a small set of config/env inputs. It has
 **no daemon of its own** — a copy runs as a foreground process and exits when
-the job finishes. The systemd unit is an optional *invocation* wrapper, not a
-service that lives forever.
+the job finishes. Unattended or periodic runs are supervised externally (your
+cron / scheduler / process manager of choice).
 
 ---
 
 ## 2. Prerequisites
 
 - **Go 1.27** to build from source.
-- **Linux 6.1+ kernel** (the v2 target; glibc-aware). See §4 for the
+- **Linux 6.1+ kernel** (the v2 target; glibc-aware). See §3 for the
   compatibility matrix.
 - Module proxy note: `proxy.golang.org` intermittently 403s on
   `github.com/klauspost/compress`, so the build environment sets
@@ -61,8 +60,8 @@ The Makefile targets: `all build cross amd64 test cover vet fmt
 doctor selftest clean`.
 
 ### 3.3 Linux package
-`packaging/` ships `deb/`, `rpm/`, `systemd/`, and `logrotate.conf`. Install
-the deb/rpm, then enable the systemd unit (optional; see §5).
+`packaging/` ships `deb/`, `rpm/`, and `logrotate.conf`. Install the deb/rpm
+and run the CLI (or schedule it with your own cron / process manager).
 
 Verify after install:
 ```
@@ -99,35 +98,14 @@ distinguishable from one that does not.
 
 ---
 
-## 5. systemd service
-
-Reference unit: `packaging/systemd/gpstream.service`. It is an
-**oneshot-style** invocation (a copy is a bounded job), not a long-lived
-daemon. Typical layout:
-
-- `ExecStart=/usr/bin/gpstream run --source ... --dest ...`
-- Restart policy is usually **no** (or `on-failure` with an attempt cap),
-  because the correct recovery mechanism is `resume`, not a silent restart
-  (see `FAILOVER.md`).
-- Pass secrets via the environment file / EnvironmentFile, **never** in
-  `ExecStart` (see §7).
-
-Enable:
-```
-systemctl enable --now gpstream
-systemctl status gpstream
-```
-
----
-
-## 6. Log rotation
+## 5. Log rotation
 
 Reference: `packaging/logrotate.conf`. Rotate the job log / mirror journal
 to keep them bounded on long-running copies.
 
 ---
 
-## 7. Security model (admin)
+## 6. Security model (admin)
 
 The administrator's job is to keep **secrets out of argv and out of logs**.
 
@@ -148,7 +126,7 @@ defaults**.
 
 ---
 
-## 8. Resource layout
+## 7. Resource layout
 
 | Knob | Flag / env | Default | Notes |
 |------|-----------|---------|-------|
@@ -160,7 +138,7 @@ defaults**.
 
 ---
 
-## 9. Upgrade path
+## 8. Upgrade path
 
 There is **no `upgrade-check` or `package-info` subcommand**. Check the
 installed version with `gpstream version`, and upgrade the RPM/deb package
@@ -181,7 +159,7 @@ Before upgrading a running deployment:
 
 ---
 
-## 10. Admin checklist
+## 9. Admin checklist
 
 - [ ] Built or packaged for the target arch (linux/amd64).
 - [ ] `gpstream doctor` returns **PASS** against the real clusters.
@@ -195,7 +173,7 @@ Before upgrading a running deployment:
 
 ---
 
-## 11. Read more
+## 10. Read more
 
 - `OPERATOR_GUIDE.md` — running a copy day-to-day.
 - `SECURITY.md` — the security model in depth.

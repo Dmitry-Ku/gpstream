@@ -340,65 +340,7 @@ re-copied — `status` counts all three as terminal.
 
 ---
 
-## 11. When to use the gpstream service
-
-The `gpstream.service` unit is **not a daemon**. Its `ExecStart` is a single
-`gpstream run --config /etc/gpstream/gpstream.toml` invocation supervised by
-systemd: when the copy finishes, the process exits and the service stops.
-`Restart=on-failure` restarts it only on a non-zero exit — it does not keep
-the process alive.
-
-The operation id is what makes a crash recoverable, so it must be **stable
-across restarts** — pass an explicit `--operation-id`. Without one, `run`
-generates a **timestamp** id (UTC, `YYYYMMDDTHHMMSSZ`, collision-suffixed), so
-a restarted run under `Restart=on-failure` would start a *new* operation
-instead of resuming. For a supervised (systemd) migration pin the id in the
-unit's `ExecStart` / config file; a restarted run then finds the existing
-journal at `<state-dir>/<id>/`, skips terminal units (checksum-verified), and
-re-copies only the non-terminal ones under a fresh snapshot epoch.
-`gpstream resume --operation-id <id>` (or `latest`) does the same on demand.
-
-If the source has **changed** since the crash — a table created/dropped, a
-table grown, a layout change — the hash differs, a new operation-id and a
-fresh state dir are produced, and the old journal is **not** found. The
-restart is then a *fresh* job, and tables already swapped on the destination
-surface as conflicts (default action = stop). Note that `DELETE` + `VACUUM`
-does not restore the hash: `pg_total_relation_size` tracks the physical file,
-which only `VACUUM FULL`/`CLUSTER` shrinks.
-
-**For the service, pin an explicit `--operation-id` in `ExecStart`** (it is a
-CLI flag only — not a config-file key or env var). That makes the id, and
-therefore the journal, stable across restarts regardless of source changes.
-The plan-hash id is a convenience for a one-shot copy of a static source.
-
-**Use the service when:**
-
-- the copy is **long and unattended** (hours to days) — logs in the journal,
-  automatic restart on crash, logrotate, monitoring via `status` / Prometheus;
-- the copy is **periodic** (a DW replica refresh, a catch-up after the initial
-  load) — the service plus a `systemd-timer` on a schedule;
-- the copy must **survive a crash or a controller reboot** without operator
-  action — `Restart=on-failure` plus the journal self-resume described above.
-
-**Do not use it when:**
-
-- the copy is short and interactive (seconds to minutes) — a plain
-  `gpstream run --config ...` in a terminal;
-- each run needs **different parameters** — the service is pinned to
-  `/etc/gpstream/gpstream.toml`; per-run flags (`--operation-id`,
-  `--resolve-conflicts`, a different scope) are only available from a manual
-  run;
-- the operator is present for a one-off migration — terminal + `status` +
-  Prometheus is enough.
-
-**Recommended pattern:** initial load with a manual `run` (or the service if
-it is long), check `status`, then `systemctl disable gpstream`. For periodic
-refresh, `systemctl enable gpstream` plus a timer. Per-operation flags are
-never done through the service.
-
----
-
-## 12. Indexes
+## 11. Indexes
 
 Indexes are handled separately from the data copy:
 
@@ -430,7 +372,7 @@ On a rename the PK constraint keeps the destination table's naming, too
 
 ---
 
-## 13. Honest caveats (live stand)
+## 12. Honest caveats (live stand)
 
 gpstream's unit tests exercise the **fake** SQL/data path. Criteria that need a
 **real** Greenplum cluster are **not verified without a live stand**:

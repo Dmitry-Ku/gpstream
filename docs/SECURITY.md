@@ -42,9 +42,9 @@ captured log line.
 | TLS CA | `--ssl-ca <file>` / `GPSTREAM_SSL_CA` | argv |
 | Min TLS | `--ssl-min-tls <v>` / `GPSTREAM_SSL_MIN_TLS` | — |
 
-In practice, put these in an `EnvironmentFile` for the systemd unit or in a
-restricted-env wrapper, and keep the connection strings out of any committed
-file or shell rc.
+In practice, put these in a restricted-env wrapper (your cron / process
+manager / init unit of choice) and keep the connection strings out of any
+committed file or shell rc.
 
 Config precedence is **CLI > env (GPSTREAM_*) > YAML (--config) > defaults**.
 Because the CLI layer wins, a secret is *only* a risk when it appears on the
@@ -221,6 +221,6 @@ never fails the action.
 ## 11. Read more
 
 - `CONFIGURATION.md` — config fields, defaults, precedence, validation.
-- `ADMIN_GUIDE.md` — deployment, systemd, logrotate, upgrade.
+- `ADMIN_GUIDE.md` — deployment, logrotate, upgrade.
 - `METRICS.md` — the counters (including `Errors`/`FrameErrors`).
 - `TROUBLESHOOTING.md` — diagnosing a failed `doctor` run.
