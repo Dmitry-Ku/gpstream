@@ -253,6 +253,16 @@ primary non-loopback IP plus a free port. Each unit binds
 the source segment hosts dial that address, so the host must be routable from
 them — on a multi-homed controller set it explicitly.
 .TP
+.B --data-port-range
+LO-HI|LO
+Restrict the automatic data/control port allocation to a fixed range for
+strict firewalls (the operator opens exactly that range). Default: fully
+automatic — every long-lived agent binds
+.BR :0
+and reports its real address in the control handshake.
+.B --dry-run
+verifies the range is large enough for the chosen mode.
+.TP
 .B --seg-tls-cert
 F
 Controller serving certificate for the segment-direct hop. Deliberately separate from
@@ -355,6 +365,18 @@ Config file (TOML or YAML).
 mTLS client cert/key, CA bundle, minimum TLS version (default 1.2).
 The pg data plane is encrypted by default (sslmode=verify-full is enforced
 unless the connstring sets an explicit sslmode).
+.TP
+.BR --control-tls-cert | --control-tls-key | --control-tls-ca
+TLS for the control channel (the controller's dials to the agents' control
+sockets). The agents serve with their own
+.B --control-tls-cert / --control-tls-key ;
+the controller verifies each agent's control-socket certificate against
+.B --control-tls-ca .
+When an agent's
+.B --control-tls-ca
+enables mTLS, the controller presents
+.B --control-tls-cert / --control-tls-key
+to that agent.
 .SH ENVIRONMENT
 Configuration precedence: CLI > environment > config file > defaults.
 Secrets are taken
