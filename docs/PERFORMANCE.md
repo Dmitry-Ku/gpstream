@@ -142,8 +142,10 @@ ports per **host-pair** connection (source-host → destination-host)
 internally, bounded by the worker pool (`--workers`).
 
 **Status:** the two-agent data path (source agent + destination agent, the
-controller holds no data connection) is the only data path. Three copy modes
-are **implemented and live-verified** on the lab:
+controller holds no data connection) is the only data path. Two copy modes
+are **implemented and live-verified** on the lab (`coordinator` and
+`on_segment`; the former `direct` mode was removed — its per-segment write
+lives on as the per-table auto sub-paths of `on_segment`):
 
 - **`--copy-mode coordinator` (default)** — the source agent reads the table
   with one `COPY ... TO STDOUT` on the source coordinator; the destination
