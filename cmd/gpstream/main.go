@@ -1690,6 +1690,14 @@ TLS:
   --ssl-cert, --ssl-key            mTLS client cert/key
   --ssl-ca F                       TLS CA bundle
   --ssl-min-tls V                  minimum TLS version (default 1.2)
+  --control-tls-cert F             control-channel TLS (agent control
+                                   sockets; separate from --ssl-*): the agents serve with
+                                   --control-tls-cert/key; the controller verifies against
+                                   --control-tls-ca
+  --control-tls-key F                control-channel serving key
+  --control-tls-ca F                 trusted CA; an agent --control-tls-ca
+                                   enables mTLS (the controller then presents its
+                                   --control-tls-cert/key)
 
 Config file: /etc/gpstream/gpstream.toml; state: /var/lib/gpstream/<operation-id>/.
 See docs/ for the full guide.`)

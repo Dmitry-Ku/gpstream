@@ -311,12 +311,11 @@ operator reads the number and decides. The `--locale-check` flag was removed
 |------|--------------|---------|
 | `--dry-run` | `DryRun` | `false` (plan only, do not execute) |
 | `--timeout <S>` | `Timeout` | `120s` (bounds the plan-formation phase; F-10 §6) |
-| `--operation-id <id\|latest>` | `OperationID` | `""` (operation identity. `run`: a name, or omitted = a generated timestamp id `YYYYMMDDTHHMMSSZ` UTC, collision-suffixed `-2`…; the state dir is then a chronological history. `status`/`resume`/`cleanup`: a name or `latest` = the newest operation. The plan JSON is always persisted to `<state-dir>/<operation-id>/plan.json`) |
 
 ### Operation identity / state (v4 §8 "State")
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--operation-id <id\|latest>` | `OperationID` | `""` (see the planning table above: timestamp default on `run`, `latest` on the read-side commands) |
+| `--operation-id <id\|latest>` | `OperationID` | `""` (operation identity. `run`: a name, or omitted = a generated timestamp id `YYYYMMDDTHHMMSSZ` UTC, collision-suffixed `-2`…; the state dir is then a chronological history. `status`/`resume`/`cleanup`: a name or `latest` = the newest operation. The plan JSON is always persisted to `<state-dir>/<operation-id>/plan.json`) |
 | `--state-dir <dir>` | `StateDir` | `/var/lib/gpstream` (operation state lives at `<state-dir>/<operation-id>/`, the plan JSON at `<state-dir>/<operation-id>/plan.json`) |
 
 ### Observability (F-04)
