@@ -93,6 +93,15 @@ type ReliablePipeConfig struct {
 	// AckByteInterval / AckTimeInterval throttle cumulative ACKs.
 	AckByteInterval int
 	AckTimeInterval time.Duration
+	// ResumeTimeout bounds the receiver's wait for the sender's RST-resume
+	// re-dial after a transport break: if no fresh connection arrives within
+	// this window the sender is declared gone (the stream ends, the unit
+	// fails and the controller resumes). It must comfortably exceed the
+	// sender's re-dial latency (the sender reconnects immediately, no
+	// backoff); 30s is very generous. It is the receiver-side twin of the
+	// sender's MaxReconnects budget (RESILIENCE: budget exhausted -> unit
+	// failed -> resume).
+	ResumeTimeout time.Duration
 }
 
 // DefaultReliablePipeConfig is the R2-approved default set: --frame-ack on,
@@ -110,6 +119,7 @@ func DefaultReliablePipeConfig() ReliablePipeConfig {
 		RetransmitBufferMax: 1 << 30,
 		AckByteInterval:     1 << 20,
 		AckTimeInterval:     100 * time.Millisecond,
+		ResumeTimeout:       30 * time.Second,
 	}
 }
 
@@ -163,6 +173,12 @@ type ReliablePipe struct {
 	lastAck   uint64
 	lastAckAt time.Time
 	spaceCv   *sync.Cond // ring space available
+
+	// Receiver (network mode): resumer performs one bounded re-accept of a
+	// fresh connection after a transport break (the sender's RST-resume
+	// re-dial). It is nil in in-memory mode, where the shared link's dialer
+	// creates the fresh pair and the receiver simply waits for the swap.
+	resumer func() dupConn
 
 	// Receiver: in-order output buffer.
 	outMu    sync.Mutex
@@ -592,22 +608,46 @@ func (rp *ReliablePipe) receiveLoop() {
 				}
 				continue
 			}
-			// The receiver is the reconnect passive side: wait for the sender's
-			// dial to swap in a fresh transport (the replay lands there), or for
-			// the sender to be gone (the stream is over).
-			l := rp.link
-			l.mu.Lock()
-			for l.swapGen == gen && !l.gone {
-				l.swapCv.Wait()
-			}
-			swapped := l.swapGen != gen
-			l.mu.Unlock()
-			if !swapped {
-				// The sender is gone: no more frames can arrive. End the receiver
-				// so Read terminates once the buffer drains; the destination's
-				// row-count verification catches any shortfall.
-				rp.markDead()
-				return
+			// The receiver is the reconnect passive side. Two modes:
+			//  - network (resumer set): accept ONE fresh connection on the
+			//    listener (bounded by ResumeTimeout) — the sender's re-dial.
+			//    Accepting on break (not continuously) keeps a shared listener
+			//    free for the next unit between breaks.
+			//  - in-memory: wait for the sender's dialer to swap a fresh pair
+			//    in through the shared link.
+			if rp.resumer != nil {
+				nc := rp.resumer()
+				if nc == nil {
+					// ResumeTimeout elapsed: the sender is gone. End the
+					// receiver so Read terminates once the buffer drains; the
+					// destination's row-count verification catches any
+					// shortfall (unit failed -> resume).
+					rp.linkGone()
+					rp.markDead()
+					return
+				}
+				rp.swapConn(nc)
+				l := rp.link
+				l.mu.Lock()
+				l.swapGen++
+				l.swapCv.Broadcast()
+				l.mu.Unlock()
+			} else {
+				l := rp.link
+				l.mu.Lock()
+				for l.swapGen == gen && !l.gone {
+					l.swapCv.Wait()
+				}
+				swapped := l.swapGen != gen
+				l.mu.Unlock()
+				if !swapped {
+					// The sender is gone: no more frames can arrive. End the
+					// receiver so Read terminates once the buffer drains; the
+					// destination's row-count verification catches any
+					// shortfall.
+					rp.markDead()
+					return
+				}
 			}
 			_ = rp.sendHello(atomic.LoadUint64(&rp.lastCons))
 			continue
