@@ -1356,6 +1356,21 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 	})
 }
 
+// wantsRoutedWrite reports whether a router_full table should take the P9
+// routed segment-to-segment data path (S≠D, or S==D with unequal keys): the
+// plan proved the route is router_full, the table is not a partition parent,
+// the ON SEGMENT dispatch is deployed (--seg-binary + --seg-listen), and the
+// operator has not disabled the routed write (--no-routed-write). Anything
+// else degrades to the merge path (SliceMux through the destination
+// coordinator — correct, just not segment-to-segment).
+func (m *Manager) wantsRoutedWrite(u *Unit, part pg.PartitionSpec) bool {
+	return u.RouteMode == route.RouterFull &&
+		part.Spec == "" &&
+		m.cfg.SegBinary != "" &&
+		m.cfg.SegListen != "" &&
+		!m.cfg.NoRoutedWrite
+}
+
 // streamTwoAgentSegment runs the P4 on_segment data path through the agents:
 // the controller (control plane only) reads the source's primary-segment count
 // and the table shape (columns / distribution / partition) on its source pool,
@@ -1485,8 +1500,7 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 	// staging DDL / swaps it). A table that cannot be routed degrades to the
 	// merge path (SliceMux through the destination coordinator — correct,
 	// just not segment-to-segment).
-	if u.RouteMode == route.RouterFull && part.Spec == "" &&
-		m.cfg.SegBinary != "" && m.cfg.SegListen != "" && !m.cfg.NoRoutedWrite {
+	if m.wantsRoutedWrite(u, part) {
 		rr, rwire, rlogical, rerr := m.streamTwoAgentRouted(ctx, t, u, target, ds, dn, cols, dist, part,
 			compStr, jobID, overwrite, n)
 		if isDirectDegraded(rerr) {
