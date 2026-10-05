@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
+	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 )
 
@@ -89,6 +90,7 @@ func main() {
 	serve := flag.Bool("serve", false, "long-lived mode: serve units over the control protocol (one data + one control listener for the run)")
 	dataListen := flag.String("data-listen", "0.0.0.0:0", "long-lived mode: data listener address host:port (0 = pick a free port; the real address is reported in the hello)")
 	ctrlListen := flag.String("control-listen", "0.0.0.0:0", "long-lived mode: control listener address host:port (0 = pick a free port)")
+	portRange := flag.String("port-range", "", "restrict auto-picked (port 0) listener ports to LO-HI (strict firewall); empty = no range (kernel picks)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -110,9 +112,14 @@ func main() {
 		if *dest == "" {
 			fail("--dest is required")
 		}
+		portAlloc, perr := portalloc.ParseRange(*portRange)
+		if perr != nil {
+			fail("invalid --port-range %q: %v", *portRange, perr)
+		}
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
 			DataListen:     *dataListen,
 			ControlListen:  *ctrlListen,
+			PortAlloc:      portAlloc,
 			DestConn:       *dest,
 			SSLCert:        *sslCert,
 			SSLKey:         *sslKey,

@@ -194,10 +194,11 @@ type Config struct {
 	// allowed range "LO-HI" (or a single "LO" base) for environments with a
 	// strict firewall (the operator opens exactly that range). Empty = fully
 	// automatic: every long-lived agent binds :0 and reports its real address
-	// in the control handshake. When set, the controller assigns ports
-	// deterministically inside the range BEFORE the agents start and the
-	// range size is checked against the mode's requirement (coordinator: 3,
-	// on_segment: 2D+1, D = destination segment count) at run/dry-run time.
+	// in the control handshake. When set, the auto-picked (":0") listener ports
+	// are restricted to the range (the controller pre-binds inside the range for
+	// same-host agents and passes --port-range to remote agents) and the range
+	// size is checked against the run's requirement (3 ports: source control +
+	// dest data + dest control, both modes) at run/dry-run time.
 	DataPortRange string // "LO-HI" or "LO" (base); empty = auto :0 + handshake
 	DataPortLo    int    // parsed low end of DataPortRange (0 = automatic)
 	DataPortHi    int    // parsed high end of DataPortRange (0 = automatic)
@@ -440,17 +441,14 @@ func (c *Config) DataPortRangeSize() int {
 	return c.DataPortHi - c.DataPortLo + 1
 }
 
-// RequiredDataPorts returns how many data/control ports the copy mode needs
-// for D destination segments: coordinator = 3 (source control + dest data +
-// dest control); on_segment = 2D+1 (source control + D dest agents × (data +
-// control)). --workers does NOT add ports (substreams reuse the data port).
+// RequiredDataPorts returns how many data/control ports the copy mode needs.
+// The two-agent (long-lived dest agent) architecture binds exactly 3 in BOTH
+// modes: source control + dest data + dest control. on_segment does NOT scale
+// with D — the per-segment segreceivers are dialers that all funnel into the
+// dest agent's single shared data listener, so --workers and the destination
+// segment count add no ports. (The pre-04.10 "one dest agent per segment"
+// design needed 2D+1; that was removed with the port-economy redesign.)
 func (c *Config) RequiredDataPorts(dstSegments int) int {
-	if c.CopyMode == CopyOnSegment {
-		if dstSegments < 1 {
-			dstSegments = 1
-		}
-		return 2*dstSegments + 1
-	}
 	return 3
 }
 
@@ -465,8 +463,8 @@ func (c *Config) CheckDataPortRange(dstSegments int) error {
 	need := c.RequiredDataPorts(dstSegments)
 	have := c.DataPortRangeSize()
 	if have < need {
-		return fmt.Errorf("--data-port-range %s has %d port(s) but %s needs %d (source control + %d dest agent(s) × 2); widen the range or lower the destination segment count",
-			c.DataPortRange, have, c.CopyMode, need, dstSegments)
+		return fmt.Errorf("--data-port-range %s has %d port(s) but this run needs %d (source control + dest data + dest control — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
+			c.DataPortRange, have, need)
 	}
 	return nil
 }

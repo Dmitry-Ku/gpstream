@@ -36,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
@@ -111,6 +112,11 @@ type DestServerOptions struct {
 	// AcceptTimeout bounds the wait for a unit's first connection;
 	// StreamTimeout bounds the whole unit stream.
 	AcceptTimeout, StreamTimeout time.Duration
+	// PortAlloc, when set, restricts the data/control listener ports to the
+	// operator's --data-port-range (strict firewall). It is consulted only
+	// when a listener address is ":0" (auto-pick); a fixed port binds
+	// verbatim. nil = legacy behavior (kernel picks, no range).
+	PortAlloc *portalloc.Allocator
 	// FrameAck enables the frame-level ACK + RST-resume transport (DESIGN
 	// §4.6) on the data socket for the coordinator serve; ReliablePipe
 	// carries its parameters.
@@ -141,11 +147,11 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 	if o.StreamTimeout <= 0 {
 		o.StreamTimeout = 6 * time.Hour
 	}
-	dataL, err := net.Listen("tcp", o.DataListen)
+	dataL, err := o.bindListener(o.DataListen)
 	if err != nil {
 		return nil, fmt.Errorf("dest server: data listen %s: %w", o.DataListen, err)
 	}
-	ctrlL, err := net.Listen("tcp", o.ControlListen)
+	ctrlL, err := o.bindListener(o.ControlListen)
 	if err != nil {
 		_ = dataL.Close()
 		return nil, fmt.Errorf("dest server: control listen %s: %w", o.ControlListen, err)
@@ -169,6 +175,17 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 	}
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
 	return s, nil
+}
+
+// bindListener binds addr, honoring the --data-port-range (o.PortAlloc) when
+// the port is 0 (auto-pick) and a range is active. A fixed port, or no range,
+// binds verbatim (the legacy behavior). The data and control listeners share
+// the one allocator, so the two can never land on the same port.
+func (o DestServerOptions) bindListener(addr string) (net.Listener, error) {
+	if o.PortAlloc != nil {
+		return o.PortAlloc.ListenAddr(addr)
+	}
+	return net.Listen("tcp", addr)
 }
 
 // Hello is the agent's first control message (its real bound addresses).

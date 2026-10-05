@@ -97,6 +97,17 @@ func (a *Allocator) taken(p int) bool {
 	return a.reserved[p] || a.exclude[p]
 }
 
+// Release frees a port previously handed out by Next/Listen so it can be
+// handed out again. Callers that reuse ports (the in-proc runner binds a
+// fresh data port per unit, serially) release it once the unit's listener is
+// closed; otherwise the reserved set would grow one port per unit and a small
+// range would run out. Releasing a port that is not reserved is a no-op.
+func (a *Allocator) Release(p int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.reserved, p)
+}
+
 // Next returns a free port for host, reserving it (so a later Next call does
 // not re-probe it) and closing the probe listener. The port is handed to a
 // separate process (a local agent) which re-binds it; the tiny close->rebind

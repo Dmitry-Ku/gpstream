@@ -14,6 +14,7 @@ import (
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/launch"
+	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
@@ -227,6 +228,10 @@ type unitRoutedRequest struct {
 // parse the agent's output to learn an address.
 type processTwoAgentRunner struct {
 	cfg *config.Config
+	// portAlloc restricts the controller's own pre-bound loopback ports to
+	// --data-port-range (local / single-host layout); nil = auto. The remote
+	// (SSH) layout passes the range to the agents instead (--port-range).
+	portAlloc *portalloc.Allocator
 	// Source agent (long-lived; owns the FR-02 snapshot).
 	ctrl      *agent.ControlClient
 	srcHandle *launch.Handle
@@ -238,7 +243,8 @@ type processTwoAgentRunner struct {
 }
 
 func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
-	return &processTwoAgentRunner{cfg: cfg}
+	alloc, _ := portalloc.ParseRange(cfg.DataPortRange) // Validate already checked it
+	return &processTwoAgentRunner{cfg: cfg, portAlloc: alloc}
 }
 
 // Start brings up both long-lived agents and connects the control clients.
@@ -331,6 +337,14 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
 		"--retransmit-buffer-max", strconv.FormatInt(r.cfg.RetransmitBufferMax, 10),
 	}
+	// --port-range matters only when a listener address is auto (":0"): the
+	// remote/dial-first layout, where the agent binds its own data port and
+	// the controller cannot pre-bind it. Local (same-host) agents get
+	// pre-bound fixed ports from the controller's own allocator, so the range
+	// is already applied there — passing it is a harmless no-op.
+	if r.cfg.DataPortRange != "" {
+		dargs = append(dargs, "--port-range", r.cfg.DataPortRange)
+	}
 	if r.cfg.SSLCert != "" {
 		dargs = append(dargs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
 	}
@@ -400,13 +414,13 @@ func (r *processTwoAgentRunner) controlListen(sshHost string, dialFirst bool, fi
 		}
 		return fixed, nil
 	}
-	return prebindLoopback()
+	return r.prebindLocal()
 }
 
 // dataListen returns the data address for the dest agent. A local agent gets a
 // pre-bound loopback port (auto :0, reported in the hello); a remote/dial-first
 // agent uses its fixed address, or "0.0.0.0:0" (auto :0, the hello carries the
-// real port).
+// real port — the agent restricts it to --port-range itself).
 func (r *processTwoAgentRunner) dataListen(sshHost string, dialFirst bool, fixed string) (string, error) {
 	if sshHost != "" || dialFirst {
 		if fixed == "" {
@@ -414,7 +428,22 @@ func (r *processTwoAgentRunner) dataListen(sshHost string, dialFirst bool, fixed
 		}
 		return fixed, nil
 	}
-	return prebindLoopback()
+	return r.prebindLocal()
+}
+
+// prebindLocal learns a free loopback port for a local (same-host) agent and
+// returns it as "127.0.0.1:port", honoring --data-port-range when set (the
+// allocator reserves it so the three prebinds — source control, dest control,
+// dest data — never collide). With no range it is the legacy kernel-pick.
+func (r *processTwoAgentRunner) prebindLocal() (string, error) {
+	if r.portAlloc == nil {
+		return prebindLoopback()
+	}
+	port, err := r.portAlloc.Next("127.0.0.1")
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
 }
 
 // agentLogPath is the agent's stderr sink path (GPSTREAM_AGENT_STDERR when set
@@ -686,6 +715,25 @@ func prebindLoopback() (string, error) {
 	return addr, nil
 }
 
+// prebindData learns a free loopback port for an in-proc listener, honoring
+// --data-port-range (r.portAlloc) when set. It returns the address plus a
+// release func: the per-unit data ports are bound serially (one per unit), so
+// the caller releases the port once the unit's listener is closed — otherwise
+// the allocator's reserved set grows one port per unit and a small range runs
+// out. With no range the release is a no-op and this is the legacy
+// prebindLoopback.
+func (r *InProcTwoAgentRunner) prebindData() (string, func(), error) {
+	if r.portAlloc == nil {
+		addr, err := prebindLoopback()
+		return addr, func() {}, err
+	}
+	port, err := r.portAlloc.Next("127.0.0.1")
+	if err != nil {
+		return "", nil, err
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), func() { r.portAlloc.Release(port) }, nil
+}
+
 // dialControlRetry dials addr until it succeeds or the deadline passes (the
 // source agent binds the control socket shortly after it starts). tls is the
 // control-channel TLS client settings (design 04.10; empty = plain TCP, the
@@ -758,6 +806,7 @@ func parseDestReport(stderr string) (rows int64, logical uint64, err error) {
 // wire volume, agent-side checksum) is exercised end to end.
 type InProcTwoAgentRunner struct {
 	cfg       *config.Config
+	portAlloc *portalloc.Allocator // --data-port-range for the pre-bound loopback ports (nil = auto)
 	srv       *agent.SourceServer
 	ctrl      *agent.ControlClient
 	srcCancel context.CancelFunc
@@ -766,16 +815,18 @@ type InProcTwoAgentRunner struct {
 // NewInProcTwoAgentRunner builds an in-process two-agent runner for the
 // given config (it reads cfg.Source for the source conn + FR-02 scope).
 func NewInProcTwoAgentRunner(cfg *config.Config) *InProcTwoAgentRunner {
-	return &InProcTwoAgentRunner{cfg: cfg}
+	alloc, _ := portalloc.ParseRange(cfg.DataPortRange) // Validate already checked it
+	return &InProcTwoAgentRunner{cfg: cfg, portAlloc: alloc}
 }
 
 // Start launches the in-process source agent (SourceServer) on a pre-bound
 // loopback port and connects the control client to it.
 func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
-	ctrlAddr, err := prebindLoopback()
+	ctrlAddr, releaseCtrl, err := r.prebindData()
 	if err != nil {
 		return fmt.Errorf("two-agent: pre-bind control port: %w", err)
 	}
+	_ = releaseCtrl // long-lived: the port stays reserved for the whole run
 	srv := agent.NewSourceServer(agent.ServerOptions{
 		SrcConn:        r.cfg.Source,
 		Snapshot:       r.snapshotMode(),
@@ -807,10 +858,15 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 // waits for the destination to finish. The destination is the authoritative
 // row-count source; the wire volume comes from the source agent.
 func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, error) {
-	listen, err := prebindLoopback()
+	listen, release, err := r.prebindData()
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: pre-bind data port: %w", err)
 	}
+	// The per-unit data port is reused across units: release it as soon as the
+	// unit's listener is closed. Releasing early (before the dest goroutine has
+	// fully unwound) is safe — a later prebind that probes the still-bound port
+	// gets EADDRINUSE and skips to the next one.
+	defer release()
 	// 1. Launch the per-unit destination agent (agent.Serve, no swap).
 	dresCh := make(chan agent.DestResult, 1)
 	derrCh := make(chan error, 1)
@@ -884,15 +940,17 @@ func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmen
 	// matching the segreceiver --listen flag), else a free loopback port (the
 	// in-proc test's fake segreceivers are local).
 	var listen string
+	var release = func() {}
 	var err error
 	if req.SegListen != "" {
 		listen, err = segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
 	} else {
-		listen, err = prebindLoopback()
+		listen, release, err = r.prebindData()
 	}
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: segment data port: %w", err)
 	}
+	defer release()
 	// 1. Launch the per-unit in-process destination agent: segment mode
 	// (ServeSegments, merge) by default, or the P8 direct_1to1 fast-path
 	// (ServeDirect, per-segment utility COPYs) when req.DirectWrite.
@@ -997,15 +1055,17 @@ func (r *InProcTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegmen
 // destination to finish its D utility-mode per-segment COPYs.
 func (r *InProcTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedRequest) (int64, uint64, uint64, error) {
 	var listen string
+	var release = func() {}
 	var err error
 	if req.SegListen != "" {
 		listen, err = segstream.UnitListen(req.SegListen, uint32(req.OnSegmentReq.UnitID))
 	} else {
-		listen, err = prebindLoopback()
+		listen, release, err = r.prebindData()
 	}
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: routed data port: %w", err)
 	}
+	defer release()
 	dresCh := make(chan agent.RoutedResult, 1)
 	serrCh := make(chan error, 1)
 	go func() {

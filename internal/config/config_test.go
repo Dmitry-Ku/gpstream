@@ -167,7 +167,9 @@ func TestDataPortRangeCheck(t *testing.T) {
 	if err := small.CheckDataPortRange(3); err == nil {
 		t.Fatal("coordinator 2-port range should fail")
 	}
-	// on_segment: needs 2D+1
+	// on_segment: needs 3 too (the long-lived dest agent binds one shared
+	// data + one control listener; the per-segment segreceivers dial it and
+	// never bind, so D adds no ports — the pre-04.10 2D+1 formula is gone).
 	cfg = Default()
 	cfg.CopyMode = CopyOnSegment
 	cfg.DataPortRange = "9000-9007"
@@ -175,10 +177,19 @@ func TestDataPortRangeCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckDataPortRange(3); err != nil {
-		t.Fatalf("on_segment D=3 needs 7, range 8 should pass: %v", err)
+		t.Fatalf("on_segment D=3 needs 3, range 8 should pass: %v", err)
 	}
-	if err := cfg.CheckDataPortRange(4); err == nil {
-		t.Fatal("on_segment D=4 needs 9, range 8 should fail")
+	if err := cfg.CheckDataPortRange(4); err != nil {
+		t.Fatalf("on_segment D=4 still needs 3 (segreceivers dial the shared data port), range 8 should pass: %v", err)
+	}
+	smallSeg := Default()
+	smallSeg.CopyMode = CopyOnSegment
+	smallSeg.DataPortRange = "9000-9001"
+	if err := smallSeg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := smallSeg.CheckDataPortRange(4); err == nil {
+		t.Fatal("on_segment 2-port range should fail (needs 3)")
 	}
 	// auto (no range): always passes
 	auto := Default()

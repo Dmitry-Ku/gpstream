@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: `--data-port-range` now actually restricts port allocation
+
+The flag previously only validated the range width; the data/control
+listeners always bound `:0` and the range was ignored at runtime. Now the
+auto-picked ports are really restricted:
+
+- new `internal/portalloc` package — the single allocator that picks a free
+  port inside the range (probe-and-reserve, no TOCTOU: the binding side
+  owns the port; busy in-range ports fall through to the next; a disabled
+  range degrades to the legacy kernel-pick, so runs without the flag are
+  unchanged);
+- the controller pre-binds same-host (subprocess) agent ports from the
+  range, and the in-proc runner (lab) does the same for its per-unit data
+  ports (released per unit, so many units fit a small range);
+- remote (SSH-launched) agents receive `--port-range` and bind their
+  auto-picked data/control listeners inside it — the strict-firewall case
+  (the operator opens exactly that range in the firewall);
+- fixed the stale port-count formula: the documented requirement was
+  `2*dst-segments+1` for on_segment, but the long-lived dest agent binds
+  exactly **3 ports in both modes** (source control + dest data + dest
+  control) — the per-segment segreceivers *dial* the dest agent's shared
+  data listener, they never bind. `--dry-run`/`run` now check the range
+  holds ≥3 ports, independent of the segment count;
+- behavioral coverage: portalloc unit tests (range, exhaustion, busy-port
+  skip, release/reuse), dest-server bind-in-range tests (in-range,
+  exhausted-range error, fixed-port-wins), in-proc prebind tests.
+
 ### Removed: `--copy-mode direct` (breaking)
 
 The `direct` (P5) copy-mode is removed from the user surface. Its per-segment
