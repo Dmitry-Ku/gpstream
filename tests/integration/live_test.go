@@ -218,7 +218,11 @@ func liveKillAgents(t *testing.T, srcDSN, dstDSN string) {
 			if key != "" {
 				args = append(args, "-i", key)
 			}
-			args = append(args, user+"@"+h, "sudo -n pkill -f "+pat)
+			// Quote the ERE for the REMOTE shell: unquoted, bash chokes on
+			// the parentheses (syntax error) and pkill never runs, so
+			// "killed" agents kept running and held their PG sessions /
+			// ports (55006 on the next test's DROP, refused control ports).
+			args = append(args, user+"@"+h, "sudo -n pkill -f '"+pat+"'")
 			_, _ = exec.Command("ssh", args...).CombinedOutput()
 		}
 		return
@@ -279,7 +283,15 @@ func liveDBCreate(dsn string) error {
 	// port pairs collide across the suite (e.g. 5681/5721/5731 are reused).
 	// A hard-killed prior test (kill -9 skips t.Cleanup) leaves its tables
 	// behind, so "CREATE ... already exists" must start from an EMPTY db,
-	// not the previous test's leftovers.
+	// not the previous test's leftovers. A leftover session (a killed
+	// controller's pool, an orphaned agent's pg connection) holds the DB and
+	// makes the DROP fail with 55006; terminate those backends first.
+	if _, err := c.Exec(context.Background(),
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+		 WHERE datname = '`+strings.ReplaceAll(db, "'", "''")+`' AND pid <> pg_backend_pid()`); err != nil {
+		return fmt.Errorf("live terminate %s: %w", db, err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the terminated sessions release the lock
 	if _, err := c.Exec(context.Background(), fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, db)); err != nil {
 		return fmt.Errorf("live drop %s: %w", db, err)
 	}

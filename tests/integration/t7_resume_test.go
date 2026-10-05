@@ -62,13 +62,24 @@ func TestResumeStrictRelaxedLive(t *testing.T) {
 	j1 := manifest.NewJournal(dstP, stateDir+"/journal.jsonl")
 	m1 := newTwoAgentManager(t, &cfg1, srcP, dstP, j1, srcP.DSN(), dstP.DSN())
 	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1() // release the snapshot context even if the test path doesn't call it
 	run1Done := make(chan error, 1)
 	go func() { run1Done <- m1.Run(ctx1, p1) }()
 	// t_keep (unit 1) must have landed; t_reread (unit 2) must be copying.
 	waitUnitState(t, j1, 1, manifest.StateSwapped, 120*time.Second)
 	waitUnitState(t, j1, 2, manifest.StateCopying, 120*time.Second)
 	time.Sleep(300 * time.Millisecond) // let the big copy get a little in flight
-	cancel1()                          // the "crash"
+	// The "crash": in live process-runner mode the agents are independent SSH
+	// processes, so a soft context cancel does NOT interrupt their in-flight
+	// COPY (the unit would finish to a terminal state and be kept, not
+	// re-read). A real crash is process death — hard-kill the agents. Locally
+	// the in-proc runner shares the controller's ctx, so the soft cancel is
+	// the crash.
+	if pgtest.LiveMode() {
+		liveKillAgents(t, srcCl.URL(), dstCl.URL())
+	} else {
+		cancel1()
+	}
 	err1 := <-run1Done
 	if err1 == nil {
 		t.Fatalf("run 1 returned nil after cancel, want an error")

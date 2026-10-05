@@ -115,7 +115,9 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			// pattern is harness-controlled (no single quotes), so single
 			// quoting is safe.
 			quoted := "'" + strings.ReplaceAll(pattern, "'", "'\\''") + "'"
-			args = append(args, user+"@"+host, "pgrep -f "+quoted)
+			// sudo -n: the agents run as gpadmin (launched via `sudo -u
+			// gpadmin`), so a plain pgrep as gp cannot see them.
+			args = append(args, user+"@"+host, "sudo -n pgrep -f "+quoted)
 			out, err = exec.Command("ssh", args...).Output()
 		} else {
 			out, err = exec.Command("pgrep", "-f", pattern).Output()
@@ -132,7 +134,9 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		return pids
 	}
 
-	// killPIDRemote SIGKILLs a pid on host over SSH (live mode).
+	// killPIDRemote SIGKILLs a pid on host over SSH (live mode). The agents
+	// run as gpadmin (the SSH user is gp), so the kill must go through
+	// passwordless sudo — a plain kill -9 as gp would EPERM.
 	killPIDRemote := func(t *testing.T, host string, pid int) {
 		t.Helper()
 		user := os.Getenv("GP6_LAB_SSH_USER")
@@ -143,7 +147,7 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
 			args = append(args, "-i", key)
 		}
-		args = append(args, user+"@"+host, "kill -9 "+strconv.Itoa(pid))
+		args = append(args, user+"@"+host, "sudo -n kill -9 "+strconv.Itoa(pid))
 		if out, err := exec.Command("ssh", args...).CombinedOutput(); err != nil {
 			t.Fatalf("remote kill -9 %d on %s: %v: %s", pid, host, err, out)
 		}

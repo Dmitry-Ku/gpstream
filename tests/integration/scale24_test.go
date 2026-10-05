@@ -11,6 +11,7 @@ import (
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
+	"github.com/gpstream/gpstream/internal/pgtest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/jackc/pgx/v5"
 )
@@ -192,8 +193,13 @@ func TestScale24TablesCrashResume(t *testing.T) {
 	defer func() { src.Close(); dst.Close() }()
 
 	const (
-		nSmall = 2_000     // per small table
-		nBig   = 3_000_000 // big table (~110 MB: ~1 s copy, mid-copy cancel lands safely)
+		nSmall = 2_000      // per small table
+		nBig   = 20_000_000 // big table (~1.1 GB: ~10 s copy). In live process-runner
+		// mode the "crash" is an SSH hard-kill of the agents, whose round-trip
+		// is ~0.5-1 s; a 3M-row (~110 MB) copy finished before the kill landed,
+		// so the run completed cleanly (returned nil) and the unit was swapped,
+		// not left non-terminal. A ~10 s copy gives the kill a reliable mid-copy
+		// window. Matches t7_resume's proven nReRead.
 	)
 	seedScaleTables(t, src, nSmall)
 	mustExec(t, src, `CREATE TABLE public.t_big (id int, val text)`)
@@ -216,13 +222,25 @@ func TestScale24TablesCrashResume(t *testing.T) {
 	j1 := manifest.NewJournal(dstP, stateDir+"/journal.jsonl")
 	m1 := newTwoAgentManager(t, &cfg1, srcP, dstP, j1, srcP.DSN(), dstP.DSN())
 	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1() // release the snapshot context even if the test path doesn't call it
 	run1Done := make(chan error, 1)
 	go func() { run1Done <- m1.Run(ctx1, p1) }()
 	// Unit 25 (t_big, last in plan order) copying implies units 1..24 are
 	// already swapped (1 worker).
 	waitUnitState(t, j1, 25, manifest.StateCopying, 300*time.Second)
 	time.Sleep(300 * time.Millisecond) // let the big copy get in flight
-	cancel1()                          // the "crash"
+	// the "crash": in live process-runner mode the agents are independent SSH
+	// processes, so a soft context cancel does NOT interrupt their in-flight
+	// COPY (the controller would return an error while the agents keep copying
+	// to completion, leaving unit 25 terminal/kept instead of non-terminal).
+	// A real crash is process death, so hard-kill the agents. Locally the
+	// in-proc runner shares the controller's ctx, so the soft cancel is the
+	// crash.
+	if pgtest.LiveMode() {
+		liveKillAgents(t, srcCl.URL(), dstCl.URL())
+	} else {
+		cancel1()
+	}
 	err1 := <-run1Done
 	if err1 == nil {
 		t.Fatalf("run 1 returned nil after cancel, want an error")

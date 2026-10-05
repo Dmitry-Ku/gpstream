@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
@@ -240,6 +241,20 @@ type processTwoAgentRunner struct {
 	destCtrl     *agent.DestControlClient
 	destHandle   *launch.Handle
 	destDataAddr string // the dest agent's real data address (from its hello)
+	// streamMu serializes the WHOLE per-unit dest exchange
+	// (BeginServe -> source stream -> WaitUnitDone). The long-lived dest
+	// agent has ONE control socket and a SEQUENTIAL control loop (one
+	// serve-unit -> ack -> unit-done in flight at a time), so concurrent
+	// manager workers (FR-03, WorkersPerPair > 1) must not interleave their
+	// exchanges: BeginServe and WaitUnitDone lock the client mutex
+	// separately, so without this a second worker's serve-unit would land on
+	// the socket before the first's unit-done was read, desyncing the
+	// request/response stream (a foreign unit-done read as the ack, a
+	// foreign ack read as the unit-done with rows=0 — the unit's rows are
+	// copied but its count is lost, corrupting manager.Rows / verify). The
+	// dest agent serves one unit at a time anyway, so no parallelism is
+	// given up.
+	streamMu sync.Mutex
 }
 
 func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
@@ -538,6 +553,11 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 	if r.destCtrl == nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
 	}
+	// Serialize the whole exchange (see streamMu): the dest agent's control
+	// loop is sequential, so BeginServe/WaitUnitDone must not interleave
+	// across concurrent workers.
+	r.streamMu.Lock()
+	defer r.streamMu.Unlock()
 	// 1. Tell the long-lived dest agent to serve this unit on the shared data
 	//    listener. The ack returns immediately (the serve is running,
 	//    accepting the source agent's connection).
@@ -586,6 +606,8 @@ func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegme
 	if r.destCtrl == nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
 	}
+	r.streamMu.Lock() // serialize the whole exchange (see streamMu)
+	defer r.streamMu.Unlock()
 	// 1. Tell the long-lived dest agent to serve this unit. Kind selects the
 	//    load method: direct_1to1 (a) = per-segment utility COPYs; else
 	//    segments (c) = SliceMux merge -> one coordinator COPY.
@@ -641,6 +663,8 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 	if r.destCtrl == nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: destination agent not started")
 	}
+	r.streamMu.Lock() // serialize the whole exchange (see streamMu)
+	defer r.streamMu.Unlock()
 	// 1. Tell the long-lived dest agent to serve this unit in routed mode.
 	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "routed", Routed: &req.Launch})
 	if err != nil {
