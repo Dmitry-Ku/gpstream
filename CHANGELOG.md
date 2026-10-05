@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed: plan hash no longer depends on destination state (resume correctness)
+
+The plan hash (FR-10/CR-4) previously included `Redistrib.Skew`. Skew is a
+measurement of the *destination* layout, which changes across a crash window:
+on a live Greenplum destination it is `1` while the destination is empty
+(the distribution key cannot be confirmed, so the planner is conservative)
+and `0` once the destination holds any table — including the run's own
+staging table. So the hash differed between a crashed run and its resume.
+Staging tables are named `_gs_<plan-hash>_<unit>`, so `finishCompleted`
+computed a different staging name than the one the crashed run actually
+wrote, could not find the verified data, and failed the unit with
+"staging and final both absent (verified data lost)" instead of completing
+the atomic swap. This broke FR-06/FR-07 ("resume completes to the end") on
+any Greenplum destination; plain-PostgreSQL never surfaced it (its
+distribution key is always unconfirmable, so skew is a constant `1` and the
+hash stayed stable).
+
+The hash now fingerprints only the *source* plan identity — the unit set
+(schema.name:bytes) and the coordinator host-pairs — so it is stable across
+the crash window it is used to name staging tables. The raw skew is still
+computed and reported in the dry-run (`redistribution: skew N% — <verdict>`,
+FR-15/CR-5); it is simply no longer part of the fingerprint. Verified live on
+the GP6 A-D stand: the hash is now identical before and after the crash
+window (skew flips 1→0, hash unchanged), and the three resume/crash tests
+that exposed it pass.
+
 ### Added: `--data-port-range` now actually restricts port allocation
 
 The flag previously only validated the range width; the data/control
