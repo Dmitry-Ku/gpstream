@@ -69,7 +69,7 @@ gpstream run
   [--copy-mode coordinator|on_segment]
   [--seg-listen HOST:PORT]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
-  [--workers N] [--rate-limit <Gbps>]
+  [--workers N] [--rate-limit <rate>]                 # e.g. 40, 40gbps, 400mbps
   [--auto-resume N]
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
@@ -85,7 +85,7 @@ gpstream dry-run  [--timeout S]                     # same selection flags as ru
 gpstream bench    [--timeout S]                     # input-stream rate: read source, discard payload (no dest)
 gpstream status   --operation-id <id|latest>
 gpstream resume   --operation-id <id|latest>
-gpstream cleanup  --operation-id <id|latest> [--all-incomplete] [--mode drop] [--dest <conn>]
+gpstream cleanup  --operation-id <id|latest> [--all-incomplete] [--mode drop] [--dest <conn>] --yes
 gpstream doctor   [--source ...] [--dest ...]
 gpstream selftest
 gpstream version

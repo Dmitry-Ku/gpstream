@@ -36,7 +36,7 @@ reference and the TOML/YAML key table.
 
 ---
 
-## Commands (11 dispatch entries)
+## Commands (10 dispatch entries)
 
 The dispatcher (`run`) accepts the following subcommands. `copy`/`plan` from
 older drafts are **not** separate commands: **`dry-run`** performs the
@@ -44,23 +44,25 @@ planning (without executing) and **`run`** performs the copy (with executing).
 There is no `cancel`, `rollback`, `metrics`, `logs`, `indexes`,
 `compatibility-check`, `security-check`, `package-info`, or `upgrade-check`
 command — the capability they described is folded into `run`/`doctor`/
-`status`/`resume` (see per-command notes).
+`status`/`resume` (see per-command notes). **`man` is not a subcommand** —
+`man gpstream` renders the installed OS man page (`man/gpstream.8`), so it is
+not counted here.
 
 | # | Command | Class | Consumes full contract? |
 |---|---------|-------|-------------------------|
 | 1 | `run` | core (copy) | yes (`parseConfig`) |
 | 2 | `dry-run` | core (plan) | yes |
 | 3 | `doctor` | core (diagnose) | yes |
-| 4 | `status` | state | no (bespoke) |
-| 5 | `resume` | state | no (bespoke) |
-| 6 | `cleanup` | state | no (bespoke) |
-| 7 | `selftest` | utility | no |
-| 8 | `version` | utility | no |
-| 9 | `man` | utility | no |
+| 4 | `bench` | core (measure) | yes |
+| 5 | `status` | state | no (bespoke) |
+| 6 | `resume` | state | no (bespoke) |
+| 7 | `cleanup` | state | no (bespoke) |
+| 8 | `selftest` | utility | no |
+| 9 | `version` | utility | no |
 | 10 | `help` / `-h` / `--help` | utility | no |
 
 The commands that go through `parseConfig` (honouring **every** flag) are:
-**`run`, `dry-run`, `doctor`**. The state commands parse only a small
+**`run`, `dry-run`, `doctor`, `bench`**. The state commands parse only a small
 subset of flags (listed per-command below) and ignore the rest.
 
 ---
@@ -244,6 +246,8 @@ the on-wire agent-to-agent volume.
 | `--seg-tls-key <F>` | `SegTLSKey` | `""` (controller serving key) |
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
 | `--frame-ack on\|off` | `FrameAck` | `on` (frame-level ACK + RST-resume; `off` falls back to the plain pipe) |
+| `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: on_segment then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
+| `--data-port-range <LO-HI\|LO>` | `DataPortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; `dry-run` verifies the range is large enough for the chosen mode) |
 | `--ack-timeout 15s\|30s\|adaptive` | `AckTimeout` | `30s` (`adaptive` = 3x median RTT, min 1s) |
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
@@ -298,6 +302,9 @@ operator reads the number and decides. The `--locale-check` flag was removed
 | `--ssl-cert <F>` | `SSLCert` | `""` (**secret** — env/file only, F-08) |
 | `--ssl-key <F>` | `SSLKey` | `""` (**secret** — env/file only, F-08) |
 | `--ssl-min-tls <V>` | `SSLMinTLS` | `1.2` (minimum TLS version) |
+| `--control-tls-cert <F>` | `ControlTLSCert` | `""` (client cert for the control channel; the agents serve with their own cert and the controller pins it against `--control-tls-ca`) |
+| `--control-tls-key <F>` | `ControlTLSKey` | `""` (**secret** — env/file only, F-08) |
+| `--control-tls-ca <F>` | `ControlTLSCA` | `""` (CA bundle for the control channel) |
 
 ### Dry-run / planning (F-10)
 | Flag | Config field | Default |
@@ -333,7 +340,7 @@ bespoke and shared:
 |---------|-------|
 | `status` | `--operation-id <id>` (required), `--state-dir <dir>` |
 | `resume` | `--operation-id <id>` (required), `--state-dir <dir>`, `--auto-resume <N>` |
-| `cleanup` | `--operation-id <id>` (or `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest <connstring>`, `--ssl-ca` |
+| `cleanup` | `--operation-id <id>` (or `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest <connstring>`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`, `--ssl-min-tls`, **`--yes` (always required — cleanup is destructive)** |
 
 `--operation-id <id>` names the operation directly; the state is resolved at
 `<state-dir>/<operation-id>/`.
