@@ -1204,7 +1204,18 @@ func hostPairs(cfg *config.Config) []string {
 }
 
 // hash produces the deterministic plan hash (FR-10/CR-4). It is a pure
-// function of the plan contents with no time or randomness.
+// function of the SOURCE plan identity with no time or randomness.
+//
+// Deliberately EXCLUDED: Redistrib.Skew. Skew is a destination-state
+// measurement — on a live GP6 destination it is 1 while the destination is
+// empty (distKey cannot confirm the layout, conservative) and 0 once any
+// table (e.g. the run's own staging table) exists. Including it made the hash
+// change between a crashed run and its resume (the resume's destination now
+// holds the staging table), so finishCompleted computed a different
+// StagingName (which is derived from the hash) and reported "staging and
+// final both absent (verified data lost)" for data that was actually in the
+// staging table. The hash must be stable across the crash window it is used
+// to name staging tables (FR-06/FR-07: resume completes to the end).
 func hash(p *Plan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "units=%d", len(p.Units))
@@ -1212,7 +1223,6 @@ func hash(p *Plan) string {
 		fmt.Fprintf(&b, "|%s.%s:%d", u.Schema, u.Name, u.Bytes)
 	}
 	fmt.Fprintf(&b, "|pairs=%s", strings.Join(p.Pairs, ","))
-	fmt.Fprintf(&b, "|skew=%.6g", p.Redistrib.Skew)
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
