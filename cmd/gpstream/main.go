@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -467,11 +468,34 @@ func cmdDoctor(args []string) error {
 		segBin, _ = config.ResolveSegBinaryOrEmpty()
 	}
 	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin})
+	// on_segment segment-to-segment writes (routed + direct_1to1) build
+	// per-segment utility DSNs from the operator's --dest; that requires the
+	// URL form (postgres://user@host:port/db). A keyword/value --dest would
+	// silently degrade the run to the merge path, so flag it now (a WARN —
+	// the coordinator path still works with either form).
+	if cfg.CopyMode == config.CopyOnSegment && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
+		rep.Add(doctor.Check{
+			Name: "dest-dsn-form",
+			Side: "dest",
+			Sev:  doctor.Warn,
+			Msg:  fmt.Sprintf("--dest %q is not URL-form (postgres://user@host:port/db)", cfg.Dest),
+			Rec:  "on_segment segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
+		})
+	}
 	printReport(rep)
 	if !rep.Healthy {
 		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())
 	}
 	return nil
+}
+
+// urlFormDSN reports whether conn is a URL-form postgres DSN
+// (postgres:// or postgresql:// with a host). The keyword/value form
+// (host=... port=...) is not URL-form; the segment-to-segment DSN builder
+// (segmentDSN) only understands the URL form.
+func urlFormDSN(conn string) bool {
+	u, err := url.Parse(conn)
+	return err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") && u.Host != ""
 }
 
 // diagnoseConn opens a live connection for the diagnostic, or — on failure — a
@@ -1589,6 +1613,9 @@ Flags (CLI > env > file > defaults):
 
 Selection:
   --source, --dest connstr           source/dest cluster connstrings
+                                       (URL form postgres://user@host:port/db
+                                       required for on_segment segment-to-
+                                       segment writes)
   --dbs csv                          databases to copy
   --schemas csv                      schemas to copy (db.schema)
   --tables csv                       tables to copy (db.schema.table)

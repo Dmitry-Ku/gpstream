@@ -81,7 +81,12 @@ Source cluster connection string.
 .TP
 .BR --dest
 connstr
-Destination cluster connection string.
+Destination cluster connection string. Segment-to-segment writes
+(\fB--copy-mode\fR on_segment: routed, direct_1to1) build per-segment
+utility DSNs from it and therefore require the URL form
+(postgres://user@host:port/db); a keyword/value form silently degrades
+the run to the merge path through the destination coordinator (doctor
+reports it as a WARN).
 .TP
 .BR --dbs
 csv

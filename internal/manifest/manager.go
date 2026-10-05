@@ -1950,7 +1950,7 @@ func toInt(v any) int64 {
 func segmentDSN(destDSN string, seg destSegment) (string, error) {
 	u, err := url.Parse(destDSN)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
-		return "", fmt.Errorf("direct mode requires a URL-form dest DSN (postgres://user@host:port/db), got %q", destDSN)
+		return "", fmt.Errorf("segment-to-segment writes require a URL-form dest DSN (postgres://user@host:port/db), got %q — pass a URL-form --dest or the run degrades to the merge path through the destination coordinator", destDSN)
 	}
 	u.Host = seg.Hostname + ":" + strconv.Itoa(seg.Port)
 	q := u.Query()
