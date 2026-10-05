@@ -201,6 +201,19 @@ type ReliablePipe struct {
 	rtt    []time.Duration
 	lastWr time.Time
 
+	// Sender: resume-rejection fast death. A fresh transport that dies
+	// WITHOUT any progress (no ACK, no peer HELLO since the swap) means the
+	// destination rejected the resume (the unit ended: a failed serve closed
+	// the conn / drained the backlog). A live receiver always greets a re-dial
+	// with a HELLO (and ACKs within the ACK cadence), so "no progress" is an
+	// unambiguous rejection. Three in a row => give up immediately instead of
+	// burning the MaxReconnects budget (and piling zombie re-dials into the
+	// destination's listener backlog, which would poison the next unit's
+	// accept).
+	progMu       sync.Mutex
+	connProgress bool // any ACK/HELLO seen on the current transport
+	rejects      int  // consecutive no-progress transport deaths
+
 	// Shared.
 	reconnects    int
 	retransmitted uint64
@@ -493,7 +506,11 @@ func (rp *ReliablePipe) sendData(c dupConn, p []byte) (int, error) {
 	}
 	rp.wmu.Lock()
 	defer rp.wmu.Unlock()
-	return c.Write(p)
+	_, err := writeFull(c, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // ringAdd records the frame in the retransmit ring, back-pressuring while the
@@ -668,13 +685,18 @@ func (rp *ReliablePipe) receiveLoop() {
 				rp.pendHello = nil
 			}
 			rp.helloMu.Unlock()
+			if rp.role == rpSender {
+				rp.noteProgress() // the receiver greeted the (re-)dial: it is alive
+			}
 		case ctrlAck:
 			if rp.role == rpSender && len(body) == 8 {
 				rp.applyAck(binary.LittleEndian.Uint64(body))
+				rp.noteProgress()
 			}
 		case ctrlNack:
 			if rp.role == rpSender && len(body) == 8 {
 				rp.retransmitOne(binary.LittleEndian.Uint64(body))
+				rp.noteProgress()
 			}
 		case ctrlFin:
 			// Clean end-of-stream: the sender has sent every frame. The FIN
@@ -903,6 +925,15 @@ func (rp *ReliablePipe) reconnect(failGen int) error {
 		return nil
 	}
 
+	// The previous transport died without any progress (no ACK/HELLO since
+	// the swap): the destination rejected the resume (the unit is over).
+	// Cap consecutive rejections so a dead unit fails fast instead of
+	// re-dialing the destination MaxReconnects times.
+	if rp.noProgressDeaths() >= 3 {
+		rp.markDead()
+		return fmt.Errorf("reliablepipe: destination rejected 3 consecutive resumes (unit over?)")
+	}
+
 	rp.ringMu.Lock()
 	if rp.reconnects >= rp.cfg.MaxReconnects {
 		rp.ringMu.Unlock()
@@ -922,6 +953,11 @@ func (rp *ReliablePipe) reconnect(failGen int) error {
 		return fmt.Errorf("reliablepipe: dial: %w", err)
 	}
 	rp.swapConn(c)
+	// Fresh transport: progress tracking restarts (the receiver greets a
+	// resume with a HELLO; a rejected one dies before any progress).
+	rp.progMu.Lock()
+	rp.connProgress = false
+	rp.progMu.Unlock()
 
 	// The dialer has already swapped the receiver onto the fresh pipe, so the
 	// replay below lands in the receiver's new read buffer — no synchronous
@@ -936,6 +972,30 @@ func (rp *ReliablePipe) reconnect(failGen int) error {
 
 	// Replay the un-ACKed ring in seq order (§4.6.3).
 	return rp.replayRing(c)
+}
+
+// noProgressDeaths reports the consecutive no-progress transport deaths and
+// records THIS one (called from the sender's reconnect path, which only runs
+// on a transport death). A transport that saw an ACK or a peer HELLO since
+// its swap made progress: the death resets the rejection count.
+func (rp *ReliablePipe) noProgressDeaths() int {
+	rp.progMu.Lock()
+	defer rp.progMu.Unlock()
+	if rp.connProgress {
+		rp.connProgress = false
+		rp.rejects = 0
+		return 0
+	}
+	rp.rejects++
+	return rp.rejects
+}
+
+// noteProgress records that the current transport made progress (an ACK or a
+// peer HELLO arrived): a subsequent death is a real break, not a rejection.
+func (rp *ReliablePipe) noteProgress() {
+	rp.progMu.Lock()
+	rp.connProgress = true
+	rp.progMu.Unlock()
 }
 
 func (rp *ReliablePipe) replayRing(c dupConn) error {
@@ -955,7 +1015,7 @@ func (rp *ReliablePipe) replayRing(c dupConn) error {
 	rp.ringMu.Unlock()
 	for _, p := range payload {
 		rp.wmu.Lock()
-		_, err := c.Write(p)
+		_, err := writeFull(c, p)
 		rp.wmu.Unlock()
 		if err != nil {
 			return err
@@ -1088,6 +1148,22 @@ func frameSeq(enc []byte) uint64 {
 		return binary.LittleEndian.Uint64(enc[20:28])
 	}
 	return 0
+}
+
+// writeFull writes all of p to c (a TCP conn may return a partial write;
+// the frame byte stream must not be split mid-write). It returns the first
+// error, if any.
+func writeFull(c dupConn, p []byte) (int, error) {
+	for len(p) > 0 {
+		n, err := c.Write(p)
+		if n > 0 {
+			p = p[n:]
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
 }
 
 func encodeU64(v uint64) []byte {

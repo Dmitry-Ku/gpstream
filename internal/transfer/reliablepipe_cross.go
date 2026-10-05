@@ -33,10 +33,28 @@ import (
 )
 
 // NewReliablePipeSender builds the SENDER end of a cross-process frame-ACK'd
-// pipe. It dials addr once (bounded by dialTimeout) and starts the sender's
-// receiveLoop + watchdog; on a transport break it re-dials addr and replays the
-// un-ACKed ring. addr must be a listening receiver (NewReliablePipeReceiver).
+// pipe. It dials addr once (bounded) and starts the sender's receiveLoop +
+// watchdog; on a transport break it re-dials addr and replays the un-ACKed
+// ring. addr must be a listening receiver (NewReliablePipeReceiver).
 func NewReliablePipeSender(cfg ReliablePipeConfig, addr string) (*ReliablePipe, error) {
+	dialer := func() (dupConn, error) {
+		return net.DialTimeout("tcp", addr, 10*time.Second)
+	}
+	c, err := dialer()
+	if err != nil {
+		return nil, &tcpPairError{op: "dial", err: err}
+	}
+	return NewReliablePipeSenderOnConn(cfg, c, dialer)
+}
+
+// NewReliablePipeSenderOnConn builds the SENDER end using an already-
+// established initial transport (firstConn — e.g. a TLS conn the caller dialed
+// and wrote a pre-stream header such as the UnitSpec on). On a transport break
+// the pipe re-establishes the transport via dialer (which must reproduce the
+// full connection setup, e.g. dial+TLS handshake) and replays the un-ACKed
+// ring. dialer is NOT called for the initial connection (firstConn is used);
+// it is only the re-dial on a break.
+func NewReliablePipeSenderOnConn(cfg ReliablePipeConfig, firstConn dupConn, dialer func() (dupConn, error)) (*ReliablePipe, error) {
 	if cfg.MaxReconnects <= 0 {
 		cfg.MaxReconnects = 20
 	}
@@ -52,16 +70,8 @@ func NewReliablePipeSender(cfg ReliablePipeConfig, addr string) (*ReliablePipe, 
 	if cfg.AckTimeout <= 0 {
 		cfg.AckTimeout = 30 * time.Second
 	}
-
-	dialer := func() (dupConn, error) {
-		return net.DialTimeout("tcp", addr, 10*time.Second)
-	}
-	c, err := dialer()
-	if err != nil {
-		return nil, &tcpPairError{op: "dial", err: err}
-	}
 	link := newLink()
-	rp := newReliablePipe(rpSender, cfg, link, c)
+	rp := newReliablePipe(rpSender, cfg, link, firstConn)
 	link.s = rp
 	rp.dialer = dialer
 	rp.wg.Add(2)
@@ -71,10 +81,25 @@ func NewReliablePipeSender(cfg ReliablePipeConfig, addr string) (*ReliablePipe, 
 }
 
 // NewReliablePipeReceiver builds the RECEIVER end of a cross-process frame-
-// ACK'd pipe. It accepts the initial connection from l (bounded by 30s) and
-// starts the receiver's receiveLoop + ackLoop. On a transport break it performs
-// one bounded re-accept (cfg.ResumeTimeout) of the sender's re-dial.
+// ACK'd pipe. It accepts the initial connection from l (bounded) and starts
+// the receiver's receiveLoop + ackLoop. On a transport break it performs one
+// bounded re-accept (cfg.ResumeTimeout) of the sender's re-dial.
 func NewReliablePipeReceiver(cfg ReliablePipeConfig, l net.Listener) (*ReliablePipe, error) {
+	first, err := boundedAccept(l, 30*time.Second)
+	if err != nil {
+		return nil, &tcpPairError{op: "accept", err: err}
+	}
+	return NewReliablePipeReceiverOnConn(cfg, first, l)
+}
+
+// NewReliablePipeReceiverOnConn builds the RECEIVER end using an already-
+// accepted initial transport (firstConn — e.g. the conn the caller read a
+// pre-stream header such as the UnitSpec from). On a transport break it
+// re-accepts ONE fresh connection from l (the shared data listener) for the
+// sender's re-dial, bounded by cfg.ResumeTimeout; if none arrives in time the
+// sender is declared gone. l must stay open for the life of the stream (the
+// destination agent reuses it for the next unit between breaks).
+func NewReliablePipeReceiverOnConn(cfg ReliablePipeConfig, firstConn dupConn, l net.Listener) (*ReliablePipe, error) {
 	if cfg.AckByteInterval <= 0 {
 		cfg.AckByteInterval = 1 << 20
 	}
@@ -87,13 +112,8 @@ func NewReliablePipeReceiver(cfg ReliablePipeConfig, l net.Listener) (*ReliableP
 	if cfg.ResumeTimeout <= 0 {
 		cfg.ResumeTimeout = 30 * time.Second
 	}
-
-	first, err := boundedAccept(l, 30*time.Second)
-	if err != nil {
-		return nil, &tcpPairError{op: "accept", err: err}
-	}
 	link := newLink()
-	rp := newReliablePipe(rpReceiver, cfg, link, first)
+	rp := newReliablePipe(rpReceiver, cfg, link, firstConn)
 	link.r = rp
 	// The per-break re-accept: the sender's RST-resume re-dial. Bounded so a
 	// dead sender cannot hang the destination's unit forever (ResumeTimeout).
@@ -118,6 +138,12 @@ func NewReliablePipeReceiver(cfg ReliablePipeConfig, l net.Listener) (*ReliableP
 	go rp.ackLoop()
 	return rp, nil
 }
+
+// DupConn is the transport contract a ReliablePipe end reads/writes on (an
+// alias of the internal dupConn): any io.ReadWriteCloser — a net.Conn, a
+// *tls.Conn, or an in-memory pipe. Exported so agent packages can name the
+// re-dial function type in NewReliablePipeSenderOnConn.
+type DupConn = dupConn
 
 // newLink builds a fresh, independent link (no in-memory a/b, a done channel).
 func newLink() *rpLink {
