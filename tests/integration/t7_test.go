@@ -24,7 +24,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -243,7 +242,7 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 	// fails the unit mid-run. The mid-copy dest-death no-deadlock property is
 	// carried by the crash matrix (kill-dest-agent-mid-copy).
 	mustExec(t, dst, `CREATE ROLE readonly LOGIN`)
-	mustExec(t, dst, `GRANT CONNECT ON DATABASE dstdb TO readonly`)
+	mustExec(t, dst, fmt.Sprintf(`GRANT CONNECT ON DATABASE %s TO readonly`, dstCl.DB))
 	mustExec(t, dst, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
 
 	cfg := config.Default()
@@ -251,8 +250,11 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
 
 	// The dest agent runs as the low-privilege role: its staging CREATE
-	// TABLE is rejected (the controller's dst pool stays gp — control plane).
-	readonlyDSN := strings.Replace(dstCl.URL(), "user=gp", "user=readonly", 1)
+	// TABLE is rejected (the controller's dst pool stays gp/gpadmin —
+	// control plane). dsnReplaceUser handles both the local user=gp and the
+	// live user=gpadmin DSNs (a naive user=gp prefix replace would mangle
+	// gpadmin into readonlyadmin).
+	readonlyDSN := dsnReplaceUser(dstCl.URL(), "readonly")
 	// Run 1: the unit must FAIL (dest rejects the staging DDL) and must NOT hang.
 	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
 		labDSN(t, "GP6_LAB_SRC", srcCl.URL()), labDSN(t, "GP6_LAB_DST", readonlyDSN))
@@ -261,8 +263,8 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 	var runErr error
 	select {
 	case runErr = <-runDone:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("run 1 did not return within 30s (data-path deadlock?)")
+	case <-time.After(liveDeadline(30 * time.Second)):
+		t.Fatalf("run 1 did not return within %s (data-path deadlock?)", liveDeadline(30*time.Second))
 	}
 	if runErr == nil {
 		t.Fatalf("run 1 succeeded, want the poisoned dest to fail the copy")

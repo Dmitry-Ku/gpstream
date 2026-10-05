@@ -136,7 +136,7 @@ func TestTwoAgentRoutedFrameAckServe(t *testing.T) {
 			for d := 0; d < D; d++ {
 				conns[d] = make([]transfer.Pipe, W)
 				for w := 0; w < W; w++ {
-					c, derr := net.Dial("tcp", listen)
+					c, derr := dialRetry(listen, 90*time.Second)
 					if derr != nil {
 						errCh <- fmt.Errorf("fake segreceiver %d dial (d%d w%d): %w", s, d, w, derr)
 						return

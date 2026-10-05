@@ -14,19 +14,10 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// poolSrcURL/poolDstURL point at the two ephemeral clusters this test boots.
-const (
-	poolSrcURL = "host=127.0.0.1 port=5611 user=gp dbname=srcdb sslmode=disable"
-	poolDstURL = "host=127.0.0.1 port=5612 user=gp dbname=dstdb sslmode=disable"
-)
-
-// TestPoolParallelWorkersLive reproduces the E1 e2e failure (27.09): the
-// Manager's parallel stream workers (FR-03) over a pool-backed live source.
-// Before the fix the data path shared ONE pgx.Conn across the worker pool, so
-// the second in-flight COPY failed with "read schema: conn busy". With the
-// pgxpool-backed Pool every operation takes its own connection, so a multi-unit
-// run under parallel workers must complete. This is the exact layout of the E1
-// e2e (coordinator path, --overwrite staging+swap, default FR-02 snapshot mode).
+// pool_parallel_live_test.go uses the live cluster URLs (the pgtest override
+// gives each pool its live coordinator DSN). The pools are built from the
+// cluster URLs below (srcCl.URL()/dstCl.URL()), so they work both locally and
+// live — a hardcoded 127.0.0.1:5611 DSN would break the live layout.
 func TestPoolParallelWorkersLive(t *testing.T) {
 	ctx := context.Background()
 
@@ -66,13 +57,14 @@ func TestPoolParallelWorkersLive(t *testing.T) {
 	}
 
 	// Run the Manager over POOLS (the E1 path). This is what used to fail with
-	// "read schema: conn busy" / "source copy: conn busy".
-	srcPool, err := pg.NewPool(ctx, poolSrcURL, "", "", "", "", 8)
+	// "read schema: conn busy" / "source copy: conn busy". The pools use the
+	// cluster URLs (live DSNs in live mode).
+	srcPool, err := pg.NewPool(ctx, srcCl.URL(), "", "", "", "", 8)
 	if err != nil {
 		t.Fatalf("src pool: %v", err)
 	}
 	defer srcPool.Close()
-	dstPool, err := pg.NewPool(ctx, poolDstURL, "", "", "", "", 8)
+	dstPool, err := pg.NewPool(ctx, dstCl.URL(), "", "", "", "", 8)
 	if err != nil {
 		t.Fatalf("dst pool: %v", err)
 	}

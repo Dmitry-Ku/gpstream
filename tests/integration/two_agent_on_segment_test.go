@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -177,7 +176,7 @@ func TestTwoAgentOnSegmentServe(t *testing.T) {
 	var logical uint64
 	for i := 0; i < nSeg; i++ {
 		go func(i int) {
-			conn, err := net.Dial("tcp", listen)
+			conn, err := dialRetry(listen, 90*time.Second)
 			if err != nil {
 				errCh <- fmt.Errorf("fake segreceiver %d dial: %w", i, err)
 				return

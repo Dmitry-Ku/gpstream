@@ -36,6 +36,14 @@ import (
 // both sides and the comparison is purely column-level (the DB-level diff is
 // reported separately from pg_database).
 func TestColumnCollationLive(t *testing.T) {
+	if pgtest.LiveMode() {
+		// The acceptance needs a per-DB LC_COLLATE=C + explicit C.utf8
+		// column collation on a --no-locale cluster. A live GP6 database
+		// inherits the cluster's locale and cannot be re-initialized, so
+		// the collation-diff assertions cannot hold there (the copy itself
+		// is covered by the live manager tests).
+		t.Skip("live mode: per-DB locale (LC_COLLATE=C) not available on a live GP6 cluster")
+	}
 	ctx := context.Background()
 
 	srcCl, err := pgtest.StartWithLocale(5761, "srcdb", "C", "C")

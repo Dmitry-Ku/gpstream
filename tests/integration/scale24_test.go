@@ -116,7 +116,7 @@ func TestScale24TablesConsistentSnapshot(t *testing.T) {
 	// (Waiting for a specific unit to be "copying" can be missed for a small
 	// table whose copy outlasts the poll interval, flaking the writer start.)
 	snapshotLive := false
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(liveDeadline(60 * time.Second))
 	for time.Now().Before(deadline) {
 		for _, u := range j.Units() {
 			if u.State != manifest.StatePending {

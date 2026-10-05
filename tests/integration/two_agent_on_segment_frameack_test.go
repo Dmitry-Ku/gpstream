@@ -118,7 +118,7 @@ func TestTwoAgentOnSegmentFrameAckServe(t *testing.T) {
 	errCh := make(chan error, nSeg)
 	for i := 0; i < nSeg; i++ {
 		go func(i int) {
-			conn, err := net.Dial("tcp", listen)
+			conn, err := dialRetry(listen, 90*time.Second)
 			if err != nil {
 				errCh <- fmt.Errorf("fake segreceiver %d dial: %w", i, err)
 				return

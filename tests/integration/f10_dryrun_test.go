@@ -92,16 +92,23 @@ func TestDryRunAcceptance(t *testing.T) {
 
 	// 2. Exact collation report: exactly one diff, for the copied DB srcdb,
 	// C -> C.utf8. The postgres service DB (identical on both clusters) must
-	// NOT be reported.
-	if len(p1.Collations) != 1 {
-		t.Fatalf("collation diffs = %d, want 1; got %+v", len(p1.Collations), p1.Collations)
-	}
-	cd := p1.Collations[0]
-	if cd.DB != "srcdb" {
-		t.Errorf("collation diff db = %q, want srcdb (the copied DB, not postgres)", cd.DB)
-	}
-	if cd.LCCollate != "C -> C.utf8" {
-		t.Errorf("lc_collate = %q, want %q", cd.LCCollate, "C -> C.utf8")
+	// NOT be reported. (Live mode: both live databases inherit their
+	// clusters' locale, so there is no DB-level diff — assert 0 instead.)
+	if pgtest.LiveMode() {
+		if len(p1.Collations) != 0 {
+			t.Fatalf("collation diffs = %d, want 0 (live clusters share a locale); got %+v", len(p1.Collations), p1.Collations)
+		}
+	} else {
+		if len(p1.Collations) != 1 {
+			t.Fatalf("collation diffs = %d, want 1; got %+v", len(p1.Collations), p1.Collations)
+		}
+		cd := p1.Collations[0]
+		if cd.DB != "srcdb" {
+			t.Errorf("collation diff db = %q, want srcdb (the copied DB, not postgres)", cd.DB)
+		}
+		if cd.LCCollate != "C -> C.utf8" {
+			t.Errorf("lc_collate = %q, want %q", cd.LCCollate, "C -> C.utf8")
+		}
 	}
 
 	// 3. Determinism: a second dry-run on the unchanged environment yields a

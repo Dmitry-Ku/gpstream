@@ -100,10 +100,9 @@ func TestTwoAgentManagerRun(t *testing.T) {
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
 	mgr := manifest.NewManager(&cfg, src, dst, j)
-	// Inject the in-process two-agent runner (drives the agent package over a
-	// real TCP socket; no subprocesses). Run uses it because cfg.Topology is
-	// two-agent and m.twoAgent is non-nil.
-	mgr.SetTwoAgentRunner(manifest.NewInProcTwoAgentRunner(&cfg))
+	// Inject the two-agent runner: in-process locally, the PROCESS runner
+	// (deployed agents on the cluster hosts) in live mode.
+	setTwoAgentRunner(t, mgr, &cfg, srcCl.URL(), dstCl.URL())
 
 	start := time.Now()
 	if err := runWithTimeout(t, mgr, p, 180*time.Second); err != nil {

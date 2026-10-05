@@ -247,6 +247,16 @@ func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
 	return &processTwoAgentRunner{cfg: cfg, portAlloc: alloc}
 }
 
+// NewProcessTwoAgentRunner builds the process two-agent runner (the production
+// path: it launches the real gpstream-source-agent / gpstream-dest-agent
+// binaries as subprocesses, locally or over SSH per the config's
+// SourceAgentSSH/DestAgentSSH). The integration harness injects this in live
+// mode so the data path runs through the DEPLOYED package on the cluster
+// hosts, not in-process agent code on the controller.
+func NewProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
+	return newProcessTwoAgentRunner(cfg)
+}
+
 // Start brings up both long-lived agents and connects the control clients.
 // Each agent is launched per the operator's config (Inc2d): a LOCAL
 // subprocess on the controller's host (the gp6lab / single-host layout), an

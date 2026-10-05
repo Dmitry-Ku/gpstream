@@ -57,7 +57,9 @@ func newTwoAgentManager(t *testing.T, cfg *config.Config, srcQ, dstQ pg.Streamin
 	cfg.Source = srcDSN
 	cfg.Dest = dstDSN
 	m := manifest.NewManager(cfg, srcQ, dstQ, j)
-	m.SetTwoAgentRunner(manifest.NewInProcTwoAgentRunner(cfg))
+	// Live mode: the PROCESS runner (deployed agents on the cluster hosts via
+	// SSH) + the SSH agent config. Local mode: the in-process runner.
+	setTwoAgentRunner(t, m, cfg, srcDSN, dstDSN)
 	return m
 }
 

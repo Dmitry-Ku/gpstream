@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/gpstream/gpstream/internal/pgtest"
 )
 
 // TestTwoAgentCrashRecoveryMatrix is the ADR-002 / two-agent crash-recovery
@@ -57,15 +59,20 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 	bravoDigest := digest(t, src, "public.bravo")
 
 	bin := buildTwoAgentBinaries(t)
+	// live mode: the controller is the DEPLOYED /usr/bin/gpstream on the
+	// controller host (vm1) and the agents are driven over SSH (env); local
+	// mode keeps the convention-resolved local build (agents sit next to the
+	// controller binary).
+	controllerBin := liveControllerBinary(t, bin.gpstream)
+	runEnv := liveCLIEnv(t, srcCl.URL(), dstCl.URL())
 	runArgs := func(stateDir, opID string) []string {
 		return []string{
 			"run",
 			"--source", srcCl.URL(), "--dest", dstCl.URL(),
 			"--operation-id", opID, "--state-dir", stateDir,
-			"--dbs", "srcdb",
-			// no agent-binary flags: the agents sit next to the controller
-			// binary in the temp dir, so convention resolution (sibling of
-			// the gpstream binary) finds them.
+			"--dbs", srcCl.DB,
+			// no agent-binary flags: the agents resolve by convention
+			// (sibling of the controller binary / GPSTREAM_AGENT_BIN_DIR).
 			"--workers", "1",
 			"--resolve-conflicts", "overwrite",
 		}
@@ -79,20 +86,61 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		}
 	}
 
-	// pgrepPIDs returns the pids whose command line matches the pattern.
-	pgrepPIDs := func(pattern string) []int {
-		out, err := exec.Command("pgrep", "-f", pattern).Output()
+	// sshHostFor returns the host the given agent runs on (live mode: parsed
+	// from the DSN; local: "").
+	hostOf := func(dsn string) string {
+		if !pgtest.LiveMode() {
+			return ""
+		}
+		return dsnHost(dsn)
+	}
+
+	// pgrepPIDs returns the pids whose command line matches the pattern — on
+	// the given agent host over SSH in live mode, locally otherwise.
+	pgrepPIDs := func(host, pattern string) []int {
+		var out []byte
+		var err error
+		if host != "" {
+			user := os.Getenv("GP6_LAB_SSH_USER")
+			if user == "" {
+				user = "gp"
+			}
+			args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no"}
+			if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
+				args = append(args, "-i", key)
+			}
+			args = append(args, user+"@"+host, "pgrep -f "+pattern)
+			out, err = exec.Command("ssh", args...).Output()
+		} else {
+			out, err = exec.Command("pgrep", "-f", pattern).Output()
+		}
 		if err != nil {
 			return nil
 		}
 		var pids []int
 		for _, tok := range strings.Fields(string(out)) {
-			p, e := strconv.Atoi(tok)
-			if e == nil {
+			if p, e := strconv.Atoi(tok); e == nil {
 				pids = append(pids, p)
 			}
 		}
 		return pids
+	}
+
+	// killPIDRemote SIGKILLs a pid on host over SSH (live mode).
+	killPIDRemote := func(t *testing.T, host string, pid int) {
+		t.Helper()
+		user := os.Getenv("GP6_LAB_SSH_USER")
+		if user == "" {
+			user = "gp"
+		}
+		args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no"}
+		if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
+			args = append(args, "-i", key)
+		}
+		args = append(args, user+"@"+host, "kill -9 "+strconv.Itoa(pid))
+		if out, err := exec.Command("ssh", args...).CombinedOutput(); err != nil {
+			t.Fatalf("remote kill -9 %d on %s: %v: %s", pid, host, err, out)
+		}
 	}
 
 	// waitUnitState polls the durable journal until `table` reaches `state`
@@ -139,6 +187,8 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 	// "--src <conn>" argument, which the controller never carries.
 	srcAgentPattern := filepath.Base(bin.srcAgent) + " --src "
 	destAgentPattern := filepath.Base(bin.destAgent) + " --dest "
+	srcHost := hostOf(srcCl.URL())
+	dstHost := hostOf(dstCl.URL())
 
 	scenarios := []struct {
 		name  string
@@ -150,11 +200,15 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			name: "kill-source-agent-mid-copy",
 			opID: "crashsrc",
 			kill: func(t *testing.T, runPID int) {
-				pids := pgrepPIDs(srcAgentPattern)
+				pids := pgrepPIDs(srcHost, srcAgentPattern)
 				if len(pids) == 0 {
-					t.Fatalf("source agent not found (pattern %q)", srcAgentPattern)
+					t.Fatalf("source agent not found (pattern %q, host %q)", srcAgentPattern, srcHost)
 				}
-				killPID(t, pids[0])
+				if srcHost != "" {
+					killPIDRemote(t, srcHost, pids[0])
+				} else {
+					killPID(t, pids[0])
+				}
 			},
 			// FIX A: when the source agent dies, the controller's control
 			// connection drops and the run must exit. There is no orphan to
@@ -165,11 +219,15 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			name: "kill-dest-agent-mid-copy",
 			opID: "crashdst",
 			kill: func(t *testing.T, runPID int) {
-				pids := pgrepPIDs(destAgentPattern)
+				pids := pgrepPIDs(dstHost, destAgentPattern)
 				if len(pids) == 0 {
-					t.Fatalf("dest agent not found (pattern %q)", destAgentPattern)
+					t.Fatalf("dest agent not found (pattern %q, host %q)", destAgentPattern, dstHost)
 				}
-				killPID(t, pids[0])
+				if dstHost != "" {
+					killPIDRemote(t, dstHost, pids[0])
+				} else {
+					killPID(t, pids[0])
+				}
 			},
 			check: func(t *testing.T) {},
 		},
@@ -183,17 +241,17 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			// control connection drops, so the agent must EXIT (rolling back
 			// its pinned snapshot) rather than linger as an orphan holding a
 			// server-side REPEATABLE READ backend. Give it a moment to unwind,
-			// then assert it is gone.
+			// then assert it is gone (on the source host over SSH in live mode).
 			check: func(t *testing.T) {
-				deadline := time.Now().Add(10 * time.Second)
+				deadline := time.Now().Add(30 * time.Second)
 				for time.Now().Before(deadline) {
-					if len(pgrepPIDs(srcAgentPattern)) == 0 {
+					if len(pgrepPIDs(srcHost, srcAgentPattern)) == 0 {
 						return // source agent exited cleanly on control loss
 					}
-					time.Sleep(300 * time.Millisecond)
+					time.Sleep(500 * time.Millisecond)
 				}
 				t.Fatalf("source agent is an ORPHAN after the controller died (still running: %v); it must exit and roll back its snapshot",
-					pgrepPIDs(srcAgentPattern))
+					pgrepPIDs(srcHost, srcAgentPattern))
 			},
 		},
 	}
@@ -204,10 +262,18 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			stateDir := t.TempDir()
 			journal := filepath.Join(stateDir, sc.opID, "journal.jsonl")
 
+			// Clean slate: no leftover agents from a previous scenario (an
+			// orphaned dest agent holds the fixed control/data ports and
+			// would refuse the fresh run's agent launch).
+			liveKillAgents(t, srcCl.URL(), dstCl.URL())
+
 			// --- Phase 1: run until bravo is mid-copy, then kill ----------
 			rctx, rcancel := context.WithCancel(context.Background())
 			defer rcancel()
-			cmd := exec.CommandContext(rctx, bin.gpstream, runArgs(stateDir, sc.opID)...)
+			cmd := exec.CommandContext(rctx, controllerBin, runArgs(stateDir, sc.opID)...)
+			if runEnv != nil {
+				cmd.Env = append(os.Environ(), runEnv...)
+			}
 			var runErr strings.Builder
 			cmd.Stderr = &runErr
 			if err := cmd.Start(); err != nil {
@@ -217,14 +283,15 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 
 			// Wait until alpha is swapped (unit 1 done) — proves the run is
 			// progressing through the two-agent path and the keep-unit is
-			// complete before we crash on bravo.
-			if jid := waitUnitState(t, journal, "alpha", "swapped", 120*time.Second); jid == "" {
+			// complete before we crash on bravo. (Live: a GP6 coordinator
+			// connect is 10-20s, so the window is generous.)
+			if jid := waitUnitState(t, journal, "alpha", "swapped", 300*time.Second); jid == "" {
 				rcancel()
 				_ = cmd.Wait()
 				t.Fatalf("alpha never reached swapped (run stuck?)\nstderr:\n%s", runErr.String())
 			}
 			// Wait for bravo (unit 2) to reach copying — the mid-copy moment.
-			if jid := waitUnitState(t, journal, "bravo", "copying", 120*time.Second); jid == "" {
+			if jid := waitUnitState(t, journal, "bravo", "copying", 300*time.Second); jid == "" {
 				rcancel()
 				_ = cmd.Wait()
 				t.Fatalf("bravo never reached copying (run stuck?)\nstderr:\n%s", runErr.String())
@@ -249,7 +316,14 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			sc.check(t)
 
 			// --- Phase 2: resume by re-running the SAME operation-id ------
-			rc := exec.Command(bin.gpstream, runArgs(stateDir, sc.opID)...)
+			// (the orphaned agents should have exited on control loss; a
+			// best-effort pkill clears any laggard holding the fixed ports).
+			liveKillAgents(t, srcCl.URL(), dstCl.URL())
+			time.Sleep(2 * time.Second)
+			rc := exec.Command(controllerBin, runArgs(stateDir, sc.opID)...)
+			if runEnv != nil {
+				rc.Env = append(os.Environ(), runEnv...)
+			}
 			out, err := rc.CombinedOutput()
 			if err != nil {
 				t.Fatalf("resume run failed: %v\n%s", err, out)

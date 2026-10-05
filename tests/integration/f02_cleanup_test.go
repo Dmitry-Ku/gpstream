@@ -60,18 +60,25 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 
 	bin := buildTwoAgentBinaries(t)
+	// live mode: the controller is the DEPLOYED /usr/bin/gpstream on the
+	// controller host and the agents are driven over SSH (env); local mode
+	// keeps the convention-resolved local build.
+	controllerBin := liveControllerBinary(t, bin.gpstream)
+	runEnv := liveCLIEnv(t, srcCl.URL(), dstCl.URL())
 	stateDir := t.TempDir()
 	opID := "f02kill9"
 
 	// --- Phase 1: run + kill -9 mid-operation -------------------------
 	// No rate limit: the 130 MB table streams in seconds, and the kill
 	// window is the `verifying` phase (two full-table checksum re-reads).
-	cmd := exec.Command(bin.gpstream, "run",
+	cmd := exec.Command(controllerBin, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-		// agent binaries resolve by convention (sibling of the controller binary)
-
+		// agent binaries resolve by convention / GPSTREAM_AGENT_BIN_DIR
 		"--workers", "1", "--verify", "on")
+	if runEnv != nil {
+		cmd.Env = append(os.Environ(), runEnv...)
+	}
 	var runErr strings.Builder
 	cmd.Stderr = &runErr
 	if err := cmd.Start(); err != nil {
@@ -129,9 +136,12 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 
 	// --- Phase 2: cleanup --mode drop restores the pre-operation state --
-	cl := exec.Command(bin.gpstream, "cleanup",
+	cl := exec.Command(controllerBin, "cleanup",
 		"--state-dir", stateDir, "--operation-id", opID,
 		"--mode", "drop", "--dest", dstCl.URL(), "--yes")
+	if runEnv != nil {
+		cl.Env = append(os.Environ(), runEnv...)
+	}
 	out, err := cl.CombinedOutput()
 	if err != nil {
 		t.Fatalf("cleanup --mode drop: %v\n%s", err, out)
@@ -153,11 +163,18 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}
 
 	// --- Phase 3: re-run the same operation completes the killed unit ---
-	rr := exec.Command(bin.gpstream, "run",
+	// (the orphaned remote agents should have exited on control loss; a
+	// best-effort pkill clears any laggard holding the fixed ports).
+	liveKillAgents(t, srcCl.URL(), dstCl.URL())
+	time.Sleep(2 * time.Second)
+	rr := exec.Command(controllerBin, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-	// agent binaries resolve by convention (sibling of the controller binary)
+		// agent binaries resolve by convention / GPSTREAM_AGENT_BIN_DIR
 	)
+	if runEnv != nil {
+		rr.Env = append(os.Environ(), runEnv...)
+	}
 	rrOut, err := rr.CombinedOutput()
 	if err != nil {
 		t.Fatalf("re-run: %v\n%s", err, rrOut)
@@ -231,7 +248,7 @@ func TestF02TwoDBConcurrentSnapshot(t *testing.T) {
 
 	// Wait until BOTH operations' snapshots are live (any unit left
 	// pending in the durable journal), then start one writer per database.
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(liveDeadline(60 * time.Second))
 	for {
 		live := 0
 		for _, l := range legs {
