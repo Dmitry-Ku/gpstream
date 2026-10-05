@@ -212,6 +212,14 @@ type ReliablePipe struct {
 	// creates the fresh pair and the receiver simply waits for the swap.
 	resumer func() dupConn
 
+	// identity, when set, rides every HELLO (the on_segment multi-tenant
+	// resume routing). The sender greets with it on the initial connection
+	// and every re-dial; the destination's ResumeRouter reads it to route a
+	// connection to the matching receiver-pipe. The coordinator leg (one
+	// sender per listener) leaves it unset and uses the plain 12-byte HELLO.
+	identity    StreamID
+	hasIdentity bool
+
 	// Receiver: in-order output buffer.
 	outMu    sync.Mutex
 	outBuf   [][]byte
@@ -1145,6 +1153,9 @@ func (rp *ReliablePipe) sendNack(seq uint64) {
 }
 
 func (rp *ReliablePipe) sendHello(seq uint64) error {
+	if rp.hasIdentity {
+		return rp.sendCtrl(ctrlHello, encodeHelloID(seq, rp.identity))
+	}
 	body := make([]byte, 12)
 	binary.LittleEndian.PutUint32(body[0:4], helloVer)
 	binary.LittleEndian.PutUint64(body[4:12], seq)

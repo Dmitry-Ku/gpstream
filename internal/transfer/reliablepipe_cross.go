@@ -82,6 +82,112 @@ func NewReliablePipeSenderOnConn(cfg ReliablePipeConfig, firstConn dupConn, dial
 	return rp, nil
 }
 
+// NewReliablePipeSenderOnConnID is NewReliablePipeSenderOnConn for the
+// multi-tenant (on_segment) path: the pipe greets its initial connection AND
+// every re-dial with a StreamID-carrying HELLO (helloVerID), so the
+// destination's ResumeRouter can route this slice's connections (initial and
+// resume) to the matching receiver-pipe. The coordinator leg (one sender per
+// listener) uses NewReliablePipeSenderOnConn instead, which sends no identity
+// (the plain 12-byte HELLO on a re-dial only).
+func NewReliablePipeSenderOnConnID(cfg ReliablePipeConfig, firstConn dupConn, dialer func() (dupConn, error), id StreamID) (*ReliablePipe, error) {
+	if cfg.MaxReconnects <= 0 {
+		cfg.MaxReconnects = 20
+	}
+	if cfg.RetransmitBufferMax <= 0 {
+		cfg.RetransmitBufferMax = 1 << 30
+	}
+	if cfg.AckByteInterval <= 0 {
+		cfg.AckByteInterval = 1 << 20
+	}
+	if cfg.AckTimeInterval <= 0 {
+		cfg.AckTimeInterval = 100 * time.Millisecond
+	}
+	if cfg.AckTimeout <= 0 {
+		cfg.AckTimeout = 30 * time.Second
+	}
+	link := newLink()
+	rp := newReliablePipe(rpSender, cfg, link, firstConn)
+	link.s = rp
+	rp.dialer = dialer
+	rp.identity = id
+	rp.hasIdentity = true
+	// Greet the initial connection with the identity HELLO (seq 0: no frames
+	// sent yet). The destination's router reads it to route this conn; the
+	// receiving pipe sees it (replayed) and treats it as the reconnect
+	// greeting. Sent before any data frame (both serialize on wmu).
+	_ = rp.sendHello(0)
+	rp.wg.Add(2)
+	go rp.receiveLoop()
+	go rp.watchdogLoop()
+	return rp, nil
+}
+
+// NewReliablePipeReceiverOnSlot builds the RECEIVER end of a multi-tenant
+// (on_segment) pipe whose transport is supplied by a ResumeRouter slot
+// channel, not a listener it owns. The initial connection AND every resume
+// re-dial arrive on slot (the router has already read their identity HELLO,
+// replayed it as a prefix, and confirmed it belongs to this pipe). initialTO
+// bounds the wait for the slice's first connection (a segreceiver that never
+// dials cannot hang the unit); cfg.ResumeTimeout bounds each re-accept after
+// a break (a dead segreceiver fails the slice -> the unit).
+func NewReliablePipeReceiverOnSlot(cfg ReliablePipeConfig, slot <-chan dupConn, initialTO time.Duration) (*ReliablePipe, error) {
+	if cfg.MaxReconnects <= 0 {
+		cfg.MaxReconnects = 20
+	}
+	if cfg.RetransmitBufferMax <= 0 {
+		cfg.RetransmitBufferMax = 1 << 30
+	}
+	if cfg.AckByteInterval <= 0 {
+		cfg.AckByteInterval = 1 << 20
+	}
+	if cfg.AckTimeInterval <= 0 {
+		cfg.AckTimeInterval = 100 * time.Millisecond
+	}
+	if cfg.AckTimeout <= 0 {
+		cfg.AckTimeout = 30 * time.Second
+	}
+	if cfg.ResumeTimeout <= 0 {
+		cfg.ResumeTimeout = 30 * time.Second
+	}
+	if initialTO <= 0 {
+		initialTO = 5 * time.Minute
+	}
+	first := boundedSlotAccept(slot, initialTO)
+	if first == nil {
+		return nil, &tcpPairError{op: "slot-accept", err: errors.New("initial connection timeout")}
+	}
+	link := newLink()
+	rp := newReliablePipe(rpReceiver, cfg, link, first)
+	link.r = rp
+	// Per-break re-accept: the router re-routes the slice's re-dial to this
+	// slot. Bounded by ResumeTimeout so a dead segreceiver fails the slice.
+	rp.resumer = func() dupConn {
+		deadline := time.Now().Add(cfg.ResumeTimeout)
+		for {
+			if rp.dead.Load() || rp.link.aborted.Load() {
+				return nil
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil
+			}
+			c := boundedSlotAccept(slot, remaining)
+			if c == nil {
+				return nil
+			}
+			if rp.dead.Load() || rp.link.aborted.Load() {
+				_ = c.Close()
+				return nil
+			}
+			return c
+		}
+	}
+	rp.wg.Add(2)
+	go rp.receiveLoop()
+	go rp.ackLoop()
+	return rp, nil
+}
+
 // NewReliablePipeReceiver builds the RECEIVER end of a cross-process frame-
 // ACK'd pipe. It accepts the initial connection from l (bounded) and starts
 // the receiver's receiveLoop + ackLoop. On a transport break it performs one
