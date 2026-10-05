@@ -67,8 +67,10 @@ that died — resume is the correct mechanism.
 The adaptive limiter (F-14) is **always active**: it samples source host
 load and the destination's receive queue, reduces the rate on sustained
 overload and recovers when load subsides. There is no `--adaptive-rate-limit`
-flag to enable it — it is built in. There is no `--data-port-range` flag
-(the stream manages its own data ports).
+flag to enable it — it is built in. Data ports are allocated automatically
+(every long-lived agent binds `:0` and reports its real address in the
+control handshake); for strict firewalls, restrict them with
+`--data-port-range <LO-HI>`.
 
 Diagnose with the metrics endpoint (see `METRICS.md`): `gpstream_bytes_total`,
 `gpstream_bytes_decoded_total` (compression ratio), `gpstream_throughput_bytes`,
