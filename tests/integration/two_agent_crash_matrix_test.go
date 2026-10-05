@@ -109,7 +109,13 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
 				args = append(args, "-i", key)
 			}
-			args = append(args, user+"@"+host, "pgrep -f "+pattern)
+			// Quote the pattern for the REMOTE shell: without quotes the
+			// pattern's spaces word-split, so pgrep would see "--src" as an
+			// option (error -> no pids -> false "agent not found"). The
+			// pattern is harness-controlled (no single quotes), so single
+			// quoting is safe.
+			quoted := "'" + strings.ReplaceAll(pattern, "'", "'\\''") + "'"
+			args = append(args, user+"@"+host, "pgrep -f "+quoted)
 			out, err = exec.Command("ssh", args...).Output()
 		} else {
 			out, err = exec.Command("pgrep", "-f", pattern).Output()
