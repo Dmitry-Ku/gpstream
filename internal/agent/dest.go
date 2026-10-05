@@ -40,6 +40,15 @@ type DestOptions struct {
 	// that launches the dest agent with a wildcard port (127.0.0.1:0) uses
 	// this to learn the real endpoint the source agent must dial.
 	ListenNotify func(addr string)
+	// FrameAck enables the frame-level ACK + RST-resume transport (DESIGN
+	// §4.6) on the data socket: the framed stream rides a ReliablePipe
+	// (retransmit ring + re-dial/resume) instead of a plain conn. The
+	// UnitSpec header is still read from the INITIAL connection (the
+	// pre-stream header, outside the frame channel).
+	FrameAck bool
+	// ReliablePipe carries the §4.6 transport parameters (ack timeout,
+	// reconnect budget, retransmit window, resume timeout).
+	ReliablePipe transfer.ReliablePipeConfig
 	// SharedListen, when non-nil, is the agent long-lived data listener
 	// (design 04.10: one data port per agent; units multiplex by unit_id).
 	// The serve accepts its connections from it and does NOT close it on
@@ -110,24 +119,51 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 
 	// 3. Accept the source agent's connection (bounded: a source that never
 	// dials cannot hang the dest forever — accept in a goroutine + timer).
-	var conn net.Conn
-	type acceptResult struct {
-		conn net.Conn
-		err  error
-	}
-	acceptCh := make(chan acceptResult, 1)
-	go func() {
-		c, aerr := l.Accept()
-		acceptCh <- acceptResult{conn: c, err: aerr}
-	}()
-	select {
-	case ar := <-acceptCh:
-		if ar.err != nil {
-			return out, fmt.Errorf("dest agent: accept from source: %w", ar.err)
+	// The conn is held as a DupConn (the frame-ack path may wrap it in a
+	// prefix-conn after peeking the first bytes).
+	var conn transfer.DupConn
+	acceptOne := func() (transfer.DupConn, error) {
+		type r struct {
+			conn net.Conn
+			err  error
 		}
-		conn = ar.conn
-	case <-time.After(o.AcceptTimeout):
-		return out, fmt.Errorf("dest agent: accept from source: timeout after %v", o.AcceptTimeout)
+		ch := make(chan r, 1)
+		go func() {
+			c, aerr := l.Accept()
+			ch <- r{conn: c, err: aerr}
+		}()
+		select {
+		case ar := <-ch:
+			return ar.conn, ar.err
+		case <-time.After(o.AcceptTimeout):
+			return nil, fmt.Errorf("accept from source: timeout after %v", o.AcceptTimeout)
+		}
+	}
+	conn, aerr := acceptOne()
+	if aerr != nil {
+		return out, fmt.Errorf("dest agent: %w", aerr)
+	}
+	// With frame-ack on, a STALE resume connection from a previous,
+	// already-ended unit can still arrive on the shared listener (that
+	// unit's sender re-dials a few times after its serve closed). A resume
+	// opens with a ctrl HELLO; the fresh connection for THIS unit opens with
+	// the UnitSpec header. Skip the stale resumes until the fresh UnitSpec
+	// connection arrives. (A conn that dies before yielding 4 bytes is kept:
+	// ReadUnitSpec below reports the error, matching the plain path.)
+	for o.FrameAck {
+		c, isResume := transfer.PeekStreamPrefix(conn)
+		if c == nil {
+			break
+		}
+		if !isResume {
+			conn = c // fresh UnitSpec conn (the prefix replays the header bytes)
+			break
+		}
+		_ = c.Close() // a stale resume from a previous unit
+		conn, aerr = acceptOne()
+		if aerr != nil {
+			return out, fmt.Errorf("dest agent: %w", aerr)
+		}
 	}
 	defer conn.Close()
 
@@ -161,13 +197,38 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 	if perr != nil {
 		return out, fmt.Errorf("dest agent: compress %q: %w", spec.Compress, perr)
 	}
-	fr := transfer.NewFramedReader(conn, compress.NewDec(mode))
+	var rp *transfer.ReliablePipe
+	frameConn := transfer.Pipe(conn)
+	if o.FrameAck {
+		// The framed stream rides a ReliablePipe: the source re-dials this
+		// same listener on a break and replays its un-ACKed frames; the
+		// receiver dedups by seq, so the open COPY FROM below keeps reading
+		// the in-order stream across the break (no re-COPY, no re-UnitSpec —
+		// the spec was read from the initial connection, before the frame
+		// channel). rawL is the (possibly TLS-wrapped) shared listener the
+		// re-accepts come from.
+		var rerr error
+		rp, rerr = transfer.NewReliablePipeReceiverOnConn(o.ReliablePipe, conn, l)
+		if rerr != nil {
+			return out, fmt.Errorf("dest agent: frame-ack transport: %w", rerr)
+		}
+		frameConn = rp
+	}
+	fr := transfer.NewFramedReader(frameConn, compress.NewDec(mode))
 	rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, fr)
 	if cerr != nil {
+		if rp != nil {
+			// Destination failure: tell the sender to stop (its blocked Write
+			// fails fast instead of re-dialing a destination that is done).
+			rp.Abort()
+		}
 		return out, fmt.Errorf("dest agent: copy into %s.%s: %w", spec.Schema, spec.Staging, cerr)
 	}
 	out.Rows = rows
 	out.Logical = fr.Logical()
+	if rp != nil {
+		_ = rp.Close() // clean end-of-stream (FIN) to the sender
+	}
 
 	// 7. The swap is a controller decision (P3 passes o.Swap per unit).
 	if o.Swap {

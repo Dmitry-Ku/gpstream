@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
+	"github.com/gpstream/gpstream/internal/transfer"
 )
 
 func main() {
@@ -72,6 +73,12 @@ func main() {
 	// Timeouts.
 	acceptTO := flag.Duration("accept-timeout", 5*time.Minute, "wait for the source agent's connection")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
+	// Frame-ACK (DESIGN §4.6): frame-level ACK + RST-resume on the data
+	// socket. The controller passes the run's values (default on).
+	frameAck := flag.String("frame-ack", "on", "frame-level ACK + RST-resume on the data socket: on|off (default on)")
+	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
+	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per connection")
+	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
 	// Doctor probe: print a marker and exit 0 (no serve), proving the binary
 	// is installed on the destination host.
 	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
@@ -120,6 +127,8 @@ func main() {
 			ControlTLSCA:   *ctrlCA,
 			AcceptTimeout:  *acceptTO,
 			StreamTimeout:  *streamTO,
+			FrameAck:       *frameAck != "off",
+			ReliablePipe:   transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 		})
 		if err != nil {
 			fail("start long-lived dest server: %v", err)
@@ -266,6 +275,8 @@ func main() {
 		Swap:          *swap,
 		AcceptTimeout: *acceptTO,
 		StreamTimeout: *streamTO,
+		FrameAck:      *frameAck != "off",
+		ReliablePipe:  transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 	})
 	if err != nil {
 		fail("%v", err)

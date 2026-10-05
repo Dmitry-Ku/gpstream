@@ -71,6 +71,40 @@ type SourceOptions struct {
 	// StreamTimeout bounds the whole stream (a wedged dest cannot hang the
 	// source's COPY past its own lifetime).
 	StreamTimeout time.Duration
+	// FrameAck enables the frame-level ACK + RST-resume transport (DESIGN
+	// §4.6) on the data socket; ReliablePipe carries its parameters.
+	FrameAck     bool
+	ReliablePipe transfer.ReliablePipeConfig
+}
+
+// dialDestOnce performs a SINGLE dial + (optional) TLS handshake to the
+// destination agent (o.DestAddr). The frame-ack re-dial on a break calls
+// this: a refused connection (a dead destination) must fail the unit, not
+// retry.
+func (o *SourceOptions) dialDestOnce(ctx context.Context) (net.Conn, error) {
+	raw, err := net.DialTimeout("tcp", o.DestAddr, o.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if !transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
+		return raw, nil
+	}
+	host, herr := hostOf(o.DestAddr)
+	if herr != nil {
+		raw.Close()
+		return nil, fmt.Errorf("bad --dest %q: %w", o.DestAddr, herr)
+	}
+	ccfg, cerr := transfer.ClientTLSConfig(host, o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, "")
+	if cerr != nil {
+		raw.Close()
+		return nil, fmt.Errorf("tls config: %w", cerr)
+	}
+	tc := tls.Client(raw, ccfg)
+	if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+		raw.Close()
+		return nil, fmt.Errorf("tls handshake with dest: %w", hsErr)
+	}
+	return tc, nil
 }
 
 // SourceResult is what the source agent reports after a push (FR-04 volume +
@@ -150,32 +184,14 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	// wedged dest cannot hang the source past the COPY lifetime.
 	dctx, dcancel := context.WithTimeout(ctx, o.StreamTimeout)
 	defer dcancel()
-	raw, err := net.DialTimeout("tcp", o.DestAddr, o.ConnectTimeout)
+	conn, err := o.dialDestOnce(dctx)
 	if err != nil {
 		return out, fmt.Errorf("source agent: dial dest %s: %w", o.DestAddr, err)
 	}
-	conn := raw
-	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
-		host, herr := hostOf(o.DestAddr)
-		if herr != nil {
-			raw.Close()
-			return out, fmt.Errorf("source agent: bad --dest %q: %w", o.DestAddr, herr)
-		}
-		ccfg, cerr := transfer.ClientTLSConfig(host, o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, "")
-		if cerr != nil {
-			raw.Close()
-			return out, fmt.Errorf("source agent: tls config: %w", cerr)
-		}
-		tc := tls.Client(raw, ccfg)
-		if hsErr := tc.HandshakeContext(dctx); hsErr != nil {
-			raw.Close()
-			return out, fmt.Errorf("source agent: tls handshake with dest: %w", hsErr)
-		}
-		conn = tc
-	}
 
 	// 3b. Send the UnitSpec header first: the destination reads it to build
-	// the staging table before it reads the framed data stream.
+	// the staging table before it reads the framed data stream. (It is NOT
+	// re-sent on a resume: the re-dial replays un-ACKed frames only.)
 	if serr := WriteUnitSpec(conn, spec); serr != nil {
 		conn.Close()
 		return out, serr
@@ -188,7 +204,25 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 		return out, fmt.Errorf("source agent: compress %q: %w", o.Compress, perr)
 	}
 	comp := compress.New(mode, level)
-	fw := transfer.NewFramedWriter(conn, o.JobID, o.UnitID, comp)
+
+	// 4b. Data channel: a plain conn, or (frame-ack on, DESIGN §4.6) a
+	// ReliablePipe that re-dials the destination on a break and replays the
+	// un-ACKed frames (the destination's receiver dedups by seq, so its open
+	// COPY FROM survives the break).
+	frameConn := transfer.Pipe(conn)
+	var rp *transfer.ReliablePipe
+	if o.FrameAck {
+		var rerr error
+		rp, rerr = transfer.NewReliablePipeSenderOnConn(o.ReliablePipe, conn, func() (transfer.DupConn, error) {
+			return o.dialDestOnce(dctx)
+		})
+		if rerr != nil {
+			conn.Close()
+			return out, fmt.Errorf("source agent: frame-ack transport: %w", rerr)
+		}
+		frameConn = rp
+	}
+	fw := transfer.NewFramedWriter(frameConn, o.JobID, o.UnitID, comp)
 
 	// 5. Stream: COPY ... TO STDOUT -> (count) -> frame+compress -> socket.
 	// A counting wrap measures the logical (uncompressed) volume the source
@@ -200,10 +234,18 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 		conn.Close()
 		return out, fmt.Errorf("source agent: copy %s.%s: %w", o.Schema, o.Table, cerr)
 	}
-	// 6. End-of-copy: flush the framed tail and close the socket so the
-	// destination's read side sees io.EOF.
-	if flerr := fw.CloseFlush(); flerr != nil && cerr == nil {
-		cerr = flerr
+	// 6. End-of-copy: flush the framed tail and signal clean end-of-stream.
+	// With frame-ack the FIN rides the pipe (the pipe owns the conn); without
+	// it the socket close is the end-of-copy.
+	if rp != nil {
+		if flerr := fw.Flush(); flerr != nil && cerr == nil {
+			cerr = flerr
+		}
+		_ = rp.Close()
+	} else {
+		if flerr := fw.CloseFlush(); flerr != nil && cerr == nil {
+			cerr = flerr
+		}
 	}
 
 	out.Rows = rows

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -271,6 +272,10 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		"--snapshot", r.snapshotMode(),
 		"--serve", srcCtrlAddr,
 		"--connect-timeout", "10s",
+		"--frame-ack", r.cfg.FrameAckArg(),
+		"--ack-timeout", r.cfg.AckTimeout,
+		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
+		"--retransmit-buffer-max", strconv.FormatInt(r.cfg.RetransmitBufferMax, 10),
 	}
 	if r.cfg.SSLCert != "" {
 		srcArgs = append(srcArgs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
@@ -321,6 +326,10 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--control-listen", destCtrlAddr,
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",
+		"--frame-ack", r.cfg.FrameAckArg(),
+		"--ack-timeout", r.cfg.AckTimeout,
+		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
+		"--retransmit-buffer-max", strconv.FormatInt(r.cfg.RetransmitBufferMax, 10),
 	}
 	if r.cfg.SSLCert != "" {
 		dargs = append(dargs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
@@ -773,6 +782,8 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 		Listen:         ctrlAddr,
 		ConnectTimeout: 10 * time.Second,
 		StreamTimeout:  6 * time.Hour,
+		FrameAck:       r.cfg.FrameAckOn(),
+		ReliablePipe:   r.cfg.ReliablePipeConfig(),
 	})
 	sctx, cancel := context.WithCancel(ctx)
 	r.srcCancel = cancel
@@ -813,6 +824,8 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 			Swap:          false,
 			AcceptTimeout: 5 * time.Minute,
 			StreamTimeout: 6 * time.Hour,
+			FrameAck:      r.cfg.FrameAckOn(),
+			ReliablePipe:  r.cfg.ReliablePipeConfig(),
 		})
 		if err != nil {
 			derrCh <- err

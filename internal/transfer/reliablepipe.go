@@ -128,6 +128,33 @@ func DefaultReliablePipeConfig() ReliablePipeConfig {
 	}
 }
 
+// NewReliablePipeConfig builds a ReliablePipeConfig from the raw operator
+// parameters (the agent launch args: --ack-timeout / --max-reconnects /
+// --retransmit-buffer-max), starting from the defaults. ackTimeout is
+// "adaptive" (3x median RTT) or a duration (e.g. "30s"); empty keeps the
+// default. This mirrors config.ReliablePipeConfig so the agent processes
+// (which receive the params as argv, not a *config.Config) produce the same
+// transport the controller computes.
+func NewReliablePipeConfig(ackTimeout string, maxReconnects int, retransmitMax int64) ReliablePipeConfig {
+	cfg := DefaultReliablePipeConfig()
+	if maxReconnects > 0 {
+		cfg.MaxReconnects = maxReconnects
+	}
+	if retransmitMax > 0 {
+		cfg.RetransmitBufferMax = retransmitMax
+	}
+	switch {
+	case ackTimeout == "adaptive":
+		cfg.AckTimeout = 30 * time.Second
+		cfg.AdaptiveAckTimeout = true
+	case ackTimeout != "":
+		if d, err := time.ParseDuration(ackTimeout); err == nil && d > 0 {
+			cfg.AckTimeout = d
+		}
+	}
+	return cfg
+}
+
 type rpRole int
 
 const (
@@ -353,6 +380,14 @@ func (rp *ReliablePipe) markDead() {
 		rp.outMu.Lock()
 		rp.outCv.Broadcast()
 		rp.outMu.Unlock()
+		// Wake a SENDER blocked in ringAdd back-pressure (the ring is full
+		// because the peer stopped ACKing and is now dead): without this the
+		// sender's data-COPY goroutine waits on spaceCv forever and the unit
+		// never fails. The re-check of dead/aborted in the ringAdd loop makes
+		// it return the "closed while back-pressured" error.
+		rp.ringMu.Lock()
+		rp.spaceCv.Broadcast()
+		rp.ringMu.Unlock()
 		// Wake the peer: a dead end means no swap will ever come, so a passive
 		// receiver blocked in waitSwap must not wait forever.
 		l := rp.link

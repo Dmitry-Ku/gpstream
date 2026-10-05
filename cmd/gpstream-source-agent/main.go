@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
+	"github.com/gpstream/gpstream/internal/transfer"
 )
 
 func main() {
@@ -68,6 +69,12 @@ func main() {
 	// Timeouts.
 	connectTO := flag.Duration("connect-timeout", 10*time.Second, "socket dial timeout")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
+	// Frame-ACK (DESIGN §4.6): frame-level ACK + RST-resume on the data
+	// socket. The controller passes the run's values (default on).
+	frameAck := flag.String("frame-ack", "on", "frame-level ACK + RST-resume on the data socket: on|off (default on)")
+	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
+	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per connection")
+	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
 	// Long-lived (P3) mode: listen for the controller's control protocol.
 	serve := flag.String("serve", "", "control listen address host:port (long-lived source agent mode)")
 	// Doctor probe: print a marker and exit 0 (no stream), proving the binary
@@ -111,6 +118,8 @@ func main() {
 			ControlTLSCA:   *ctrlCA,
 			ConnectTimeout: *connectTO,
 			StreamTimeout:  *streamTO,
+			FrameAck:       *frameAck != "off",
+			ReliablePipe:   transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 		})
 		addr, err := srv.Start(ctx)
 		if err != nil {
@@ -178,6 +187,8 @@ func main() {
 		DataTLSCA:      *dataCA,
 		ConnectTimeout: *connectTO,
 		StreamTimeout:  *streamTO,
+		FrameAck:       *frameAck != "off",
+		ReliablePipe:   transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 	})
 	if err != nil {
 		fail("%v", err)

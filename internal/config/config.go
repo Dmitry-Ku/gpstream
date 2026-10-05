@@ -475,12 +475,30 @@ func (c *Config) CheckDataPortRange(dstSegments int) error {
 // (DESIGN §4.6: default on; --frame-ack off falls back to the plain pipe).
 func (c *Config) FrameAckOn() bool { return c.FrameAck != "off" }
 
+// frameAckArg is the agent launch-arg value for --frame-ack ("on" when in
+// effect, "off" for the plain-pipe fallback).
+func (c *Config) FrameAckArg() string {
+	if c.FrameAckOn() {
+		return "on"
+	}
+	return "off"
+}
+
 // ReliablePipeConfig builds the R2-approved frame-ack transport parameters
 // from the CLI/env values (DESIGN §4.6).
 func (c *Config) ReliablePipeConfig() transfer.ReliablePipeConfig {
 	cfg := transfer.DefaultReliablePipeConfig()
-	cfg.MaxReconnects = c.MaxReconnects
-	cfg.RetransmitBufferMax = c.RetransmitBufferMax
+	// Guard zeros: Validate() (which applies the MaxReconnects /
+	// RetransmitBufferMax defaults) may not have run — e.g. an in-proc test
+	// builds config.Default() directly. A zero RetransmitBufferMax would
+	// cap the receiver's output window at 0 (deadlock: enqueue back-pressures
+	// forever, Read sees no data).
+	if c.MaxReconnects > 0 {
+		cfg.MaxReconnects = c.MaxReconnects
+	}
+	if c.RetransmitBufferMax > 0 {
+		cfg.RetransmitBufferMax = c.RetransmitBufferMax
+	}
 	if c.AckTimeout == "adaptive" {
 		cfg.AckTimeout = 30 * time.Second // fallback until RTT samples exist
 		cfg.AdaptiveAckTimeout = true

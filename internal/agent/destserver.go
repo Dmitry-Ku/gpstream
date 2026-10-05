@@ -111,6 +111,11 @@ type DestServerOptions struct {
 	// AcceptTimeout bounds the wait for a unit's first connection;
 	// StreamTimeout bounds the whole unit stream.
 	AcceptTimeout, StreamTimeout time.Duration
+	// FrameAck enables the frame-level ACK + RST-resume transport (DESIGN
+	// §4.6) on the data socket for the coordinator serve; ReliablePipe
+	// carries its parameters.
+	FrameAck     bool
+	ReliablePipe transfer.ReliablePipeConfig
 }
 
 // DestServer is the long-lived destination agent (one data + one control
@@ -257,6 +262,8 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			AcceptTimeout: s.opts.AcceptTimeout,
 			StreamTimeout: s.opts.StreamTimeout,
 			Swap:          req.Swap,
+			FrameAck:      s.opts.FrameAck,
+			ReliablePipe:  s.opts.ReliablePipe,
 		})
 		done.Rows, done.Logical, done.Swapped = res.Rows, res.Logical, res.Swapped
 		done.Ok = err == nil

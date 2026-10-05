@@ -61,6 +61,13 @@ type ServerOptions struct {
 	ControlTLSCert, ControlTLSKey, ControlTLSCA string
 	// ConnectTimeout bounds the per-unit dest dial; StreamTimeout the stream.
 	ConnectTimeout, StreamTimeout time.Duration
+	// FrameAck enables the frame-level ACK + RST-resume transport (DESIGN
+	// §4.6) on the data socket: the framed stream rides a ReliablePipe that
+	// re-dials the destination on a break and replays the un-ACKed frames.
+	FrameAck bool
+	// ReliablePipe carries the §4.6 transport parameters (ack timeout,
+	// reconnect budget, retransmit window, resume timeout).
+	ReliablePipe transfer.ReliablePipeConfig
 }
 
 // NewSourceServer builds a long-lived source agent with the given options.
@@ -295,8 +302,12 @@ func (w *countingWriteConn) Bytes() uint64 { return w.n.Load() }
 // still binding) and applies the data-plane TLS config when enabled (the
 // source agent is the client). Shared by streamUnit-style dials and the P5
 // direct path (which dials once per destination segment).
-func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, error) {
-	raw, err := dialDestRetry(ctx, addr, s.opts.ConnectTimeout)
+// dialDestOnce performs a SINGLE dial + (optional) TLS handshake to the
+// destination agent. The initial dial retries this (dialDestRetry) while the
+// destination binds its socket; the frame-ack re-dial on a break bounds the
+// retries itself (a dead destination must fail the unit, not hang).
+func (s *SourceServer) dialDestOnce(ctx context.Context, addr string) (net.Conn, error) {
+	raw, err := net.DialTimeout("tcp", addr, s.opts.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +330,30 @@ func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, 
 		return nil, fmt.Errorf("tls handshake with dest: %w", hsErr)
 	}
 	return tc, nil
+}
+
+// dialDestTLS dials + TLS-handshakes to the destination, retrying while the
+// destination binds its socket (the controller launches it just before the
+// source is told to dial). A refused connection is NOT the dest's "one
+// accept" (it never reached the accept), so retrying is safe.
+func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, error) {
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for {
+		conn, err := s.dialDestOnce(ctx, addr)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("dial %s (retries exhausted): %w", addr, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // handleChecksum re-derives the content checksum of a table on the pinned
@@ -371,45 +406,64 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	// controller launches it right before instructing the source to dial), so
 	// retry the dial briefly. A refused connection is NOT the dest agent's
 	// "one accept" — it never reached the accept — so retrying is safe.
-	raw, err := dialDestRetry(dctx, destAddr, s.opts.ConnectTimeout)
+	conn, err := s.dialDestTLS(dctx, destAddr)
 	if err != nil {
 		return out, fmt.Errorf("dial dest %s: %w", destAddr, err)
 	}
-	conn := raw
-	if transfer.TLSEnabled(s.opts.DataTLSCert, s.opts.DataTLSKey, s.opts.DataTLSCA) {
-		host, herr := hostOf(destAddr)
-		if herr != nil {
-			raw.Close()
-			return out, fmt.Errorf("bad dest %q: %w", destAddr, herr)
-		}
-		ccfg, cerr := transfer.ClientTLSConfig(host, s.opts.DataTLSCert, s.opts.DataTLSKey, s.opts.DataTLSCA, "")
-		if cerr != nil {
-			raw.Close()
-			return out, fmt.Errorf("tls config: %w", cerr)
-		}
-		tc := tls.Client(raw, ccfg)
-		if hsErr := tc.HandshakeContext(dctx); hsErr != nil {
-			raw.Close()
-			return out, fmt.Errorf("tls handshake with dest: %w", hsErr)
-		}
-		conn = tc
-	}
+
+	// UnitSpec header FIRST, on the INITIAL connection: the destination reads
+	// it to build the staging table before it reads the framed data stream.
+	// (It is NOT re-sent on a resume: the re-dial replays un-ACKed FRAMES only.)
 	if werr := WriteUnitSpec(conn, spec); werr != nil {
 		conn.Close()
 		return out, werr
 	}
+
 	mode, level, perr := compress.Parse(spec.Compress)
 	if perr != nil {
 		conn.Close()
 		return out, fmt.Errorf("compress %q: %w", spec.Compress, perr)
 	}
-	fw := transfer.NewFramedWriter(conn, spec.JobID, spec.UnitID, compress.New(mode, level))
+
+	// Data channel: a plain conn, or (frame-ack on, DESIGN §4.6) a
+	// ReliablePipe that re-dials the destination on a break and replays the
+	// un-ACKed frames. The destination's receiver dedups by seq, so its open
+	// COPY FROM keeps reading the in-order stream across the break (no
+	// re-COPY, no re-UnitSpec).
+	frameConn := transfer.Pipe(conn)
+	var rp *transfer.ReliablePipe
+	if s.opts.FrameAck {
+		var rerr error
+		rp, rerr = transfer.NewReliablePipeSenderOnConn(s.opts.ReliablePipe, conn, func() (transfer.DupConn, error) {
+			// Re-dial on a break: reproduce the full connection setup
+			// (dial + TLS). A single attempt — the destination's resumer
+			// is already blocked in its accept (ResumeTimeout window), so a
+			// live destination accepts; a dead one refuses, which must fail
+			// the unit fast (no retry storm).
+			return s.dialDestOnce(dctx, destAddr)
+		})
+		if rerr != nil {
+			conn.Close()
+			return out, fmt.Errorf("frame-ack transport: %w", rerr)
+		}
+		frameConn = rp
+	}
+	fw := transfer.NewFramedWriter(frameConn, spec.JobID, spec.UnitID, compress.New(mode, level))
 	copyConn := s.copyQuerier()
 	counted := &logicalCounter{}
 	tee := &teeWriter{logical: counted, out: fw}
 	rows, cerr := source.New(copyConn).CopyToStream(dctx, spec.SrcSchema, spec.SrcTable, tee)
-	if flerr := fw.CloseFlush(); cerr == nil {
-		cerr = flerr
+	if rp != nil {
+		// Flush the framed tail, then signal clean end-of-stream (FIN) over
+		// the pipe — not by closing the conn (the pipe owns the conn).
+		if flerr := fw.Flush(); cerr == nil {
+			cerr = flerr
+		}
+		_ = rp.Close()
+	} else {
+		if flerr := fw.CloseFlush(); cerr == nil {
+			cerr = flerr
+		}
 	}
 	conn.Close()
 	out.Rows = rows
