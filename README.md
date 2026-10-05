@@ -13,6 +13,13 @@ direct high-speed network — **no intermediate storage**, snapshot consistency,
 crash-recovery, background index rebuild, redistribution accounting, and a
 fully deterministic `--dry-run` plan.
 
+<p align="center"><a href="assets/architecture.svg"><img src="assets/architecture.svg" alt="gpstream architecture: coordinator and on_segment copy modes" width="900"></a></p>
+
+*Architecture: two copy modes (coordinator / on_segment), the control plane,
+the encrypted WAN channel (mTLS, GPST v2 frames, zstd, frame-ACK), and the
+capabilities — parallelism, checksums, RST-resume, resume, rate-limit,
+encryption, observability. [Open full-size SVG](assets/architecture.svg).*
+
 > **Milestone status (this build):** M1 core **verified**. `run` now performs a
 > real transfer — it is wired into the job Manager (source → stream → dest) and
 > proven against live PostgreSQL clusters by the `tests/integration`
