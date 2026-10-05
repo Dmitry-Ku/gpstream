@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -47,6 +49,32 @@ func New(lo, hi int) *Allocator {
 		lo, hi = 0, 0
 	}
 	return &Allocator{lo: lo, hi: hi, reserved: map[int]bool{}, exclude: map[int]bool{}}
+}
+
+// ParseRange parses a "LO-HI" (or single "LO") port range into an Allocator.
+// An empty string yields a disabled allocator (kernel picks). A malformed
+// range is an error (the agent / controller surfaces it at startup).
+func ParseRange(s string) (*Allocator, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return New(0, 0), nil
+	}
+	loStr, hiStr := s, s
+	if i := strings.Index(s, "-"); i >= 0 {
+		loStr, hiStr = s[:i], s[i+1:]
+	}
+	lo, err := strconv.Atoi(strings.TrimSpace(loStr))
+	if err != nil || lo < 1 || lo > 65535 {
+		return nil, fmt.Errorf("portalloc: low port %q must be 1-65535", loStr)
+	}
+	hi, err := strconv.Atoi(strings.TrimSpace(hiStr))
+	if err != nil || hi < 1 || hi > 65535 {
+		return nil, fmt.Errorf("portalloc: high port %q must be 1-65535", hiStr)
+	}
+	if hi < lo {
+		return nil, fmt.Errorf("portalloc: high port %d < low port %d", hi, lo)
+	}
+	return New(lo, hi), nil
 }
 
 // Enabled reports whether a range is active.
@@ -131,17 +159,22 @@ func (a *Allocator) Listen(host string) (net.Listener, error) {
 	return nil, fmt.Errorf("portalloc: no free port in range %d-%d on %s (widen --data-port-range)", a.lo, a.hi, host)
 }
 
-func itoa(p int) string {
-	// strconv.Itoa is fine but this avoids importing strconv for one call.
-	if p == 0 {
-		return "0"
+func itoa(p int) string { return strconv.Itoa(p) }
+
+// ListenAddr binds the listener for a "host:port" address. When the port is
+// 0 (the "pick a free port" sentinel) and a range is active, the port is
+// chosen from the range on that host (no close->rebind race); otherwise the
+// address is bound verbatim (a fixed port, or a disabled range = legacy :0).
+// This is the single entry point the agents use, so a remote agent that the
+// controller launches with "host:0" still honors --data-port-range.
+func (a *Allocator) ListenAddr(addr string) (net.Listener, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return net.Listen("tcp", addr)
 	}
-	var b [6]byte
-	i := len(b)
-	for p > 0 {
-		i--
-		b[i] = byte('0' + p%10)
-		p /= 10
+	p, aerr := strconv.Atoi(portStr)
+	if aerr != nil || p != 0 || !a.Enabled() {
+		return net.Listen("tcp", addr)
 	}
-	return string(b[i:])
+	return a.Listen(host)
 }
