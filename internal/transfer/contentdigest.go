@@ -216,6 +216,22 @@ func (w *ContentDigestWriter) Sum() (string, error) {
 // derived from the XOR of its per-slice accumulators (which is commutative /
 // associative, so it is independent of the slice partition) plus the total
 // row count.
+// DigestAccumulator returns the raw per-row XOR accumulator + row count of a
+// (buffered) binary-COPY payload — the one-shot form of ContentDigestWriter's
+// Accumulator(). It is the source-side building block the persistent channel
+// (P1c) and the segreceiver trailers (P0) carry: XOR is commutative and
+// associative, so it composes across units/slices. For a non-COPY (opaque)
+// payload it returns an error (the accumulator is only defined for a valid
+// binary-COPY stream).
+func DigestAccumulator(payload []byte) ([32]byte, int64, error) {
+	w := NewContentDigest()
+	if _, err := w.Write(payload); err != nil {
+		var zero [32]byte
+		return zero, 0, err
+	}
+	return w.Accumulator()
+}
+
 func CombinedDigestString(acc [32]byte, rows int64) string {
 	final := sha256.Sum256(append(acc[:], int64ToBytes(rows)...))
 	return fmt.Sprintf("%d:%x", rows, final)

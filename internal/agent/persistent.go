@@ -196,18 +196,19 @@ func NewPersistentReceiver(conn transfer.Pipe, jobID uint32) *PersistentReceiver
 }
 
 // ReceiveUnit blocks until the next unit begins (a UnitBegin frame, skipping
-// any idle Pings) and returns its spec, a data reader that streams the unit's
-// decompressed rows (ending at the Trailer frame with io.EOF), and the Trailer
-// (valid once the reader reaches io.EOF). The connection is not closed.
+// any idle Pings) and returns its spec and a reader that streams the unit's
+// decompressed rows (ending at the Trailer frame with io.EOF). The connection
+// is not closed. The reader's Trailer() (the source's raw digest acc + row
+// count) and Logical() are valid once the reader reaches io.EOF.
 //
-// The data reader must be fully consumed (to io.EOF) before the next call to
+// The reader must be fully consumed (to io.EOF) before the next call to
 // ReceiveUnit: the reader and the next ReceiveUnit share the connection's read
 // stream, and the reader stops exactly at the Trailer frame.
-func (p *PersistentReceiver) ReceiveUnit(ctx context.Context) (spec UnitSpec, data io.Reader, tr *transfer.Trailer, err error) {
+func (p *PersistentReceiver) ReceiveUnit(ctx context.Context) (spec UnitSpec, data *unitDataReader, err error) {
 	for {
 		f, rerr := transfer.ReadFrame(ctx, p.conn)
 		if rerr != nil {
-			return spec, nil, nil, rerr
+			return spec, nil, rerr
 		}
 		switch {
 		case f.IsPing():
@@ -215,18 +216,16 @@ func (p *PersistentReceiver) ReceiveUnit(ctx context.Context) (spec UnitSpec, da
 		case f.IsUnitBegin():
 			spec, err = unmarshalSpecPayload(f.Data)
 			if err != nil {
-				return spec, nil, nil, fmt.Errorf("persistent receiver: unit-begin: %w", err)
+				return spec, nil, fmt.Errorf("persistent receiver: unit-begin: %w", err)
 			}
-			mode, level, perr := compress.Parse(spec.Compress)
+			mode, _, perr := compress.Parse(spec.Compress)
 			if perr != nil {
-				return spec, nil, nil, fmt.Errorf("persistent receiver: compress %q: %w", spec.Compress, perr)
+				return spec, nil, fmt.Errorf("persistent receiver: compress %q: %w", spec.Compress, perr)
 			}
-			dec := compress.NewDec(mode)
-			_ = level
-			ud := &unitDataReader{conn: p.conn, dec: dec}
-			return spec, ud, &ud.trailer, nil
+			ud := &unitDataReader{conn: p.conn, dec: compress.NewDec(mode)}
+			return spec, ud, nil
 		default:
-			return spec, nil, nil,
+			return spec, nil,
 				fmt.Errorf("persistent receiver: expected UnitBegin, got frame flags=%d (unit %d)", f.Flags, f.UnitID)
 		}
 	}

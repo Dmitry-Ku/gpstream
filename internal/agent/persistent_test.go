@@ -69,7 +69,7 @@ func TestPersistentChannelMultiUnit(t *testing.T) {
 	// The destination receives all units off the ONE connection.
 	for u := 0; u < units; u++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		spec, data, tr, err := rcv.ReceiveUnit(ctx)
+		spec, data, err := rcv.ReceiveUnit(ctx)
 		cancel()
 		if err != nil {
 			t.Fatalf("unit %d: receive: %v", u, err)
@@ -87,9 +87,9 @@ func TestPersistentChannelMultiUnit(t *testing.T) {
 				u, got.Len(), len(wantData[u]))
 		}
 		// The Trailer (end-of-unit marker) must carry the source's digest acc + rows.
-		if (*tr).Digest != wantAcc[u] || (*tr).Rows != wantRows[u] {
+		if data.Trailer().Digest != wantAcc[u] || data.Trailer().Rows != wantRows[u] {
 			t.Fatalf("unit %d: trailer = (acc=%x rows=%d), want (acc=%x rows=%d)",
-				u, (*tr).Digest, (*tr).Rows, wantAcc[u], wantRows[u])
+				u, data.Trailer().Digest, data.Trailer().Rows, wantAcc[u], wantRows[u])
 		}
 	}
 	if err := <-sndDone; err != nil {
@@ -125,7 +125,7 @@ func TestPersistentChannelPingTolerance(t *testing.T) {
 
 	// Receive the unit (drains through its trailer).
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	spec, data, _, err := rcv.ReceiveUnit(ctx)
+	spec, data, err := rcv.ReceiveUnit(ctx)
 	cancel()
 	if err != nil || spec.UnitID != 9 {
 		t.Fatalf("unit: spec=%+v err=%v", spec, err)
@@ -138,7 +138,7 @@ func TestPersistentChannelPingTolerance(t *testing.T) {
 	// the next UnitBegin — bounded here by the sender closing the conn.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
-	if _, _, _, err := rcv.ReceiveUnit(ctx2); err == nil {
+	if _, _, err := rcv.ReceiveUnit(ctx2); err == nil {
 		t.Fatal("expected an error after the ping (conn closed), got nil")
 	}
 	if err := <-done; err != nil {
