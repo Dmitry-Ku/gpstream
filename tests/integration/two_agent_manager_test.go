@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -13,21 +12,32 @@ import (
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/pgtest"
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// digest returns an order-independent content digest of a table via the pool.
-func digest(t *testing.T, q pg.Querier, table string) string {
+// digest returns a content hash of every row in table. It streams the
+// table with `COPY (SELECT * FROM t) TO STDOUT (BINARY)` and hashes the
+// payload, instead of aggregating server-side: a
+// `string_agg(... ORDER BY id)` over a multi-million-row table overflows
+// GP6's per-segment workfile limit (SQLSTATE 53000; the limit is a
+// postmaster-context GUC and cannot be raised per session). Streaming
+// keeps the digest O(1) in server memory at any table size. The hash is
+// content-sensitive (any row value or row-count change flips it); row
+// order is not pinned, but the digest is only ever compared between two
+// databases of the same schema under the same streaming, so the check
+// stays valid (and count() pins the row count alongside it).
+func digest(t *testing.T, q pg.StreamingQuerier, table string) string {
 	t.Helper()
-	rows, err := q.Query(context.Background(),
-		`SELECT md5(string_agg(row_to_json(r)::text, chr(10) ORDER BY r.id)) FROM `+table+` r`)
+	buf := &appendBuf{}
+	if _, err := q.ReadCopy(context.Background(), buf, `COPY (SELECT * FROM `+table+`) TO STDOUT (BINARY)`); err != nil {
+		t.Fatalf("digest %s: %v", table, err)
+	}
+	d, err := transfer.ContentDigest(buf.data)
 	if err != nil {
 		t.Fatalf("digest %s: %v", table, err)
 	}
-	if len(rows) == 0 || rows[0][0] == nil {
-		t.Fatalf("digest %s: no row", table)
-	}
-	return fmt.Sprint(rows[0][0])
+	return d
 }
 
 // TestTwoAgentManagerRun is the P3 acceptance (ADR-002 remediation): the
