@@ -42,7 +42,9 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 	srcCl, dstCl, src, dst := startPGPairFull(t, 5731, 5732)
 
 	const alphaRows = 500
-	const bravoRows = 1_200_000 // ~130 MB: a multi-second kill window mid-copy
+	const bravoRows = 5_000_000 // ~500 MB: a ~15-30 s copy, so the SSH kill
+	// reliably lands mid-copy (at 130 MB the run can finish before the
+	// kill's round trip arrives -> "run exited cleanly").
 	mustExec(t, src, `CREATE TABLE public.alpha (id int, v text)`)
 	mustExec(t, src, fmt.Sprintf(
 		`INSERT INTO public.alpha SELECT g, repeat('a',40)||g FROM generate_series(1,%d) g`, alphaRows))
@@ -109,12 +111,23 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
 				args = append(args, "-i", key)
 			}
-			// Quote the pattern for the REMOTE shell: without quotes the
-			// pattern's spaces word-split, so pgrep would see "--src" as an
-			// option (error -> no pids -> false "agent not found"). The
-			// pattern is harness-controlled (no single quotes), so single
-			// quoting is safe.
-			quoted := "'" + strings.ReplaceAll(pattern, "'", "'\\''") + "'"
+			// Bracket the first char (the classic [c] trick): pgrep -f runs
+			// inside the remote `bash -c` wrapper, whose own command line
+			// contains the pattern text, so pgrep would always report the
+			// wrapper's pid too — and the orphan-exit check
+			// (len(pgrepPIDs)==0) could never observe 0 pids, even when the
+			// agent had exited cleanly (guaranteed false ORPHAN). [c] still
+			// matches the agent's command line, but the wrapper's contains
+			// the literal "[c]" and no longer matches.
+			// Quote for the REMOTE shell: without quotes the pattern's
+			// spaces word-split, so pgrep would see "--src" as an option
+			// (error -> no pids). The pattern is harness-controlled (no
+			// single quotes), so single quoting is safe.
+			bracketed := pattern
+			if r := rune(bracketed[0]); (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				bracketed = "[" + string(r) + "]" + bracketed[1:]
+			}
+			quoted := "'" + strings.ReplaceAll(bracketed, "'", "'\\''") + "'"
 			// sudo -n: the agents run as gpadmin (launched via `sudo -u
 			// gpadmin`), so a plain pgrep as gp cannot see them.
 			args = append(args, user+"@"+host, "sudo -n pgrep -f "+quoted)
@@ -134,9 +147,43 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		return pids
 	}
 
+	// psRemote returns `ps -o pid,etime,stat,args` lines for processes matching
+	// pattern on host (SSH in live mode, local otherwise) - orphan diagnosis:
+	// a leftover from an earlier scenario has a long etime; a genuinely stuck
+	// agent of this scenario has a short one.
+	psRemote := func(t *testing.T, host, pattern string) string {
+		t.Helper()
+		if host == "" {
+			out, _ := exec.Command("ps", "-eo", "pid,etime,stat,args").Output()
+			var b strings.Builder
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, pattern) && !strings.Contains(line, "ps -eo") {
+					b.WriteString(line + "\n")
+				}
+			}
+			return b.String()
+		}
+		user := os.Getenv("GP6_LAB_SSH_USER")
+		if user == "" {
+			user = "gp"
+		}
+		args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no"}
+		if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
+			args = append(args, "-i", key)
+		}
+		q := "'" + strings.ReplaceAll(pattern, "'", "'\\''") + "'"
+		args = append(args, user+"@"+host, "sudo -n ps -eo pid,etime,stat,args | grep -F "+q+" | grep -v grep")
+		out, _ := exec.Command("ssh", args...).CombinedOutput()
+		return string(out)
+	}
+
 	// killPIDRemote SIGKILLs a pid on host over SSH (live mode). The agents
 	// run as gpadmin (the SSH user is gp), so the kill must go through
-	// passwordless sudo — a plain kill -9 as gp would EPERM.
+	// passwordless sudo — a plain kill -9 as gp would EPERM. The kill
+	// is best-effort: by the time the SSH round trip lands, the agent
+	// may already have exited on its own (the run finished before the
+	// kill arrived) — that is the intended "run ended" outcome, not a
+	// failure.
 	killPIDRemote := func(t *testing.T, host string, pid int) {
 		t.Helper()
 		user := os.Getenv("GP6_LAB_SSH_USER")
@@ -149,6 +196,9 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		}
 		args = append(args, user+"@"+host, "sudo -n kill -9 "+strconv.Itoa(pid))
 		if out, err := exec.Command("ssh", args...).CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "No such process") {
+						return // already gone before the kill arrived
+			}
 			t.Fatalf("remote kill -9 %d on %s: %v: %s", pid, host, err, out)
 		}
 	}
@@ -250,15 +300,27 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			// The crux of FIX A: with the controller gone, the source agent's
 			// control connection drops, so the agent must EXIT (rolling back
 			// its pinned snapshot) rather than linger as an orphan holding a
-			// server-side REPEATABLE READ backend. Give it a moment to unwind,
-			// then assert it is gone (on the source host over SSH in live mode).
+			// server-side REPEATABLE READ backend.
+			//
+			// Timing: the control plane and the data plane are decoupled.
+			// Killing the controller closes the CONTROL connection, but the
+			// in-flight COPY rides a separate data connection to the (still
+			// alive) destination agent, so the source agent finishes that unit
+			// before its control loop notices the drop and exits. On live GP6
+			// a ~130 MB in-flight COPY can take well over 30 s, so the window
+			// must cover "the in-flight unit finishing" + unwind. 180 s is
+			// generous; if the agent is still here after that it is a real
+			// hang, not a timing artifact.
 			check: func(t *testing.T) {
-				deadline := time.Now().Add(30 * time.Second)
+				deadline := time.Now().Add(180 * time.Second)
 				for time.Now().Before(deadline) {
 					if len(pgrepPIDs(srcHost, srcAgentPattern)) == 0 {
 						return // source agent exited cleanly on control loss
 					}
 					time.Sleep(500 * time.Millisecond)
+				}
+				if info := psRemote(t, srcHost, srcAgentPattern); info != "" {
+				t.Logf("orphan ps on %s:\n%s", srcHost, info)
 				}
 				t.Fatalf("source agent is an ORPHAN after the controller died (still running: %v); it must exit and roll back its snapshot",
 					pgrepPIDs(srcHost, srcAgentPattern))

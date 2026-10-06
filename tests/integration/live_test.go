@@ -205,7 +205,10 @@ func liveDeadline(d time.Duration) time.Duration {
 // data ports), or locally otherwise.
 func liveKillAgents(t *testing.T, srcDSN, dstDSN string) {
 	t.Helper()
-	pat := "gpstream-(source|dest)-agent"
+	// [g]pstream...: bracket the first char so the remote pkill -f does not
+	// match its own `bash -c` wrapper (whose command line contains the
+	// pattern text); see pgrepPIDs in two_agent_crash_matrix_test.go.
+	pat := "[g]pstream-(source|dest)-agent"
 	if pgtest.LiveMode() {
 		hosts := map[string]bool{dsnHost(srcDSN): true, dsnHost(dstDSN): true}
 		user := os.Getenv("GP6_LAB_SSH_USER")

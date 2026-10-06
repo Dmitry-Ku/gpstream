@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed: per-unit destination exchange serialized in the two-agent runner (FR-03 row accounting)
+
+The long-lived dest agent serves one unit at a time (a single sequential
+control loop), but the controller's `processTwoAgentRunner` issued
+`BeginServe` / `Stream` / `WaitUnitDone` under *separate* short
+client-mutex sections. With `--workers > 1`, worker B's `BeginServe` could
+interleave after worker A's `BeginServe` and before A's `WaitUnitDone`, so
+the agent's sequential control loop delivered B's `unit-done` to A's
+`WaitUnitDone` — and A's report to B. Each unit then misattributed the
+other's row count, the manager's `Rows` total came up short of the
+destination's verified data (the tables were actually complete), and the
+run failed its FR-03 row-accounting check. Reproduced live on the GP6 A-D
+stand (4 workers, 3 tables: reported 8 000 of 28 000 rows). The whole
+per-unit exchange is now serialized behind a single runner mutex, so the
+controller's view of the dest agent's sequential protocol can never
+interleave; units still run concurrently on the data plane.
+
 ### Fixed: plan hash no longer depends on destination state (resume correctness)
 
 The plan hash (FR-10/CR-4) previously included `Redistrib.Skew`. Skew is a
