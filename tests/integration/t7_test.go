@@ -328,12 +328,4 @@ func mustDigest(t *testing.T, c pg.StreamingQuerier, table string) string {
 	return d
 }
 
-// appendBuf is a plain io.Writer that accumulates bytes.
-type appendBuf struct{ data []byte }
-
-func (b *appendBuf) Write(p []byte) (int, error) {
-	b.data = append(b.data, p...)
-	return len(p), nil
-}
-
 func itoa(n int) string { return fmt.Sprint(n) }
