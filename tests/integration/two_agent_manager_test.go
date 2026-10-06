@@ -30,7 +30,7 @@ import (
 func digest(t *testing.T, q pg.StreamingQuerier, table string) string {
 	t.Helper()
 	buf := &appendBuf{}
-	if _, err := q.ReadCopy(context.Background(), buf, `COPY (SELECT * FROM `+table+`) TO STDOUT (BINARY)`); err != nil {
+	if _, err := q.ReadCopy(context.Background(), buf, `COPY (SELECT * FROM `+table+`) TO STDOUT (FORMAT binary)`); err != nil {
 		t.Fatalf("digest %s: %v", table, err)
 	}
 	d, err := transfer.ContentDigest(buf.data)
