@@ -46,7 +46,24 @@ type Frame struct {
 const (
 	// FlagTrailer marks a control frame whose Data is a Trailer payload
 	// (sha256 + per-row digest + row count) rather than table bytes (§4.3).
+	// On the persistent coordinator channel (P1c) the Trailer frame is ALSO
+	// the end-of-unit marker: the connection stays open after it and the next
+	// unit begins with a fresh UnitBegin frame.
 	FlagTrailer uint8 = 1 << 0
+	// FlagUnitBegin marks a control frame whose Data is a UnitSpec payload —
+	// the per-unit header that opens a unit on the PERSISTENT coordinator
+	// data channel (P1c). On the legacy per-unit connection the UnitSpec rode
+	// the first bytes of the socket (WriteUnitSpec/ReadUnitSpec); on the
+	// persistent channel it rides a frame so the connection is not torn down
+	// between units (saves TCP+TLS+spec ≈ 4-5 RTT per unit).
+	FlagUnitBegin uint8 = 1 << 1
+	// FlagPing marks an idle-watchdog control frame (P1c): empty Data, sent by
+	// the source every ~30s to keep a NAT/firewall idle-timeout from reaping
+	// the persistent channel and to detect a dead peer early. The destination
+	// answers with a Pong.
+	FlagPing uint8 = 1 << 2
+	// FlagPong is the destination's reply to a Ping (empty Data).
+	FlagPong uint8 = 1 << 3
 )
 
 // Trailer carries the per-slice verification data and row count (§4.3/§4.4).
@@ -110,6 +127,41 @@ func NewTrailerFrame(jobID, unitID uint32, seq uint64, contentID int16, t Traile
 		Ver:       frameVer2,
 		Data:      t.EncodePayload(),
 	}
+}
+
+// NewUnitBeginFrame builds a v2 control frame carrying a UnitSpec payload —
+// the per-unit header that opens a unit on the persistent coordinator data
+// channel (P1c). data is the serialized UnitSpec (the agent package marshals
+// it; this package stays transport-generic). ContentID is the coordinator
+// sentinel (there is no per-segment slice on this path).
+func NewUnitBeginFrame(jobID, unitID uint32, seq uint64, data []byte) *Frame {
+	return &Frame{
+		JobID:     jobID,
+		UnitID:    unitID,
+		Seq:       seq,
+		ContentID: ContentCoordinator,
+		Flags:     FlagUnitBegin,
+		Ver:       frameVer2,
+		Data:      data,
+	}
+}
+
+// IsUnitBegin reports whether the frame is a UnitBegin control frame (P1c).
+func (f *Frame) IsUnitBegin() bool { return f.Flags&FlagUnitBegin != 0 }
+
+// IsPing / IsPong report the idle-watchdog control frames (P1c).
+func (f *Frame) IsPing() bool { return f.Flags&FlagPing != 0 }
+func (f *Frame) IsPong() bool { return f.Flags&FlagPong != 0 }
+
+// NewPingFrame / NewPongFrame build the idle-watchdog control frames (P1c):
+// empty Data, used to keep a NAT/firewall idle-timeout from reaping the
+// persistent channel and to detect a dead peer early.
+func NewPingFrame(jobID, unitID uint32, seq uint64) *Frame {
+	return &Frame{JobID: jobID, UnitID: unitID, Seq: seq, ContentID: ContentCoordinator, Flags: FlagPing, Ver: frameVer2}
+}
+
+func NewPongFrame(jobID, unitID uint32, seq uint64) *Frame {
+	return &Frame{JobID: jobID, UnitID: unitID, Seq: seq, ContentID: ContentCoordinator, Flags: FlagPong, Ver: frameVer2}
 }
 
 // Trailer returns the Trailer carried by a Trailer frame, or an error if the
