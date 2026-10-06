@@ -7,6 +7,44 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added: per-row content digest in the slice trailer (P0a)
+
+The segstream slice Trailer frame grew from 40 to 72 bytes: in addition to
+the per-slice SHA-256 and the row count it now carries a 32-byte per-row
+content-digest accumulator (the XOR of one SHA-256 per row over the
+on-the-wire binary-COPY bytes, O(1) memory). Because XOR is
+commutative/associative, the digest composes across slices and across
+re-partitions: the XOR of the per-slice accumulators (plus the total row
+count) equals the digest of the full row multiset, independent of how the
+rows are split into slices or ordered within them. The segreceiver carries
+it when started with `--digest on` (off by default — the wire payload is
+then a zero digest and costs nothing); the destination reads it back in the
+trailer (`SliceResult.Digest`). No backward compatibility: there are no
+installations yet, and a 40-byte (pre-P0a) trailer payload is rejected
+rather than mis-parsed. This is the wire form the mesh srcDigest/dstDigest
+verification (P3) builds on. Covered by unit tests (72-byte trailer
+round-trip, 40-byte payload rejection, `ContentDigestWriter.Accumulator()`
+== the combined digest, truncation detection) and segstream tests (digest
+invariance across split shapes, re-serialization == verbatim, 1-bit
+corruption).
+
+### Added: on-the-data-path digests on the on_segment path (P0b groundwork)
+
+With `Spec.VerifyDigest` set, the destination agent (merge path,
+`ServeSegments`) now computes BOTH content digests on the data path:
+`SegmentsResult.SrcDigest` — the XOR of the per-slice trailer digests
+combined with the trailer row count (order- and split-independent, equals
+the source's logical row-multiset digest) — and `SegmentsResult.DstDigest` —
+the merged (SliceMux) binary-COPY stream tee'd through the O(1) digest
+writer as it flows into `COPY FROM`. The two are equal iff the destination
+loaded exactly the source's rows. Both are empty when `VerifyDigest` is off
+(the default path pays no digest cost). The controller's verify step keeps
+the post-copy re-read for the on_segment path for now (the re-read is also
+the transparent fallback for every mode); the groundwork is exercised by an
+e2e test (real dest agent, fake segreceivers with `--digest on` trailers):
+`SrcDigest == DstDigest == reference` for 20 000 rows, both empty with the
+digest off, and a 1-bit flip in one slice changes both digests identically.
+
 ## [v0.2.0] - 2026-10-06
 ### Added: P9-E inline content verification (--verify on, coordinator path)
 

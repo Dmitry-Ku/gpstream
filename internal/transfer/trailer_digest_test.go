@@ -1,8 +1,6 @@
 package transfer
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"testing"
 )
 
@@ -66,7 +64,7 @@ func TestContentDigestAccumulator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	want := combinedDigestString(acc, rows)
+	want := CombinedDigestString(acc, rows)
 	if sum != want {
 		t.Errorf("Sum() = %q, want %q (derived from Accumulator)", sum, want)
 	}
@@ -109,9 +107,4 @@ func testCopyStream() []byte {
 	return b
 }
 
-// combinedDigestString renders the final combined digest (sha256(acc||rows))
-// in the same "<rows>:<hex>" form as ContentDigest, from the raw accumulator.
-func combinedDigestString(acc [32]byte, rows int64) string {
-	final := sha256.Sum256(append(acc[:], int64ToBytes(rows)...))
-	return fmt.Sprintf("%d:%x", rows, final)
-}
+

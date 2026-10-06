@@ -209,6 +209,18 @@ func (w *ContentDigestWriter) Sum() (string, error) {
 // accumulators and compare against the source's. For a non-COPY (opaque)
 // stream or a stream that has not completed, it returns an error (the digest
 // is only meaningful for a well-formed binary-COPY payload).
+// CombinedDigestString renders the final combined content digest
+// (sha256(acc || rows)) from a raw per-row XOR accumulator and a row count,
+// in the same "<rows>:<hex>" form as ContentDigest / ContentDigestWriter.Sum.
+// It is the inverse of the split used by the mesh: a unit's digest can be
+// derived from the XOR of its per-slice accumulators (which is commutative /
+// associative, so it is independent of the slice partition) plus the total
+// row count.
+func CombinedDigestString(acc [32]byte, rows int64) string {
+	final := sha256.Sum256(append(acc[:], int64ToBytes(rows)...))
+	return fmt.Sprintf("%d:%x", rows, final)
+}
+
 func (w *ContentDigestWriter) Accumulator() ([32]byte, int64, error) {
 	var zero [32]byte
 	if w.mode != 2 {

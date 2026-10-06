@@ -81,6 +81,17 @@ type SegmentsResult struct {
 	TrailerRows int64
 	// Swapped reports whether the atomic rename was performed.
 	Swapped bool
+	// SrcDigest is the source-side content digest of the unit, derived on
+	// the data path when Spec.VerifyDigest is set (P0b): the XOR of the
+	// per-slice trailer digests combined with the trailer row count, in the
+	// "<rows>:<hex>" form. It equals the source's logical row multiset
+	// digest (order- and split-independent). Empty when VerifyDigest is off
+	// or the slices did not carry digests.
+	SrcDigest string
+	// DstDigest is the destination-side content digest: the merged
+	// (SliceMux) binary-COPY stream tee'd through the O(1) digest writer as
+	// it flows into the COPY FROM. Empty when VerifyDigest is off.
+	DstDigest string
 }
 
 // countingConn wraps a net.Conn and counts every byte read from the network
@@ -201,12 +212,25 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 	var logicalN atomic.Uint64
 	mux := segstream.NewSliceMux(&logicalTee{w: pw, n: &logicalN}, o.Segments)
 
+	// P0b: when the controller asked for inline verify (Spec.VerifyDigest,
+	// --verify on), tee the MERGED binary-COPY stream into the O(1) digest
+	// writer so the destination computes its content digest ON THE DATA PATH
+	// (same mechanism as the coordinator path, P9-E). The merged stream is a
+	// single valid binary-COPY stream (SliceMux emits one header + all rows
+	// + one EOF), so the writer sees exactly the row multiset the COPY loads.
+	var dstSum *transfer.ContentDigestWriter
+	copyIn := io.Reader(pr)
+	if spec.VerifyDigest {
+		dstSum = transfer.NewContentDigest()
+		copyIn = &digestReader{next: dstSum, src: pr}
+	}
+
 	copyDone := make(chan struct{}, 1)
 	var copyRows int64
 	var copyErr error
 	go func() {
 		defer close(copyDone)
-		rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, pr)
+		rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, copyIn)
 		copyRows = rows
 		copyErr = cerr
 		if cerr != nil {
@@ -225,6 +249,10 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 	// connects is caught by the stream deadline (the controller kills the
 	// agent).
 	var trailerRows int64
+	// srcAcc accumulates the XOR of the per-slice trailer digests (the
+	// source-side content digest building block, P0b). Zero when the slices
+	// did not carry digests (pre-P0 wire / digest off).
+	var srcAcc [32]byte
 	var firstErr error
 	var wire uint64
 	var accErr error
@@ -244,6 +272,7 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 				}
 				if s.res.Trailer != nil && s.res.Err == nil {
 					trailerRows += s.res.Rows
+					xorDigestAcc(&srcAcc, &s.res.Digest)
 				}
 			}
 			// The frame-ack path carries the bytes inside the ReliablePipe
@@ -302,6 +331,7 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 			}
 			if s.res.Trailer != nil && s.res.Err == nil {
 				trailerRows += s.res.Rows
+				xorDigestAcc(&srcAcc, &s.res.Digest)
 			}
 		}
 	}
@@ -332,6 +362,20 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 		return out, fmt.Errorf("dest agent: trailer rows %d != dest rows %d", trailerRows, copyRows)
 	}
 	out.Rows = copyRows
+
+	// 7b. P0b: report the on-the-data-path digests (inline verify, FR-02).
+	// DstDigest is over the merged stream the COPY actually loaded; SrcDigest
+	// is the XOR of the per-slice trailer digests (order- and split-
+	// independent, so it equals the source's logical digest). They match iff
+	// the destination loaded exactly the source's row multiset.
+	if spec.VerifyDigest {
+		if d, derr := dstSum.Sum(); derr != nil {
+			return out, fmt.Errorf("dest agent: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
+		} else {
+			out.DstDigest = d
+		}
+		out.SrcDigest = transfer.CombinedDigestString(srcAcc, trailerRows)
+	}
 
 	// 8. The swap is a controller decision (the runner passes o.Swap per unit).
 	if o.Swap {
@@ -402,4 +446,11 @@ func serveSegmentsFrameAck(sctx context.Context, o SegmentsOptions, l net.Listen
 		}
 	}
 	return nil, router.WireBytes()
+}
+
+// xorDigestAcc XOR-folds b into acc (the per-slice digest composition).
+func xorDigestAcc(acc, b *[32]byte) {
+	for i := range acc {
+		acc[i] ^= b[i]
+	}
 }
