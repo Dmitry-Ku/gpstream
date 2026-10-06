@@ -241,7 +241,16 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 	// low-privilege role cannot create the staging table, so the dest agent
 	// fails the unit mid-run. The mid-copy dest-death no-deadlock property is
 	// carried by the crash matrix (kill-dest-agent-mid-copy).
+	// The role is cluster-global (not per-database): drop it first so a
+	// re-run on the same live cluster does not fail with 42710, and drop it
+	// again at the end so we do not leave state behind.
+	mustExec(t, dst, `DROP ROLE IF EXISTS readonly`)
 	mustExec(t, dst, `CREATE ROLE readonly LOGIN`)
+	t.Cleanup(func() {
+		// Best-effort: the role holds no DB-specific privileges (GRANT CONNECT
+		// on a test DB that the harness drops), so a plain DROP works.
+		_, _ = dst.Exec(context.Background(), `DROP ROLE IF EXISTS readonly`)
+	})
 	mustExec(t, dst, fmt.Sprintf(`GRANT CONNECT ON DATABASE %s TO readonly`, dstCl.DB))
 	mustExec(t, dst, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
 
@@ -306,11 +315,13 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 // same transfer.ContentDigest the data path verifies with).
 func mustDigest(t *testing.T, c pg.StreamingQuerier, table string) string {
 	t.Helper()
-	buf := &appendBuf{}
-	if _, err := c.ReadCopy(context.Background(), buf, `COPY `+table+` TO STDOUT (FORMAT binary)`); err != nil {
+	// Stream into the O(1)-memory ContentDigestWriter (buffering the whole
+	// payload OOMs on multi-million-row tables; see digest()).
+	dw := transfer.NewContentDigest()
+	if _, err := c.ReadCopy(context.Background(), dw, `COPY `+table+` TO STDOUT (FORMAT binary)`); err != nil {
 		t.Fatalf("readcopy %s: %v", table, err)
 	}
-	d, err := transfer.ContentDigest(buf.data)
+	d, err := dw.Sum()
 	if err != nil {
 		t.Fatalf("digest %s: %v", table, err)
 	}

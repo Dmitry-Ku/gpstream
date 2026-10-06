@@ -29,11 +29,14 @@ import (
 // stays valid (and count() pins the row count alongside it).
 func digest(t *testing.T, q pg.StreamingQuerier, table string) string {
 	t.Helper()
-	buf := &appendBuf{}
-	if _, err := q.ReadCopy(context.Background(), buf, `COPY (SELECT * FROM `+table+`) TO STDOUT (FORMAT binary)`); err != nil {
+	// Stream straight into the O(1)-memory ContentDigestWriter: buffering the
+	// whole payload (appendBuf + ContentDigest([]byte)) OOMs on multi-million
+	// row tables on the 7.8 GB lab controller (vm1, no swap).
+	dw := transfer.NewContentDigest()
+	if _, err := q.ReadCopy(context.Background(), dw, `COPY (SELECT * FROM `+table+`) TO STDOUT (FORMAT binary)`); err != nil {
 		t.Fatalf("digest %s: %v", table, err)
 	}
-	d, err := transfer.ContentDigest(buf.data)
+	d, err := dw.Sum()
 	if err != nil {
 		t.Fatalf("digest %s: %v", table, err)
 	}
