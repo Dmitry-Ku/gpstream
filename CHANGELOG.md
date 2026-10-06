@@ -7,6 +7,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added: small-table → coordinator fallback under --copy-mode on_segment (P1b)
+
+Under `--copy-mode on_segment`, a table whose estimated size (`pg_total_relation_size`, read once per table at planning) is below the existing `--small-table-threshold` now takes the **coordinator** data path instead of the segment-direct pipeline: the same single knob that auto-disables compression for tiny payloads (F-12) now also routes them off the mesh. The segment-direct path's fixed cost (S segreceivers, S destination connections, per-slice framing) does not pay back on a payload that does not even justify compression. The coordinator path carries the inline content digest (P9-E), so the small table verifies without a re-read for free. The decision is per unit (a run copies small tables through the coordinator and large ones through the mesh), is strict at the boundary (a table exactly at the threshold stays on the segment path), and is recorded in events.jsonl as `onsegment_coordinator_fallback {table, rows, bytes, threshold, reason}`. No new option; a zero threshold or an unknown size keeps the operator's mode. Covered by a boundary unit test and a local e2e (on_segment mode + a small table copies through the coordinator with the fallback event recorded), plus a live-gated e2e (small → coordinator + large → mesh in one run).
+
 ### Added: per-row content digest in the slice trailer (P0a)
 
 The segstream slice Trailer frame grew from 40 to 72 bytes: in addition to

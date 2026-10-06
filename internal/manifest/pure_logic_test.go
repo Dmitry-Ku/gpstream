@@ -216,6 +216,45 @@ func TestUnitCompressorsSwap(t *testing.T) {
 	}
 }
 
+// TestCoordinatorFallbackForDecision locks the P1b small-table
+// coordinator-fallback predicate: under --copy-mode on_segment a table below
+// --small-table-threshold takes the coordinator data path (the segment-direct
+// pipeline does not pay back on a payload that does not justify compression);
+// the threshold boundary is strict, an unknown size or a disabled threshold
+// keeps the operator's mode, and the coordinator / replicated modes are
+// unaffected (replicated has its own earlier case).
+func TestCoordinatorFallbackForDecision(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    config.CopyMode
+		thresh  int64
+		bytes   int64
+		repl    bool
+		want    bool
+	}{
+		{"coordinator-mode-never-falls-back", config.CopyCoordinator, 1 << 20, 1 << 19, false, false},
+		{"onsegment-small-falls-back", config.CopyOnSegment, 1 << 20, 1 << 19, false, true},
+		{"onsegment-at-threshold-stays", config.CopyOnSegment, 1 << 20, 1 << 20, false, false},
+		{"onsegment-large-stays", config.CopyOnSegment, 1 << 20, 2 << 20, false, false},
+		{"onsegment-unknown-size-stays", config.CopyOnSegment, 1 << 20, 0, false, false},
+		{"onsegment-zero-threshold-stays", config.CopyOnSegment, 0, 100, false, false},
+		{"onsegment-replicated-has-own-case", config.CopyOnSegment, 1 << 20, 100, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.CopyMode = tc.mode
+			cfg.SmallTableThreshold = tc.thresh
+			m, _ := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+			got := m.coordinatorFallbackFor(plan.Table{Bytes: tc.bytes, SrcReplicated: tc.repl})
+			if got != tc.want {
+				t.Fatalf("coordinatorFallbackFor(mode=%s thr=%d bytes=%d repl=%v) = %v, want %v",
+					tc.mode, tc.thresh, tc.bytes, tc.repl, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestManagerOnRateChangeEmitsEvent: a rate shift is recorded in events.jsonl
 // (rate_limit_shift) and reflected in the rate-limit metric (FR-04/F-14).
 func TestManagerOnRateChangeEmitsEvent(t *testing.T) {

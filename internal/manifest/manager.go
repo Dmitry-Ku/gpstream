@@ -188,6 +188,23 @@ func (m *Manager) compressionOffFor(t plan.Table) bool {
 		t.Bytes > 0 && t.Bytes < m.cfg.SmallTableThreshold
 }
 
+// coordinatorFallbackFor reports whether a small table (below
+// --small-table-threshold) must take the coordinator data path even when
+// --copy-mode is on_segment (P1b). One knob drives both small-table
+// behaviors: the same table for which per-slice compression is not worth
+// the encoder cost (F-12) is also one for which a segment-to-segment
+// pipeline is not worth the S segreceivers + S destination connections.
+// The metric is t.Bytes (pg_total_relation_size: a cheap local coordinator
+// catalog read, done once per table at planning). An unknown size (0) or a
+// disabled threshold (0) keeps the operator's mode; the boundary is strict
+// (a table exactly at the threshold stays on the segment path).
+func (m *Manager) coordinatorFallbackFor(t plan.Table) bool {
+	return m.cfg.CopyMode == config.CopyOnSegment &&
+		!t.SrcReplicated &&
+		m.cfg.SmallTableThreshold > 0 &&
+		t.Bytes > 0 && t.Bytes < m.cfg.SmallTableThreshold
+}
+
 // unitCompressors returns the compressor/decompressor pair the unit's
 // transport must use: the operator's mode, or the none pair when the F-12
 // small-table auto-disable applies. The destination side must use the SAME
@@ -1190,6 +1207,22 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		m.events.Log("replicated_fallback",
 			"table", t.Schema+"."+t.Name,
 			"reason", "DISTRIBUTED REPLICATED source: ON SEGMENT read would stream S identical full copies")
+		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
+	case m.twoAgent != nil && m.coordinatorFallbackFor(t):
+		// P1b: a SMALL table (below --small-table-threshold) takes the
+		// coordinator data path even under --copy-mode on_segment: the
+		// segment-direct pipeline (S segreceivers + S destination
+		// connections + a per-slice compressor) does not pay back on a
+		// payload that does not even justify compression (F-12, the same
+		// metric and threshold). The coordinator path also carries the
+		// inline content digest (P9-E), so the small table verifies
+		// without a re-read for free.
+		m.events.Log("onsegment_coordinator_fallback",
+			"table", t.Schema+"."+t.Name,
+			"rows", t.RowEst,
+			"bytes", t.Bytes,
+			"threshold", m.cfg.SmallTableThreshold,
+			"reason", "small table: the segment-direct pipeline does not pay back (F-12 threshold)")
 		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
 	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment:
 		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
