@@ -97,8 +97,21 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		return dsnHost(dsn)
 	}
 
-	// pgrepPIDs returns the pids whose command line matches the pattern — on
-	// the given agent host over SSH in live mode, locally otherwise.
+	// pgrepPIDs returns the pids of the AGENT process(es) whose command line
+	// matches the pattern — on the given agent host over SSH in live mode,
+	// locally otherwise.
+	//
+	// Live: the agent is launched `setsid nohup sudo -u <runas> <bin>`, which
+	// leaves a ROOT sudo wrapper PLUS the <runas>-owned agent, and BOTH carry
+	// the full "<bin> --src …" command line. A plain `pgrep -f` therefore
+	// returns two pids, pids[0] being the wrapper (the smaller pid). Killing
+	// the wrapper only SIGKILLs root's sudo process — the agent survives as an
+	// orphan (reparented to init) and FINISHES the copy, so the run exits
+	// cleanly instead of erroring. We must target the agent: when the agents
+	// run as <runas> (GP6_LAB_SSH_RUNAS), filter `pgrep -f` by that user so
+	// only the agent is returned. (Verified on the live stand: `pgrep -f`
+	// sees wrapper+agent, `pgrep -u <runas> -f` sees the agent alone, and
+	// killing it takes the agent down.)
 	pgrepPIDs := func(host, pattern string) []int {
 		var out []byte
 		var err error
@@ -107,6 +120,7 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			if user == "" {
 				user = "gp"
 			}
+			runas := os.Getenv("GP6_LAB_SSH_RUNAS")
 			args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no"}
 			if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
 				args = append(args, "-i", key)
@@ -130,7 +144,15 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			quoted := "'" + strings.ReplaceAll(bracketed, "'", "'\\''") + "'"
 			// sudo -n: the agents run as gpadmin (launched via `sudo -u
 			// gpadmin`), so a plain pgrep as gp cannot see them.
-			args = append(args, user+"@"+host, "sudo -n pgrep -f "+quoted)
+			pgrepCmd := "sudo -n pgrep"
+			if runas != "" {
+				// Target the agent, not the root sudo wrapper (see the
+				// function comment): the wrapper is owned by root, so
+				// filtering by the runas user leaves only the agent.
+				pgrepCmd += " -u " + runas
+			}
+			pgrepCmd += " -f " + quoted
+			args = append(args, user+"@"+host, pgrepCmd)
 			out, err = exec.Command("ssh", args...).Output()
 		} else {
 			out, err = exec.Command("pgrep", "-f", pattern).Output()
@@ -197,7 +219,7 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 		args = append(args, user+"@"+host, "sudo -n kill -9 "+strconv.Itoa(pid))
 		if out, err := exec.Command("ssh", args...).CombinedOutput(); err != nil {
 			if strings.Contains(string(out), "No such process") {
-						return // already gone before the kill arrived
+				return // already gone before the kill arrived
 			}
 			t.Fatalf("remote kill -9 %d on %s: %v: %s", pid, host, err, out)
 		}
@@ -320,7 +342,7 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 					time.Sleep(500 * time.Millisecond)
 				}
 				if info := psRemote(t, srcHost, srcAgentPattern); info != "" {
-				t.Logf("orphan ps on %s:\n%s", srcHost, info)
+					t.Logf("orphan ps on %s:\n%s", srcHost, info)
 				}
 				t.Fatalf("source agent is an ORPHAN after the controller died (still running: %v); it must exit and roll back its snapshot",
 					pgrepPIDs(srcHost, srcAgentPattern))
