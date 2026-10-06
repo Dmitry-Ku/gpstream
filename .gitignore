@@ -31,6 +31,7 @@ r5probe2
 # live cron state (gpstream-autonomy reads/writes it every 30 min) —
 # not a repo artifact; kept outside git on purpose
 /STATE-CHECKPOINT-*.md
+/STATE-LIVE-GP6LAB.md
 
 # cron pause signal (created on disk by the stop procedure, deleted on
 # resume) — a local control file, never a repo artifact
