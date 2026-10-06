@@ -23,6 +23,32 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # goreleaser v1.24 reuses the existing release for the same tag and
+      # fails with `422 already_exists` when the old assets are still
+      # attached (e.g. after force-moving the tag to a new commit). Delete
+      # any pre-existing release for this tag first — idempotent: a 404
+      # means there is nothing to delete.
+      - name: Delete pre-existing release (idempotent)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          code=$(curl -s -o /tmp/release.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}")
+          if [ "$code" = "404" ]; then
+            echo "no pre-existing release for ${{ github.ref_name }} — nothing to delete"
+            exit 0
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::failed to look up release (HTTP $code)"; exit 1
+          fi
+          id=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['id'])")
+          curl -fsSL -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/${id}"
+          echo "deleted pre-existing release ${id}"
+
       # proxy.golang.org intermittently 403s klauspost/compress; the direct
       # (git clone) fallback resolves it (ADR-000).
       - name: Build + publish
