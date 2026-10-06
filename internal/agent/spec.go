@@ -36,6 +36,14 @@ type UnitSpec struct {
 	Cols []pg.Column
 	Dist pg.Distribution
 	Part pg.PartitionSpec
+	// VerifyDigest (FR-02, P9-E) is the controller's request, carried on the
+	// data connection with the spec, for the source to compute the
+	// row-order-independent content digest on the data path (reported in
+	// SourceResult/StreamResp) and for the destination to do the same (it
+	// reads it here, reported in DestResult/DestUnitDone). The controller
+	// compares the two digests in the verify step instead of re-reading the
+	// tables. Set when --verify is on; empty/false on the default path.
+	VerifyDigest bool
 }
 
 // DirectLaunch is the P5 direct-mode launch payload the controller hands the

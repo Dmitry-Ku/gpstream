@@ -197,6 +197,37 @@ lives on as the per-table auto sub-paths of `on_segment`):
   the mode; see `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27.md` (only
   `direct_1to1` (S==D) and `router_full` are correct under the GP jump-hash).
 
+## Content verification (`--verify on`)
+
+`--verify on` (FR-02) checks the copied content, not just the row count. The
+digest is a **row-order-independent** content hash — the XOR of one SHA-256
+per row over the row's on-the-wire binary-COPY bytes, combined with the row
+count (XOR is commutative, so the result is invariant to the row order the
+distributed source gathers rows in; the row count distinguishes two
+multisets that happen to XOR the same). Format: `"<rows>:<hex>"`.
+
+**How it is derived (P9-E, since v0.2.0):** on the **coordinator** two-agent
+data path (the default `--copy-mode coordinator`), the digest is computed
+**inline, on the data path, on BOTH sides** as the rows stream — the source
+agent tees the `COPY ... TO STDOUT` stream and the destination agent tees the
+stream it feeds into `COPY ... FROM STDIN`, each through an O(1)-memory
+incremental writer. The controller then compares the two inline digests
+directly, so **verification re-reads neither table**. This is the M7-relevant
+behavior: on the 100 TB → 1 PB pilot, the legacy post-copy verify would have
+re-scanned the source table *and* the destination staging table (a full extra
+read of ~100 TB); the inline digest removes both re-reads for the cost of a
+per-row SHA-256 that the copy already pays to touch the bytes.
+
+**Honest scope:** the inline path covers the coordinator data path (including
+the DISTRIBUTED REPLICATED fallback into it). The **on_segment** and **routed**
+sub-paths (multi-slice, per-segment utility COPYs) keep the **legacy post-copy
+re-read** (re-derive on the source snapshot + verify the destination staging
+table) — wiring the inline digest through the N-slice merge is the remaining
+follow-up. When a copy mode does not report inline digests, the verify step
+transparently falls back to the re-read, so `--verify on` is always correct,
+only the re-read cost differs by path. Off by default (`off`), where the
+COPY protocol's row count is the landed-data check.
+
 ## Compression
 
 `--compress none|zlib|zstd[:1-19]` (FR-12). The source **compresses** and
@@ -252,7 +283,7 @@ suite as evidence for the target.**
 | Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
-| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a post-copy checksum of both sides) |
+| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a content digest: on the coordinator path it is computed **inline on the data path** (no re-read of either table, P9-E); the on_segment/routed paths keep a post-copy re-read) |
 
 ## Honest notes
 

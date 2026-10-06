@@ -235,7 +235,7 @@ the on-wire agent-to-agent volume.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
-| `--verify on\|off` | `Verify` | `off` (post-copy content verification; off = none, the COPY row count is the check) |
+| `--verify on\|off` | `Verify` | `off` (content verification of the copied data; off = none, the COPY row count is the check. On the coordinator path the digest is computed inline on the data path (no re-read, P9-E); on_segment/routed keep a post-copy re-read) |
 | `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Transport / frame-ack (T-B, §4.6)

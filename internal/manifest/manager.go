@@ -1161,6 +1161,13 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	var (
 		rows          int64
 		wire, logical uint64
+		// P9-E (FR-02): the row-order-independent content digests computed ON
+		// THE DATA PATH when --verify is on (the coordinator two-agent path):
+		// srcDigest from the source agent, dstDigest from the destination
+		// agent. The verify step compares them instead of re-reading the
+		// tables. Empty on the segment/routed paths (which keep the re-read)
+		// and when --verify is off.
+		srcDigest, dstDigest string
 	)
 	// F-12: a small table (below --small-table-threshold) rides the transport
 	// with compression OFF; record the decision in events.jsonl (F-04) so the
@@ -1183,7 +1190,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		m.events.Log("replicated_fallback",
 			"table", t.Schema+"."+t.Name,
 			"reason", "DISTRIBUTED REPLICATED source: ON SEGMENT read would stream S identical full copies")
-		rows, wire, logical, err = m.streamTwoAgent(ctx, t, u, target, ds, dn)
+		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
 	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment:
 		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
 		// moves into the agents. The source agent triggers the ON SEGMENT
@@ -1201,7 +1208,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// instruction, reads back the destination's count + the wire volume,
 		// and keeps the DDL/journal/verify/swap decision. The FR-02 snapshot
 		// is held by the long-lived source agent, not the controller.
-		rows, wire, logical, err = m.streamTwoAgent(ctx, t, u, target, ds, dn)
+		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
 	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
@@ -1224,42 +1231,64 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	tkey := unitTableKey(u)
 	m.monitor.RecordRows(tkey, rows)
 	m.monitor.RecordBytes(tkey, wire, logical)
-	// 6. Verify the content checksum (FR-02, --verify on): re-derive it on both
-	//    sides and compare, without re-copying the table. Off by default — the
-	//    COPY protocol's row count is then the landed-data check.
-	//    The checksum reads on us.agent so it sees the SAME snapshot as the
-	//    data COPY (in the per-table fallback that is the unit's dedicated
-	//    short snapshot; otherwise the run-wide pinned snapshot).
+	// 6. Verify the content checksum (FR-02, --verify on). Two paths:
+	//    (a) P9-E inline: when the data path computed the row-order-
+	//        independent content digest on BOTH sides (coordinator two-agent
+	//        with --verify on), compare them directly — the digest was
+	//        derived as the rows streamed (O(1) memory), so verification
+	//        re-reads NEITHER table. On the M7 pilot (100 TB -> 1 PB) this
+	//        removes a full re-scan of the source and of the destination.
+	//    (b) fallback: re-derive the checksum on both sides (the segment /
+	//        routed copy modes keep this path, as does a run where the
+	//        agents did not report inline digests). The source checksum is
+	//        read on the source agent so it sees the SAME FR-02 snapshot as
+	//        the data COPY.
+	//    Off by default — the COPY protocol's row count is then the
+	//    landed-data check.
 	if verify {
 		_ = m.setUnitState(u, StateVerifying)
-		// The source checksum must be read on the SAME snapshot the data COPY
-		// used. In two-agent mode the copy ran under the long-lived source
-		// agent's FR-02 snapshot, so the checksum must come from that agent
-		// (not the controller's own pool, which holds a different snapshot).
-		srcSum, err := m.twoAgent.Checksum(ctx, t.Schema, t.Name)
-		if err != nil {
-			if !inPlace {
-				_ = m.dst.DropStaging(ctx, ds, target)
+		var srcSum, dstSum string
+		if srcDigest != "" && dstDigest != "" {
+			// (a) P9-E: compare the two inline digests (identical format to
+			// the re-read checksum: "<rows>:<hex>").
+			srcSum, dstSum = srcDigest, dstDigest
+		} else {
+			// (b) fallback: re-derive on both sides.
+			srcSum, err = m.twoAgent.Checksum(ctx, t.Schema, t.Name)
+			if err != nil {
+				if !inPlace {
+					_ = m.dst.DropStaging(ctx, ds, target)
+				}
+				_ = m.setUnitState(u, StateFailed)
+				return fmt.Errorf("source checksum: %w", err)
 			}
-			_ = m.setUnitState(u, StateFailed)
-			return fmt.Errorf("source checksum: %w", err)
-		}
-		ok, vrows, err := m.dst.Verify(ctx, ds, target, srcSum)
-		if err != nil {
-			if !inPlace {
-				_ = m.dst.DropStaging(ctx, ds, target)
+			ok, vrows, verr := m.dst.Verify(ctx, ds, target, srcSum)
+			if verr != nil {
+				if !inPlace {
+					_ = m.dst.DropStaging(ctx, ds, target)
+				}
+				_ = m.setUnitState(u, StateFailed)
+				return fmt.Errorf("verify: %w", verr)
 			}
-			_ = m.setUnitState(u, StateFailed)
-			return fmt.Errorf("verify: %w", err)
+			if !ok {
+				if !inPlace {
+					_ = m.dst.DropStaging(ctx, ds, target)
+				}
+				_ = m.setUnitState(u, StateFailed)
+				// FR-04 "checksum errors": a content mismatch in the verify phase.
+				m.monitor.RecordChecksumError()
+				return fmt.Errorf("verify: checksum mismatch (rows=%d)", vrows)
+			}
+			dstSum = srcSum // the re-read confirmed destination == source
 		}
-		if !ok {
+		if srcSum != dstSum {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
 			}
 			_ = m.setUnitState(u, StateFailed)
 			// FR-04 "checksum errors": a content mismatch in the verify phase.
 			m.monitor.RecordChecksumError()
-			return fmt.Errorf("verify: checksum mismatch (rows=%d)", vrows)
+			return fmt.Errorf("verify: checksum mismatch (src=%s dst=%s)", srcSum, dstSum)
 		}
 		u.Checksum = srcSum
 		m.statMu.Lock()
@@ -1334,7 +1363,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 // reads back the destination's row count and the wire volume. The destination
 // staging table is created + loaded by the destination agent; the swap is the
 // controller's decision (runUnit step 9).
-func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string) (int64, uint64, uint64, error) {
+func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, verifyDigest bool) (int64, uint64, uint64, string, string, error) {
 	uc, _ := m.unitCompressors(t)
 	jobID := jobIDFromHash(u.JobID)
 	return m.twoAgent.Stream(ctx, unitStreamRequest{
@@ -1348,6 +1377,11 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 			DstSchema: ds,
 			DstTable:  dn,
 			Staging:   target,
+			// P9-E (FR-02): with --verify on, compute the row-order-independent
+			// content digest ON THE DATA PATH on both sides (O(1) memory), so
+			// the verify step compares the two inline digests instead of
+			// re-reading the source and destination tables.
+			VerifyDigest: verifyDigest,
 		},
 		DstConn: m.cfg.Dest,
 		DstCert: m.cfg.SSLCert,

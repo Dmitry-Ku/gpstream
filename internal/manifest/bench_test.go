@@ -38,8 +38,8 @@ type fakeBenchRunner struct {
 }
 
 func (f *fakeBenchRunner) Start(context.Context) error { return nil }
-func (f *fakeBenchRunner) Stream(context.Context, unitStreamRequest) (int64, uint64, uint64, error) {
-	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: Stream unused in bench")
+func (f *fakeBenchRunner) Stream(context.Context, unitStreamRequest) (int64, uint64, uint64, string, string, error) {
+	return 0, 0, 0, "", "", fmt.Errorf("fakeBenchRunner: Stream unused in bench")
 }
 func (f *fakeBenchRunner) StreamSegment(context.Context, unitSegmentRequest) (int64, uint64, uint64, error) {
 	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamSegment unused in bench")

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -232,6 +233,7 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 		Compress:  req.Compress,
 		SrcSchema: req.Schema, SrcTable: req.Table,
 		Cols: cols, Dist: dist, Part: part,
+		VerifyDigest: req.VerifyDigest,
 	}
 
 	// 2. Stream the unit (data COPY on the pinned snapshot conn) to the dest.
@@ -240,7 +242,7 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 		s.heal(ctx) // a failed unit may have aborted the snapshot tx (F-06)
 		return StreamResp{Ok: false, Error: serr.Error()}
 	}
-	return StreamResp{Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical}
+	return StreamResp{Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical, Digest: res.Digest}
 }
 
 // handleOnSegment runs the P4 on_segment data path on the source agent's FR-02
@@ -464,7 +466,19 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	fw := transfer.NewFramedWriter(frameConn, spec.JobID, spec.UnitID, compress.New(mode, level))
 	copyConn := s.copyQuerier()
 	counted := &logicalCounter{}
-	tee := &teeWriter{logical: counted, out: fw}
+	var (
+		dataOut io.Writer = fw
+		dsum    *transfer.ContentDigestWriter
+	)
+	// P9-E: when the controller requested inline verify (--verify on), the
+	// source computes the row-order-independent content digest ON THE DATA
+	// PATH (O(1) memory) and reports it, so the verify step compares two
+	// inline digests instead of re-reading the source table.
+	if spec.VerifyDigest {
+		dsum = transfer.NewContentDigest()
+		dataOut = &digestTee{next: fw, d: dsum}
+	}
+	tee := &teeWriter{logical: counted, out: dataOut}
 	rows, cerr := source.New(copyConn).CopyToStream(dctx, spec.SrcSchema, spec.SrcTable, tee)
 	if rp != nil {
 		// Flush the framed tail, then signal clean end-of-stream (FIN) over
@@ -484,6 +498,13 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	out.Logical = uint64(counted.n)
 	if cerr != nil {
 		return out, cerr
+	}
+	if dsum != nil {
+		d, derr := dsum.Sum()
+		if derr != nil {
+			return out, fmt.Errorf("inline digest %s.%s: %w", spec.SrcSchema, spec.SrcTable, derr)
+		}
+		out.Digest = d
 	}
 	return out, nil
 }

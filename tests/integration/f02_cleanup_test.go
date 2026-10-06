@@ -30,12 +30,23 @@ import (
 // "kill -9 mid-operation => cleanup leaves the destination in its
 // pre-operation state (or 'fully copied' for completed tables)".
 //
-// Phase 1: `gpstream run` (real binary, subprocess) copies one table at a
-// crawling rate-limit; the test waits until the durable journal shows the
-// unit in `copying` and the staging table exists on the destination —
-// mid-copy, guaranteed — then kill -9 the process. The killed COPY leaves
-// its partial rows in the staging table (PG does not roll back a killed
-// COPY); the final table was never swapped in.
+// Phase 1: `gpstream run` (real binary, subprocess, --verify on) copies one
+// ~130 MB table; the test waits until the durable journal shows the unit in
+// `copying` (the staging table already exists on the destination) and
+// kill -9 the controller mid-copy. The agent-to-agent data path is
+// independent of the controller, so the orphaned agents finish the in-flight
+// COPY and commit the staging (ALL rows), then exit on control loss. The
+// final table is never swapped in (the swap is the controller's decision,
+// and the controller is dead) — the "fully copied, not swapped" state the
+// spec allows.
+//
+// (Historical note: this test used to kill during the `verifying` phase —
+// the multi-second window between the COPY commit and the swap, back when
+// verify meant two full-table checksum re-reads. P9-E made verify an inline
+// data-path digest comparison (sub-millisecond), so that window no longer
+// exists as a reliable kill target; the copy itself (seconds for 130 MB) is
+// the window now, and the post-kill assertions cover both terminal states.)
+//
 // Phase 2: `gpstream cleanup --mode drop --dest ...` must remove exactly the
 // gpstream-owned objects (the surviving staging; the never-created final is
 // a no-op) and restore the receiver to its pre-operation state — a
@@ -93,29 +104,57 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	}()
 
 	journal := filepath.Join(stateDir, opID, "journal.jsonl")
-	// Wait for the unit to reach `verifying` — the COPY has committed (the
-	// staging table now holds ALL rows) but the atomic swap to the final
-	// name has NOT happened yet. Killing here is the exact spec "mid-
-	// operation" moment: data is on the destination in scratch form, the
-	// final table is still absent. (Killing during `copying` is weaker: the
-	// COPY is one uncommitted transaction, so staging shows 0 rows until it
-	// commits.)
+	// Wait for the unit to reach `copying` — the data path is starting and
+	// the in-flight data COPY is about to run. The 130 MB copy takes
+	// seconds, so a kill issued shortly after the state is first observed
+	// lands mid-copy (the exact spec "mid-operation" moment). The journal is
+	// append-only, so the `copying` line is the unit's FIRST post-pending
+	// state: seeing it for the first time means the copy is at its very
+	// start, never already finished. (Historically this test killed during
+	// `verifying` — a multi-second window back when verify re-read both
+	// tables; P9-E made verify an inline data-path digest compare, so that
+	// window is gone and the copy itself is the window now.) The kill is
+	// additionally gated on the staging table existing (below), which is the
+	// proof the data path is actually live.
 	var jobID string
 	var unitID int64
 	deadline := time.Now().Add(240 * time.Second)
 	for time.Now().Before(deadline) {
-		jobID, unitID = readStateUnit(journal, "verifying")
+		jobID, unitID = readStateUnit(journal, "copying")
 		if jobID != "" {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	if jobID == "" {
 		_ = cmd.Process.Kill()
-		t.Fatalf("unit never reached verifying (journal stuck?)\nstderr:\n%s", runErr.String())
+		t.Fatalf("unit never reached copying (journal stuck?)\nstderr:\n%s", runErr.String())
 	}
 	staging := dest.StagingName(jobID, unitID)
-	// Kill -9 the copying process (the exact spec scenario).
+	// Wait for the staging table to actually exist before killing. In the
+	// two-agent path the DESTINATION AGENT creates it (the controller only
+	// names it), so the journal's `copying` state lags behind — a kill issued
+	// right when `copying` first appears can land before the source agent has
+	// even dialed (the dest agent still blocked on accept), in which case the
+	// copy never starts and there is nothing to observe. The staging table
+	// existing is the proof that the data path is live (source dialed, dest
+	// connected + created staging, COPY about to / in flight), so it is the
+	// correct "mid-operation" kill target. The 130 MB copy then takes seconds,
+	// giving a reliable mid-copy window (the swap is far later).
+	stageDeadline := time.Now().Add(120 * time.Second)
+	for !stagingExists(ctx, dst, staging) {
+		if time.Now().After(stageDeadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("staging %s never appeared (data path not live?)\nstderr:\n%s", staging, runErr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Kill -9 the controller mid-copy (the exact spec scenario). The
+	// agent-to-agent data path is independent of the controller, so the
+	// orphaned agents finish the in-flight COPY (committing the staging)
+	// and then exit on control loss — the final table is never swapped in,
+	// because the swap is the controller's decision and the controller is
+	// dead.
 	if err := exec.Command("kill", "-9", strconv.Itoa(cmd.Process.Pid)).Run(); err != nil {
 		t.Fatalf("kill -9: %v", err)
 	}
@@ -124,15 +163,30 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 		t.Fatal("killed process must not exit cleanly")
 	}
 
-	// Post-kill state: the committed COPY left ALL rows in staging (a
-	// killed process does not roll back an already-committed COPY), and the
-	// final table is still absent (no swap happened).
-	stRows := mustCount(t, dst, `SELECT count(*) FROM `+staging)
-	if stRows != rows {
-		t.Fatalf("staging rows = %d, want %d (committed COPY, pre-swap kill)", stRows, rows)
+	// Wait for the orphaned agents to finish the in-flight COPY. The staging
+	// table is one transaction, so its count is 0 while the COPY runs and
+	// jumps to ALL rows the moment the destination agent's COPY commits.
+	// A missing staging relation (the journal can mark `copying` a beat
+	// before the dest agent creates the table, and the kill can land in that
+	// beat) counts as 0 rows — the COPY has not committed yet.
+	commitDeadline := time.Now().Add(120 * time.Second)
+	for {
+		st, err := stagingRowCount(ctx, dst, staging)
+		if err != nil {
+			t.Fatalf("count staging: %v", err)
+		}
+		if st == rows {
+			break
+		}
+		if time.Now().After(commitDeadline) {
+			t.Fatalf("staging never reached %d rows after the mid-copy kill (orphaned agents did not finish the COPY)", rows)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
+	// Post-kill state: the committed COPY left ALL rows in staging, and the
+	// final table is still absent (no swap happened).
 	if stagingExists(ctx, dst, "public.f02kill") {
-		t.Fatal("final table must not exist after a pre-swap kill (no swap)")
+		t.Fatal("final table must not exist after a mid-copy kill (no swap)")
 	}
 
 	// --- Phase 2: cleanup --mode drop restores the pre-operation state --
@@ -335,6 +389,36 @@ func TestF02TwoDBConcurrentSnapshot(t *testing.T) {
 func stagingExists(ctx context.Context, q *pg.Pool, rel string) bool {
 	v, _ := pg.Row(ctx, q, `SELECT to_regclass($1)`, rel)
 	return v != nil
+}
+
+// stagingRowCount returns the row count of a staging table, treating a
+// not-yet-created relation as 0 rows. In the two-agent data path the
+// destination AGENT creates the staging table (the controller only names it),
+// so right after the journal flips a unit to `copying` the relation can still
+// be absent — the in-flight COPY has not committed yet either way.
+func stagingRowCount(ctx context.Context, q *pg.Pool, rel string) (int64, error) {
+	v, err := pg.Row(ctx, q, `SELECT to_regclass($1)`, rel)
+	if err != nil {
+		return 0, err
+	}
+	if v == nil {
+		return 0, nil // not created yet (or already dropped) = no committed rows
+	}
+	rows, err := q.Query(ctx, `SELECT count(*) FROM `+rel)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 || len(rows[0]) == 0 {
+		return 0, nil
+	}
+	switch v := rows[0][0].(type) {
+	case int64:
+		return v, nil
+	case int32:
+		return int64(v), nil
+	default:
+		return 0, fmt.Errorf("stagingRowCount: unexpected count type %T", rows[0][0])
+	}
 }
 
 // readStateUnit returns (jobID, unitID) of the first journal record in the

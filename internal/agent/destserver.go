@@ -85,7 +85,12 @@ type DestUnitDone struct {
 	Logical uint64 `json:"logical,omitempty"`
 	Wire    uint64 `json:"wire,omitempty"`
 	Swapped bool   `json:"swapped,omitempty"`
-	Error   string `json:"error,omitempty"`
+	// Digest is the row-order-independent content digest the destination
+	// computed on the data path (FR-02, P9-E) when the spec carried
+	// VerifyDigest; empty otherwise. The controller compares it against the
+	// source's inline digest (StreamResp.Digest) to verify without a re-read.
+	Digest string `json:"digest,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // DestReleased is the agent's reply to "release".
@@ -326,6 +331,7 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			ReliablePipe:  s.opts.ReliablePipe,
 		})
 		done.Rows, done.Logical, done.Swapped = res.Rows, res.Logical, res.Swapped
+		done.Digest = res.Digest
 		done.Ok = err == nil
 		done.Error = errString(err)
 	case "segments":

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -72,6 +73,12 @@ type DestResult struct {
 	Logical uint64
 	// Swapped reports whether the atomic rename was performed.
 	Swapped bool
+	// Digest is the row-order-independent content digest of the payload the
+	// destination loaded (FR-02, P9-E inline verify), computed on the data
+	// path as the rows flow into the COPY FROM (O(1) memory). Empty when the
+	// source did not set UnitSpec.VerifyDigest (--verify off): the verify
+	// path then falls back to re-deriving the checksum on the staging table.
+	Digest string
 }
 
 // Serve listens on o.Listen for ONE source agent connection, reads the
@@ -215,7 +222,19 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 		frameConn = rp
 	}
 	fr := transfer.NewFramedReader(frameConn, compress.NewDec(mode))
-	rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, fr)
+	// P9-E: when the source requested inline verify (UnitSpec.VerifyDigest,
+	// set by the controller with --verify on), tee the decompressed binary-
+	// COPY stream into a ContentDigestWriter so the destination computes the
+	// row-order-independent content digest ON THE DATA PATH (O(1) memory) as
+	// the rows flow into the COPY FROM. The controller compares it against
+	// the source's inline digest instead of re-reading the staging table.
+	var dsum *transfer.ContentDigestWriter
+	var in io.Reader = fr
+	if spec.VerifyDigest {
+		dsum = transfer.NewContentDigest()
+		in = &digestReader{next: dsum, src: fr}
+	}
+	rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, in)
 	if cerr != nil {
 		if rp != nil {
 			// Destination failure: tell the sender to stop (its blocked Write
@@ -229,6 +248,13 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 	if rp != nil {
 		_ = rp.Close() // clean end-of-stream (FIN) to the sender
 	}
+	if dsum != nil {
+		d, derr := dsum.Sum()
+		if derr != nil {
+			return out, fmt.Errorf("dest agent: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
+		}
+		out.Digest = d
+	}
 
 	// 7. The swap is a controller decision (P3 passes o.Swap per unit).
 	if o.Swap {
@@ -238,4 +264,26 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 		out.Swapped = true
 	}
 	return out, nil
+}
+
+// digestReader (io.Reader) tees every chunk read from src into a
+// ContentDigestWriter (FR-02, P9-E) and serves it to the next reader, so the
+// destination computes the row-order-independent content digest ON THE DATA
+// PATH (as the rows flow into the COPY FROM, O(1) memory) instead of
+// re-reading the staging table after the copy. It is only in the chain when
+// UnitSpec.VerifyDigest is set (--verify on), so the default (verify-off)
+// path pays no digest cost.
+type digestReader struct {
+	next io.Writer
+	src  io.Reader
+}
+
+func (dr *digestReader) Read(p []byte) (int, error) {
+	n, err := dr.src.Read(p)
+	if n > 0 {
+		if _, werr := dr.next.Write(p[:n]); werr != nil {
+			return n, werr
+		}
+	}
+	return n, err
 }

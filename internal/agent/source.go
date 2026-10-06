@@ -75,6 +75,12 @@ type SourceOptions struct {
 	// §4.6) on the data socket; ReliablePipe carries its parameters.
 	FrameAck     bool
 	ReliablePipe transfer.ReliablePipeConfig
+	// VerifyDigest (FR-02, P9-E) asks the source to compute the
+	// row-order-independent content digest of the payload ON THE DATA PATH
+	// (as the rows stream, O(1) memory) and report it in SourceResult.Digest,
+	// so a verifying controller can compare against the destination's inline
+	// digest without re-reading either table. Set when --verify is on.
+	VerifyDigest bool
 }
 
 // dialDestOnce performs a SINGLE dial + (optional) TLS handshake to the
@@ -116,6 +122,12 @@ type SourceResult struct {
 	Rows    int64
 	Wire    uint64
 	Logical uint64
+	// Digest is the row-order-independent content digest of the binary-COPY
+	// payload the source streamed (FR-02, P9-E inline verify), computed on
+	// the data path as the rows flow (O(1) memory). Empty when the caller
+	// did not request it (UnitSpec.VerifyDigest off / --verify off): the
+	// verify path then falls back to re-deriving the checksum on the snapshot.
+	Digest string
 }
 
 // Push streams o.Schema.o.Table from the source to o.DestAddr over a real
@@ -168,6 +180,7 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 		SrcSchema: o.Schema, SrcTable: o.Table,
 		Compress: o.Compress,
 		Cols:     cols, Dist: dist, Part: part,
+		VerifyDigest: o.VerifyDigest,
 	}
 
 	// 2b. FR-02 snapshot (the pinned REPEATABLE READ tx lives on this conn).
@@ -224,11 +237,23 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	}
 	fw := transfer.NewFramedWriter(frameConn, o.JobID, o.UnitID, comp)
 
-	// 5. Stream: COPY ... TO STDOUT -> (count) -> frame+compress -> socket.
-	// A counting wrap measures the logical (uncompressed) volume the source
-	// read from PG, for the FR-04 report.
+	// 5. Stream: COPY ... TO STDOUT -> (count) -> [digest] -> frame+compress
+	// -> socket. The counting wrap measures the logical (uncompressed) volume
+	// the source read from PG, for the FR-04 report. When VerifyDigest is set
+	// (--verify on, FR-02/P9-E) a digest tee computes the row-order-
+	// independent content digest ON THE DATA PATH (O(1) memory), so the
+	// controller can verify against the destination's inline digest without
+	// re-reading either table.
 	counted := &logicalCounter{}
-	tee := &teeWriter{logical: counted, out: fw}
+	var (
+		dataOut io.Writer = fw
+		dsum    *transfer.ContentDigestWriter
+	)
+	if o.VerifyDigest {
+		dsum = transfer.NewContentDigest()
+		dataOut = &digestTee{next: fw, d: dsum}
+	}
+	tee := &teeWriter{logical: counted, out: dataOut}
 	rows, cerr := srcAgent.CopyToStream(dctx, o.Schema, o.Table, tee)
 	if cerr != nil {
 		conn.Close()
@@ -253,6 +278,15 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	out.Logical = uint64(counted.n)
 	if cerr != nil {
 		return out, cerr
+	}
+	// P9-E: finalize the inline content digest (the COPY completed cleanly,
+	// so the stream has its end marker; a Sum error is a genuine anomaly).
+	if dsum != nil {
+		d, derr := dsum.Sum()
+		if derr != nil {
+			return out, fmt.Errorf("source agent: inline digest %s.%s: %w", o.Schema, o.Table, derr)
+		}
+		out.Digest = d
 	}
 	return out, nil
 }
@@ -343,4 +377,22 @@ func (t *teeWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return t.out.Write(p)
+}
+
+// digestTee tees each chunk into a ContentDigestWriter (FR-02, P9-E) and
+// forwards it to the next writer, so the source computes the row-order-
+// independent content digest ON THE DATA PATH (as the rows stream, O(1)
+// memory) instead of re-reading the table after the copy. It is only in the
+// chain when UnitSpec.VerifyDigest is set (--verify on), so the default
+// (verify-off) path pays no digest cost.
+type digestTee struct {
+	next io.Writer
+	d    *transfer.ContentDigestWriter
+}
+
+func (dr *digestTee) Write(p []byte) (int, error) {
+	if _, err := dr.d.Write(p); err != nil {
+		return 0, err
+	}
+	return dr.next.Write(p)
 }

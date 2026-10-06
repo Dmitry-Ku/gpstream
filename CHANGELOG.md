@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added: P9-E inline content verification (--verify on, coordinator path)
+
+`--verify on` now computes the FR-02 content digest **inline, on the data
+path, on both sides** for the coordinator two-agent copy mode (the default
+`--copy-mode coordinator`), instead of re-reading the tables after the copy.
+The source agent tees its `COPY ... TO STDOUT` stream and the destination
+agent tees the stream it feeds into `COPY ... FROM STDIN`, each through the
+O(1)-memory row-order-independent digest writer (XOR of one SHA-256 per row
+over the on-the-wire binary-COPY bytes, combined with the row count). The
+controller compares the two inline digests directly, so verification
+**re-reads neither table** — on the M7 pilot (100 TB → 1 PB) this removes a
+full extra re-scan of the source *and* the destination. The digest is
+computed only when `--verify on` (the default `off` path pays no digest
+cost). The on_segment and routed sub-paths keep the legacy post-copy
+re-read, and the verify step transparently falls back to it whenever a copy
+mode does not report inline digests, so `--verify on` stays correct in every
+mode. Covered by unit tests (inline digest == buffered digest across chunk
+sizes; corruption detection) and a real two-agent round-trip test with
+zstd framing.
+
 ### Fixed: per-unit destination exchange serialized in the two-agent runner (FR-03 row accounting)
 
 The long-lived dest agent serves one unit at a time (a single sequential

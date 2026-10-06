@@ -42,6 +42,12 @@ type StreamReq struct {
 	DstTable  string `json:"dst_table"`
 	Staging   string `json:"staging"`
 	Overwrite bool   `json:"overwrite"`
+	// VerifyDigest (FR-02, P9-E) asks the source agent to compute the
+	// row-order-independent content digest of the streamed payload on the
+	// data path (O(1) memory) and report it in StreamResp.Digest, so the
+	// controller verifies against the destination's inline digest without
+	// re-reading either table. Set by the manager when --verify is on.
+	VerifyDigest bool `json:"verify_digest"`
 }
 
 // OnSegmentReq is the controller's per-unit instruction for the P4
@@ -82,10 +88,10 @@ type OnSegmentReq struct {
 	// --ack-timeout / --max-reconnects / --retransmit-buffer-max flags in the
 	// segreceiver program string; the destination agent is launched with the
 	// same parameters by the controller.
-	FrameAck        string `json:"frame_ack,omitempty"`        // on|off
-	AckTimeout      string `json:"ack_timeout,omitempty"`      // 15s|30s|adaptive
-	MaxReconnects   int    `json:"max_reconnects,omitempty"`
-	RetransmitMax   int64  `json:"retransmit_buffer_max,omitempty"`
+	FrameAck      string `json:"frame_ack,omitempty"`   // on|off
+	AckTimeout    string `json:"ack_timeout,omitempty"` // 15s|30s|adaptive
+	MaxReconnects int    `json:"max_reconnects,omitempty"`
+	RetransmitMax int64  `json:"retransmit_buffer_max,omitempty"`
 }
 
 // OnSegmentResp is the source agent's report after the ON SEGMENT COPY
@@ -152,7 +158,12 @@ type StreamResp struct {
 	Rows    int64  `json:"rows,omitempty"`
 	Wire    uint64 `json:"wire,omitempty"`
 	Logical uint64 `json:"logical,omitempty"`
-	Error   string `json:"error,omitempty"`
+	// Digest is the row-order-independent content digest the source computed
+	// on the data path (FR-02, P9-E) when StreamReq.VerifyDigest is set;
+	// empty otherwise. The controller compares it against the destination's
+	// inline digest (DestUnitDone.Digest) to verify without a re-read.
+	Digest string `json:"digest,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // ReleaseResp acknowledges the release.
