@@ -143,7 +143,7 @@ func TestTwoAgentDirect1to1Serve(t *testing.T) {
 				errCh <- fmt.Errorf("fake segreceiver %d dial: %w", i, err)
 				return
 			}
-			if _, err := segstream.SendCompressed(ctx, conn, bytes.NewReader(slices[i]), jobID, unitID, int16(i), compress.ModeZstd, 3); err != nil {
+			if _, err := segstream.SendCompressed(ctx, conn, bytes.NewReader(slices[i]), jobID, unitID, int16(i), compress.ModeZstd, 3, false); err != nil {
 				errCh <- fmt.Errorf("fake segreceiver %d send: %w", i, err)
 				return
 			}

@@ -85,17 +85,28 @@ func annMode(f *transfer.Frame) compress.Mode {
 // (the UnitSpec carries it), so it can decompress from the first data frame;
 // the trailer's flags carry the mode as a consistency check (a mismatch is an
 // error, catching a mis-configured agent pair).
-func SendCompressed(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16, m compress.Mode, level int) (int64, error) {
+func SendCompressed(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16, m compress.Mode, level int, digest bool) (int64, error) {
 	defer conn.Close()
 	comp := compress.New(m, level)
 	rc := transfer.NewRowCounter(in)
 	h := sha256.New()
+	var d *transfer.ContentDigestWriter
+	if digest {
+		d = transfer.NewContentDigest()
+	}
 	buf := make([]byte, chunkSize)
 	var seq uint64
 	for {
 		n, rerr := readChunkCoalesced(rc, buf)
 		if n > 0 {
 			h.Write(buf[:n])
+			if d != nil {
+				// Digest over the UNcompressed payload (the logical rows), so
+				// it matches the destination's post-decompression bytes.
+				if _, werr := d.Write(buf[:n]); werr != nil {
+					return rc.Rows(), werr
+				}
+			}
 			// Compress the chunk (FR-12): the wire carries the compressed
 			// bytes; the destination decompresses. ModeNone is a pass-through.
 			payload := comp.Encode(buf[:n])
@@ -119,6 +130,16 @@ func SendCompressed(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID
 	var tr transfer.Trailer
 	copy(tr.SHA256[:], h.Sum(nil))
 	tr.Rows = rc.Rows()
+	if d != nil {
+		acc, rows, aerr := d.Accumulator()
+		if aerr != nil {
+			return rc.Rows(), aerr
+		}
+		if rows != rc.Rows() {
+			return rc.Rows(), fmt.Errorf("segstream: digest row count %d != row counter %d", rows, rc.Rows())
+		}
+		copy(tr.Digest[:], acc[:])
+	}
 	// The end-of-slice trailer also carries the mode (consistency check).
 	f := transfer.NewTrailerFrame(jobID, unitID, seq, content, tr)
 	f.Flags |= flagModeAnnounce | (compressModeByte(m) << 3)
@@ -234,6 +255,7 @@ func ReadStreamCompressed(ctx context.Context, conn transfer.Pipe, res *SliceRes
 			res.Trailer = &tr
 			res.Rows = tr.Rows
 			res.SHA256 = tr.SHA256
+			res.Digest = tr.Digest
 			continue
 		}
 		raw := dec.Decode(f.Data)

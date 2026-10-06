@@ -116,7 +116,7 @@ func fakeSegment(ch chan<- error, addr string, slice []byte, jobID, unitID uint3
 		ch <- fmt.Errorf("fake segment dial: %w", err)
 		return
 	}
-	if _, err := Send(context.Background(), conn, bytes.NewReader(slice), jobID, unitID, content); err != nil {
+	if _, err := Send(context.Background(), conn, bytes.NewReader(slice), jobID, unitID, content, false); err != nil {
 		ch <- fmt.Errorf("Send: %w", err)
 		return
 	}
@@ -334,7 +334,7 @@ func TestSendBadStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Send(context.Background(), conn, strings.NewReader("not a copy stream"), 1, 1, 0); err == nil {
+	if _, err := Send(context.Background(), conn, strings.NewReader("not a copy stream"), 1, 1, 0, false); err == nil {
 		t.Fatal("Send on non-COPY stdin: expected error")
 	}
 	select {

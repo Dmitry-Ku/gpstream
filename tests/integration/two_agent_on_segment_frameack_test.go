@@ -133,7 +133,7 @@ func TestTwoAgentOnSegmentFrameAckServe(t *testing.T) {
 				return
 			}
 			// Stream the slice through the pipe (the pipe owns the conn).
-			if _, err := segstream.SendCompressed(ctx, rp, bytes.NewReader(slices[i]), jobID, unitID, int16(i), compress.ModeZstd, 3); err != nil {
+			if _, err := segstream.SendCompressed(ctx, rp, bytes.NewReader(slices[i]), jobID, unitID, int16(i), compress.ModeZstd, 3, false); err != nil {
 				errCh <- fmt.Errorf("fake segreceiver %d send: %w", i, err)
 				return
 			}

@@ -80,6 +80,11 @@ func main() {
 	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
 	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per slice")
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
+	// P0: when set, the slice's end-of-stream Trailer carries the raw per-row
+	// content-digest accumulator (mesh srcDigest building block). The
+	// controller embeds the flag when --verify on and the on_segment path is
+	// active; empty/off = the pre-P0 trailer (zero digest).
+	digest := flag.String("digest", "", "carry the per-row content digest in the trailer (on|off; default off)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -131,7 +136,7 @@ func main() {
 	defer cancel()
 
 	if routed {
-		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck))
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), *digest == "on")
 		return
 	}
 
@@ -188,9 +193,9 @@ func main() {
 		if perr != nil {
 			fail("compress %q: %v", *compressMode, perr)
 		}
-		rows, err = segstream.SendCompressed(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level)
+		rows, err = segstream.SendCompressed(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level, *digest == "on")
 	} else {
-		rows, err = segstream.Send(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID))
+		rows, err = segstream.Send(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), *digest == "on")
 	}
 	if err != nil {
 		fail("stream: %v", err)
@@ -264,7 +269,7 @@ func hostOf(listen string) (string, error) {
 // connection grid to the RoutedSender. Exit 0 on a clean stream; exit 1
 // otherwise (a non-zero exit fails the kernel's COPY, so there is no silent
 // partial stream).
-func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA, ackTimeout string, maxReconnects int, retransmitMax int64, on bool) {
+func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA, ackTimeout string, maxReconnects int, retransmitMax int64, on, digest bool) {
 	D := routeD
 	W := routeWorkers
 	// The routing key is embedded by the controller as "oid:pos,oid:pos" —
@@ -384,7 +389,7 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 				transfer.StreamID{JobID: uint32(jobID), UnitID: uint32(unitID), Content: int16(contentID), DstContent: int16(d), Worker: int32(w)})
 		}
 	}
-	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, dataConns)
+	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, digest, dataConns)
 	rows, err := sender.Run()
 	if err != nil {
 		fail("route: %v", err)

@@ -63,16 +63,31 @@ var ErrFrameAfterTrailer = errors.New("segstream: frame after trailer")
 // (a binary COPY slice stream) through a RowCounter + sha256, frames the
 // bytes (v2, content-tagged) and writes them to conn, finishing with a
 // Trailer frame. It returns the slice row count. in may be os.Stdin.
-func Send(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16) (int64, error) {
+//
+// When digest is set, the uncompressed payload is also tee'd through an
+// O(1) per-row content-digest writer and the Trailer carries the raw
+// per-row XOR accumulator in its Digest field (the mesh srcDigest building
+// block, P0); when false the Digest field is zero and the wire is
+// byte-identical to the pre-P0 behavior.
+func Send(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID uint32, content int16, digest bool) (int64, error) {
 	defer conn.Close()
 	rc := transfer.NewRowCounter(in)
 	h := sha256.New()
+	var d *transfer.ContentDigestWriter
+	if digest {
+		d = transfer.NewContentDigest()
+	}
 	buf := make([]byte, chunkSize)
 	var seq uint64
 	for {
 		n, rerr := readChunkCoalesced(rc, buf)
 		if n > 0 {
 			h.Write(buf[:n])
+			if d != nil {
+				if _, werr := d.Write(buf[:n]); werr != nil {
+					return rc.Rows(), werr
+				}
+			}
 			if werr := transfer.WriteFrame(conn, &transfer.Frame{
 				JobID: jobID, UnitID: unitID, Seq: seq, ContentID: content, Data: buf[:n],
 			}); werr != nil {
@@ -93,6 +108,16 @@ func Send(ctx context.Context, conn transfer.Pipe, in io.Reader, jobID, unitID u
 	var tr transfer.Trailer
 	copy(tr.SHA256[:], h.Sum(nil))
 	tr.Rows = rc.Rows()
+	if d != nil {
+		acc, rows, aerr := d.Accumulator()
+		if aerr != nil {
+			return rc.Rows(), aerr
+		}
+		if rows != rc.Rows() {
+			return rc.Rows(), fmt.Errorf("segstream: digest row count %d != row counter %d", rows, rc.Rows())
+		}
+		copy(tr.Digest[:], acc[:])
+	}
 	return rc.Rows(), transfer.WriteFrame(conn, transfer.NewTrailerFrame(jobID, unitID, seq, content, tr))
 }
 
@@ -124,6 +149,7 @@ type SliceResult struct {
 	ContentID int16
 	Rows      int64
 	SHA256    [32]byte
+	Digest    [32]byte // the trailer's per-row XOR accumulator (zero if the sender did not carry it)
 	Trailer   *transfer.Trailer // the received trailer (nil if the stream truncated)
 	Bytes     uint64            // payload bytes received (excludes framing)
 	Err       error             // first error on this stream (nil = clean EOF after trailer)
@@ -229,6 +255,7 @@ func readStream(ctx context.Context, conn net.Conn, res *SliceResult, writer fun
 			res.Trailer = &tr
 			res.Rows = tr.Rows
 			res.SHA256 = tr.SHA256
+			res.Digest = tr.Digest
 			continue
 		}
 		res.Bytes += uint64(len(f.Data))

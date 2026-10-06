@@ -87,7 +87,7 @@ func TestSendCompressedCoalescesPipedRows(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, e := SendCompressed(context.Background(), pc, pr, 1, 1, 0, compress.ModeZstd, 3)
+		_, e := SendCompressed(context.Background(), pc, pr, 1, 1, 0, compress.ModeZstd, 3, false)
 		done <- e
 	}()
 
@@ -135,7 +135,7 @@ func TestSendCoalescesPipedRows(t *testing.T) {
 	defer sc.Close()
 	done := make(chan error, 1)
 	go func() {
-		_, e := Send(context.Background(), pc, pr, 1, 1, 0)
+		_, e := Send(context.Background(), pc, pr, 1, 1, 0, false)
 		done <- e
 	}()
 	frames, ferr := countFrames(sc)

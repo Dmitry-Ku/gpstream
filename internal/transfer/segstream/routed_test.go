@@ -152,7 +152,7 @@ func TestRoutedSenderSplitsDisjointAndComplete(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	sender := NewRoutedSender(ctx, &src, []int{0}, []uint32{23}, D, W, 1, 1, 0, compress.ModeNone, 0, conns)
+	sender := NewRoutedSender(ctx, &src, []int{0}, []uint32{23}, D, W, 1, 1, 0, compress.ModeNone, 0, false, conns)
 	rows, err := sender.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)

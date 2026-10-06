@@ -23,7 +23,7 @@ func fakeSegmentCompressed(ch chan<- error, addr string, slice []byte, jobID, un
 		ch <- fmt.Errorf("fake segment dial: %w", err)
 		return
 	}
-	if _, err := SendCompressed(context.Background(), conn, bytes.NewReader(slice), jobID, unitID, content, m, level); err != nil {
+	if _, err := SendCompressed(context.Background(), conn, bytes.NewReader(slice), jobID, unitID, content, m, level, false); err != nil {
 		ch <- fmt.Errorf("SendCompressed: %w", err)
 		return
 	}

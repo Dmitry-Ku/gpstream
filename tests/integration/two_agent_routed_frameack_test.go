@@ -151,7 +151,7 @@ func TestTwoAgentRoutedFrameAckServe(t *testing.T) {
 				}
 			}
 			sender := segstream.NewRoutedSender(ctx, bytes.NewReader(slices[s]), []int{0}, []uint32{23}, D, W,
-				uint32(jobID), uint32(unitID), int16(s), compress.ModeZstd, 3, conns)
+				uint32(jobID), uint32(unitID), int16(s), compress.ModeZstd, 3, false, conns)
 			if _, err := sender.Run(); err != nil {
 				errCh <- fmt.Errorf("fake segreceiver %d run: %w", s, err)
 				return

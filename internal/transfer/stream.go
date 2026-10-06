@@ -45,38 +45,57 @@ type Frame struct {
 // Frame flags (v2 Flags byte).
 const (
 	// FlagTrailer marks a control frame whose Data is a Trailer payload
-	// (sha256 + row count) rather than table bytes (§4.3).
+	// (sha256 + per-row digest + row count) rather than table bytes (§4.3).
 	FlagTrailer uint8 = 1 << 0
 )
 
-// Trailer carries the per-slice verification digest and row count (§4.3/§4.4).
+// Trailer carries the per-slice verification data and row count (§4.3/§4.4).
 // The source computes it over the (decompressed) binary-COPY payload of the
 // slice; the destination compares its own computed values against the Trailer
 // to decide verified vs corrupt.
+//
+// SHA256 is the sha256 of the raw uncompressed slice payload (a per-slice
+// integrity check — order- and split-dependent).
+//
+// Digest is the RAW per-row XOR accumulator of the slice: the XOR of one
+// SHA-256 per row (over the row's on-the-wire binary-COPY bytes) WITHOUT the
+// final sha256(acc||rows) combining step. It is deliberately the uncombined
+// accumulator because XOR is commutative and associative: the accumulator of
+// a unit's rows is identical no matter how the rows are partitioned into
+// slices, so XORing the source's S per-slice Digests equals XORing the
+// destination's D per-slice Digests (S != D) whenever both sides received the
+// same row multiset (the mesh srcDigest/dstDigest invariant, P0). Rows is
+// carried separately and is the cross-check that the two multisets have the
+// same size (the final combined digest is derived from (Digest, Rows) at the
+// point of comparison: sha256(Digest || Rows)).
 type Trailer struct {
 	SHA256 [32]byte
+	Digest [32]byte
 	Rows   int64
 }
 
-// TrailerPayloadLen is the on-wire size of a Trailer payload (32 + 8).
-const TrailerPayloadLen = 40
+// TrailerPayloadLen is the on-wire size of a Trailer payload
+// (sha256 32 + digest 32 + rows 8).
+const TrailerPayloadLen = 72
 
-// EncodePayload serialises a Trailer to its 40-byte wire form (little-endian).
+// EncodePayload serialises a Trailer to its 72-byte wire form (little-endian).
 func (t Trailer) EncodePayload() []byte {
 	b := make([]byte, TrailerPayloadLen)
-	copy(b[:32], t.SHA256[:])
-	binary.LittleEndian.PutUint64(b[32:40], uint64(t.Rows))
+	copy(b[0:32], t.SHA256[:])
+	copy(b[32:64], t.Digest[:])
+	binary.LittleEndian.PutUint64(b[64:72], uint64(t.Rows))
 	return b
 }
 
-// DecodeTrailerPayload parses a 40-byte Trailer payload.
+// DecodeTrailerPayload parses a 72-byte Trailer payload.
 func DecodeTrailerPayload(b []byte) (Trailer, error) {
 	var t Trailer
 	if len(b) != TrailerPayloadLen {
 		return t, fmt.Errorf("trailer: bad payload len %d (want %d)", len(b), TrailerPayloadLen)
 	}
-	copy(t.SHA256[:], b[:32])
-	t.Rows = int64(binary.LittleEndian.Uint64(b[32:40]))
+	copy(t.SHA256[:], b[0:32])
+	copy(t.Digest[:], b[32:64])
+	t.Rows = int64(binary.LittleEndian.Uint64(b[64:72]))
 	return t, nil
 }
 

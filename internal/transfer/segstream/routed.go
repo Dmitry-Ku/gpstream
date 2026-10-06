@@ -52,6 +52,7 @@ type RoutedSender struct {
 	content int16 // this source segment's content id
 	mode    compress.Mode
 	level   int
+	digest  bool // when true, each sub-stream trailer carries the per-row digest (P0)
 	// conns[d][w] is the connected sub-stream to destination segment d,
 	// sub-stream w (already dialled + TLS'd by the caller).
 	conns [][]transfer.Pipe
@@ -62,7 +63,7 @@ type RoutedSender struct {
 
 // NewRoutedSender builds a sender over the segment slice in. conns must have
 // len(conns) == numDest and len(conns[d]) == workers.
-func NewRoutedSender(ctx context.Context, in io.Reader, keyIdx []int, keyOid []uint32, numDest int32, workers int, jobID, unitID uint32, content int16, mode compress.Mode, level int, conns [][]transfer.Pipe) *RoutedSender {
+func NewRoutedSender(ctx context.Context, in io.Reader, keyIdx []int, keyOid []uint32, numDest int32, workers int, jobID, unitID uint32, content int16, mode compress.Mode, level int, digest bool, conns [][]transfer.Pipe) *RoutedSender {
 	return &RoutedSender{
 		ctx:     ctx,
 		in:      in,
@@ -75,6 +76,7 @@ func NewRoutedSender(ctx context.Context, in io.Reader, keyIdx []int, keyOid []u
 		content: content,
 		mode:    mode,
 		level:   level,
+		digest:  digest,
 		conns:   conns,
 		perSeg:  make([]int64, numDest),
 	}
@@ -126,7 +128,7 @@ func (rs *RoutedSender) Run() (int64, error) {
 				defer sendWG.Done()
 				defer func() { _ = readers[d][w].Close() }()
 				_, eerr := SendCompressed(rs.ctx, rs.conns[d][w], readers[d][w],
-					rs.jobID, rs.unitID, int16(d), rs.mode, rs.level)
+					rs.jobID, rs.unitID, int16(d), rs.mode, rs.level, rs.digest)
 				if eerr != nil {
 					sendErrs <- fmt.Errorf("dest segment %d sub-stream %d: %v", d, w, eerr)
 				}

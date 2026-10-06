@@ -202,6 +202,27 @@ func (w *ContentDigestWriter) Sum() (string, error) {
 	return "", fmt.Errorf("digest: no payload")
 }
 
+// Accumulator exposes the RAW per-row XOR accumulator and row count of a
+// completed binary-COPY stream (mode 2, end-of-stream marker seen). This is
+// the uncombined value the Trailer carries in its Digest field: it is
+// XOR-composable across slices, so the destination can XOR its per-slice
+// accumulators and compare against the source's. For a non-COPY (opaque)
+// stream or a stream that has not completed, it returns an error (the digest
+// is only meaningful for a well-formed binary-COPY payload).
+func (w *ContentDigestWriter) Accumulator() ([32]byte, int64, error) {
+	var zero [32]byte
+	if w.mode != 2 {
+		return zero, 0, fmt.Errorf("digest: accumulator is only defined for a binary-COPY stream")
+	}
+	if !w.eof {
+		if len(w.buf) > 0 {
+			return zero, 0, fmt.Errorf("digest: truncated copy stream (row data after end)")
+		}
+		return zero, 0, fmt.Errorf("digest: missing copy end marker")
+	}
+	return w.acc, w.rows, nil
+}
+
 // rowEndOffset scans buf for the first complete row and returns the offset
 // just past it. It returns (-1, true, nil) when the first entry is the
 // end-of-stream marker, (0, false, nil) when the row is not fully present
