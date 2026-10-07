@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added: snapshot-epoch foundation (P1d-1)
+
+Foundation for `--workers N > 1` (N parallel data streams) on the coordinator
+data path. A run now pins an **N-connection snapshot-epoch**: N concurrent
+REPEATABLE READ transactions, each fixed to its snapshot point within one
+ε-window (a few ms) at run start, so N pipelines stream N tables concurrently
+under N near-identical snapshots. strict mode (`--workers 1`) is unchanged — a
+single pinned connection, one exact point.
+
+- `internal/transfer/pg`: `Epoch` (`NewEpoch`/`Acquire`/`Release`/`Heal`/
+  `Close`) pins N dedicated pool connections, each `BEGIN ISOLATION LEVEL
+  REPEATABLE READ` + `SELECT clock_timestamp()` (the first query fixes the
+  snapshot point). `ValidateDelta` gates the pin spread Δ = max(t_fix) −
+  min(t_fix) against `--max-snapshot-delta`; a heal re-pin is validated
+  against the epoch's earliest pin (baseMin).
+- `--max-snapshot-delta SEC` (default 1s, 0 disables): the snapshot-epoch pin
+  spread limit. A run whose N pins are more than that apart refuses to start
+  (a doctor error carrying the actual Δ) instead of copying a silently
+  inconsistent snapshot. The live pin spread is ~ms, so the default leaves
+  three orders of magnitude of headroom.
+- `internal/doctor`: a `max_connections` sizing check (WARN) — the source DB
+  must supply the epoch's N pinned connections plus pool headroom (N+4).
+
+Live-tested against PG 9.4.26: N=3 pin + Δ gate, Δ-reject (spread > limit →
+refuse), F-02 concurrent-copy (a committed write after the pins is invisible
+to all N pinned snapshots while a fresh connection sees it), and heal
+(re-pin after an aborted snapshot sees the post-pin write).
+
 ### Added: persistent coordinator data channel (P1c)
 
 The coordinator (default `--copy-mode coordinator`) two-agent copy now rides

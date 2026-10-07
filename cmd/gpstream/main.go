@@ -201,6 +201,11 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--workers":
 			i++
 			cfg.WorkersPerPair = atoi(args[i])
+		case "--max-snapshot-delta":
+			// P1d: the snapshot-epoch pin spread limit, in SECONDS (--workers
+			// N>1). 0 disables the check; default 1s.
+			i++
+			cfg.MaxSnapshotDelta = time.Duration(atoi(args[i])) * time.Second
 
 		// Resilience (FR-06/FR-07).
 		case "--auto-resume":
@@ -467,7 +472,7 @@ func cmdDoctor(args []string) error {
 	if segBin == "" {
 		segBin, _ = config.ResolveSegBinaryOrEmpty()
 	}
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin})
+	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
 	// on_segment segment-to-segment writes (routed + direct_1to1) build
 	// per-segment utility DSNs from the operator's --dest; that requires the
 	// URL form (postgres://user@host:port/db). A keyword/value --dest would
@@ -1639,7 +1644,9 @@ Performance:
                                    diagnostics (bps/mbit/gbit); the flow is
                                    paced by backpressure only (enforced
                                    pacing: backlog)
-  --workers N                      parallel workers per host-pair (default 2)
+  --workers N                      parallel workers per host-pair (default 2; 1 = strict, N>1 = snapshot-epoch)
+  --max-snapshot-delta SEC         snapshot-epoch pin-spread limit in seconds for
+                                   --workers N>1 (0 disables; default 1s)
   --small-table-threshold size     tables smaller than this copy with compression
                                    off (default 1MiB; 0 disables)
   --index-workers N                background index-build workers (default 2)

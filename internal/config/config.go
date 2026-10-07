@@ -124,6 +124,14 @@ type Config struct {
 	SmallTableThreshold int64
 	RateLimit           float64 // Gbps total ceiling
 	WorkersPerPair      int
+	// MaxSnapshotDelta (P1d) bounds the snapshot-epoch pin spread for
+	// --workers N > 1, in SECONDS: the N REPEATABLE READ pins are taken in
+	// one ε-window and their spread (max(t_fix) − min(t_fix)) must be <=
+	// this limit or the run refuses to start (a doctor error carrying the
+	// actual delta). 0 disables the check. Default 1s (the live pin spread
+	// is ~ms, a 3-orders-of-magnitude margin). strict mode (--workers 1)
+	// never pins an epoch, so this has no effect there.
+	MaxSnapshotDelta time.Duration
 
 	// Resilience (FR-06/FR-07).
 	AutoResume int // N >= 0; 0 = manual only
@@ -291,6 +299,7 @@ func Default() Config {
 		SSLMinTLS:           "1.2",
 		AgentBinDir:         "/usr/bin",
 		WorkersPerPair:      2,
+		MaxSnapshotDelta:    1 * time.Second,     // P1d: snapshot-epoch pin-spread limit (seconds)
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
 }
@@ -330,6 +339,9 @@ func (c *Config) Validate() error {
 	}
 	if c.WorkersPerPair < 1 {
 		return fmt.Errorf("workers must be >= 1, got %d", c.WorkersPerPair)
+	}
+	if c.MaxSnapshotDelta < 0 {
+		return fmt.Errorf("max-snapshot-delta must be >= 0 seconds (0 disables the check), got %s", c.MaxSnapshotDelta)
 	}
 	if c.AutoResume < 0 {
 		return fmt.Errorf("auto-resume must be >= 0")
@@ -522,6 +534,11 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("WORKERS"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.WorkersPerPair = n
+		}
+	}
+	if v, ok := get("MAX_SNAPSHOT_DELTA"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxSnapshotDelta = time.Duration(n) * time.Second
 		}
 	}
 	if v, ok := get("COMPRESS"); ok {
@@ -846,6 +863,10 @@ func assignConfigString(c *Config, key, v string) {
 	case "workers":
 		if n, err := strconv.Atoi(v); err == nil {
 			c.WorkersPerPair = n
+		}
+	case "max_snapshot_delta":
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxSnapshotDelta = time.Duration(n) * time.Second
 		}
 	case "compress":
 		c.Compression = Compression(v)

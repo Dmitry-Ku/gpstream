@@ -107,6 +107,11 @@ type Options struct {
 	// will have on the SOURCE segment hosts (it is a required component of
 	// the segment-direct capability; empty disables the on_segment check).
 	SegmentBinary string
+	// Workers is the run's --workers (the host-pair worker pool / the
+	// snapshot-epoch N). The doctor uses it to size the source DB's
+	// max_connections against the run's connection demand (P1d). 0 disables
+	// the connection-sizing check.
+	Workers int
 	// (P7) the data plane is always two-agent: the source/dest agents carry
 	// the data and the controller holds no data connections. There is no
 	// topology to select, so the check below is a constant confirmation.
@@ -133,8 +138,40 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkTLS(opts.MinTLS)
 	r.checkStatementTimeouts("source", src)
 	r.checkStatementTimeouts("dest", dst)
+	r.checkConnSizing(ctx, "source", src, opts.Workers)
 	r.checkTopology(opts)
 	return r
+}
+
+// checkConnSizing (P1d) warns if the SOURCE database's max_connections cannot
+// comfortably supply the run's connection demand: the snapshot-epoch holds N
+// pinned REPEATABLE READ connections (N = --workers) plus the pool's catalog /
+// journal / admin connections (sized N+4 by the controller). It is a WARN, not
+// a FAIL: a small max_connections slows the run (pool acquires block) rather
+// than corrupting it, and the operator may raise it or lower --workers.
+func (r *Report) checkConnSizing(ctx context.Context, side string, q pg.Querier, workers int) {
+	if workers <= 1 {
+		return // strict mode: one pinned conn + the pool; no sizing concern
+	}
+	need := workers + 4 // the epoch's N + the pool's catalog/journal/admin headroom
+	maxc := pg.RowStr(ctx, q, `SHOW max_connections`)
+	if maxc == "" {
+		return // cannot determine; the reachability check already reported
+	}
+	var mc int
+	if _, err := fmt.Sscanf(maxc, "%d", &mc); err != nil {
+		return
+	}
+	if mc < need {
+		r.Add(Check{
+			Name: "max_connections", Side: side, Sev: Warn,
+			Msg: fmt.Sprintf("max_connections=%d < %d needed for --workers %d (snapshot-epoch N pinned conns + pool headroom)", mc, need, workers),
+			Rec: "raise the source DB's max_connections or lower --workers (a too-small pool blocks acquires; the run stays correct but slows)",
+		})
+		return
+	}
+	r.Add(Check{Name: "max_connections", Side: side, Sev: Pass,
+		Msg: fmt.Sprintf("max_connections=%d >= %d for --workers %d", mc, need, workers)})
 }
 
 // checkTopology confirms the data-plane architecture (P7): the build is
