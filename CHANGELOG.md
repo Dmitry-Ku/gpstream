@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (P2)
+
+- **Mini-agent (`gpstream-dest-agent --mini`)** — the per-destination-segment
+  agent for the `direct_1to1` mesh (design 04.10). It runs on a destination
+  **segment** host (NOT the coordinator), connects to its OWN segment locally
+  (utility mode, `gp_session_role=utility`), and never touches the coordinator
+  for data. Per unit it accepts ONE compressed slice on its data listener,
+  decompresses it (teeing the content digest when `--verify` is on), loads it
+  with ONE utility-mode `COPY`, and reports `{unit, srcContrib, dstAcc, rows,
+  ok}` to the supervisor over a persistent report channel. A report-channel
+  drop (supervisor death) is an **orphan-exit**: the mini exits immediately,
+  not by timeout. New flags: `--mini`, `--seg` (segment ordinal),
+  `--report-addr` (the supervisor's report listener). New report protocol:
+  `mini-hello` (`{seg, dataPort, ready}`), `mini-unit`, `mini-unit-resp`,
+  `mini-done`. Core: `internal/agent/mini.go` (`ServeMini` +
+  `serveMiniUnit`, ~70–80% shared with `ServeDirect`). Acceptance:
+  `tests/integration/two_agent_mini_test.go` (real `ServeMini` + pgtest;
+  asserts the authoritative row count + trailer cross-check, ADR-002
+  wire<logical, and the composable-digest invariant
+  `srcContrib == dstAcc == reference` that the P3 supervisor XORs across
+  segments). The mini's `--dest` is the utility-mode DSN to its own segment;
+  the data port is one of the run's in-range ports (the `4+D` formula: 3 base
+  ports + D mini-agent data ports, one per destination segment).
+- **`CheckPortRange` mesh formula** — the strict-firewall port-range check now
+  accounts for the `4+D` requirement (3 base ports + D mini-agent data ports)
+  in `mesh` mode, so a run with D destination segments validates the range
+  size accordingly (P1 item 3–5, deferred to P2 with the mini-agent).
+
 ### Changed (P1, breaking)
 
 - **`--data-port-range` → `--port-range`** (clean rename, no alias): the

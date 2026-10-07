@@ -1652,9 +1652,11 @@ Transport / resilience:
   --port-range LO-HI          restrict the auto data/control port
                                    allocation to an allowed range (strict
                                    firewall); default auto = agent binds :0 +
-                                   handshake. 3 ports are needed per run
-                                   (source control + dest data + dest control,
-                                   both modes); checked at run/dry-run
+                                   handshake. A run needs 3 ports in
+                                   coordinator mode (source control + dest
+                                   data + dest control) or 4+D in mesh mode
+                                   (+dest report + D mini-agent data ports);
+                                   checked at run/dry-run
   --seg-tls-cert F                 TLS serving cert for the segment-direct hop
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop

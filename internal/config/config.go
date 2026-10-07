@@ -438,14 +438,25 @@ func (c *Config) PortRangeSize() int {
 	return c.PortHi - c.PortLo + 1
 }
 
-// RequiredDataPorts returns how many data/control ports the copy mode needs.
-// The two-agent (long-lived dest agent) architecture binds exactly 3 in BOTH
-// modes: source control + dest data + dest control. on_segment does NOT scale
-// with D — the per-segment segreceivers are dialers that all funnel into the
-// dest agent's single shared data listener, so --workers and the destination
-// segment count add no ports. (The pre-04.10 "one dest agent per segment"
-// design needed 2D+1; that was removed with the port-economy redesign.)
+// RequiredDataPorts returns how many data/control ports the copy mode needs
+// from the --port-range (the in-range allocation the agents bind on).
+//
+//   - coordinator (and the mesh coordinator-fallback for small/replicated
+//     tables): exactly **3** — source control + dest data + dest control. The
+//     per-segment segreceivers are dialers that all funnel into the dest
+//     agent's single shared data listener, so the destination segment count
+//     adds no ports (the pre-04.10 "one dest agent per segment" 2D+1 design
+//     was removed with the port-economy redesign).
+//
+//   - mesh (P2, direct_1to1): **4 + D** — source control + dest control +
+//     dest report + dest data + D mini-agent data ports (one in-range data
+//     port per destination segment, each mini-agent binds its own). The
+//     source report-listener was removed (its digest rides the slice trailer),
+//     so it is not counted. PG ports on the segments are NOT in the range.
 func (c *Config) RequiredDataPorts(dstSegments int) int {
+	if c.CopyMode == CopyMesh {
+		return 4 + dstSegments
+	}
 	return 3
 }
 
@@ -460,6 +471,10 @@ func (c *Config) CheckPortRange(dstSegments int) error {
 	need := c.RequiredDataPorts(dstSegments)
 	have := c.PortRangeSize()
 	if have < need {
+		if c.CopyMode == CopyMesh {
+			return fmt.Errorf("--port-range %s has %d port(s) but this mesh run needs %d (4 + D: source control + dest control + dest report + dest data + %d mini-agent data ports, one per destination segment); widen the range",
+				c.PortRange, have, need, dstSegments)
+		}
 		return fmt.Errorf("--port-range %s has %d port(s) but this run needs %d (source control + dest data + dest control — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
 			c.PortRange, have, need)
 	}

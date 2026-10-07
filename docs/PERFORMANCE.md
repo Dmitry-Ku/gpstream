@@ -150,10 +150,13 @@ the source feed the pipeline?" before committing to a full run.
 
 Data ports are allocated automatically: every long-lived agent binds `:0`
 and reports its real (routable) address in the control handshake, so the
-stream needs no pre-planned port. A run uses exactly 3 ports in both copy
-modes (source control + dest data + dest control) — the on_segment
+stream needs no pre-planned port. A run uses exactly 3 ports in coordinator
+mode (source control + dest data + dest control) — the on_segment
 segreceivers dial the dest agent's shared data listener, so the segment
-count adds no ports. For strict firewalls, restrict the auto-allocated
+count adds no ports. In mesh (direct_1to1) mode a run uses **4+D** ports
+(source control + dest control + dest report + dest data + D mini-agent data
+ports, one per destination segment). For strict firewalls, restrict the
+auto-allocated
 ports with `--port-range <LO-HI>`: same-host agents get pre-bound
 ports from the range, remote (SSH-launched) agents bind their auto-picked
 ports inside it (the operator opens exactly that range).

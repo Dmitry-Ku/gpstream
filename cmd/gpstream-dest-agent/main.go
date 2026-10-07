@@ -96,6 +96,19 @@ func main() {
 	// connection). Empty = off (legacy per-unit coordinator connections).
 	persistListen := flag.String("persist-listen", "", "long-lived mode: persistent-coordinator listener address host:port (0 = pick a free port; the real address is reported in the hello); empty = off")
 	workers := flag.Int("workers", 1, "long-lived mode: the run's data-worker count (P1d snapshot-epoch); sizes the destination pg pool for the concurrent persistent serves")
+	// P2 mini-agent mode (direct_1to1 mesh): run as a per-segment mini-agent
+	// instead of the coordinator dest-agent. --seg is this segment's ordinal
+	// (0..D-1); --report-addr is the supervisor's (coordinator dest-agent)
+	// report listener the mini dials ONCE for the run. The mini's --dest is
+	// the utility-mode DSN to ITS OWN segment (gp_session_role=utility) — the
+	// mini connects to pg LOCALLY on the segment host and never touches the
+	// coordinator for data (design 04.10). It serves one compressed slice per
+	// unit into one utility COPY and reports {unit, srcContrib, dstAcc, rows,
+	// ok} to the supervisor. A report-channel drop (supervisor death) =
+	// orphan-exit: the mini exits immediately.
+	mini := flag.Bool("mini", false, "P2 mini-agent mode: per-segment dest agent (direct_1to1 mesh)")
+	seg := flag.Int("seg", 0, "mini-agent mode: this segment's ordinal (0..D-1)")
+	reportAddr := flag.String("report-addr", "", "mini-agent mode: the supervisor's report listener address (the mini dials it once for the run)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -111,6 +124,49 @@ func main() {
 	// COPY and the socket cleanly.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if *mini {
+		// P2 mini-agent mode: run on a destination SEGMENT host (not the
+		// coordinator), connect to its OWN segment locally (utility mode), and
+		// serve one compressed slice per unit into one utility COPY, reporting
+		// to the supervisor over a persistent channel. No coordinator check
+		// (the mini is a segment agent by design 04.10).
+		if *dest == "" {
+			fail("--dest (the utility-mode DSN to this segment) is required in --mini mode")
+		}
+		if *reportAddr == "" {
+			fail("--report-addr (the supervisor's report listener) is required in --mini mode")
+		}
+		portAlloc, perr := portalloc.ParseRange(*portRange)
+		if perr != nil {
+			fail("invalid --port-range %q: %v", *portRange, perr)
+		}
+		res, err := agent.ServeMini(ctx, agent.MiniOptions{
+			Seg:           *seg,
+			DataListen:    *dataListen,
+			PortAlloc:     portAlloc,
+			PrimaryDSN:    *dest,
+			SSLCert:       *sslCert,
+			SSLKey:        *sslKey,
+			SSLCA:         *sslCA,
+			SSLMinTLS:     *sslMinTLS,
+			DataTLSCert:   *dataCert,
+			DataTLSKey:    *dataKey,
+			DataTLSCA:     *dataCA,
+			DataTLSMinTLS: *dataMinTLS,
+			ReportAddr:    *reportAddr,
+			AcceptTimeout: *acceptTO,
+			StreamTimeout: *streamTO,
+		})
+		if err != nil {
+			fail("mini agent: %v", err)
+		}
+		// The mini reports per-unit over the persistent channel; on exit (clean
+		// mini-done or orphan-exit) it logs its totals for the operator.
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: mini seg=%d exited units=%d rows=%d wire=%d logical=%d\n",
+			res.Seg, res.UnitsServed, res.Rows, res.Wire, res.Logical)
+		os.Exit(0)
+	}
 
 	if *serve {
 		// Long-lived mode: one data + one control listener for the run.

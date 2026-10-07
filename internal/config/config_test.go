@@ -167,9 +167,8 @@ func TestPortRangeCheck(t *testing.T) {
 	if err := small.CheckPortRange(3); err == nil {
 		t.Fatal("coordinator 2-port range should fail")
 	}
-	// on_segment: needs 3 too (the long-lived dest agent binds one shared
-	// data + one control listener; the per-segment segreceivers dial it and
-	// never bind, so D adds no ports — the pre-04.10 2D+1 formula is gone).
+	// mesh (P2, direct_1to1): needs 4 + D (source control + dest control +
+	// dest report + dest data + D mini-agent data ports). D=3 -> 7, D=4 -> 8.
 	cfg = Default()
 	cfg.CopyMode = CopyMesh
 	cfg.PortRange = "9000-9007"
@@ -177,10 +176,20 @@ func TestPortRangeCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckPortRange(3); err != nil {
-		t.Fatalf("on_segment D=3 needs 3, range 8 should pass: %v", err)
+		t.Fatalf("mesh D=3 needs 4+3=7, range 8 should pass: %v", err)
 	}
 	if err := cfg.CheckPortRange(4); err != nil {
-		t.Fatalf("on_segment D=4 still needs 3 (segreceivers dial the shared data port), range 8 should pass: %v", err)
+		t.Fatalf("mesh D=4 needs 4+4=8, range 8 should pass: %v", err)
+	}
+	// mesh boundary: D=4 needs exactly 8 ports, so a 7-port range must fail.
+	edge := Default()
+	edge.CopyMode = CopyMesh
+	edge.PortRange = "9000-9006"
+	if err := edge.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := edge.CheckPortRange(4); err == nil {
+		t.Fatal("mesh D=4 needs 8 ports, a 7-port range should fail")
 	}
 	smallSeg := Default()
 	smallSeg.CopyMode = CopyMesh
@@ -189,7 +198,7 @@ func TestPortRangeCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := smallSeg.CheckPortRange(4); err == nil {
-		t.Fatal("on_segment 2-port range should fail (needs 3)")
+		t.Fatal("mesh 2-port range should fail (needs 4+4=8)")
 	}
 	// auto (no range): always passes
 	auto := Default()

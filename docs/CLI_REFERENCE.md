@@ -271,7 +271,7 @@ the on-wire agent-to-agent volume.
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
 | `--frame-ack on\|off` | `FrameAck` | `on` (frame-level ACK + RST-resume; `off` falls back to the plain pipe) |
 | `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: on_segment then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
-| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in both copy modes — source control + dest data + dest control, since on_segment segreceivers dial the shared data listener; `dry-run` verifies the range holds ≥3) |
+| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since on_segment segreceivers dial the shared data listener — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
 | `--ack-timeout 15s\|30s\|adaptive` | `AckTimeout` | `30s` (`adaptive` = 3x median RTT, min 1s) |
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
