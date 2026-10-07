@@ -44,14 +44,18 @@ type SourceServer struct {
 	ctrlAddr string
 	stop     chan struct{}
 	stopped  chan struct{}
-	// P1c: the persistent coordinator data channel (one connection to the
-	// destination's dedicated persistent-coordinator listener for the whole
-	// run). Established lazily on the first persistent stream (or in advance
-	// when PersistListen is set), re-dialed on a break (budget: MaxReconnects).
+	// P1c/P1d: the persistent coordinator data channels (one connection per
+	// data worker to the destination's dedicated persistent-coordinator
+	// listener, for the whole run). P1d: N = Workers channels (Workers=1 keeps
+	// the single P1c channel); unit X rides channel X%N. Established lazily on
+	// the first persistent stream, re-dialed on a break (budget: MaxReconnects).
 	// persistMu serializes connect/reconnect against SendUnit's writes.
-	persistMu sync.Mutex
-	persConn  net.Conn
-	persSnd   *PersistentSender
+	persistMu   sync.Mutex
+	persConns   []net.Conn
+	persSnds    []*PersistentSender
+	persN       int  // number of channels (= Workers, >= 1)
+	persReady   bool // the channel pool is established
+	persConnIdx int  // the channel the last (re)dial touched (for re-dial)
 	// persFails (P1c): the consecutive units that failed on a DOWN persistent
 	// channel (a dial failure or a mid-unit break) since the last successful
 	// unit. Bounded by the re-dial budget (MaxReconnects, the run's
@@ -60,6 +64,12 @@ type SourceServer struct {
 	// rest of the run. Reset to 0 by a successful unit. Written only from the
 	// sequential control loop (handleStream), so no lock is needed.
 	persFails int
+	// P1d concurrent control: respMu serializes RESPONSE lines on the
+	// single control connection (N ops in flight; a response line must
+	// not interleave with another). opsWg counts in-flight ops so a
+	// release can wait for them to settle before committing the snapshot.
+	respMu sync.Mutex
+	opsWg  sync.WaitGroup
 }
 
 // ServerOptions configures a long-lived source agent.
@@ -206,6 +216,16 @@ func (s *SourceServer) startControl() (string, error) {
 
 // serveControl accepts the controller's control connection and serves
 // StreamReq/ReleaseReq messages for the run's lifetime.
+//
+// P1d concurrent control: one read cycle + ONE goroutine per op. N units can
+// be in flight on the single control connection at once; each response
+// carries the request's ReqID so the controller correlates it to the waiting
+// worker (the responses arrive in completion order, not request order). A
+// unit-level panic (e.g. a pg conn torn down mid-stream during a crash)
+// reports THAT op as failed instead of killing the agent: the run's
+// resilience contract is per-unit, not per-process. Release is handled
+// synchronously in this loop (it must be the LAST op: it waits for the
+// in-flight ops to settle, commits the snapshot, and the agent then exits).
 func (s *SourceServer) serveControl(l net.Listener) {
 	defer close(s.stopped)
 	defer l.Close()
@@ -226,65 +246,81 @@ func (s *SourceServer) serveControl(l net.Listener) {
 			return // controller closed the control conn (run end / stop)
 		}
 		var probe struct {
-			Op string `json:"op"`
+			Op    string `json:"op"`
+			ReqID uint64 `json:"req_id"`
 		}
 		if uerr := json.Unmarshal(line, &probe); uerr != nil {
 			continue
 		}
-		// A unit-level panic (e.g. a pg conn torn down mid-stream during a
-		// crash) reports THAT unit as failed instead of killing the agent:
-		// the run's resilience contract is per-unit, not per-process.
-		func() {
+		// Release: last op. Wait for in-flight ops, commit the snapshot,
+		// report, exit.
+		if probe.Op == "release" {
+			var req ReleaseReq
+			if uerr := json.Unmarshal(line, &req); uerr != nil {
+				_ = s.sendResp(conn, ReleaseResp{ReqID: probe.ReqID, Error: uerr.Error()})
+				return
+			}
+			_ = s.sendResp(conn, s.handleRelease(req.ReqID))
+			return
+		}
+		// Everything else: one goroutine per op (concurrent, P1d).
+		s.opsWg.Add(1)
+		go func() {
+			defer s.opsWg.Done()
 			defer func() {
 				if p := recover(); p != nil {
 					fmt.Fprintf(os.Stderr, "gpstream-source-agent: unit panic: %v\n", p)
-					_ = SendLine(conn, StreamResp{Ok: false, Error: fmt.Sprintf("unit panic: %v", p)})
+					_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unit panic: %v", p)})
 				}
 			}()
 			switch probe.Op {
 			case "stream":
 				var req StreamReq
 				if uerr := json.Unmarshal(line, &req); uerr != nil {
-					_ = SendLine(conn, StreamResp{Ok: false, Error: uerr.Error()})
+					_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: uerr.Error()})
 					return
 				}
-				_ = SendLine(conn, s.handleStream(req))
+				_ = s.sendResp(conn, s.handleStream(req))
 			case "onsegment":
 				var req OnSegmentReq
 				if uerr := json.Unmarshal(line, &req); uerr != nil {
-					_ = SendLine(conn, OnSegmentResp{Ok: false, Error: uerr.Error()})
+					_ = s.sendResp(conn, OnSegmentResp{ReqID: probe.ReqID, Error: uerr.Error()})
 					return
 				}
-				_ = SendLine(conn, s.handleOnSegment(req))
+				_ = s.sendResp(conn, s.handleOnSegment(req))
 			case "checksum":
 				var req ChecksumReq
 				if uerr := json.Unmarshal(line, &req); uerr != nil {
-					_ = SendLine(conn, ChecksumResp{Ok: false, Error: uerr.Error()})
+					_ = s.sendResp(conn, ChecksumResp{ReqID: probe.ReqID, Error: uerr.Error()})
 					return
 				}
-				_ = SendLine(conn, s.handleChecksum(req))
-			case "release":
-				_ = SendLine(conn, s.handleRelease())
+				_ = s.sendResp(conn, s.handleChecksum(req))
 			default:
-				_ = SendLine(conn, StreamResp{Ok: false, Error: fmt.Sprintf("unknown op %q", probe.Op)})
+				_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 			}
 		}()
-		if probe.Op == "release" {
-			return
-		}
 	}
+}
+
+// sendResp writes one control response line, serialized (P1d: N ops in flight
+// on one connection; response lines must not interleave).
+func (s *SourceServer) sendResp(conn net.Conn, msg any) error {
+	s.respMu.Lock()
+	defer s.respMu.Unlock()
+	return SendLine(conn, msg)
 }
 
 // handleStream streams one unit to the destination agent and returns the report.
 func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 	ctx := context.Background()
+	reqID := req.ReqID
 	// 1. Capture the source table's shape on the POOL (not the pinned snapshot
 	// conn — a catalog fault must not abort the snapshot; the manager's
 	// srcRead() convention).
 	cq := s.catalogQuerier()
 	cols, err := source.New(cq).Columns(ctx, req.Schema, req.Table)
 	if err != nil {
-		return StreamResp{Ok: false, Error: fmt.Sprintf("read columns %s.%s: %v", req.Schema, req.Table, err)}
+		return StreamResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("read columns %s.%s: %v", req.Schema, req.Table, err)}
 	}
 	dist := source.New(cq).Distribution(ctx, req.Schema, req.Table)
 	part, perr := pg.CapturePartitionSpec(cq, ctx, req.Schema, req.Table)
@@ -315,9 +351,9 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 	}
 	if serr != nil {
 		s.heal(ctx) // a failed unit may have aborted the snapshot tx (F-06)
-		return StreamResp{Ok: false, Error: serr.Error()}
+		return StreamResp{ReqID: reqID, Ok: false, Error: serr.Error()}
 	}
-	return StreamResp{Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical, Digest: res.Digest}
+	return StreamResp{ReqID: reqID, Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical, Digest: res.Digest}
 }
 
 // handleOnSegment runs the P4 on_segment data path on the source agent's FR-02
@@ -333,6 +369,7 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StreamTimeout)
 	defer cancel()
+	reqID := req.ReqID
 	var prog string
 	var err error
 	if req.FrameAck != "off" {
@@ -356,7 +393,7 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 			req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress)
 	}
 	if err != nil {
-		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("build program: %v", err)}
+		return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("build program: %v", err)}
 	}
 	sql := segstream.CopyOnSegmentSQL(req.Schema, req.Table, prog)
 	// The ON SEGMENT dispatch must run on the unit's FR-02 snapshot
@@ -370,9 +407,9 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	rows, err := cq.Exec(ctx, sql)
 	if err != nil {
 		s.heal(ctx) // a failed dispatch may have aborted the snapshot tx (F-06)
-		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
+		return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
 	}
-	return OnSegmentResp{Ok: true, Rows: rows}
+	return OnSegmentResp{ReqID: reqID, Ok: true, Rows: rows}
 }
 
 // countingWriteConn wraps a net.Conn and counts every byte written to it (the
@@ -458,9 +495,9 @@ func (s *SourceServer) handleChecksum(req ChecksumReq) ChecksumResp {
 	ctx := context.Background()
 	sum, err := source.New(s.copyQuerier()).Checksum(ctx, req.Schema, req.Table)
 	if err != nil {
-		return ChecksumResp{Ok: false, Error: err.Error()}
+		return ChecksumResp{ReqID: req.ReqID, Ok: false, Error: err.Error()}
 	}
-	return ChecksumResp{Ok: true, Checksum: sum}
+	return ChecksumResp{ReqID: req.ReqID, Ok: true, Checksum: sum}
 }
 
 // Checksum re-derives a table's content checksum on the run's FR-02 snapshot
@@ -624,44 +661,53 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	return out, nil
 }
 
-// streamUnitPersistent streams the unit over the run's ONE persistent
-// coordinator channel (P1c): the UnitBegin frame (the spec), the framed +
+// streamUnitPersistent streams the unit over the run's persistent coordinator
+// channel pool (P1c/P1d): the UnitBegin frame (the spec), the framed +
 // compressed data, and the Trailer frame — the connection is NOT closed
 // between units (that is the point: it saves the per-unit TCP+TLS+UnitSpec
 // handshake, ≈4-5 RTT).
 //
+// P1d: N = Workers channels; unit X rides channel X%N. Each channel is its own
+// connection with its own serve loop on the destination, so N units stream in
+// parallel. Workers=1 keeps the single P1c channel.
+//
 // Resilience: on a mid-unit break (the destination died or the socket reset)
-// the unit fails; the connection is torn down so the NEXT unit (the manager's
-// retry, or the following unit) re-dials a fresh channel and re-streams from
-// scratch. The destination truncates the surviving staging before re-loading
-// it (FR-07, in ServePersistentUnit). The re-dial itself is bounded
-// (dialDestTLS retries while the destination re-binds). This keeps the
-// source and destination in lock-step: one unit attempt = one serve-unit +
-// one stream, so a break never desyncs the two sides (an in-call re-stream
-// would send a second UnitBegin the destination is not positioned to read).
+// the unit fails; the channel pool is torn down so the NEXT unit (the
+// manager's retry, or the following unit) re-dials a fresh set and re-streams
+// from scratch. The destination truncates the surviving staging before
+// re-loading it (FR-07, in ServePersistentUnit). The re-dial itself is bounded
+// (dialDestTLS retries while the destination re-binds). This keeps the source
+// and destination in lock-step: one unit attempt = one serve-unit + one
+// stream, so a break never desyncs the two sides (an in-call re-stream would
+// send a second UnitBegin the destination is not positioned to read).
 func (s *SourceServer) streamUnitPersistent(ctx context.Context, spec UnitSpec, destAddr string) (SourceResult, error) {
 	var out SourceResult
 	dctx, dcancel := context.WithTimeout(ctx, s.opts.StreamTimeout)
 	defer dcancel()
 
-	// 1. Ensure the channel is up: reuse the run's connection, or dial a
-	//    fresh one (the first unit, or a re-dial after a previous break).
+	// 1. Ensure the channel pool is up: reuse the run's N connections, or dial
+	//    a fresh set (the first unit, or a re-dial after a previous break).
 	//    dialDestTLS retries the dial while the destination is (re)binding.
 	//    The re-dial budget (MaxReconnects) bounds how many CONSECUTIVE units
 	//    may spend a dial window on a dead destination before failing fast.
-	if err := s.ensurePersistent(dctx, destAddr); err != nil {
+	if err := s.ensurePersistentPool(dctx, destAddr); err != nil {
 		if s.persFails < s.reconnectBudget() {
 			s.persFails++ // a failed (re)dial: one budget step spent
 		}
 		return out, err
 	}
 
-	// 2. Stream the unit (UnitBegin + framed/compressed data + Trailer). On a
-	//    break the send fails and the channel is torn down for the next unit.
-	res, err := s.sendPersistentUnit(dctx, spec)
+	// 2. The unit's channel: X%N (both source and dest count channels from 0,
+	//    so the unit lands on the destination's matching serve loop).
+	idx := int(spec.UnitID % uint32(s.persN))
+
+	// 3. Stream the unit (UnitBegin + framed/compressed data + Trailer). On a
+	//    break the send fails and the pool is torn down for the next unit.
+	res, err := s.sendPersistentUnit(dctx, spec, idx)
 	if err != nil {
 		// A failed send means the channel is suspect (a write error / a dead
-		// peer): tear it down so the next unit re-dials a fresh connection.
+		// peer): tear down the pool so the next unit re-dials fresh
+		// connections (the destination re-accepts the ordered set).
 		s.teardownPersistent()
 		s.persFails++ // a mid-unit break: the next unit re-dials (budget step)
 		return out, err
@@ -670,21 +716,24 @@ func (s *SourceServer) streamUnitPersistent(ctx context.Context, spec UnitSpec, 
 	return res, nil
 }
 
-// sendPersistentUnit streams ONE unit over the established persistent channel
-// (UnitBegin + framed/compressed data + Trailer) and returns the source-side
-// report (rows + wire/logical volume + the inline digest when verify is on).
-// The connection stays open for the next unit (the caller tears it down only
-// on a failure).
-func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec) (SourceResult, error) {
+// sendPersistentUnit streams ONE unit over channel idx of the established
+// persistent channel pool (UnitBegin + framed/compressed data + Trailer) and
+// returns the source-side report (rows + wire/logical volume + the inline
+// digest when verify is on). The connection stays open for the next unit on
+// that channel (the caller tears down the pool only on a failure).
+func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, idx int) (SourceResult, error) {
 	var out SourceResult
 	s.persistMu.Lock()
-	snd := s.persSnd
+	var snd *PersistentSender
+	if idx >= 0 && idx < len(s.persSnds) {
+		snd = s.persSnds[idx]
+	}
 	if snd != nil {
 		snd.SetJobID(spec.JobID) // the frames carry the run's job id
 	}
 	s.persistMu.Unlock()
 	if snd == nil {
-		return out, fmt.Errorf("persistent channel not established (unit %d)", spec.UnitID)
+		return out, fmt.Errorf("persistent channel %d not established (unit %d)", idx, spec.UnitID)
 	}
 
 	mode, level, perr := compress.Parse(spec.Compress)
@@ -693,10 +742,12 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec) (S
 	}
 	comp := compress.New(mode, level)
 
-	// The data COPY runs on the pinned snapshot connection; its binary-COPY
-	// stream is piped into SendUnit, which frames + compresses it and brackets
-	// it with the UnitBegin/Trailer frames on the channel. The digest tee
-	// (verify on) computes the inline content digest on the data path.
+	// The data COPY runs on a snapshot-epoch connection (borrowed, no commit,
+	// returned after) or the pinned conn (strict) / pool (no snap); its
+	// binary-COPY stream is piped into SendUnit, which frames + compresses it
+	// and brackets it with the UnitBegin/Trailer frames on the channel. The
+	// digest tee (verify on) computes the inline content digest on the data
+	// path.
 	var dsum *transfer.ContentDigestWriter
 	if spec.VerifyDigest {
 		dsum = transfer.NewContentDigest()
@@ -768,43 +819,99 @@ func (s *SourceServer) reconnectBudget() int {
 	return 20
 }
 
-// ensurePersistent establishes the persistent channel to destAddr if it is
-// not already connected (idempotent). It reuses the run's connection; on the
-// first unit (or a re-dial after a break) it dials, retrying while the
-// destination is (re)binding its listener.
-func (s *SourceServer) ensurePersistent(ctx context.Context, destAddr string) error {
+// ensurePersistentPool establishes the N persistent channels to destAddr if
+// they are not already up (idempotent). It dials the N channels SEQUENTIALLY
+// in order 0..N-1 (P1d): the destination's accept loop assigns each accepted
+// connection its own serve loop, so the dial order defines which channel a
+// unit rides on (unit X -> channel X%N, both sides counting from 0). Each
+// channel gets its own PersistentSender + idle-watchdog ping. dialDestTLS
+// retries the dial while the destination is (re)binding. The re-dial budget
+// (MaxReconnects) bounds how many consecutive units may spend a dial window
+// on a dead destination before failing fast (FR-06).
+func (s *SourceServer) ensurePersistentPool(ctx context.Context, destAddr string) error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
-	if s.persSnd != nil && s.persConn != nil {
+	if s.persReady {
 		return nil
 	}
-	// Budget check BEFORE the dial: a destination that has stayed dead for
-	// the whole budget must fail this unit fast (the manager records it; the
-	// run-level resume retries it) instead of spending another 30s dial
-	// window (FR-06).
+	// Budget check BEFORE the dial: a destination that has stayed dead for the
+	// whole budget must fail this unit fast (the manager records it; the
+	// run-level resume retries it) instead of spending another 30s dial window.
 	if s.persFails >= s.reconnectBudget() {
 		return fmt.Errorf("persistent channel: re-dial budget (%d) exhausted, destination %s unreachable", s.reconnectBudget(), destAddr)
 	}
-	conn, err := s.dialDestTLS(ctx, destAddr)
-	if err != nil {
-		return fmt.Errorf("persistent channel: dial %s: %w", destAddr, err)
+	n := s.persistentChannelCount()
+	s.persN = n // channel index = unit % N (must be set before any stream op)
+	s.persConns = make([]net.Conn, n)
+	s.persSnds = make([]*PersistentSender, n)
+	for i := 0; i < n; i++ {
+		conn, err := s.dialDestTLS(ctx, destAddr)
+		if err != nil {
+			// Roll back the channels already dialed (a partial pool is useless:
+			// the destination's accept loop expects an ordered set).
+			for j := 0; j < i; j++ {
+				_ = s.persConns[j].Close()
+			}
+			s.persConns, s.persSnds = nil, nil
+			return fmt.Errorf("persistent channel %d/%d: dial %s: %w", i, n, destAddr, err)
+		}
+		s.persConns[i] = conn
+		s.persSnds[i] = NewPersistentSender(conn, 0)
+		s.persSnds[i].StartPing()
 	}
-	s.persConn = conn
-	s.persSnd = NewPersistentSender(conn, 0)
-	s.persSnd.StartPing()
+	s.persReady = true
 	return nil
 }
 
-// teardownPersistent closes the persistent channel (called after a failed
-// unit, so the next unit re-dials a fresh connection). Safe when not up.
+// persistentChannelCount is the number of persistent data channels: the run's
+// --workers (P1d), capped at >= 1 (Workers=1 = the single P1c channel).
+func (s *SourceServer) persistentChannelCount() int {
+	if s.opts.Workers > 1 {
+		return s.opts.Workers
+	}
+	return 1
+}
+
+// teardownPersistent closes the persistent channel pool (called after a
+// failed unit, so the next unit re-dials fresh connections). Safe when not up.
 func (s *SourceServer) teardownPersistent() {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
-	if s.persSnd != nil {
-		s.persSnd.Close()
-		s.persSnd = nil
+	s.teardownPoolLocked()
+}
+
+// teardownPoolLocked closes all channels and resets the pool (caller holds
+// persistMu).
+func (s *SourceServer) teardownPoolLocked() {
+	for i := range s.persSnds {
+		if s.persSnds[i] != nil {
+			s.persSnds[i].Close()
+			s.persSnds[i] = nil
+		}
 	}
-	s.persConn = nil
+	for i := range s.persConns {
+		s.persConns[i] = nil
+	}
+	s.persReady = false
+}
+
+// teardownChannel tears down ONE channel (i) after a break on it, so the next
+// unit that rides it re-dials a fresh connection (P1d: per-channel re-dial).
+func (s *SourceServer) teardownChannel(i int) {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	if i >= 0 && i < len(s.persSnds) {
+		if s.persSnds[i] != nil {
+			s.persSnds[i].Close()
+			s.persSnds[i] = nil
+		}
+		if i < len(s.persConns) {
+			s.persConns[i] = nil
+		}
+	}
+	// Mark the pool not-ready so ensurePersistentPool re-establishes it (it
+	// re-dials all N in order; the already-healthy ones are closed first).
+	s.teardownPoolLocked()
 }
 
 // ClosePersistent tears the channel down at run end (Release).
@@ -812,10 +919,12 @@ func (s *SourceServer) ClosePersistent() {
 	s.teardownPersistent()
 }
 
-// handleRelease ends the run: commits the snapshot and signals stop.
-// strict (Workers=1): COMMIT on the one pinned conn. epoch (Workers>1, P1d):
+// handleRelease ends the run: waits for the in-flight ops to settle
+// (P1d concurrent control), then commits the snapshot and signals stop.
+// strict (Workers=1): COMMIT on the one pinned conn. epoch (Workers>1):
 // COMMIT on all N connections (the run's successful Release).
-func (s *SourceServer) handleRelease() ReleaseResp {
+func (s *SourceServer) handleRelease(reqID uint64) ReleaseResp {
+	s.opsWg.Wait() // in-flight ops must finish before the snapshot commits
 	ctx := context.Background()
 	s.healMu.Lock()
 	if s.snapTx && s.epoch != nil {
@@ -834,7 +943,7 @@ func (s *SourceServer) handleRelease() ReleaseResp {
 	}
 	s.healMu.Unlock()
 	close(s.stop)
-	return ReleaseResp{Ok: true}
+	return ReleaseResp{ReqID: reqID, Ok: true}
 }
 
 // heal re-establishes the FR-02 snapshot after a unit failure (the manager's

@@ -838,6 +838,10 @@ func dialControlRetry(ctx context.Context, addr string, deadline time.Duration, 
 	for {
 		client, err := agent.DialControlTLS(deadlineCtx, addr, tls)
 		if err == nil {
+			// P1d: source-agent control is concurrent (one conn, N ops in
+			// flight) — start the response-reader that routes responses to
+			// the waiting worker by ReqID.
+			client.StartReader()
 			return client, nil
 		}
 		lastErr = err

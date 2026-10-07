@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
@@ -57,6 +58,11 @@ type StreamReq struct {
 	// (the one-shot bench / legacy per-unit path) dials DestAddr fresh and
 	// sends the legacy UnitSpec header + framed stream.
 	Persistent bool `json:"persistent,omitempty"`
+	// ReqID (P1d) is the controller's per-request correlation id, echoed
+	// in StreamResp so concurrent ops on one control connection are
+	// matched to the waiting worker (unit_id alone is not unique across
+	// retries: the same unit can be streamed twice in one run).
+	ReqID uint64 `json:"req_id,omitempty"`
 }
 
 // OnSegmentReq is the controller's per-unit instruction for the P4
@@ -97,6 +103,9 @@ type OnSegmentReq struct {
 	// --ack-timeout / --max-reconnects / --retransmit-buffer-max flags in the
 	// segreceiver program string; the destination agent is launched with the
 	// same parameters by the controller.
+	// ReqID (P1d) is the controller's per-request correlation id, echoed
+	// in OnSegmentResp (concurrent ops on one control connection).
+	ReqID         uint64 `json:"req_id,omitempty"`
 	FrameAck      string `json:"frame_ack,omitempty"`   // on|off
 	AckTimeout    string `json:"ack_timeout,omitempty"` // 15s|30s|adaptive
 	MaxReconnects int    `json:"max_reconnects,omitempty"`
@@ -108,9 +117,11 @@ type OnSegmentReq struct {
 // COPY row count (a cross-check; the authoritative count is the destination
 // agent's).
 type OnSegmentResp struct {
-	Ok    bool   `json:"ok"`
-	Rows  int64  `json:"rows,omitempty"`
-	Error string `json:"error,omitempty"`
+	Ok     bool   `json:"ok"`
+	UnitID uint32 `json:"unit_id,omitempty"` // P1d: echoes OnSegmentReq.UnitID
+	ReqID  uint64 `json:"req_id,omitempty"`  // P1d: echoes OnSegmentReq.ReqID
+	Rows   int64  `json:"rows,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // DirectReq is the controller's per-unit instruction for the P5 direct data
@@ -158,12 +169,22 @@ type DirectResp struct {
 // close the source connection).
 type ReleaseReq struct {
 	Op string `json:"op"` // "release"
+	// ReqID (P1d) is the controller's per-request correlation id, echoed in
+	// ReleaseResp. Release must be sent after every in-flight op has
+	// completed (the client guarantees this), so the agent can wait for
+	// ops to drain before committing the snapshot.
+	ReqID uint64 `json:"req_id,omitempty"`
 }
 
 // StreamResp is the source agent's report after streaming a unit (the
 // FR-04 volume + row count). Ok=false carries Error.
 type StreamResp struct {
-	Ok      bool   `json:"ok"`
+	Ok bool `json:"ok"`
+	// UnitID (P1d) echoes StreamReq.UnitID so the controller's reader
+	// correlates the report to the unit (concurrent ops, one control conn).
+	UnitID uint32 `json:"unit_id,omitempty"`
+	// ReqID echoes StreamReq.ReqID (concurrent-op correlation, P1d).
+	ReqID   uint64 `json:"req_id,omitempty"`
 	Rows    int64  `json:"rows,omitempty"`
 	Wire    uint64 `json:"wire,omitempty"`
 	Logical uint64 `json:"logical,omitempty"`
@@ -177,7 +198,9 @@ type StreamResp struct {
 
 // ReleaseResp acknowledges the release.
 type ReleaseResp struct {
-	Ok    bool   `json:"ok"`
+	Ok bool `json:"ok"`
+	// ReqID (P1d) echoes ReleaseReq.ReqID (concurrent-op correlation).
+	ReqID uint64 `json:"req_id,omitempty"`
 	Error string `json:"error,omitempty"`
 }
 
@@ -186,14 +209,19 @@ type ReleaseResp struct {
 // against the destination table's checksum. The source agent re-derives it on
 // its pinned snapshot connection (the same snapshot the data COPY used).
 type ChecksumReq struct {
-	Op     string `json:"op"` // "checksum"
+	Op string `json:"op"` // "checksum"
+	// ReqID (P1d) is the controller's per-request correlation id, echoed in
+	// ChecksumResp (concurrent ops on one control connection).
+	ReqID  uint64 `json:"req_id,omitempty"`
 	Schema string `json:"schema"`
 	Table  string `json:"table"`
 }
 
 // ChecksumResp is the source agent's checksum report.
 type ChecksumResp struct {
-	Ok       bool   `json:"ok"`
+	Ok bool `json:"ok"`
+	// ReqID (P1d) echoes ChecksumReq.ReqID (concurrent-op correlation).
+	ReqID    uint64 `json:"req_id,omitempty"`
 	Checksum string `json:"checksum,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
@@ -251,13 +279,154 @@ type ControlClient struct {
 	conn net.Conn
 	w    *bufio.Writer
 	r    *bufio.Reader
-	mu   sync.Mutex
+	// writeMu (P1d) serializes request LINES on the single control
+	// connection: two workers may have ops in flight, but a request line is
+	// never interleaved with another (newline-delimited JSON).
+	writeMu sync.Mutex
+	// pending (P1d concurrent control): in-flight op correlation. Each
+	// request carries a unique ReqID; the single reader goroutine routes the
+	// matching response line back to the waiting worker (a response never
+	// blocks on the next request). Keyed by ReqID.
+	pendingMu sync.Mutex
+	pending   map[uint64]chan []byte
+	// dead is closed when the reader sees the connection end (the agent
+	// exited): every waiting op fails fast instead of blocking forever.
+	dead     chan struct{}
+	deadOnce sync.Once
+	nextID   atomic.Uint64
 }
 
-// DialControl connects the controller to a source agent's control socket
-// (plain TCP — the pre-redesign local layout).
+// errControlDead is returned to every in-flight op when the control
+// connection drops (the reader goroutine closed dead).
+var errControlDead = fmt.Errorf("control: connection closed")
+
+// StartReader launches the single response-reader goroutine (P1d) for a
+// source-agent control client. It is idempotent (a second call is a no-op).
+// DialControl starts it automatically; the process runner's dialControlRetry
+// (which dials with its own TLS settings) must call it after dialing. The
+// DESTINATION control client does NOT use it (DestControlClient reads its
+// own ack/unit-done lines sequentially).
+func (c *ControlClient) StartReader() {
+	if c.dead != nil {
+		return // already started
+	}
+	c.dead = make(chan struct{})
+	c.pending = make(map[uint64]chan []byte)
+	go c.readLoop()
+}
+
+// readLoop reads response lines for the connection's lifetime and routes
+// each to the op that issued the matching ReqID (concurrent control, P1d:
+// the agent runs ops as goroutines, so responses arrive in COMPLETION order,
+// not request order — correlation by ReqID is what makes that safe).
+func (c *ControlClient) readLoop() {
+	defer c.markDead()
+	for {
+		line, err := c.r.ReadBytes('\n')
+		if len(line) > 0 {
+			var env struct {
+				ReqID uint64 `json:"req_id"`
+			}
+			if uerr := json.Unmarshal(line, &env); uerr == nil && env.ReqID != 0 {
+				c.pendingMu.Lock()
+				ch, ok := c.pending[env.ReqID]
+				if ok {
+					delete(c.pending, env.ReqID)
+				}
+				c.pendingMu.Unlock()
+				if ok {
+					select {
+					case ch <- line:
+					default: // already failed (dead) — drop
+					}
+					continue
+				}
+			}
+			// A line we cannot correlate (should not happen: the agent
+			// echoes ReqID on every response). Drop it rather than wedge.
+		}
+		if err != nil {
+			return // io.EOF (agent exited) or a transport error
+		}
+	}
+}
+
+// markDead fails every waiting op once (connection loss).
+func (c *ControlClient) markDead() {
+	c.deadOnce.Do(func() {
+		close(c.dead)
+		c.pendingMu.Lock()
+		for id := range c.pending {
+			delete(c.pending, id)
+		}
+		c.pendingMu.Unlock()
+	})
+}
+
+// call issues one request line and waits for the matching response line
+// (correlated by ReqID). req must be a pointer to a request type carrying a
+// ReqID field (set here); resp is unmarshaled from the response line.
+func (c *ControlClient) call(req, resp any) error {
+	id := c.nextID.Add(1)
+	switch r := req.(type) {
+	case *StreamReq:
+		r.ReqID = id
+	case *OnSegmentReq:
+		r.ReqID = id
+	case *ChecksumReq:
+		r.ReqID = id
+	case *ReleaseReq:
+		r.ReqID = id
+	}
+	ch := make(chan []byte, 1)
+	c.pendingMu.Lock()
+	c.pending[id] = ch
+	c.pendingMu.Unlock()
+	defer func() {
+		c.pendingMu.Lock()
+		if c.pending[id] == ch {
+			delete(c.pending, id)
+		}
+		c.pendingMu.Unlock()
+	}()
+
+	// Write the request line (serialized: one line at a time on the conn).
+	c.writeMu.Lock()
+	werr := SendLine(c.w, req)
+	if werr == nil {
+		werr = c.w.Flush()
+	}
+	c.writeMu.Unlock()
+	if werr != nil {
+		return werr
+	}
+
+	select {
+	case line := <-ch:
+		if uerr := json.Unmarshal(line, resp); uerr != nil {
+			return fmt.Errorf("control: unmarshal response: %w", uerr)
+		}
+		return nil
+	case <-c.dead:
+		return errControlDead
+	}
+}
+
+// DialControl connects the controller to a SOURCE agent's control socket.
+// (plain TCP — the pre-redesign local layout). It starts the response-reader
+// goroutine (P1d concurrent control): the source agent serves ops as
+// goroutines, so responses arrive in completion order and are correlated
+// to the waiting worker by ReqID. DO NOT use this for the DESTINATION
+// control socket — that protocol (a leading hello, then sequential
+// ack/unit-done) is read by DestControlClient itself; use
+// DialDestControl for it.
 func DialControl(ctx context.Context, addr string) (*ControlClient, error) {
-	return DialControlTLS(ctx, addr, ControlTLS{})
+	c, err := DialControlTLS(ctx, addr, ControlTLS{})
+	if err != nil {
+		return nil, err
+	}
+	c.StartReader()
+	return c, nil
 }
 
 // DialControlTLS connects the controller to an agent control socket,
@@ -294,19 +463,13 @@ func DialControlTLS(ctx context.Context, addr string, t ControlTLS) (*ControlCli
 }
 
 // Stream instructs the source agent to stream one unit to the given
-// destination agent endpoint and waits for the source's report.
+// destination agent endpoint and waits for the source's report. P1d: the op
+// runs concurrently with the other workers' ops (one control connection, N
+// ops in flight, correlated by ReqID).
 func (c *ControlClient) Stream(req StreamReq) (StreamResp, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var resp StreamResp
-	if err := SendLine(c.w, req); err != nil {
+	if err := c.call(&req, &resp); err != nil {
 		return resp, err
-	}
-	if err := c.w.Flush(); err != nil {
-		return resp, fmt.Errorf("control: flush: %w", err)
-	}
-	if err := recvLine(c.r, &resp); err != nil {
-		return resp, fmt.Errorf("control: read stream response: %w", err)
 	}
 	return resp, nil
 }
@@ -317,17 +480,9 @@ func (c *ControlClient) Stream(req StreamReq) (StreamResp, error) {
 // compressed to the destination agent. It blocks until the kernel's COPY
 // returns (all segreceivers have streamed) and returns the kernel's row count.
 func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var resp OnSegmentResp
-	if err := SendLine(c.w, req); err != nil {
+	if err := c.call(&req, &resp); err != nil {
 		return resp, err
-	}
-	if err := c.w.Flush(); err != nil {
-		return resp, fmt.Errorf("control: flush: %w", err)
-	}
-	if err := recvLine(c.r, &resp); err != nil {
-		return resp, fmt.Errorf("control: read onsegment response: %w", err)
 	}
 	return resp, nil
 }
@@ -335,34 +490,23 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 // Checksum asks the source agent (which holds the FR-02 snapshot) for the
 // content checksum of a table.
 func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var resp ChecksumResp
-	if err := SendLine(c.w, ChecksumReq{Op: "checksum", Schema: schema, Table: table}); err != nil {
+	req := ChecksumReq{Op: "checksum", Schema: schema, Table: table}
+	if err := c.call(&req, &resp); err != nil {
 		return resp, err
-	}
-	if err := c.w.Flush(); err != nil {
-		return resp, fmt.Errorf("control: flush: %w", err)
-	}
-	if err := recvLine(c.r, &resp); err != nil {
-		return resp, fmt.Errorf("control: read checksum response: %w", err)
 	}
 	return resp, nil
 }
 
 // Release tells the source agent to end the run (commit the snapshot).
+// P1d: the caller MUST have completed every in-flight op first (the manager
+// sends it after the worker pool drains), so the agent can wait for its ops
+// to settle before committing.
 func (c *ControlClient) Release() (ReleaseResp, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var resp ReleaseResp
-	if err := SendLine(c.w, ReleaseReq{Op: "release"}); err != nil {
+	req := ReleaseReq{Op: "release"}
+	if err := c.call(&req, &resp); err != nil {
 		return resp, err
-	}
-	if err := c.w.Flush(); err != nil {
-		return resp, fmt.Errorf("control: flush: %w", err)
-	}
-	if err := recvLine(c.r, &resp); err != nil {
-		return resp, fmt.Errorf("control: read release response: %w", err)
 	}
 	return resp, nil
 }
