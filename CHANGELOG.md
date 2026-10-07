@@ -7,6 +7,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (P3)
+
+- **Supervisor in the dest-agent (direct_1to1 mesh coordinator side)** — the
+  coordinator-side counterpart of the P2 mini-agent. `internal/agent/
+  supervisor.go` (`Supervisor`): the dest-agent on the destination coordinator
+  accepts the D mini-agents' persistent report connections and reads each
+  hello `{seg, dataPort, ready}`, building a `MiniMap` (seg ordinal -> this
+  segment's data-listener address) that the controller folds into the
+  segreceivers' ProgramCommand. Per unit, `ServeUnit` broadcasts a `mini-unit`
+  request to EVERY mini-agent (concurrently, on each persistent report
+  connection) and collects the D `mini-unit-resp` reports, COMBINING them into
+  the unit's digests: `srcDigest = XOR_D(srcContrib)` and `dstDigest =
+  XOR_D(dstAcc)` over the summed row count (the per-row XOR accumulator is
+  commutative/associative, so segment order does not matter — this makes the
+  direct_1to1 mesh verifiable without re-reading any table, FR-02). HEALTH: a
+  mini-agent whose report connection drops (the process died) is an ORPHAN —
+  its unit report is a failure, so the unit fails and the run resumes (the
+  staging slice on that segment is truncated on re-copy). On `Stop` the
+  supervisor sends `mini-done` to each mini (clean exit) and closes the report
+  listener (best-effort; the mini's orphan-exit is the guarantee). Design
+  04.10: the supervisor holds NO data connection. Acceptance:
+  `tests/integration/two_agent_supervisor_test.go` (a real Supervisor
+  coordinates D=3 real ServeMini minis on separate pgtest clusters emulating D
+  segment hosts; asserts combined rows == seeded, perSeg covers every row
+  once, and BOTH combined srcDigest and dstDigest == the buffered reference
+  digest — the XOR_D composable-digest invariant) and
+  `two_agent_supervisor_orphan_test.go` (a dead mini's report channel drop ->
+  `ServeUnit` fails the unit naming the orphan). Launching the D mini-agents
+  over SSH (one per destination segment host) is the P3 SSH-launch increment
+  (live-validated); this increment is the self-testable supervisor core.
+
 ### Added (P2)
 
 - **Mini-agent (`gpstream-dest-agent --mini`)** — the per-destination-segment
