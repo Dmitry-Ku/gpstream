@@ -294,16 +294,25 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 	if err := r.startSource(ctx); err != nil {
 		return err
 	}
-	if err := r.startDest(ctx); err != nil {
-		// Surface the real startDest error (dial failure, launch failure) —
-		// stopSource is cleanup, not the cause. Swallowing it (the old
-		// `return r.stopSource()`) turned every dest-start failure into the
-		// misleading "destination agent not started" at stream time.
-		stopErr := r.stopSource()
-		if stopErr != nil {
-			return fmt.Errorf("start dest: %w (source stop: %v)", err, stopErr)
+	// A destination agent is only launched when a destination is configured.
+	// The input-stream benchmark (bench.go) reads the source only and drains
+	// to a local sink — it has no destination, so the source agent is all
+	// that is needed. Launching the dest agent with an empty --dest conn
+	// string would make it fail its pg pool before its control listener
+	// opens, so the controller's dial would get "connection refused".
+	if r.cfg.Dest != "" {
+		if err := r.startDest(ctx); err != nil {
+			// Surface the real startDest error (dial failure, launch
+			// failure) — stopSource is cleanup, not the cause. Swallowing it
+			// (the old `return r.stopSource()`) turned every dest-start
+			// failure into the misleading "destination agent not started" at
+			// stream time.
+			stopErr := r.stopSource()
+			if stopErr != nil {
+				return fmt.Errorf("start dest: %w (source stop: %v)", err, stopErr)
+			}
+			return err
 		}
-		return err
 	}
 	return nil
 }
