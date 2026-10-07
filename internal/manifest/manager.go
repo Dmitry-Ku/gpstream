@@ -135,6 +135,16 @@ func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) 
 		dec:      compress.NewDec(mode),
 		compMode: mode,
 	}
+	// 07.10: primary-journal (dest DB) write errors are no longer swallowed
+	// (a GP6/PG9.4 upsert failure used to die silently, leaving
+	// gpstream_units/gpstream_jobs empty) — they land in events.jsonl so an
+	// operator sees a broken pg journal. The file mirror stays the resume
+	// source, so the job still completes (FR-07).
+	if j != nil {
+		j.Note(func(msg string) {
+			m.events.Log("journal_pg_error", "msg", msg)
+		})
+	}
 	// F-12 small-table auto-disable: when the operator chose a real
 	// compression mode, prebuild the none-mode pair so a small unit's
 	// transport (per unit, decided in the two-agent data path).

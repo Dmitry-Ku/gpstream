@@ -124,21 +124,28 @@ func (j *Journal) SaveMeta(jobID string, m *JobMeta) error {
 		}
 	}
 	if j.q != nil {
-		_, _ = j.q.Exec(context.Background(),
+		if _, err := j.q.Exec(context.Background(),
 			`CREATE TABLE IF NOT EXISTS gpstream_jobs (
 			    job_id      text PRIMARY KEY,
 			    snap_epoch  bigint NOT NULL,
 			    snap_id     text,
 			    copy_mode   text
-			)`)
-		_, _ = j.q.Exec(context.Background(),
+			)`); err != nil {
+			j.noteLine("journal: gpstream_jobs create failed (mirror remains the resume source): " + err.Error())
+		}
+		// GP6 = PostgreSQL 9.4 has no ON CONFLICT: upsert via SELECT +
+		// UPDATE/INSERT (07.10 e2e: the old upsert silently failed, leaving
+		// gpstream_jobs empty on the destination).
+		if err := pgUpsert(context.Background(), j.q,
+			`SELECT 1 FROM gpstream_jobs WHERE job_id = $1`,
+			[]any{jobID},
+			[]any{jobID, m.SnapEpoch, m.SnapID, m.CopyMode},
+			[]any{jobID, m.SnapEpoch, m.SnapID, m.CopyMode},
+			`UPDATE gpstream_jobs SET snap_epoch = $2, snap_id = $3, copy_mode = $4 WHERE job_id = $1`,
 			`INSERT INTO gpstream_jobs (job_id, snap_epoch, snap_id, copy_mode)
-			 VALUES ($1,$2,$3,$4)
-			 ON CONFLICT (job_id) DO UPDATE SET
-			    snap_epoch = EXCLUDED.snap_epoch,
-			    snap_id    = EXCLUDED.snap_id,
-			    copy_mode  = EXCLUDED.copy_mode`,
-			jobID, m.SnapEpoch, m.SnapID, m.CopyMode)
+			 VALUES ($1, $2, $3, $4)`); err != nil {
+			j.noteLine("journal: gpstream_jobs write failed (mirror remains the resume source): " + err.Error())
+		}
 	}
 	return nil
 }

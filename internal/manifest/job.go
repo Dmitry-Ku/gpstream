@@ -114,6 +114,10 @@ type Journal struct {
 	q      pg.Querier // primary (dest DB); may be nil in tests
 	mirror string     // local file mirror path
 	units  map[int64]*Unit
+	// note, when set, receives a human-readable line for every primary-journal
+	// write error (the Manager wires it to the F-04/F-14 event log, 07.10:
+	// a silent `_, _ =` let a GP6/PG9.4 journal write die unnoticed).
+	note func(msg string)
 }
 
 // NewJournal creates a journal backed by a Querier and a file mirror.
@@ -122,6 +126,19 @@ func NewJournal(q pg.Querier, mirrorPath string) *Journal {
 		q:      q,
 		mirror: mirrorPath,
 		units:  map[int64]*Unit{},
+	}
+}
+
+// Note sets the sink for primary-journal error lines (F-04/F-14 event log).
+func (j *Journal) Note(f func(string)) {
+	if f != nil {
+		j.note = f
+	}
+}
+
+func (j *Journal) noteLine(msg string) {
+	if j.note != nil {
+		j.note(msg)
 	}
 }
 
@@ -312,18 +329,52 @@ func (j *Journal) SetState(u *Unit) error {
 	j.units[u.UnitID] = &c
 	j.mu.Unlock()
 	// Persist to primary journal (best-effort; the file mirror is the durable
-	// fallback when the dest DB is unreachable, FR-07).
+	// fallback when the dest DB is unreachable, FR-07). GP6 = PostgreSQL 9.4
+	// has no ON CONFLICT, so the upsert is SELECT-by-PK + UPDATE/INSERT: the
+	// old upsert failed on GP6 with a syntax error that was swallowed by
+	// `_, _ =`, leaving gpstream_units empty (07.10 e2e). A write error still
+	// does not sink the job, but it is no longer silent: j.note carries it to
+	// the F-04/F-14 event log.
 	if j.q != nil {
-		_, _ = j.q.Exec(context.Background(),
+		// UPDATE args: (job_id, unit_id, state, checksum, row_count,
+		// byte_count, attempts, epoch, updated).
+		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated}
+		// INSERT args: 14 columns (job_id, unit_id, db, schema, table, part,
+		// kind, state, checksum, row_count, byte_count, attempts, epoch,
+		// updated).
+		insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated}
+		if err := pgUpsert(context.Background(), j.q,
+			`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
+			[]any{u.JobID, u.UnitID},
+			updArgs,
+			insArgs,
+			`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, updated = $9 WHERE job_id = $1 AND unit_id = $2`,
 			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, updated)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-			ON CONFLICT (job_id, unit_id) DO UPDATE SET
-			    state=EXCLUDED.state, checksum=EXCLUDED.checksum, row_count=EXCLUDED.row_count,
-			    byte_count=EXCLUDED.byte_count, attempts=EXCLUDED.attempts, epoch=EXCLUDED.epoch, updated=EXCLUDED.updated`,
-			u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`); err != nil {
+			j.noteLine("journal: gpstream_units write failed (mirror remains the resume source): " + err.Error())
+		}
 	}
 	// File mirror (durable): append the single changed record.
 	return j.mirrorAppend(&c)
+}
+
+// pgUpsert inserts the row or, if a row with the same primary key already
+// exists, updates it. GP6 (PostgreSQL 9.4) predates ON CONFLICT, so this is a
+// SELECT-by-PK followed by UPDATE or INSERT. The SELECT→write gap is benign
+// here: each unit is owned by a single worker (its SetState calls are
+// sequential), and other workers use different (job_id, unit_id) keys, so two
+// same-key writers can only ever be the same unit's own sequential calls.
+func pgUpsert(ctx context.Context, q pg.Querier, selSQL string, selArgs, updSQLArgs, insSQLArgs []any, updSQL, insSQL string) error {
+	if v, err := pg.Row(ctx, q, selSQL, selArgs...); err != nil {
+		return err
+	} else if v != nil {
+		if _, err := q.Exec(ctx, updSQL, updSQLArgs...); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := q.Exec(ctx, insSQL, insSQLArgs...)
+	return err
 }
 
 // mirrorAppend appends one unit record (a deep copy taken by the caller under
