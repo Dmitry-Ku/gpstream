@@ -241,9 +241,9 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--seg-listen":
 			i++
 			cfg.SegListen = args[i]
-		case "--data-port-range":
+		case "--port-range":
 			i++
-			cfg.DataPortRange = args[i]
+			cfg.PortRange = args[i]
 		// The agent/segment binary paths are NOT flags: a packaged install
 		// always lays all four binaries in /usr/bin, so they resolve by
 		// convention (sibling of the gpstream binary, then PATH). Override
@@ -438,13 +438,13 @@ func cmdDryRun(args []string) error {
 	}
 	rep := doctor.Run(ctx, diagnoseConn(ctx, cfg, "source"), diagnoseConn(ctx, cfg, "dest"),
 		doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
-	if cfg.CopyMode == config.CopyOnSegment && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
+	if cfg.CopyMode == config.CopyMesh && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
 		rep.Add(doctor.Check{
 			Name: "dest-dsn-form",
 			Side: "dest",
 			Sev:  doctor.Warn,
 			Msg:  fmt.Sprintf("--dest %q is not URL-form (postgres://user@host:port/db)", cfg.Dest),
-			Rec:  "on_segment segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
+			Rec:  "mesh segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
 		})
 	}
 	printReport(rep)
@@ -465,11 +465,11 @@ func cmdDryRun(args []string) error {
 		return fmt.Errorf("dry-run: %w", err)
 	}
 
-	// Design 04.10: verify the --data-port-range size against the mode's
+	// Design 04.10: verify the --port-range size against the mode's
 	// requirement (the plan resolved the destination topology, so D is known
 	// at dry-run time).
 	if cfg.CopyMode != "" && p.Route.Resolved {
-		if err := cfg.CheckDataPortRange(int(p.Route.DstSegments)); err != nil {
+		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
 			return err
 		}
 	}
@@ -1390,10 +1390,10 @@ func cmdRun(args []string) error {
 		fmt.Println("\nrun: plan empty; nothing to copy.")
 		return nil
 	}
-	// Design 04.10: verify the --data-port-range size against the mode's
+	// Design 04.10: verify the --port-range size against the mode's
 	// requirement (fail fast, before any agent starts).
 	if cfg.CopyMode != "" && p.Route.Resolved {
-		if err := cfg.CheckDataPortRange(int(p.Route.DstSegments)); err != nil {
+		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
 			return fmt.Errorf("run: %w", err)
 		}
 	}
@@ -1401,7 +1401,7 @@ func cmdRun(args []string) error {
 	// non-loopback IP + a prebound free port (each unit then binds
 	// base+unitID). The host must be routable from the SOURCE segment hosts;
 	// a multi-homed controller should pass --seg-listen explicitly.
-	if cfg.CopyMode == config.CopyOnSegment {
+	if cfg.CopyMode == config.CopyMesh {
 		if err := cfg.ResolveSegListen(len(p.Units)); err != nil {
 			return fmt.Errorf("run: %w", err)
 		}
@@ -1645,11 +1645,11 @@ Performance:
                                    destination coordinator instead)
 
 Transport / resilience:
-  --copy-mode coordinator|on_segment          data path (default coordinator)
+  --copy-mode coordinator|mesh                data path (default coordinator)
   --seg-listen HOST:PORT           on_segment base listen addr the segreceivers
                                    dial (default: auto = controller primary IP +
                                    a free port; each unit binds base+unitID)
-  --data-port-range LO-HI          restrict the auto data/control port
+  --port-range LO-HI          restrict the auto data/control port
                                    allocation to an allowed range (strict
                                    firewall); default auto = agent binds :0 +
                                    handshake. 3 ports are needed per run

@@ -79,13 +79,13 @@ const (
 	// CopyCoordinator is the default: COPY ... TO STDOUT through the source
 	// coordinator (always works, single network path).
 	CopyCoordinator CopyMode = "coordinator"
-	// CopyOnSegment is the segment-direct data path (design 04.10): the
+	// CopyMesh is the segment-direct data path (design 04.10): the
 	// kernel launches gpstream-segreceiver on every primary source segment
 	// via COPY ... TO PROGRAM ... ON SEGMENT; the slices stream compressed
 	// over the WAN to the destination agents, which load per-segment (1:1 /
 	// routed) or merge through the destination coordinator (merge) — the
 	// sub-path is chosen per table by the planner.
-	CopyOnSegment CopyMode = "on_segment"
+	CopyMesh CopyMode = "mesh"
 )
 
 // Config is the fully resolved runtime configuration. It is the single source
@@ -198,7 +198,7 @@ type Config struct {
 	CopyMode  CopyMode // default coordinator
 	SegListen string   // base listen address the segreceivers dial (host:port); empty = auto (controller primary IP + free port, resolved at run start)
 	SegBinary string   // gpstream-segreceiver path on the SOURCE segment hosts; empty = convention (sibling of the gpstream binary, then PATH)
-	// DataPortRange restricts the auto data/control port allocation to an
+	// PortRange restricts the auto data/control port allocation to an
 	// allowed range "LO-HI" (or a single "LO" base) for environments with a
 	// strict firewall (the operator opens exactly that range). Empty = fully
 	// automatic: every long-lived agent binds :0 and reports its real address
@@ -207,9 +207,9 @@ type Config struct {
 	// same-host agents and passes --port-range to remote agents) and the range
 	// size is checked against the run's requirement (3 ports: source control +
 	// dest data + dest control, both modes) at run/dry-run time.
-	DataPortRange string // "LO-HI" or "LO" (base); empty = auto :0 + handshake
-	DataPortLo    int    // parsed low end of DataPortRange (0 = automatic)
-	DataPortHi    int    // parsed high end of DataPortRange (0 = automatic)
+	PortRange string // "LO-HI" or "LO" (base); empty = auto :0 + handshake
+	PortLo    int    // parsed low end of PortRange (0 = automatic)
+	PortHi    int    // parsed high end of PortRange (0 = automatic)
 
 	// The data plane ALWAYS runs in the source/dest agents (ADR-002, P7): the
 	// controller orchestrates a source agent and a dest agent (both launched
@@ -355,9 +355,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unknown verify mode %q", c.Verify)
 	}
 	switch c.CopyMode {
-	case "", CopyCoordinator, CopyOnSegment:
+	case "", CopyCoordinator, CopyMesh:
 	default:
-		return fmt.Errorf("unknown copy mode %q (want coordinator|on_segment)", c.CopyMode)
+		return fmt.Errorf("unknown copy mode %q (want coordinator|mesh)", c.CopyMode)
 	}
 	// on_segment: SegBinary/SegListen may stay empty — they resolve by
 	// convention at run start (ResolveAgentBinaries / ResolveSegListen) and
@@ -396,12 +396,12 @@ func (c *Config) Validate() error {
 	if c.RetransmitBufferMax <= 0 {
 		c.RetransmitBufferMax = 64 << 20
 	}
-	if c.DataPortRange != "" {
-		lo, hi, err := parsePortRange(c.DataPortRange)
+	if c.PortRange != "" {
+		lo, hi, err := parsePortRange(c.PortRange)
 		if err != nil {
-			return fmt.Errorf("invalid --data-port-range %q: %w", c.DataPortRange, err)
+			return fmt.Errorf("invalid --port-range %q: %w", c.PortRange, err)
 		}
-		c.DataPortLo, c.DataPortHi = lo, hi
+		c.PortLo, c.PortHi = lo, hi
 	}
 	return nil
 }
@@ -429,13 +429,13 @@ func parsePortRange(s string) (int, int, error) {
 	return lo, hi, nil
 }
 
-// DataPortRangeSize returns the number of ports in the configured range (0
+// PortRangeSize returns the number of ports in the configured range (0
 // when the range is empty = automatic).
-func (c *Config) DataPortRangeSize() int {
-	if c.DataPortLo == 0 {
+func (c *Config) PortRangeSize() int {
+	if c.PortLo == 0 {
 		return 0
 	}
-	return c.DataPortHi - c.DataPortLo + 1
+	return c.PortHi - c.PortLo + 1
 }
 
 // RequiredDataPorts returns how many data/control ports the copy mode needs.
@@ -449,19 +449,19 @@ func (c *Config) RequiredDataPorts(dstSegments int) int {
 	return 3
 }
 
-// CheckDataPortRange verifies the configured range (if any) is large enough
+// CheckPortRange verifies the configured range (if any) is large enough
 // for the copy mode's requirement. Callers pass the destination segment
 // count (from the catalog, so it works at dry-run time). Returns a clear
 // error naming the required vs available count.
-func (c *Config) CheckDataPortRange(dstSegments int) error {
-	if c.DataPortLo == 0 {
+func (c *Config) CheckPortRange(dstSegments int) error {
+	if c.PortLo == 0 {
 		return nil // automatic: nothing to check
 	}
 	need := c.RequiredDataPorts(dstSegments)
-	have := c.DataPortRangeSize()
+	have := c.PortRangeSize()
 	if have < need {
-		return fmt.Errorf("--data-port-range %s has %d port(s) but this run needs %d (source control + dest data + dest control — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
-			c.DataPortRange, have, need)
+		return fmt.Errorf("--port-range %s has %d port(s) but this run needs %d (source control + dest data + dest control — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
+			c.PortRange, have, need)
 	}
 	return nil
 }
@@ -567,8 +567,8 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("SEG_LISTEN"); ok {
 		c.SegListen = v
 	}
-	if v, ok := get("DATA_PORT_RANGE"); ok {
-		c.DataPortRange = v
+	if v, ok := get("PORT_RANGE"); ok {
+		c.PortRange = v
 	}
 	// Data-plane TLS for the on_segment hop (F-13), separate from the PG
 	// SSL_* vars: the segment stream can be encrypted even when the PG
@@ -876,8 +876,8 @@ func assignConfigString(c *Config, key, v string) {
 		c.SegBinary = v
 	case "seg_listen":
 		c.SegListen = v
-	case "data_port_range":
-		c.DataPortRange = v
+	case "port_range":
+		c.PortRange = v
 	case "index_priority":
 		c.IndexPriority = v
 	case "timeout":
@@ -911,7 +911,7 @@ func (c *Config) ResolveAgentBinaries() error {
 	}
 	// The segreceiver is needed only for on_segment (the kernel runs it on
 	// the source segments); other modes never reference it.
-	if c.CopyMode == CopyOnSegment && c.SegBinary == "" {
+	if c.CopyMode == CopyMesh && c.SegBinary == "" {
 		c.SegBinary, err = resolveSibling("gpstream-segreceiver")
 		if err != nil {
 			return fmt.Errorf("resolve gpstream-segreceiver: %w", err)

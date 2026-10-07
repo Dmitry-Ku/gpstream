@@ -155,7 +155,7 @@ Which of them a host needs depends on the `--copy-mode` you run:
 | Where | What | When |
 | --- | --- | --- |
 | **Controller host** (the machine the operator runs gpstream from — it does *not* have to be a cluster host; any host with network access to both clusters) | `gpstream` (main CLI) + `gpstream-source-agent` + `gpstream-dest-agent` | always (the package installs all four) |
-| **Source segment hosts** (every host in the source segment topology) | `gpstream-segreceiver` | only for `--copy-mode on_segment` |
+| **Source segment hosts** (every host in the source segment topology) | `gpstream-segreceiver` | only for `--copy-mode mesh` |
 | **Destination hosts** | *nothing* by default, or `gpstream-dest-agent` for a cross-host dest placement | cross-host: the dest agent runs the per-unit `COPY FROM` on the destination cluster |
 
 The data plane always runs in the agents (ADR-002 remediated; the

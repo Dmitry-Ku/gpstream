@@ -1,6 +1,6 @@
 package main
 
-// Coverage for the flags that had no parse test: --data-port-range,
+// Coverage for the flags that had no parse test: --port-range,
 // --no-routed-write, and the --control-tls-cert/key/ca trio (control-channel
 // TLS, design 04.10). Also the invalid-port-range validation error.
 
@@ -9,13 +9,13 @@ import (
 	"testing"
 )
 
-// TestParseConfigTransportFlagsC: --data-port-range / --no-routed-write /
+// TestParseConfigTransportFlagsC: --port-range / --no-routed-write /
 // --control-tls-cert / --control-tls-key / --control-tls-ca bind into the
 // config fields (parse layer only; the runtime effect of each is tested in
 // the behavior packages).
 func TestParseConfigTransportFlagsC(t *testing.T) {
 	c, err := parseConfig([]string{
-		"--data-port-range", "9000-9007",
+		"--port-range", "9000-9007",
 		"--no-routed-write",
 		"--control-tls-cert", "/tmp/ctl-cert.pem",
 		"--control-tls-key", "/tmp/ctl-key.pem",
@@ -24,8 +24,8 @@ func TestParseConfigTransportFlagsC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if c.DataPortRange != "9000-9007" {
-		t.Errorf("DataPortRange = %q, want 9000-9007", c.DataPortRange)
+	if c.PortRange != "9000-9007" {
+		t.Errorf("PortRange = %q, want 9000-9007", c.PortRange)
 	}
 	if !c.NoRoutedWrite {
 		t.Error("NoRoutedWrite = false, want true")
@@ -38,31 +38,31 @@ func TestParseConfigTransportFlagsC(t *testing.T) {
 	}
 }
 
-// TestParseConfigDataPortRangeSingleBase: a single base port ("LO", no dash)
+// TestParseConfigPortRangeSingleBase: a single base port ("LO", no dash)
 // parses and is treated as a one-port range by the size check.
-func TestParseConfigDataPortRangeSingleBase(t *testing.T) {
-	c, err := parseConfig([]string{"--data-port-range", "9500"})
+func TestParseConfigPortRangeSingleBase(t *testing.T) {
+	c, err := parseConfig([]string{"--port-range", "9500"})
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
-	if c.DataPortRange != "9500" {
-		t.Fatalf("DataPortRange = %q, want 9500", c.DataPortRange)
+	if c.PortRange != "9500" {
+		t.Fatalf("PortRange = %q, want 9500", c.PortRange)
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate (single base port is a valid range): %v", err)
 	}
-	if got := c.DataPortRangeSize(); got != 1 {
-		t.Errorf("DataPortRangeSize() = %d, want 1", got)
+	if got := c.PortRangeSize(); got != 1 {
+		t.Errorf("PortRangeSize() = %d, want 1", got)
 	}
 }
 
-// TestParseConfigDataPortRangeInvalid: a non-numeric range fails validation
+// TestParseConfigPortRangeInvalid: a non-numeric range fails validation
 // (parseConfig runs Validate at the end, so the error surfaces here) with a
 // clear message naming the flag.
-func TestParseConfigDataPortRangeInvalid(t *testing.T) {
-	if _, err := parseConfig([]string{"--data-port-range", "not-a-port"}); err == nil ||
-		!strings.Contains(err.Error(), "--data-port-range") {
-		t.Errorf("parseConfig(invalid range) = %v, want an error naming --data-port-range", err)
+func TestParseConfigPortRangeInvalid(t *testing.T) {
+	if _, err := parseConfig([]string{"--port-range", "not-a-port"}); err == nil ||
+		!strings.Contains(err.Error(), "--port-range") {
+		t.Errorf("parseConfig(invalid range) = %v, want an error naming --port-range", err)
 	}
 }
 

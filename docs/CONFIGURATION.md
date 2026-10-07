@@ -127,7 +127,7 @@ place.
 ### 1.12 Transport (T-B, §1.3)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `on_segment`. |
+| `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `mesh`. |
 | `SegListen` | string | `""` → auto | `--seg-listen` / `seg_listen` / `GPSTREAM_SEG_LISTEN` | Base listen address for `on_segment`: each unit binds `base+unitID`. When empty, auto-resolved to the controller's primary non-loopback IP + a free port (must be routable from the source segment hosts). |
 | `SegBinary` | string | `""` → resolved | `seg_binary` / `GPSTREAM_SEG_BINARY` | gpstream-segreceiver path on the SOURCE segment hosts. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `on_segment` runs. |
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
@@ -310,7 +310,7 @@ failed validation aborts the command.
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
 | conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
 | verify mode | must be `on`/`off` | `unknown verify mode "…"` |
-| copy-mode on_segment | `--seg-listen` must be a valid `host:port` when given (auto-resolved when empty); the segreceiver binary must resolve | `--seg-listen must be host:port` / `on_segment: gpstream-segreceiver not found` |
+| copy-mode mesh | `--seg-listen` must be a valid `host:port` when given (auto-resolved when empty); the segreceiver binary must resolve | `--seg-listen must be host:port` / `on_segment: gpstream-segreceiver not found` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |
 

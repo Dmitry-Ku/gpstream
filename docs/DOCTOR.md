@@ -87,7 +87,7 @@ overall: PASS (no FAIL)
 
 ## 2. The `on_segment` capability (segment-direct read, T-B)
 
-`--copy-mode on_segment` streams the **source segments** directly to the
+`--copy-mode mesh` streams the **source segments** directly to the
 controller (`COPY ... TO PROGRAM ... ON SEGMENT` under the coordinator's
 snapshot, delivered by `gpstream-segreceiver` on the segment hosts),
 while the destination write still goes through the dest coordinator.
@@ -103,21 +103,21 @@ message:
 | **2. Dispatch** | `COPY (SELECT 1) TO PROGRAM 'true <SEGID>' ON SEGMENT` (no-op program) | Any dispatch error — the kernel path `CdbDispatchUtilityStatement` → primary-only gang is broken (permissions, segment state). |
 | **3. Binary** | `COPY (SELECT 1) TO PROGRAM '<seg-binary> --check --content <SEGID>' ON SEGMENT` — `gpstream-segreceiver --check` must exit 0 on **every primary segment host** | The binary is missing/not executable on one or more segment hosts — install the `gpstream` package (recommended: same version as the controller, so `rpm -qa`/`dnf upgrade` keep hosts in lockstep) or copy the single static `gpstream-segreceiver` file to every host in the segment topology. |
 
-All three OK → `on_segment` PASS and `--copy-mode on_segment` is
+All three OK → `on_segment` PASS and `--copy-mode mesh` is
 available (~2× throughput on the source side, T0-4). Any one missing →
 `on_segment` WARN with the precise fix; **the job still runs on the
 coordinator path** — that path always works and is the default.
 
 Live-verified on the lab: with the GUC off, the probe reports the
 `forbidden ... external program` error; with it on, the probe passes and
-the E2 e2e (`--copy-mode on_segment`, 111 000 rows, trailer cross-check)
+the E2 e2e (`--copy-mode mesh`, 111 000 rows, trailer cross-check)
 is green.
 
 ### Choosing `--copy-mode`
 
 | Situation | Use |
 |-----------|-----|
-| Doctor `on_segment` = **PASS** | `--copy-mode on_segment` — source segments stream directly (the fast path) |
+| Doctor `on_segment` = **PASS** | `--copy-mode mesh` — source segments stream directly (the fast path) |
 | Doctor `on_segment` = **WARN** (or the segreceiver does not resolve) | default coordinator path — correct, slower on the source side |
 | Plain PostgreSQL endpoint | coordinator path only — there are no segments to read from |
 

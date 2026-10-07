@@ -73,7 +73,7 @@ func TestStatusLiveTable(t *testing.T) {
 	})
 	opdir := filepath.Join(dir, "op-live2")
 	// jobmeta.json: the snap-epoch metadata (T5).
-	meta := manifest.JobMeta{JobID: "op-live2", SnapEpoch: 3, SnapID: "snap-3", CopyMode: "on_segment"}
+	meta := manifest.JobMeta{JobID: "op-live2", SnapEpoch: 3, SnapID: "snap-3", CopyMode: "mesh"}
 	if b, err := json.Marshal(meta); err == nil {
 		if err := os.WriteFile(filepath.Join(opdir, "jobmeta.json"), b, 0o644); err != nil {
 			t.Fatalf("write jobmeta: %v", err)

@@ -234,7 +234,7 @@ type unitRoutedRequest struct {
 type processTwoAgentRunner struct {
 	cfg *config.Config
 	// portAlloc restricts the controller's own pre-bound loopback ports to
-	// --data-port-range (local / single-host layout); nil = auto. The remote
+	// --port-range (local / single-host layout); nil = auto. The remote
 	// (SSH) layout passes the range to the agents instead (--port-range).
 	portAlloc *portalloc.Allocator
 	// Source agent (long-lived; owns the FR-02 snapshot).
@@ -267,7 +267,7 @@ type processTwoAgentRunner struct {
 }
 
 func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
-	alloc, _ := portalloc.ParseRange(cfg.DataPortRange) // Validate already checked it
+	alloc, _ := portalloc.ParseRange(cfg.PortRange) // Validate already checked it
 	return &processTwoAgentRunner{cfg: cfg, portAlloc: alloc}
 }
 
@@ -424,8 +424,8 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// the controller cannot pre-bind it. Local (same-host) agents get
 	// pre-bound fixed ports from the controller's own allocator, so the range
 	// is already applied there — passing it is a harmless no-op.
-	if r.cfg.DataPortRange != "" {
-		dargs = append(dargs, "--port-range", r.cfg.DataPortRange)
+	if r.cfg.PortRange != "" {
+		dargs = append(dargs, "--port-range", r.cfg.PortRange)
 	}
 	if r.cfg.SSLCert != "" {
 		dargs = append(dargs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
@@ -514,7 +514,7 @@ func (r *processTwoAgentRunner) dataListen(host string) (string, error) {
 }
 
 // prebindLocal learns a free loopback port for a local (same-host) agent and
-// returns it as "127.0.0.1:port", honoring --data-port-range when set (the
+// returns it as "127.0.0.1:port", honoring --port-range when set (the
 // allocator reserves it so the three prebinds — source control, dest control,
 // dest data — never collide). With no range it is the legacy kernel-pick.
 func (r *processTwoAgentRunner) prebindLocal() (string, error) {
@@ -543,7 +543,7 @@ func (r *processTwoAgentRunner) agentHost(sshTarget string) string {
 }
 
 // allocRemoteControlPort picks a control port on a REMOTE agent host: within
-// --data-port-range when set (the allocator probes via loopback, which is a
+// --port-range when set (the allocator probes via loopback, which is a
 // local hint, not a remote probe — a remote collision is caught by the
 // bounded control dial), else a kernel-picked loopback port as a fresh-port
 // candidate.
@@ -909,7 +909,7 @@ func prebindLoopback() (string, error) {
 }
 
 // prebindData learns a free loopback port for an in-proc listener, honoring
-// --data-port-range (r.portAlloc) when set. It returns the address plus a
+// --port-range (r.portAlloc) when set. It returns the address plus a
 // release func: the per-unit data ports are bound serially (one per unit), so
 // the caller releases the port once the unit's listener is closed — otherwise
 // the allocator's reserved set grows one port per unit and a small range runs
@@ -1003,7 +1003,7 @@ func parseDestReport(stderr string) (rows int64, logical uint64, err error) {
 // wire volume, agent-side checksum) is exercised end to end.
 type InProcTwoAgentRunner struct {
 	cfg       *config.Config
-	portAlloc *portalloc.Allocator // --data-port-range for the pre-bound loopback ports (nil = auto)
+	portAlloc *portalloc.Allocator // --port-range for the pre-bound loopback ports (nil = auto)
 	srv       *agent.SourceServer
 	ctrl      *agent.ControlClient
 	srcCancel context.CancelFunc
@@ -1068,7 +1068,7 @@ func (r *InProcTwoAgentRunner) PersistAccepts() int64 {
 // NewInProcTwoAgentRunner builds an in-process two-agent runner for the
 // given config (it reads cfg.Source for the source conn + FR-02 scope).
 func NewInProcTwoAgentRunner(cfg *config.Config) *InProcTwoAgentRunner {
-	alloc, _ := portalloc.ParseRange(cfg.DataPortRange) // Validate already checked it
+	alloc, _ := portalloc.ParseRange(cfg.PortRange) // Validate already checked it
 	return &InProcTwoAgentRunner{cfg: cfg, portAlloc: alloc}
 }
 

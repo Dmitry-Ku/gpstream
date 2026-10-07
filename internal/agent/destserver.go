@@ -148,7 +148,7 @@ type DestServerOptions struct {
 	// StreamTimeout bounds the whole unit stream.
 	AcceptTimeout, StreamTimeout time.Duration
 	// PortAlloc, when set, restricts the data/control listener ports to the
-	// operator's --data-port-range (strict firewall). It is consulted only
+	// operator's --port-range (strict firewall). It is consulted only
 	// when a listener address is ":0" (auto-pick); a fixed port binds
 	// verbatim. nil = legacy behavior (kernel picks, no range).
 	PortAlloc *portalloc.Allocator
@@ -338,7 +338,7 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 	return s, nil
 }
 
-// bindListener binds addr, honoring the --data-port-range (o.PortAlloc) when
+// bindListener binds addr, honoring the --port-range (o.PortAlloc) when
 // the port is 0 (auto-pick) and a range is active. A fixed port, or no range,
 // binds verbatim (the legacy behavior). The data and control listeners share
 // the one allocator, so the two can never land on the same port.

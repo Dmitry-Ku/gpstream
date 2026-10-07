@@ -6,15 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/pgtest"
 )
 
-// P1b: small-table → coordinator fallback under --copy-mode on_segment.
+// P1b: small-table → coordinator fallback under --copy-mode mesh.
 //
 // One knob (--small-table-threshold) drives both small-table behaviors: a
 // table for which per-slice compression is not worth the encoder cost (F-12)
@@ -24,7 +24,7 @@ import (
 // (P9-E), so it verifies without a re-read for free.
 
 // TestOnSegmentSmallTableCoordinatorFallback is the LOCAL acceptance: with
-// --copy-mode on_segment, a SINGLE small table (below the threshold) must be
+// --copy-mode mesh, a SINGLE small table (below the threshold) must be
 // copied through the COORDINATOR path (the segment-direct path is unavailable
 // on plain PG and would fail, so a successful run proves the fallback). The
 // fallback event must be recorded, the data must land correct, and the
@@ -38,9 +38,9 @@ func TestOnSegmentSmallTableCoordinatorFallback(t *testing.T) {
 	mustExec(t, src, `INSERT INTO public.small SELECT g, 'v' || g FROM generate_series(1,500) g`)
 
 	cfg := config.Default()
-	cfg.CopyMode = config.CopyOnSegment    // the mode the fallback overrides for small tables
-	cfg.SmallTableThreshold = 1 << 20      // 1 MiB default
-	cfg.Verify = config.VerifyOn           // inline-digest verify (coordinator path, P9-E)
+	cfg.CopyMode = config.CopyMesh    // the mode the fallback overrides for small tables
+	cfg.SmallTableThreshold = 1 << 20 // 1 MiB default
+	cfg.Verify = config.VerifyOn      // inline-digest verify (coordinator path, P9-E)
 	cfg.Compression = config.CompZstd
 	cfg.ConflictAction = config.Overwrite
 	cfg.WorkersPerPair = 1
@@ -108,7 +108,7 @@ func TestOnSegmentCoordinatorFallbackLive(t *testing.T) {
 	mustExec(t, src, `INSERT INTO public.p1b_large SELECT g, 'v' || g FROM generate_series(1,300000) g`)
 
 	cfg := config.Default()
-	cfg.CopyMode = config.CopyOnSegment
+	cfg.CopyMode = config.CopyMesh
 	cfg.SmallTableThreshold = 1 << 20
 	cfg.Verify = config.VerifyOn
 	cfg.Compression = config.CompZstd

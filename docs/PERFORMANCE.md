@@ -154,7 +154,7 @@ stream needs no pre-planned port. A run uses exactly 3 ports in both copy
 modes (source control + dest data + dest control) — the on_segment
 segreceivers dial the dest agent's shared data listener, so the segment
 count adds no ports. For strict firewalls, restrict the auto-allocated
-ports with `--data-port-range <LO-HI>`: same-host agents get pre-bound
+ports with `--port-range <LO-HI>`: same-host agents get pre-bound
 ports from the range, remote (SSH-launched) agents bind their auto-picked
 ports inside it (the operator opens exactly that range).
 
@@ -168,7 +168,7 @@ lives on as the per-table auto sub-paths of `on_segment`):
   with one `COPY ... TO STDOUT` on the source coordinator; the destination
   agent loads the staging table with one `COPY ... FROM STDIN` on the dest
   coordinator. All data transits the two coordinator hosts.
-- **`--copy-mode on_segment` (T-B, source-direct read)** — the source agent
+- **`--copy-mode mesh` (T-B, source-direct read)** — the source agent
   triggers the ON SEGMENT dispatch (`COPY ... TO PROGRAM ... ON SEGMENT`
   under the FR-02 run snapshot): the kernel launches `gpstream-segreceiver`
   on every up primary source segment, and each streams its compressed
@@ -281,7 +281,7 @@ suite as evidence for the target.**
 | Reduce load on a side (prod protection) | `--workers N` down, `--compress` level up, schedule the run (an enforced `--rate-limit` ceiling is backlog) |
 | Push a fast link, let it adapt         | `--workers N` up; with `--rate-limit` set, watch `rate_limit_shift` events for controller-host load |
 | Many small tables / more concurrency   | `--workers N` up |
-| Direct segment→segment routing        | `--copy-mode on_segment` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
+| Direct segment→segment routing        | `--copy-mode mesh` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
 | Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a content digest: on the coordinator path it is computed **inline on the data path** (no re-read of either table, P9-E); the on_segment/routed paths keep a post-copy re-read) |
 

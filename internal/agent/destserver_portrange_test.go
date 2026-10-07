@@ -8,7 +8,7 @@ import (
 	"github.com/gpstream/gpstream/internal/portalloc"
 )
 
-// TestDestServerPortRange: with --data-port-range active and auto-pick
+// TestDestServerPortRange: with --port-range active and auto-pick
 // (":0") listener addresses, NewDestServer must bind BOTH listeners inside
 // the range (the strict-firewall case), and the two must not collide.
 func TestDestServerPortRange(t *testing.T) {

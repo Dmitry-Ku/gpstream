@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (P1, breaking)
+
+- **`--data-port-range` → `--port-range`** (clean rename, no alias): the
+  flag, the `PortRange`/`PortLo`/`PortHi` config fields, the
+  `PORT_RANGE` env var, the `port_range` config-file key, and
+  `CheckPortRange`/`PortRangeSize` all moved. `--data-port-range` is
+  rejected (unknown flag).
+- **`--copy-mode on_segment` → `--copy-mode mesh`** (clean rename, no
+  alias): the mode value is now `mesh` (`config.CopyMesh`); the accepted
+  values are `coordinator|mesh`, the error reads
+  `want coordinator|mesh`. The `COPY ... TO PROGRAM ... ON SEGMENT`
+  SQL mechanism (`CopyOnSegmentSQL`, `OnSegmentReq`/`OnSegmentResp`) and
+  the doctor `on_segment` capability name are unchanged — only the
+  operator-facing copy-mode value was renamed. Stored/reported
+  `copy_mode` now reads `mesh` for runs under the new name.
+
+### Fixed
+
+- **Primary journal on GP6 (PostgreSQL 9.4).** The `gpstream_units` /
+  `gpstream_jobs` upserts used `ON CONFLICT ... DO UPDATE` (PG 9.5+),
+  which GP6 rejects; the error was swallowed (`_, _ =`), so both tables
+  stayed empty and the whole durable journal silently lived only in the
+  controller-side file mirror. The upserts are now PG 9.4-compatible
+  (SELECT-by-PK + UPDATE/INSERT), and primary-journal write errors are
+  surfaced to `events.jsonl` (`kind=journal_pg_error`) instead of being
+  dropped — the file mirror remains the resume source (FR-07), so a job
+  still completes when the destination DB write fails.
+
 ### Added: remote agent launch + coordinator guard (P1e)
 
 - **`--source-agent-ssh user@host[:port]`** and **`--dest-agent-ssh

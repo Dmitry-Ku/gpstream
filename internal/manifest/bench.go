@@ -85,8 +85,8 @@ func (m *Manager) BenchAll(ctx context.Context, units []plan.Table, runner TwoAg
 		}
 	}()
 	switch m.cfg.CopyMode {
-	case config.CopyOnSegment:
-		return nil, fmt.Errorf("bench: --copy-mode on_segment measures the per-segment source read (COPY ON SEGMENT), which requires a real Greenplum source; run it on the lab (gp6lab build tag)")
+	case config.CopyMesh:
+		return nil, fmt.Errorf("bench: --copy-mode mesh measures the per-segment source read (COPY ON SEGMENT), which requires a real Greenplum source; run it on the lab (gp6lab build tag)")
 	}
 	workers := m.cfg.WorkersPerPair
 	if workers < 1 {

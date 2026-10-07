@@ -79,7 +79,7 @@ on sustained overload, and records each shift as a `rate_limit_shift` event
 it is built in. Data ports are allocated automatically
 (every long-lived agent binds `:0` and reports its real address in the
 control handshake); for strict firewalls, restrict them with
-`--data-port-range <LO-HI>`.
+`--port-range <LO-HI>`.
 
 Diagnose with the metrics endpoint (see `METRICS.md`): `gpstream_bytes_total`,
 `gpstream_bytes_decoded_total` (compression ratio), `gpstream_throughput_bytes`,

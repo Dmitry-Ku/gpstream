@@ -1,12 +1,12 @@
 // Package portalloc hands out TCP ports for the gpstream data/control
 // listeners, optionally restricted to an operator-supplied range
-// (--data-port-range LO-HI). It is the single place that knows how to pick a
+// (--port-range LO-HI). It is the single place that knows how to pick a
 // free port within a range, so every bind site (the controller's local
 // prebind, the in-proc test runner, and the remote agents' self-bind) shares
 // the same allocation policy.
 //
 // When no range is set (lo == 0) every helper degrades to the kernel-picks
-// behavior ("host:0"), so a run without --data-port-range is byte-for-byte
+// behavior ("host:0"), so a run without --port-range is byte-for-byte
 // unchanged from before the flag existed.
 package portalloc
 
@@ -140,7 +140,7 @@ func (a *Allocator) Next(host string) (int, error) {
 		a.reserved[p] = true
 		return p, nil
 	}
-	return 0, fmt.Errorf("portalloc: no free port in range %d-%d on %s (widen --data-port-range)", a.lo, a.hi, host)
+	return 0, fmt.Errorf("portalloc: no free port in range %d-%d on %s (widen --port-range)", a.lo, a.hi, host)
 }
 
 // Listen binds a listener on host within the active range and returns it
@@ -167,7 +167,7 @@ func (a *Allocator) Listen(host string) (net.Listener, error) {
 		a.reserved[p] = true
 		return l, nil
 	}
-	return nil, fmt.Errorf("portalloc: no free port in range %d-%d on %s (widen --data-port-range)", a.lo, a.hi, host)
+	return nil, fmt.Errorf("portalloc: no free port in range %d-%d on %s (widen --port-range)", a.lo, a.hi, host)
 }
 
 func itoa(p int) string { return strconv.Itoa(p) }
@@ -177,7 +177,7 @@ func itoa(p int) string { return strconv.Itoa(p) }
 // chosen from the range on that host (no close->rebind race); otherwise the
 // address is bound verbatim (a fixed port, or a disabled range = legacy :0).
 // This is the single entry point the agents use, so a remote agent that the
-// controller launches with "host:0" still honors --data-port-range.
+// controller launches with "host:0" still honors --port-range.
 func (a *Allocator) ListenAddr(addr string) (net.Listener, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {

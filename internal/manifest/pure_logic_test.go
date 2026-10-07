@@ -146,7 +146,7 @@ func TestIsEOF(t *testing.T) {
 func TestJobMetaMirrorRoundTrip(t *testing.T) {
 	mirror := t.TempDir() + "/journal.jsonl"
 	j := NewJournal(nil, mirror)
-	if err := j.SaveMeta("op1", &JobMeta{JobID: "op1", SnapEpoch: 4, CopyMode: "on_segment"}); err != nil {
+	if err := j.SaveMeta("op1", &JobMeta{JobID: "op1", SnapEpoch: 4, CopyMode: "mesh"}); err != nil {
 		t.Fatalf("save meta: %v", err)
 	}
 	j2 := NewJournal(nil, mirror)
@@ -154,7 +154,7 @@ func TestJobMetaMirrorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load meta: %v", err)
 	}
-	if meta == nil || meta.SnapEpoch != 4 || meta.CopyMode != "on_segment" {
+	if meta == nil || meta.SnapEpoch != 4 || meta.CopyMode != "mesh" {
 		t.Fatalf("meta = %+v, want epoch=4 on_segment", meta)
 	}
 	j3 := NewJournal(nil, t.TempDir()+"/journal.jsonl")
@@ -225,20 +225,20 @@ func TestUnitCompressorsSwap(t *testing.T) {
 // unaffected (replicated has its own earlier case).
 func TestCoordinatorFallbackForDecision(t *testing.T) {
 	cases := []struct {
-		name    string
-		mode    config.CopyMode
-		thresh  int64
-		bytes   int64
-		repl    bool
-		want    bool
+		name   string
+		mode   config.CopyMode
+		thresh int64
+		bytes  int64
+		repl   bool
+		want   bool
 	}{
 		{"coordinator-mode-never-falls-back", config.CopyCoordinator, 1 << 20, 1 << 19, false, false},
-		{"onsegment-small-falls-back", config.CopyOnSegment, 1 << 20, 1 << 19, false, true},
-		{"onsegment-at-threshold-stays", config.CopyOnSegment, 1 << 20, 1 << 20, false, false},
-		{"onsegment-large-stays", config.CopyOnSegment, 1 << 20, 2 << 20, false, false},
-		{"onsegment-unknown-size-stays", config.CopyOnSegment, 1 << 20, 0, false, false},
-		{"onsegment-zero-threshold-stays", config.CopyOnSegment, 0, 100, false, false},
-		{"onsegment-replicated-has-own-case", config.CopyOnSegment, 1 << 20, 100, true, false},
+		{"onsegment-small-falls-back", config.CopyMesh, 1 << 20, 1 << 19, false, true},
+		{"onsegment-at-threshold-stays", config.CopyMesh, 1 << 20, 1 << 20, false, false},
+		{"onsegment-large-stays", config.CopyMesh, 1 << 20, 2 << 20, false, false},
+		{"onsegment-unknown-size-stays", config.CopyMesh, 1 << 20, 0, false, false},
+		{"onsegment-zero-threshold-stays", config.CopyMesh, 0, 100, false, false},
+		{"onsegment-replicated-has-own-case", config.CopyMesh, 1 << 20, 100, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

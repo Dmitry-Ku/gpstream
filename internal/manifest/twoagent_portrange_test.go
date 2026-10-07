@@ -9,14 +9,14 @@ import (
 )
 
 // inprocPrebindsInRange: the in-proc runner (the lab / integration path)
-// pre-binds its loopback ports through --data-port-range: every pre-bound
+// pre-binds its loopback ports through --port-range: every pre-bound
 // port lands inside the range, and the per-unit release/reuse keeps many
 // units within a small range.
 func TestInProcPrebindsInRange(t *testing.T) {
 	cfg := config.Default()
 	cfg.Source = "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable"
 	cfg.CopyMode = config.CopyCoordinator
-	cfg.DataPortRange = "23000-23002"
+	cfg.PortRange = "23000-23002"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestInProcPrebindsInRange(t *testing.T) {
 	}
 }
 
-// inprocNoRangeUnchanged: without --data-port-range the in-proc prebind is
+// inprocNoRangeUnchanged: without --port-range the in-proc prebind is
 // the legacy kernel-pick (any port, no range check).
 func TestInProcNoRangeUnchanged(t *testing.T) {
 	cfg := config.Default()

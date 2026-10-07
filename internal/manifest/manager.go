@@ -209,7 +209,7 @@ func (m *Manager) compressionOffFor(t plan.Table) bool {
 // disabled threshold (0) keeps the operator's mode; the boundary is strict
 // (a table exactly at the threshold stays on the segment path).
 func (m *Manager) coordinatorFallbackFor(t plan.Table) bool {
-	return m.cfg.CopyMode == config.CopyOnSegment &&
+	return m.cfg.CopyMode == config.CopyMesh &&
 		!t.SrcReplicated &&
 		m.cfg.SmallTableThreshold > 0 &&
 		t.Bytes > 0 && t.Bytes < m.cfg.SmallTableThreshold
@@ -1207,7 +1207,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"reason", "small-table auto-disable (F-12)")
 	}
 	switch {
-	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment && t.SrcReplicated:
+	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyMesh && t.SrcReplicated:
 		// Design 04.10 (question 5): a DISTRIBUTED REPLICATED source table
 		// holds a FULL copy on every source segment, so an ON SEGMENT read
 		// would stream S identical copies (S× rows on the destination). The
@@ -1234,7 +1234,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"threshold", m.cfg.SmallTableThreshold,
 			"reason", "small table: the segment-direct pipeline does not pay back (F-12 threshold)")
 		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
-	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyOnSegment:
+	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyMesh:
 		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
 		// moves into the agents. The source agent triggers the ON SEGMENT
 		// dispatch (kernel launches the segreceiver on every primary source

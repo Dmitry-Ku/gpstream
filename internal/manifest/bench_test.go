@@ -138,11 +138,11 @@ func TestBenchAllEmptyUnits(t *testing.T) {
 // + ON SEGMENT / routing); on a non-GP source they are refused with a clear
 // message pointing at the lab.
 func TestBenchAllRejectsSegmentModes(t *testing.T) {
-	m := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyOnSegment })
+	m := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyMesh })
 	if _, err := m.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
 		t.Fatal("benchall(on_segment): want the real-GP error")
 	}
-	m2 := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyOnSegment })
+	m2 := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyMesh })
 	if _, err := m2.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
 		t.Fatal("benchall(on_segment): want the real-GP error")
 	}

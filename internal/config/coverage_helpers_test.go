@@ -160,8 +160,8 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")
-	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegListen = "not-a-port" }, "on_segment-bad-listen")
-	fail(func(c *Config) { c.CopyMode = CopyOnSegment; c.SegListen = "host:0" }, "on_segment-port-zero")
+	fail(func(c *Config) { c.CopyMode = CopyMesh; c.SegListen = "not-a-port" }, "on_segment-bad-listen")
+	fail(func(c *Config) { c.CopyMode = CopyMesh; c.SegListen = "host:0" }, "on_segment-port-zero")
 	fail(func(c *Config) { c.FrameAck = "maybe" }, "frame-ack")
 	fail(func(c *Config) { c.AckTimeout = "banana" }, "ack-timeout")
 
@@ -238,7 +238,7 @@ ssl_min_tls = "1.2"
 seg_tls_cert = "/sa"
 seg_tls_key = "/sb"
 seg_tls_ca = "/sc"
-data_port_range = "9000-9100"
+port_range = "9000-9100"
 index_priority = "size"
 timeout = "2m"
 overwrite_only_conflicts = "1"
@@ -274,7 +274,7 @@ ssl_min_tls: "1.2"
 seg_tls_cert: "/sa"
 seg_tls_key: "/sb"
 seg_tls_ca: "/sc"
-data_port_range: "9000-9100"
+port_range: "9000-9100"
 index_priority: "size"
 timeout: "2m"
 overwrite_only_conflicts: "1"

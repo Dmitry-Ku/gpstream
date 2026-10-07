@@ -112,7 +112,7 @@ func TestParseSizeValue(t *testing.T) {
 	}
 }
 
-func TestDataPortRangeValidation(t *testing.T) {
+func TestPortRangeValidation(t *testing.T) {
 	cases := []struct {
 		name    string
 		in      string
@@ -147,54 +147,54 @@ func TestDataPortRangeValidation(t *testing.T) {
 	}
 }
 
-func TestDataPortRangeCheck(t *testing.T) {
+func TestPortRangeCheck(t *testing.T) {
 	// coordinator: needs 3 ports
 	cfg := Default()
 	cfg.CopyMode = CopyCoordinator
-	cfg.DataPortRange = "9000-9002"
+	cfg.PortRange = "9000-9002"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.CheckDataPortRange(3); err != nil {
+	if err := cfg.CheckPortRange(3); err != nil {
 		t.Fatalf("coordinator 3-port range should pass: %v", err)
 	}
 	small := Default()
 	small.CopyMode = CopyCoordinator
-	small.DataPortRange = "9000-9001"
+	small.PortRange = "9000-9001"
 	if err := small.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := small.CheckDataPortRange(3); err == nil {
+	if err := small.CheckPortRange(3); err == nil {
 		t.Fatal("coordinator 2-port range should fail")
 	}
 	// on_segment: needs 3 too (the long-lived dest agent binds one shared
 	// data + one control listener; the per-segment segreceivers dial it and
 	// never bind, so D adds no ports — the pre-04.10 2D+1 formula is gone).
 	cfg = Default()
-	cfg.CopyMode = CopyOnSegment
-	cfg.DataPortRange = "9000-9007"
+	cfg.CopyMode = CopyMesh
+	cfg.PortRange = "9000-9007"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.CheckDataPortRange(3); err != nil {
+	if err := cfg.CheckPortRange(3); err != nil {
 		t.Fatalf("on_segment D=3 needs 3, range 8 should pass: %v", err)
 	}
-	if err := cfg.CheckDataPortRange(4); err != nil {
+	if err := cfg.CheckPortRange(4); err != nil {
 		t.Fatalf("on_segment D=4 still needs 3 (segreceivers dial the shared data port), range 8 should pass: %v", err)
 	}
 	smallSeg := Default()
-	smallSeg.CopyMode = CopyOnSegment
-	smallSeg.DataPortRange = "9000-9001"
+	smallSeg.CopyMode = CopyMesh
+	smallSeg.PortRange = "9000-9001"
 	if err := smallSeg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := smallSeg.CheckDataPortRange(4); err == nil {
+	if err := smallSeg.CheckPortRange(4); err == nil {
 		t.Fatal("on_segment 2-port range should fail (needs 3)")
 	}
 	// auto (no range): always passes
 	auto := Default()
-	auto.CopyMode = CopyOnSegment
-	if err := auto.CheckDataPortRange(50); err != nil {
+	auto.CopyMode = CopyMesh
+	if err := auto.CheckPortRange(50); err != nil {
 		t.Fatalf("auto range should pass: %v", err)
 	}
 }

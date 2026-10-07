@@ -79,7 +79,7 @@ Source cluster connection string.
 .BR --dest
 connstr
 Destination cluster connection string. Segment-to-segment writes
-(\fB--copy-mode\fR on_segment: routed, direct_1to1) build per-segment
+(\fB--copy-mode\fR mesh: routed, direct_1to1) build per-segment
 utility DSNs from it and therefore require the URL form
 (postgres://user@host:port/db); a keyword/value form silently degrades
 the run to the merge path through the destination coordinator (dry-run
@@ -244,7 +244,7 @@ exactly the cluster its DSN points to (P1e coordinator guard); a violation
 aborts the agent and the \fBrun\fR/\fBbench\fR fails with the verdict from the
 agent log. A non-Greenplum (single-node) database always passes.
 For
-.B --copy-mode on_segment
+.B --copy-mode mesh
 the gpstream package must be installed on every SOURCE segment host (the
 kernel runs
 .B gpstream-segreceiver
@@ -252,7 +252,7 @@ there); the package places it at
 .BR /usr/bin/gpstream-segreceiver .
 .TP
 .BR --copy-mode
-coordinator|on_segment
+coordinator|mesh
 Data path (default coordinator). coordinator = one COPY through each
 coordinator; on_segment = the source segments stream in parallel (ON SEGMENT
 dispatch) and pick per table:
@@ -276,7 +276,7 @@ primary non-loopback IP plus a free port. Each unit binds
 the source segment hosts dial that address, so the host must be routable from
 them — on a multi-homed controller set it explicitly.
 .TP
-.B --data-port-range
+.B --port-range
 LO-HI|LO
 Restrict the automatic data/control port allocation to a fixed range for
 strict firewalls (the operator opens exactly that range). Default: fully
