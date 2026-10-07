@@ -50,10 +50,18 @@ type SourceServer struct {
 	// the single P1c channel); unit X rides channel X%N. Established lazily on
 	// the first persistent stream, re-dialed on a break (budget: MaxReconnects).
 	// persistMu serializes connect/reconnect against SendUnit's writes.
-	persistMu   sync.Mutex
-	persConns   []net.Conn
-	persSnds    []*PersistentSender
-	persN       int  // number of channels (= Workers, >= 1)
+	persistMu sync.Mutex
+	persConns []net.Conn
+	persSnds  []*PersistentSender
+	persN     int // number of channels (= Workers, >= 1)
+	// persChanMu (P1d): per-channel send serialization. The manager's worker
+	// pool pulls units off a shared queue, so two in-flight units can hash to the
+	// SAME channel (X%N). SendUnit is not atomic (it acquires the sender's mutex
+	// per frame), so a concurrent SendUnit on one channel would interleave their
+	// UnitBegin/data/Trailer frames; the dest's per-channel serve loop reads one
+	// unit at a time. This lock makes the whole send atomic per channel (units on
+	// DIFFERENT channels stream in parallel; the serial case always finds it free).
+	persChanMu  []sync.Mutex
 	persReady   bool // the channel pool is established
 	persConnIdx int  // the channel the last (re)dial touched (for re-dial)
 	// persFails (P1c): the consecutive units that failed on a DOWN persistent
@@ -745,6 +753,13 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, id
 	if snd == nil {
 		return out, fmt.Errorf("persistent channel %d not established (unit %d)", idx, spec.UnitID)
 	}
+	// Serialize sends on THIS channel (see persChanMu): the whole unit
+	// (UnitBegin + data + Trailer) goes out without interleaving with another
+	// unit routed to the same channel.
+	if len(s.persChanMu) > idx {
+		s.persChanMu[idx].Lock()
+		defer s.persChanMu[idx].Unlock()
+	}
 
 	mode, level, perr := compress.Parse(spec.Compress)
 	if perr != nil {
@@ -854,6 +869,7 @@ func (s *SourceServer) ensurePersistentPool(ctx context.Context, destAddr string
 	s.persN = n // channel index = unit % N (must be set before any stream op)
 	s.persConns = make([]net.Conn, n)
 	s.persSnds = make([]*PersistentSender, n)
+	s.persChanMu = make([]sync.Mutex, n)
 	for i := 0; i < n; i++ {
 		conn, err := s.dialDestTLS(ctx, destAddr)
 		if err != nil {

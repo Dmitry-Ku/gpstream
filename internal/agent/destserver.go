@@ -72,13 +72,13 @@ type DestHello struct {
 //	"routed"      — S×D×W sub-streams -> D per-segment utility COPYs (the
 //	routed sub-path (b)).
 type DestServeReq struct {
-	Op     string `json:"op"` // "serve-unit"
-	Kind   string `json:"kind"`
-	Swap   bool   `json:"swap"`
+	Op   string `json:"op"` // "serve-unit"
+	Kind string `json:"kind"`
+	Swap bool   `json:"swap"`
 	// UnitID (P1d) identifies the unit for the concurrent serve path: the
 	// unit-done report echoes it so the controller correlates N serves in
 	// flight on one control connection.
-	UnitID uint32        `json:"unit_id,omitempty"`
+	UnitID   uint32        `json:"unit_id,omitempty"`
 	Spec     *UnitSpec     `json:"spec,omitempty"`     // kind=coordinator
 	Segments int           `json:"segments,omitempty"` // kind=segments
 	Direct   *DirectLaunch `json:"direct,omitempty"`   // kind=direct
@@ -95,8 +95,8 @@ type DestAck struct {
 
 // DestUnitDone is the agent's report after a serve-unit finished.
 type DestUnitDone struct {
-	Op     string `json:"op"` // "unit-done"
-	Ok     bool   `json:"ok"`
+	Op string `json:"op"` // "unit-done"
+	Ok bool   `json:"ok"`
 	// UnitID (P1d) echoes DestServeReq.UnitID (concurrent serves: the
 	// controller maps the report to the unit by id).
 	UnitID  uint32 `json:"unit_id,omitempty"`
