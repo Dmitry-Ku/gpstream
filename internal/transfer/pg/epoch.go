@@ -28,12 +28,13 @@ import (
 // once, each in its own REPEATABLE READ transaction, so N pipelines stream N
 // tables concurrently under N near-identical snapshots.
 type Epoch struct {
-	pool  *Pool
-	mu    sync.Mutex
-	raw   []*pgxpool.Conn // the N reserved pool connections (index-aligned)
-	conns []*EpochConn    // the N borrowed-conn wrappers (index-aligned)
-	inUse []bool          // Acquire/Release free-list (index-aligned)
-	fix   []time.Time     // t_fix[i]: wall-clock moment connection i's snapshot fixed
+	pool      *Pool
+	mu        sync.Mutex
+	raw       []*pgxpool.Conn // the N reserved pool connections (index-aligned)
+	conns     []*EpochConn    // the N borrowed-conn wrappers (index-aligned)
+	inUse     []bool          // Acquire/Release free-list (index-aligned)
+	divergent []bool          // conns excluded after a divergent heal (fail -> resume)
+	fix       []time.Time     // t_fix[i]: wall-clock moment connection i's snapshot fixed
 	// baseMin is the earliest ORIGINAL pin (min of fix at NewEpoch). It is the
 	// reference a heal re-pin is validated against (P1d heal): a re-pin that
 	// lags baseMin by more than --max-snapshot-delta must not restart the unit.
@@ -78,11 +79,12 @@ func NewEpoch(ctx context.Context, pool *Pool, n int) (*Epoch, error) {
 		return nil, err
 	}
 	e := &Epoch{
-		pool:  pool,
-		raw:   raw,
-		conns: make([]*EpochConn, n),
-		inUse: make([]bool, n),
-		fix:   make([]time.Time, n),
+		pool:      pool,
+		raw:       raw,
+		conns:     make([]*EpochConn, n),
+		inUse:     make([]bool, n),
+		divergent: make([]bool, n),
+		fix:       make([]time.Time, n),
 	}
 	for i, c := range raw {
 		if err := pinEpochConn(ctx, c); err != nil {
@@ -126,12 +128,12 @@ func (e *Epoch) Acquire() (*EpochConn, error) {
 		return nil, fmt.Errorf("epoch: closed")
 	}
 	for i := range e.conns {
-		if !e.inUse[i] {
+		if !e.inUse[i] && !e.divergent[i] {
 			e.inUse[i] = true
 			return e.conns[i], nil
 		}
 	}
-	return nil, fmt.Errorf("epoch: all %d connections in use", len(e.conns))
+	return nil, fmt.Errorf("epoch: all %d connections in use or divergent", len(e.conns))
 }
 
 // Release returns a borrowed connection to the epoch's free-list (the
@@ -221,10 +223,26 @@ func (e *Epoch) Heal(i int, limit time.Duration) (time.Time, error) {
 }
 
 // Close rolls back all N open snapshot transactions and returns the N
-// connections to the pool (the run's Release). It is idempotent.
+// connections to the pool (the run's abort/error path). It is idempotent.
 func (e *Epoch) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.end("ROLLBACK")
+}
+
+// CommitAll commits all N open snapshot transactions and returns the N
+// connections to the pool (the run's successful Release). For read-only
+// snapshot transactions this cleanly ends each and releases its snapshot
+// (and its xmin, which pins the vacuum horizon). It is idempotent.
+func (e *Epoch) CommitAll() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.end("COMMIT")
+}
+
+// end terminates all N transactions with stmt (COMMIT or ROLLBACK) and
+// returns the connections to the pool. Caller holds e.mu.
+func (e *Epoch) end(stmt string) {
 	if e.closed {
 		return
 	}
@@ -233,11 +251,59 @@ func (e *Epoch) Close() {
 		if c == nil {
 			continue
 		}
-		_, _ = c.Conn().Exec(context.Background(), "ROLLBACK")
+		_, _ = c.Conn().Exec(context.Background(), stmt)
 		c.Release()
 	}
 	e.raw = nil
 	e.conns = nil
+}
+
+// ProbeAndHeal checks connection i's snapshot transaction and, only if it is
+// aborted (a failed unit's SQL fault), re-pins it with a fresh REPEATABLE READ
+// snapshot (a new t_fix[i], validated against baseMin). A healthy connection is
+// left untouched (its snapshot point is preserved, so the epoch's ε-window is
+// not widened). It returns nil if the connection is healthy or was healed
+// within the delta limit; an error if the re-pin lags baseMin by more than
+// `limit` (divergent — the caller must NOT restart the unit; fail -> resume).
+// limit <= 0 skips the validation.
+func (e *Epoch) ProbeAndHeal(i int, limit time.Duration) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if i < 0 || i >= len(e.raw) {
+		return fmt.Errorf("epoch: bad connection index %d", i)
+	}
+	pc := e.raw[i].Conn()
+	// Probe: a healthy transaction answers SELECT 1. Exec (not Query) so the
+	// probe leaves no open rows on the connection (open rows would keep the
+	// conn busy for the next operation).
+	if _, err := pc.Exec(context.Background(), "SELECT 1"); err == nil {
+		return nil // healthy, leave untouched
+	}
+	// Aborted: roll back and re-pin (fresh REPEATABLE READ + clock probe).
+	_, _ = pc.Exec(context.Background(), "ROLLBACK")
+	if err := pinEpochConn(context.Background(), e.raw[i]); err != nil {
+		return fmt.Errorf("epoch: heal pin connection %d: %w", i, err)
+	}
+	nf := time.Now()
+	e.fix[i] = nf
+	if limit > 0 && !healLagOKTimes(e.baseMin, nf, limit) {
+		return fmt.Errorf("epoch: heal connection %d lags the epoch base by %s > --max-snapshot-delta %s (do not restart the unit; fail -> resume)", i, nf.Sub(e.baseMin), limit)
+	}
+	return nil
+}
+
+// MarkDivergent excludes connection i from the free-list after a divergent
+// heal (its re-pin lags the epoch base by more than --max-snapshot-delta, so it
+// must not carry a unit — that would copy a snapshot inconsistent with the rest
+// of the run). The open transaction is left in place; Close/CommitAll ends it.
+// It is not re-included.
+func (e *Epoch) MarkDivergent(i int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if i >= 0 && i < len(e.divergent) {
+		e.divergent[i] = true
+		e.inUse[i] = true // keep it out of the free-list
+	}
 }
 
 // reserveEpoch acquires n dedicated pool connections for a snapshot-epoch

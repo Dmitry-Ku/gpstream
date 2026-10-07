@@ -338,6 +338,10 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		"--ack-timeout", r.cfg.AckTimeout,
 		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
 		"--retransmit-buffer-max", strconv.FormatInt(r.cfg.RetransmitBufferMax, 10),
+		// P1d: --workers > 1 = snapshot-epoch (N pinned conns); the binary
+		// sizes its source pool accordingly and validates the pin spread.
+		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
+		"--max-snapshot-delta", strconv.FormatInt(int64(r.cfg.MaxSnapshotDelta.Seconds()), 10),
 	}
 	if r.cfg.SSLCert != "" {
 		srcArgs = append(srcArgs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
@@ -979,6 +983,10 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 		StreamTimeout:  6 * time.Hour,
 		FrameAck:       r.cfg.FrameAckOn(),
 		ReliablePipe:   r.cfg.ReliablePipeConfig(),
+		// P1d: --workers > 1 switches the source agent to the snapshot-epoch
+		// (N pinned conns); --max-snapshot-delta bounds the pin spread.
+		Workers:          r.cfg.WorkersPerPair,
+		MaxSnapshotDelta: r.cfg.MaxSnapshotDelta,
 	})
 	sctx, cancel := context.WithCancel(ctx)
 	r.srcCancel = cancel

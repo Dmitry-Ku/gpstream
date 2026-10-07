@@ -35,8 +35,9 @@ import (
 type SourceServer struct {
 	opts     ServerOptions
 	pool     *pg.Pool
-	pinned   pg.StreamingQuerier // the pinned snapshot connection (data COPYs)
+	pinned   pg.StreamingQuerier // the pinned snapshot connection (data COPYs, Workers=1 strict)
 	pinRel   func()
+	epoch    *pg.Epoch // the snapshot-epoch (Workers>1): N pinned conns, borrow/return per COPY
 	snapMode SnapshotMode
 	snapTx   bool
 	healMu   sync.Mutex
@@ -89,6 +90,14 @@ type ServerOptions struct {
 	// after a break (the run's --max-reconnects; 0 = default 20). A break
 	// that exhausts the budget fails the unit (run-level resume, FR-06).
 	MaxReconnects int
+	// Workers (P1d) is the run's --workers. 1 (the default) = strict: one
+	// pinned REPEATABLE READ connection, one exact snapshot point. >1 =
+	// snapshot-epoch: N pinned connections in an ε-window, each data COPY
+	// borrows one (no commit), Release commits all N.
+	Workers int
+	// MaxSnapshotDelta (P1d, --max-snapshot-delta) bounds the epoch's pin
+	// spread and the heal re-pin lag (0 disables the check).
+	MaxSnapshotDelta time.Duration
 	// PersistListen, when set, is the destination's dedicated persistent-
 	// coordinator listener address (from its hello): the channel is
 	// established up front at Start so the first unit pays no dial. Empty =
@@ -114,29 +123,58 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 	s.stop = make(chan struct{})
 	s.stopped = make(chan struct{})
 
-	pool, err := pg.NewPool(ctx, s.opts.SrcConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS, 4)
+	// Pool sizing: strict needs 4; the snapshot-epoch reserves N dedicated
+	// connections (plus headroom for catalog reads), matching the
+	// controller's --workers+4 sizing the doctor checks (P1d).
+	poolSize := 4
+	if s.opts.Workers > 1 {
+		poolSize = s.opts.Workers + 4
+	}
+	pool, err := pg.NewPool(ctx, s.opts.SrcConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS, poolSize)
 	if err != nil {
 		return "", fmt.Errorf("source server: connect source: %w", err)
 	}
 	s.pool = pool
 
-	// FR-02 snapshot on a pinned connection (the manager's establishSnapshot).
+	// FR-02 snapshot. Workers=1 (strict): one pinned connection, one exact
+	// point. Workers>1 (P1d snapshot-epoch): N pinned connections in an
+	// ε-window, validated against --max-snapshot-delta before the run starts.
 	mode := s.opts.Snapshot
 	if mode != SnapNone {
-		q, release, perr := pool.Pin(ctx)
-		if perr != nil {
-			pool.Close()
-			return "", fmt.Errorf("source server: pin snapshot conn: %w", perr)
+		workers := s.opts.Workers
+		if workers < 1 {
+			workers = 1
 		}
-		if berr := beginSnapshot(ctx, q, mode); berr != nil {
-			release()
-			pool.Close()
-			return "", berr
+		if workers > 1 {
+			e, eerr := pg.NewEpoch(ctx, pool, workers)
+			if eerr != nil {
+				pool.Close()
+				return "", fmt.Errorf("source server: create snapshot-epoch: %w", eerr)
+			}
+			if verr := e.ValidateDelta(s.opts.MaxSnapshotDelta); verr != nil {
+				e.Close()
+				pool.Close()
+				return "", fmt.Errorf("source server: %w", verr)
+			}
+			s.epoch = e
+			s.snapMode = mode
+			s.snapTx = true
+		} else {
+			q, release, perr := pool.Pin(ctx)
+			if perr != nil {
+				pool.Close()
+				return "", fmt.Errorf("source server: pin snapshot conn: %w", perr)
+			}
+			if berr := beginSnapshot(ctx, q, mode); berr != nil {
+				release()
+				pool.Close()
+				return "", berr
+			}
+			s.pinned = q
+			s.pinRel = release
+			s.snapMode = mode
+			s.snapTx = true
 		}
-		s.pinned = q
-		s.pinRel = release
-		s.snapMode = mode
-		s.snapTx = true
 	}
 	return s.startControl()
 }
@@ -322,9 +360,14 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	}
 	sql := segstream.CopyOnSegmentSQL(req.Schema, req.Table, prog)
 	// The ON SEGMENT dispatch must run on the unit's FR-02 snapshot
-	// connection (the kernel dispatches with DF_WITH_SNAPSHOT); the pinned
-	// conn is that connection.
-	rows, err := s.copyQuerier().Exec(ctx, sql)
+	// connection (the kernel dispatches with DF_WITH_SNAPSHOT): the
+	// borrowed epoch connection (Workers>1) or the pinned conn (strict).
+	cq, aerr := s.snapshotQuerier()
+	if aerr != nil {
+		return OnSegmentResp{Ok: false, Error: aerr.Error()}
+	}
+	defer s.releaseSnapshotConn(cq)
+	rows, err := cq.Exec(ctx, sql)
 	if err != nil {
 		s.heal(ctx) // a failed dispatch may have aborted the snapshot tx (F-06)
 		return OnSegmentResp{Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
@@ -448,6 +491,34 @@ func (s *SourceServer) copyQuerier() pg.StreamingQuerier {
 	return s.pool
 }
 
+// snapshotQuerier returns a querier a unit's data COPY / checksum runs on.
+// strict (Workers=1): the pinned snapshot connection (one exact point).
+// epoch (Workers>1): a BORROWED epoch connection — that connection's pinned
+// snapshot carries the unit's COPY (P1d). The caller MUST return it with
+// releaseSnapshotConn when the read is done (the transaction is NOT committed).
+func (s *SourceServer) snapshotQuerier() (pg.StreamingQuerier, error) {
+	if s.snapTx && s.epoch != nil {
+		ec, aerr := s.epoch.Acquire()
+		if aerr != nil {
+			return nil, fmt.Errorf("source agent: no snapshot-epoch connection for the data COPY: %w", aerr)
+		}
+		return ec, nil
+	}
+	if s.pinned != nil {
+		return s.pinned, nil
+	}
+	return s.pool, nil
+}
+
+// releaseSnapshotConn returns a querier obtained from snapshotQuerier to the
+// epoch (the snapshot transaction is NOT committed — the run reuses it). A
+// pinned (strict) connection or the pool is not returned (no-op).
+func (s *SourceServer) releaseSnapshotConn(q pg.StreamingQuerier) {
+	if ec, ok := q.(*pg.EpochConn); ok {
+		ec.Release()
+	}
+}
+
 // streamUnit dials the destination agent and streams the unit (the data COPY)
 // from the pinned snapshot connection, framing + compressing on the wire.
 func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr string) (SourceResult, error) {
@@ -501,7 +572,14 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 		frameConn = rp
 	}
 	fw := transfer.NewFramedWriter(frameConn, spec.JobID, spec.UnitID, compress.New(mode, level))
-	copyConn := s.copyQuerier()
+	// Data COPY on a snapshot-epoch connection (Workers>1: borrowed, no
+	// commit, returned after) or the pinned conn (strict) / pool (no snap).
+	copyConn, aerr := s.snapshotQuerier()
+	if aerr != nil {
+		conn.Close()
+		return out, aerr
+	}
+	defer s.releaseSnapshotConn(copyConn)
 	counted := &logicalCounter{}
 	var (
 		dataOut io.Writer = fw
@@ -635,7 +713,14 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec) (S
 		if spec.VerifyDigest {
 			w = &digestTee{next: pw, d: dsum}
 		}
-		rows, cerr := source.New(s.copyQuerier()).CopyToStream(ctx, spec.SrcSchema, spec.SrcTable, w)
+		cq, aerr := s.snapshotQuerier()
+		if aerr != nil {
+			_ = pw.CloseWithError(aerr)
+			outcome <- copyOutcome{err: aerr}
+			return
+		}
+		rows, cerr := source.New(cq).CopyToStream(ctx, spec.SrcSchema, spec.SrcTable, w)
+		s.releaseSnapshotConn(cq)
 		digest := ""
 		if cerr == nil && spec.VerifyDigest {
 			d, derr := dsum.Sum()
@@ -728,9 +813,16 @@ func (s *SourceServer) ClosePersistent() {
 }
 
 // handleRelease ends the run: commits the snapshot and signals stop.
+// strict (Workers=1): COMMIT on the one pinned conn. epoch (Workers>1, P1d):
+// COMMIT on all N connections (the run's successful Release).
 func (s *SourceServer) handleRelease() ReleaseResp {
 	ctx := context.Background()
 	s.healMu.Lock()
+	if s.snapTx && s.epoch != nil {
+		s.epoch.CommitAll()
+		s.epoch = nil
+		s.snapTx = false
+	}
 	if s.snapTx && s.pinned != nil {
 		_, _ = s.pinned.Exec(ctx, "COMMIT")
 		s.snapTx = false
@@ -755,8 +847,25 @@ func (s *SourceServer) heal(ctx context.Context) {
 	// (observed as a live cross-VM crash).
 	s.healMu.Lock()
 	defer s.healMu.Unlock()
-	if !s.snapTx || s.pinned == nil {
+	if !s.snapTx {
 		return // already released (Close/Release won the race)
+	}
+	// Epoch (Workers>1): probe + heal every pinned connection. A healthy one is
+	// left untouched (its snapshot point is preserved). A re-pin that lags the
+	// epoch base by more than --max-snapshot-delta is marked divergent: it is
+	// excluded from the free-list and must NOT carry a restarted unit (fail
+	// -> resume, the honest divergence — not a silent snapshot drift).
+	if s.epoch != nil {
+		for i := 0; i < s.epoch.ConnCount(); i++ {
+			if herr := s.epoch.ProbeAndHeal(i, s.opts.MaxSnapshotDelta); herr != nil {
+				s.epoch.MarkDivergent(i)
+				fmt.Fprintf(os.Stderr, "gpstream-source-agent: epoch conn %d divergent, excluded (fail -> resume): %v\n", i, herr)
+			}
+		}
+		return
+	}
+	if s.pinned == nil {
+		return
 	}
 	// Probe the pinned connection.
 	if _, err := s.pinned.Query(ctx, "SELECT 1"); err == nil {
@@ -770,6 +879,11 @@ func (s *SourceServer) heal(ctx context.Context) {
 // Close stops the source server (rolling back any open snapshot).
 func (s *SourceServer) Close() {
 	s.healMu.Lock()
+	if s.snapTx && s.epoch != nil {
+		s.epoch.Close()
+		s.epoch = nil
+		s.snapTx = false
+	}
 	if s.snapTx && s.pinned != nil {
 		_, _ = s.pinned.Exec(context.Background(), "ROLLBACK")
 		s.snapTx = false

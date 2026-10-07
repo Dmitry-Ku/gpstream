@@ -77,6 +77,10 @@ func main() {
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
 	// Long-lived (P3) mode: listen for the controller's control protocol.
 	serve := flag.String("serve", "", "control listen address host:port (long-lived source agent mode)")
+	// P1d: --workers > 1 = snapshot-epoch (N pinned REPEATABLE READ
+	// connections); --max-snapshot-delta bounds the pin spread (seconds).
+	workers := flag.Int("workers", 1, "parallel data workers (1 = strict, N>1 = snapshot-epoch)")
+	snapDelta := flag.Float64("max-snapshot-delta", 1, "snapshot-epoch pin-spread limit, seconds (0 disables)")
 	// Doctor probe: print a marker and exit 0 (no stream), proving the binary
 	// is installed on the source host.
 	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
@@ -103,24 +107,26 @@ func main() {
 	// socket; the FR-02 snapshot spans the whole run.
 	if *serve != "" {
 		srv := agent.NewSourceServer(agent.ServerOptions{
-			SrcConn:        *src,
-			SSLCert:        *sslCert,
-			SSLKey:         *sslKey,
-			SSLCA:          *sslCA,
-			SSLMinTLS:      *sslMinTLS,
-			Snapshot:       agent.SnapshotMode(*snapshot),
-			Listen:         *serve,
-			DataTLSCert:    *dataCert,
-			DataTLSKey:     *dataKey,
-			DataTLSCA:      *dataCA,
-			ControlTLSCert: *ctrlCert,
-			ControlTLSKey:  *ctrlKey,
-			ControlTLSCA:   *ctrlCA,
-			ConnectTimeout: *connectTO,
-			StreamTimeout:  *streamTO,
-			MaxReconnects:  *maxReconnects, // P1c: persistent channel re-dial budget
-			FrameAck:       *frameAck != "off",
-			ReliablePipe:   transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
+			SrcConn:          *src,
+			SSLCert:          *sslCert,
+			SSLKey:           *sslKey,
+			SSLCA:            *sslCA,
+			SSLMinTLS:        *sslMinTLS,
+			Snapshot:         agent.SnapshotMode(*snapshot),
+			Listen:           *serve,
+			DataTLSCert:      *dataCert,
+			DataTLSKey:       *dataKey,
+			DataTLSCA:        *dataCA,
+			ControlTLSCert:   *ctrlCert,
+			ControlTLSKey:    *ctrlKey,
+			ControlTLSCA:     *ctrlCA,
+			ConnectTimeout:   *connectTO,
+			StreamTimeout:    *streamTO,
+			MaxReconnects:    *maxReconnects, // P1c: persistent channel re-dial budget
+			FrameAck:         *frameAck != "off",
+			ReliablePipe:     transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
+			Workers:          *workers, // P1d: 1 = strict, N>1 = snapshot-epoch
+			MaxSnapshotDelta: time.Duration(*snapDelta * float64(time.Second)),
 		})
 		addr, err := srv.Start(ctx)
 		if err != nil {
