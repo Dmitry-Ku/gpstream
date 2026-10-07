@@ -35,6 +35,20 @@ refuse), F-02 concurrent-copy (a committed write after the pins is invisible
 to all N pinned snapshots while a fresh connection sees it), and heal
 (re-pin after an aborted snapshot sees the post-pin write).
 
+### Changed: `--workers` default 2 → 1 (P1d, breaking)
+
+The default `--workers` is now **1** (it was 2). With `--workers 1` the run is
+**strict**: one pinned REPEATABLE READ connection and serial data phases — a
+single exact snapshot point, the safest consistency guarantee. `--workers N > 1`
+switches the run to **snapshot-epoch** mode (N pinned connections, N parallel
+data streams; see "snapshot-epoch foundation (P1d-1)" above).
+
+**Migration:** a run that relied on the old default of 2 workers now runs
+strict (1 worker). To keep the previous throughput, set `--workers 2` (or the
+value you want) explicitly in the CLI, env (`GPSTREAM_WORKERS`), or config
+(`workers`). Note that N > 1 now additionally implies the snapshot-epoch
+behavior and is bounded by `--max-snapshot-delta`.
+
 ### Added: persistent coordinator data channel (P1c)
 
 The coordinator (default `--copy-mode coordinator`) two-agent copy now rides

@@ -219,8 +219,8 @@ func TestApplyEnvBadNumbersIgnored(t *testing.T) {
 	t.Setenv("GPSTREAM_WORKERS", "not-an-int")
 	c := Default()
 	c.ApplyEnv()
-	// Defaults: rate limit 0 (Default leaves it 0), workers 2.
-	if c.WorkersPerPair != 2 {
-		t.Errorf("workers = %d, want 2 (bad env int ignored)", c.WorkersPerPair)
+	// Defaults: rate limit 0 (Default leaves it 0), workers 1 (P1d: 1 = strict).
+	if c.WorkersPerPair != 1 {
+		t.Errorf("workers = %d, want 1 (bad env int ignored)", c.WorkersPerPair)
 	}
 }

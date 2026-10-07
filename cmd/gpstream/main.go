@@ -1644,7 +1644,7 @@ Performance:
                                    diagnostics (bps/mbit/gbit); the flow is
                                    paced by backpressure only (enforced
                                    pacing: backlog)
-  --workers N                      parallel workers per host-pair (default 2; 1 = strict, N>1 = snapshot-epoch)
+  --workers N                      parallel workers per host-pair (default 1; 1 = strict, N>1 = snapshot-epoch)
   --max-snapshot-delta SEC         snapshot-epoch pin-spread limit in seconds for
                                    --workers N>1 (0 disables; default 1s)
   --small-table-threshold size     tables smaller than this copy with compression

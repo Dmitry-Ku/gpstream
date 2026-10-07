@@ -217,7 +217,7 @@ Conflict policy semantics:
 | `--zstd-level <1-19>` | `ZstdLevel` | `3` |
 | `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
 | `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbps`, …). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
-| `--workers <N>` | `WorkersPerPair` | `2` (must be `>= 1`, validated) |
+| `--workers <N>` | `WorkersPerPair` | `1` (must be `>= 1`, validated; 1 = strict, N>1 = snapshot-epoch) |
 
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |

@@ -290,7 +290,7 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 | `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
-| `WorkersPerPair` | `2` |
+| `WorkersPerPair` | `1` |
 
 Secrets (SSL cert / key / CA) come from **env or file, never from argv**. The
 example configuration is at `packaging/examples/gpstream.toml`; TLS paths in it

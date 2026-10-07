@@ -298,7 +298,7 @@ func Default() Config {
 		IndexPriority:       "size",
 		SSLMinTLS:           "1.2",
 		AgentBinDir:         "/usr/bin",
-		WorkersPerPair:      2,
+		WorkersPerPair:      1, // P1d: default 1 = strict (one exact snapshot point; N>1 = snapshot-epoch)
 		MaxSnapshotDelta:    1 * time.Second,     // P1d: snapshot-epoch pin-spread limit (seconds)
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}

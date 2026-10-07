@@ -61,7 +61,7 @@ from the flags or the file.
 | `ZstdLevel` | int | **`3`** | `--zstd-level` / `--compress zstd:N` / file | Must be **1–19** (validate). |
 | `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env / file | F-12: a table whose estimated size is below this copies with compression **off**. `0` disables the auto-disable. |
 | `RateLimit` | float64 | `0` (none) | `--rate-limit` / env / file | Gbps baseline for the ETA + adaptive load diagnostics (AIMD, F-14). Does not cap the flow — backpressure paces it; the enforced ceiling (pacer) is backlog. |
-| `WorkersPerPair` | int | **`2`** | `--workers` / env / file | Must be **≥ 1** (validate). |
+| `WorkersPerPair` | int | **`1`** | `--workers` / env / file | Must be **≥ 1** (validate). 1 = strict (one snapshot point); N>1 = snapshot-epoch. |
 
 ### 1.6a Transport (two-agent, ADR-002)
 | Field | Type | Default | Source | Notes |
@@ -179,7 +179,7 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `Timeout` | `120s` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
-| `WorkersPerPair` | `2` |
+| `WorkersPerPair` | `1` |
 | `StateDir` | `/var/lib/gpstream` |
 
 `Validate()` additionally normalises the frame-ack defaults in place:
