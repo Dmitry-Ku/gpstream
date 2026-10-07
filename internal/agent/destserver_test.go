@@ -57,14 +57,14 @@ func TestDestServerProtocol(t *testing.T) {
 	// the background); the unit-done report follows once the serve fails at
 	// the (unreachable) pg connect.
 	spec := &UnitSpec{Schema: "s", Table: "t", Staging: "t_gpstream_stg"}
-	ack, err := client.BeginServe(DestServeReq{Kind: "coordinator", Spec: spec})
+	ack, err := client.BeginServe(DestServeReq{Kind: "coordinator", Spec: spec, UnitID: 7})
 	if err != nil {
 		t.Fatalf("BeginServe: %v", err)
 	}
 	if !ack.Ok {
 		t.Fatalf("ack = %+v", ack)
 	}
-	done, err := client.WaitUnitDone()
+	done, err := client.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		t.Fatalf("WaitUnitDone: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestDestServerProtocol(t *testing.T) {
 	if !ack2.Ok {
 		t.Fatalf("ack for bogus kind = %+v (want ok=true; the error rides unit-done)", ack2)
 	}
-	done2, err := client.WaitUnitDone()
+	done2, err := client.WaitUnitDone(ack2.ReqID)
 	if err != nil {
 		t.Fatalf("WaitUnitDone(bogus): %v", err)
 	}
@@ -173,7 +173,7 @@ func TestDestServerBadKind(t *testing.T) {
 	if !ack.Ok {
 		t.Fatalf("ack = %+v (want ok=true; the error rides unit-done)", ack)
 	}
-	done, err := client.WaitUnitDone()
+	done, err := client.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		t.Fatalf("WaitUnitDone: %v", err)
 	}

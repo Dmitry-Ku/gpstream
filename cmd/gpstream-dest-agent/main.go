@@ -95,6 +95,7 @@ func main() {
 	// agent dials it ONCE per run; every coordinator unit rides the same
 	// connection). Empty = off (legacy per-unit coordinator connections).
 	persistListen := flag.String("persist-listen", "", "long-lived mode: persistent-coordinator listener address host:port (0 = pick a free port; the real address is reported in the hello); empty = off")
+	workers := flag.Int("workers", 1, "long-lived mode: the run's data-worker count (P1d snapshot-epoch); sizes the destination pg pool for the concurrent persistent serves")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -137,6 +138,7 @@ func main() {
 			ControlTLSCert: *ctrlCert,
 			ControlTLSKey:  *ctrlKey,
 			ControlTLSCA:   *ctrlCA,
+			Workers:        *workers,
 			AcceptTimeout:  *acceptTO,
 			StreamTimeout:  *streamTO,
 			FrameAck:       *frameAck != "off",

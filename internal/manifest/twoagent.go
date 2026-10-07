@@ -400,6 +400,9 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--data-listen", dataAddr,
 		"--control-listen", destCtrlAddr,
 		"--persist-listen", persistListen,
+		// P1d: size the destination pg pool for the concurrent persistent
+		// serves (the run's data-worker count).
+		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",
 		"--frame-ack", r.cfg.FrameAckArg(),
@@ -579,44 +582,82 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 	if r.destCtrl == nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: destination agent not started")
 	}
-	// Serialize the whole exchange (see streamMu): the dest agent's control
-	// loop is sequential, so BeginServe/WaitUnitDone must not interleave
-	// across concurrent workers.
+	// P1d: the persistent path is CONCURRENT (no streamMu): the dest agent's
+	// control loop serves N units in flight, correlated by ReqID. The legacy
+	// per-unit path keeps streamMu (the sequential data listener).
+	if r.destPersistAddr != "" {
+		return r.streamCoordinatorPersistent(ctx, req)
+	}
 	r.streamMu.Lock()
 	defer r.streamMu.Unlock()
 	// 1. Tell the long-lived dest agent to serve this unit on the shared data
 	//    listener. The ack returns immediately (the serve is running,
 	//    accepting the source agent's connection).
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator"})
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
 	if err != nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
 	if !ack.Ok {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
 	}
-	// 2. Instruct the source agent to stream the unit. P1c: when the dest
-	//    agent exposes a persistent-coordinator listener, the unit rides the
-	//    run's ONE persistent channel (UnitBegin + frames + Trailer, the
-	//    connection stays open); otherwise the legacy per-unit connection.
+	// 2. Instruct the source agent to stream the unit (legacy per-unit
+	//    connection: the UnitSpec rides the data connection).
 	sreq := req.StreamReq
-	if r.destPersistAddr != "" {
-		sreq.DestAddr = r.destPersistAddr
-		sreq.Persistent = true
-	} else {
-		sreq.DestAddr = r.destDataAddr
-	}
+	sreq.DestAddr = r.destDataAddr
 	resp, err := r.ctrl.Stream(sreq)
 	if err != nil {
-		// Drain the in-flight serve so the next unit's BeginServe is clean.
-		_, _ = r.destCtrl.WaitUnitDone()
+		// The unit's data will not arrive: fail the in-flight serve so the
+		// unit-done returns promptly.
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
-	// 3. Wait for the destination to finish the COPY (the unit-done report).
-	done, err := r.destCtrl.WaitUnitDone()
+	// 3. Wait for the destination to finish the COPY (the unit-done report,
+	// correlated to THIS serve by the ack's ReqID).
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
+	}
+	if !done.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
+	}
+	// P9-E: return the inline content digests (both empty when the controller
+	// did not request verify): the source's (from the stream reply) and the
+	// destination's (from the unit-done report), for the manager to compare.
+	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
+}
+
+// streamCoordinatorPersistent (P1d) drives one coordinator unit over the
+// dest's persistent channel POOL (no streamMu: the dest control loop serves
+// N units in flight, correlated by ReqID; unit X rides channel X%N).
+func (r *processTwoAgentRunner) streamCoordinatorPersistent(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, error) {
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
+	}
+	if !ack.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
+	}
+	sreq := req.StreamReq
+	sreq.DestAddr = r.destPersistAddr
+	sreq.Persistent = true
+	resp, err := r.ctrl.Stream(sreq)
+	if err != nil {
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
+	}
+	if !resp.Ok {
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
+	}
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
 	}
@@ -652,10 +693,11 @@ func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegme
 		Kind:     kind,
 		Spec:     &req.Spec,
 		Segments: req.Segments,
+		UnitID:   req.UnitID,
 	}
 	if req.DirectWrite {
 		kind = "direct"
-		dreq = agent.DestServeReq{Kind: "direct", Direct: &req.DirectLaunch}
+		dreq = agent.DestServeReq{Kind: "direct", Direct: &req.DirectLaunch, UnitID: req.UnitID}
 	}
 	ack, err := r.destCtrl.BeginServe(dreq)
 	if err != nil {
@@ -670,15 +712,16 @@ func (r *processTwoAgentRunner) StreamSegment(ctx context.Context, req unitSegme
 	o.DestAddr = r.destDataAddr
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, fmt.Errorf("two-agent: onsegment unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, fmt.Errorf("two-agent: source agent onsegment unit %d: %s", o.UnitID, oresp.Error)
 	}
-	// 3. Wait for the destination to finish (the unit-done report).
-	done, err := r.destCtrl.WaitUnitDone()
+	// 3. Wait for the destination to finish (the unit-done report, correlated
+	// by the ack's ReqID).
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: dest unit-done (%s) unit %d: %w", kind, o.UnitID, err)
 	}
@@ -702,7 +745,7 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 	r.streamMu.Lock() // serialize the whole exchange (see streamMu)
 	defer r.streamMu.Unlock()
 	// 1. Tell the long-lived dest agent to serve this unit in routed mode.
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "routed", Routed: &req.Launch})
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "routed", Routed: &req.Launch, UnitID: req.UnitID})
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: begin serve (routed) unit %d: %w", req.UnitID, err)
 	}
@@ -715,15 +758,16 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 	o.DestAddr = r.destDataAddr
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, fmt.Errorf("two-agent: onsegment (routed) unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, fmt.Errorf("two-agent: source agent onsegment (routed) unit %d: %s", o.UnitID, oresp.Error)
 	}
-	// 3. Wait for the destination to finish (the unit-done report).
-	done, err := r.destCtrl.WaitUnitDone()
+	// 3. Wait for the destination to finish (the unit-done report, correlated
+	// by the ack's ReqID).
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("two-agent: dest unit-done (routed) unit %d: %w", o.UnitID, err)
 	}
@@ -1036,6 +1080,9 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 		PersistListen: persistAddr,
 		PortAlloc:     r.portAlloc,
 		DestConn:      r.cfg.Dest,
+		// P1d: size the destination pg pool for the concurrent persistent
+		// serves (the run's data-worker count).
+		Workers:       r.cfg.WorkersPerPair,
 		AcceptTimeout: 5 * time.Minute,
 		StreamTimeout: 6 * time.Hour,
 		FrameAck:      r.cfg.FrameAckOn(),
@@ -1070,16 +1117,15 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 	if r.dest == nil || r.destCtrl == nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: in-proc dest server not started")
 	}
-	// Serialize the whole exchange (see streamMu): the dest agent's control
-	// loop is sequential, so BeginServe/WaitUnitDone must not interleave
-	// across concurrent workers.
-	r.streamMu.Lock()
-	defer r.streamMu.Unlock()
+	// P1d: NO streamMu — the dest agent's control loop is concurrent (N
+	// serves in flight on one control connection, correlated by ReqID), so
+	// the run's N workers overlap their data phases. (The mesh serves still
+	// serialize on the dest side — see StreamSegment/StreamRouted.)
 
 	// 1. Tell the long-lived dest agent to serve this unit on the persistent
-	//    channel. The ack returns immediately (the serve is running, blocked
-	//    on the next UnitBegin).
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator"})
+	//    channel. The ack returns immediately (the serve is registered and
+	//    waiting for the unit's UnitBegin off its channel).
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
 	if err != nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
@@ -1089,23 +1135,30 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 
 	// 2. Instruct the source agent to stream the unit over the persistent
 	//    channel (the dest's persist address, from its hello). The source
-	//    dials it on the first unit and keeps the connection for the run.
+	//    dials the channel pool on the first unit and keeps the connections
+	//    for the run (unit X rides channel X%N).
 	sreq := req.StreamReq
 	sreq.DestAddr = r.dest.PersistAddr()
 	sreq.Persistent = true
 	resp, err := r.ctrl.Stream(sreq)
 	if err != nil {
-		// Drain the in-flight serve so the next unit's BeginServe is clean.
-		_, _ = r.destCtrl.WaitUnitDone()
+		// The unit's data will not arrive: cancel the in-flight serve (the
+		// dest fails the serve / drains the partial channel) so the
+		// unit-done report returns promptly instead of waiting for the run
+		// ctx.
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
-		_, _ = r.destCtrl.WaitUnitDone()
+		_, _ = r.destCtrl.CancelUnit(req.UnitID)
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
 
-	// 3. Wait for the destination to finish the COPY (the unit-done report).
-	done, err := r.destCtrl.WaitUnitDone()
+	// 3. Wait for the destination to finish the COPY (the unit-done report,
+	//    correlated to THIS serve by the ack's ReqID).
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
 	}
@@ -1114,9 +1167,6 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 	}
 
 	// Destination row count is authoritative; wire volume from the source.
-	// P9-E: return the inline content digests (both empty when the controller
-	// did not request verify): the source's (from the stream reply) and the
-	// destination's (from the unit-done report), for the manager to compare.
 	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
 }
 

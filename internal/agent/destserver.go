@@ -31,7 +31,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,7 +77,11 @@ type DestServeReq struct {
 	// UnitID (P1d) identifies the unit for the concurrent serve path: the
 	// unit-done report echoes it so the controller correlates N serves in
 	// flight on one control connection.
-	UnitID   uint32        `json:"unit_id,omitempty"`
+	UnitID uint32 `json:"unit_id,omitempty"`
+	// ReqID (P1d) is the controller's per-request correlation id, echoed on
+	// the ack and the unit-done (unit_id alone is not unique across
+	// retries: the same unit can be served twice in one run).
+	ReqID    uint64        `json:"req_id,omitempty"`
 	Spec     *UnitSpec     `json:"spec,omitempty"`     // kind=coordinator
 	Segments int           `json:"segments,omitempty"` // kind=segments
 	Direct   *DirectLaunch `json:"direct,omitempty"`   // kind=direct
@@ -88,8 +91,11 @@ type DestServeReq struct {
 // DestAck is the agent's immediate reply to "serve-unit" (the serve is
 // running in the background; its report arrives as a standalone unit-done).
 type DestAck struct {
-	Op    string `json:"op"` // "ack"
-	Ok    bool   `json:"ok"`
+	Op string `json:"op"` // "ack"
+	Ok bool   `json:"ok"`
+	// ReqID (P1d) echoes DestServeReq.ReqID so the controller matches the
+	// ack to the waiting worker (N serves in flight on one control conn).
+	ReqID uint64 `json:"req_id,omitempty"`
 	Error string `json:"error,omitempty"`
 }
 
@@ -99,6 +105,9 @@ type DestUnitDone struct {
 	Ok bool   `json:"ok"`
 	// UnitID (P1d) echoes DestServeReq.UnitID (concurrent serves: the
 	// controller maps the report to the unit by id).
+	// ReqID (P1d) echoes DestServeReq.ReqID (the controller's correlation
+	// id, robust across a unit's retries).
+	ReqID   uint64 `json:"req_id,omitempty"`
 	UnitID  uint32 `json:"unit_id,omitempty"`
 	Rows    int64  `json:"rows,omitempty"`
 	Logical uint64 `json:"logical,omitempty"`
@@ -115,7 +124,9 @@ type DestUnitDone struct {
 // DestReleased is the agent's reply to "release".
 type DestReleased struct {
 	Op string `json:"op"` // "released"
-	Ok bool   `json:"ok"`
+	// ReqID (P1d) echoes the release's correlation id.
+	ReqID uint64 `json:"req_id,omitempty"`
+	Ok    bool   `json:"ok"`
 }
 
 // DestServerOptions configures one long-lived dest agent.
@@ -155,6 +166,10 @@ type DestServerOptions struct {
 	// The data-plane TLS settings apply to it exactly as to the mesh data
 	// listener.
 	PersistListen string
+	// Workers (P1d) is the run's data-worker count, used to size the
+	// destination pg pool for the concurrent persistent serves
+	// (Workers>1 = snapshot-epoch). 0/1 = strict: the single-serve sizing.
+	Workers int
 	// RunCtx, when set, is the base context every serve is bounded by (in
 	// addition to AcceptTimeout/StreamTimeout). The IN-PROC runner sets it to
 	// the controller's run context so a run abort / crash-simulation (a soft
@@ -178,25 +193,67 @@ type DestServer struct {
 	// persistL (P1c): the dedicated persistent-coordinator listener (plain
 	// when data TLS is off, TLS-wrapped when on). nil = off.
 	persistL net.Listener
-	// dq (P1c): the destination pg conn the persistent serve uses (nil when
-	// the persist listener is off).
-	dq *pg.Conn
+	// dq (P1c/P1d): the destination pg POOL the persistent serves use
+	// (staging DDL, the COPY, the swap). nil when the persist listener is
+	// off. P1d: a pool, not one conn — N persistent channels serve N units
+	// concurrently, each with its own staging DDL + COPY on its own conn.
+	dq *pg.Pool
 	// runCtx: the base context every serve is bounded by (RunCtx when set,
 	// else context.Background() — the process-runner behavior).
 	runCtx context.Context
-	// persConn (P1c): the live persistent coordinator connection (nil = none
-	// up yet / broken). persWait is closed whenever a connection is stored
-	// (takePersConn waits on it); a fresh unclosed one is created each time.
-	persMu   sync.Mutex
-	persConn *persConnW
-	persWait chan struct{}
+	// persConns (P1d): the live persistent coordinator connections (one per
+	// channel the source dialed; the source dials Workers of them). Each
+	// runs its own serve loop (servePersistentChannel); a loop removes its
+	// connection on exit. persMu guards the slice.
+	persMu    sync.Mutex
+	persConns []*persConnW
+	// persServes (P1d): tracks the per-channel serve loops, so Close can
+	// wait for them (and their in-flight COPY) to finish before closing the
+	// pg pool (F-02: the agent must outlive a running COPY so the staging
+	// commits).
+	persServes sync.WaitGroup
+	// serveWG (P1d): tracks the serve-unit ops running on the concurrent
+	// control loop (one goroutine per op). serveControl waits it before
+	// exiting on control-conn loss / release, so an in-flight unit's COPY
+	// finishes (and reports) before the agent exits.
+	serveWG sync.WaitGroup
+	// unitReg (P1d): maps a unit's UnitID to its in-flight serve's
+	// registration. The per-channel serve loop signals it when the unit's
+	// data arrives (started) and delivers the result (done); the serve op
+	// (serveOne) waits on it. The registry is keyed by UnitID because the
+	// channel loop sees the UnitBegin's unit-id (the spec's "unit-done
+	// маппится по unit-id").
+	unitMu  sync.Mutex
+	unitReg map[uint32]*unitServe
+	// meshMu (P1d): the mesh serves (segments / direct / routed) stay
+	// serialized — their data-plane serves accept a variable number of
+	// connections on the shared data listener, which is only unambiguous
+	// one-at-a-time (the pre-P1d invariant). The coordinator persistent
+	// path does NOT take it (that is the whole point of P1d).
+	meshMu sync.Mutex
 	// persAccepts (P1c): the number of persistent coordinator connections
 	// accepted so far (the first unit's dial + one per re-dial after a
 	// break) — a runtime signal that the persistent channel is in use.
 	persAccepts atomic.Int64
 
+	// ctrlConn (P1d): the accepted control connection, so the serve ops can
+	// send their ack / unit-done lines on it (serialized by connMu —
+	// concurrent serves must not interleave their response lines).
+	ctrlConn net.Conn
+	connMu   sync.Mutex
 	ctrlDone chan struct{}
 	stopOnce sync.Once
+}
+
+// unitServe (P1d) is the in-flight registration of one serve-unit op, keyed
+// by the unit's UnitID in the DestServer.unitReg. The per-channel serve loop
+// delivers the result on done (buffered 1: a cancelled serve op — a run
+// abort — must not be blocked by an undelivered report). finished is set
+// the moment a terminal report is delivered (success or failure), so a late
+// failure (a channel break) cannot override a unit that already completed.
+type unitServe struct {
+	done     chan DestUnitDone
+	finished atomic.Bool
 }
 
 // NewDestServer binds the data + control listeners and starts the control
@@ -257,16 +314,24 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 			s.persistL = tls.NewListener(s.persistL, pcfg)
 		}
 	}
-	// P1c: the destination pg connection the persistent serve uses (staging
-	// DDL, the COPY, the swap) + the persistent-coordinator accept loop.
+	// P1c: the destination pg pool the persistent serves use (staging DDL,
+	// the COPY, the swap) + the persistent-coordinator accept loop.
 	if s.persistL != nil {
-		dq, derr := pg.NewConn(context.Background(), o.DestConn, o.SSLCert, o.SSLKey, o.SSLCA, o.SSLMinTLS)
+		// P1d: a POOL, not one connection — N persistent channels can
+		// serve N units concurrently, each with its own staging DDL +
+		// COPY. Sized for the run's workers plus headroom (0/1 = strict:
+		// the old single connection plus one).
+		n := o.Workers
+		if n < 1 {
+			n = 1
+		}
+		dq, derr := pg.NewPool(context.Background(), o.DestConn, o.SSLCert, o.SSLKey, o.SSLCA, o.SSLMinTLS, n+2)
 		if derr != nil {
 			s.Close()
 			return nil, fmt.Errorf("dest server: connect dest (persistent serve): %w", derr)
 		}
 		s.dq = dq
-		s.persWait = make(chan struct{})
+		s.unitReg = make(map[uint32]*unitServe)
 		go s.acceptPersistent()
 	}
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
@@ -391,10 +456,12 @@ func (s *DestServer) Kill() {
 		if s.persistL != nil {
 			_ = s.persistL.Close()
 			s.persMu.Lock()
-			if w := s.persConn; w != nil {
-				_ = w.Conn.Close() // hard: the in-flight COPY's read breaks
-				s.persConn = nil
+			for _, w := range s.persConns {
+				if w != nil {
+					_ = w.Conn.Close() // hard: the in-flight COPY's read breaks
+				}
 			}
+			s.persConns = nil
 			s.persMu.Unlock()
 		}
 	})
@@ -408,12 +475,19 @@ func (s *DestServer) Close() {
 		if s.persistL != nil {
 			_ = s.persistL.Close()
 			s.persMu.Lock()
-			if w := s.persConn; w != nil {
-				_ = w.Close()
-				s.persConn = nil
+			for _, w := range s.persConns {
+				if w != nil {
+					_ = w.Close()
+				}
 			}
+			s.persConns = nil
 			s.persMu.Unlock()
 		}
+		// F-02: wait for the per-channel serve loops (and, with them, the
+		// in-flight COPYs — the staging is one transaction: its commit is
+		// what the post-kill assertions rely on) BEFORE closing the pg pool.
+		s.persServes.Wait()
+		s.serveWG.Wait()
 		if s.dq != nil {
 			s.dq.Close()
 		}
@@ -421,7 +495,14 @@ func (s *DestServer) Close() {
 }
 
 // serveControl accepts the ONE control connection (the controller) and runs
-// the sequential protocol: hello, then serve-unit* / release.
+// the protocol: hello, then serve-unit* / release. P1d: CONCURRENT — each
+// serve-unit op runs in its own goroutine (the controller's N workers issue
+// N serves in flight on one connection), the responses (ack, unit-done) are
+// serialized on the connection (connMu) and carry the op's ReqID so the
+// controller matches them to the waiting worker. Release waits for the
+// in-flight ops (serveWG) before replying — like the source agent's
+// opsWg.Wait — so a running COPY finishes and reports before the agent
+// exits.
 func (s *DestServer) serveControl(l net.Listener) {
 	defer close(s.ctrlDone)
 	conn, err := l.Accept()
@@ -429,6 +510,7 @@ func (s *DestServer) serveControl(l net.Listener) {
 		return // no controller (orphan) — the process waits to be killed
 	}
 	defer conn.Close()
+	s.ctrlConn = conn
 	// The agent speaks first: report the real bound addresses (auto :0).
 	if werr := SendLine(conn, s.Hello()); werr != nil {
 		return
@@ -437,37 +519,90 @@ func (s *DestServer) serveControl(l net.Listener) {
 	for {
 		var req DestServeReq
 		if rerr := recvLine(r, &req); rerr != nil {
-			return // controller closed the control conn (run end / stop)
+			// Controller closed the control conn (run end / kill -9). WAIT
+			// for the in-flight ops before exiting: the data path is
+			// independent of the control conn (F-02), so a running COPY must
+			// finish (the staging commits) BEFORE the agent exits and closes
+			// the pg pool.
+			s.serveWG.Wait()
+			return
 		}
 		switch req.Op {
 		case "serve-unit":
-			// Acknowledge immediately (the serve runs in the background —
-			// the controller instructs the SOURCE agent to stream AFTER
-			// this ack), then report the result as a standalone unit-done.
-			ack := DestAck{Op: "ack", Ok: true}
+			ack := DestAck{Op: "ack", Ok: true, ReqID: req.ReqID}
 			if req.Kind == "" {
-				ack = DestAck{Op: "ack", Ok: false, Error: "serve-unit: missing kind"}
+				ack = DestAck{Op: "ack", Ok: false, ReqID: req.ReqID, Error: "serve-unit: missing kind"}
 			}
-			if serr := SendLine(conn, ack); serr != nil {
+			// P1d race guard: the persistent serve MUST be registered in
+			// unitReg BEFORE the ack is sent. Once the ack returns, the
+			// controller instructs the source to stream, and the source's
+			// UnitBegin can reach the channel loop almost immediately —
+			// before the serve op's goroutine is scheduled. If the unit is
+			// not registered by then, the channel loop would drop it (data
+			// already off the wire) and desync the channel. (Non-persistent
+			// serves accept on the data listener and are not racy.)
+			if ack.Ok && req.Kind == "coordinator" && s.persistL != nil {
+				s.registerUnitServe(req.UnitID)
+			}
+			if serr := s.sendLine(conn, ack); serr != nil {
+				s.serveWG.Wait()
 				return
 			}
 			if !ack.Ok {
 				continue
 			}
-			// Each unit is bounded by the run ctx (the in-proc runner's
-			// run context, so a run abort / crash-simulation interrupts an
-			// in-flight COPY) + the serve's own StreamTimeout.
-			done := s.serveOne(s.runCtx, &req)
-			if serr := SendLine(conn, done); serr != nil {
-				return
+			s.serveWG.Add(1)
+			go func(r DestServeReq) {
+				defer s.serveWG.Done()
+				var done DestUnitDone
+				if r.Kind == "coordinator" && s.persistL != nil {
+					done = s.serveUnitPersistentWait(s.runCtx, &r)
+				} else {
+					// The mesh serves (segments / direct / routed) and the
+					// legacy per-unit coordinator path stay serialized: their
+					// data-plane serves accept a variable number of
+					// connections on the shared data listener, which is only
+					// unambiguous one-at-a-time.
+					s.meshMu.Lock()
+					done = s.serveOne(s.runCtx, &r)
+					s.meshMu.Unlock()
+				}
+				// Correlate the report to the waiting worker (serveOne does
+				// not set ReqID; serveUnitPersistentWait does).
+				if done.ReqID == 0 {
+					done.ReqID = r.ReqID
+				}
+				_ = s.sendLine(conn, done)
+			}(req)
+		case "cancel-unit":
+			// The controller's source stream failed (the unit's data will
+			// not arrive / is partial): fail the in-flight serve so the
+			// controller's WaitUnitDone unblocks promptly instead of
+			// waiting for the run ctx. A unit whose data already arrived is
+			// left to complete (its report wins over the cancel).
+			s.unitMu.Lock()
+			us := s.unitReg[req.UnitID]
+			s.unitMu.Unlock()
+			if us != nil {
+				s.failUnitServe(us, req.UnitID, fmt.Errorf("unit cancelled by the controller (source stream failed)"))
 			}
+			_ = s.sendLine(conn, DestAck{Op: "ack", Ok: true, ReqID: req.ReqID})
 		case "release":
-			_ = SendLine(conn, DestReleased{Op: "released", Ok: true})
+			s.serveWG.Wait() // in-flight ops must finish before the agent exits
+			_ = s.sendLine(conn, DestReleased{Op: "released", Ok: true, ReqID: req.ReqID})
 			return
 		default:
-			_ = SendLine(conn, DestUnitDone{Op: "unit-done", Ok: false, Error: "unknown op " + req.Op})
+			_ = s.sendLine(conn, DestUnitDone{Op: "unit-done", Ok: false, Error: "unknown op " + req.Op})
 		}
 	}
+}
+
+// sendLine writes one control response line, serialized (P1d: N serves in
+// flight on one connection; the response lines must not interleave).
+func (s *DestServer) sendLine(conn net.Conn, msg any) error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return SendLine(conn, msg)
 }
 
 // serveOne runs one unit on the shared data listener and reports it. The
@@ -479,17 +614,11 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 	switch req.Kind {
 	case "coordinator":
 		if s.persistL != nil {
-			// P1c: the unit rides the run's ONE persistent coordinator
-			// channel (the UnitBegin frame carries the spec; the connection
-			// stays open between units). The control loop stays sequential:
-			// ReceiveUnit blocks until the source sends the UnitBegin during
-			// the Stream (after the ack), exactly like the legacy acceptOne
-			// blocked for the source's dial.
-			res, err := s.serveCoordinatorPersistent(ctx, req.Swap)
-			done.Rows, done.Logical, done.Swapped = res.Rows, res.Logical, res.Swapped
-			done.Digest = res.Digest
-			done.Ok = err == nil
-			done.Error = errString(err)
+			// P1d: the persistent path is served by the per-channel serve
+			// loops (serveUnitPersistent, launched by the concurrent
+			// control loop); this sequential serveOne branch is only
+			// reached when the persist listener is OFF.
+			done.Error = "persistent coordinator serve: served by the channel pool (serveUnitPersistent)"
 			return done
 		}
 		// Legacy per-unit connection: the UnitSpec rides the data connection
@@ -607,8 +736,11 @@ func (c *persConnW) Close() error {
 	return c.Conn.Close()
 }
 
-// acceptPersistent accepts the persistent coordinator connection(s) and keeps
-// the latest one stored (s.persConn). It runs for the life of the server.
+// acceptPersistent accepts the persistent coordinator connection(s) (P1d:
+// the source dials Workers of them, one per channel) and gives each its own
+// serve loop (servePersistentChannel). Each connection is kept for the run;
+// a source re-dial after a break simply arrives as the next Accept and gets
+// a fresh loop. Runs for the life of the server.
 func (s *DestServer) acceptPersistent() {
 	for {
 		conn, err := s.persistL.Accept()
@@ -618,89 +750,178 @@ func (s *DestServer) acceptPersistent() {
 		w := &persConnW{Conn: conn, closed: make(chan struct{})}
 		s.persAccepts.Add(1)
 		s.persMu.Lock()
-		old := s.persConn
-		s.persConn = w
-		ch := s.persWait
-		s.persWait = make(chan struct{})
+		s.persConns = append(s.persConns, w)
 		s.persMu.Unlock()
-		if old != nil {
-			_ = old.Close() // a stale channel (the source re-dialed) — replace it
-		}
-		close(ch)  // wake waiters: a connection is now stored
-		<-w.closed // wait for this connection to be torn down, then re-accept
+		s.persServes.Add(1)
+		go func() {
+			defer s.persServes.Done()
+			defer w.Close()
+			s.servePersistentChannel(s.runCtx, w)
+		}()
 	}
 }
 
-// takePersConn returns the live persistent coordinator connection, waiting
-// (bounded by ctx) until one is accepted if none is up yet (the first unit,
-// or a re-accept after a break).
-func (s *DestServer) takePersConn(ctx context.Context) (net.Conn, error) {
-	for {
-		s.persMu.Lock()
-		if c := s.persConn; c != nil {
-			s.persMu.Unlock()
-			return c.Conn, nil
-		}
-		ch := s.persWait
-		s.persMu.Unlock()
-		select {
-		case <-ch:
-			// A connection was stored: re-check (it may already be replaced).
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-}
-
-// dropPersConn tears down the persistent connection after a unit failure on
-// a broken channel (the accept loop re-accepts the source's re-dial). A unit
-// failure on a HEALTHY channel (e.g. a destination PG fault) keeps the
-// connection: the next unit re-streams over it.
-func (s *DestServer) dropPersConn(c net.Conn) {
+// removePersConn drops a channel from the live set (its serve loop is
+// exiting).
+func (s *DestServer) removePersConn(w *persConnW) {
 	s.persMu.Lock()
-	if w := s.persConn; w != nil && w.Conn == c {
-		s.persConn = nil
+	for i, c := range s.persConns {
+		if c == w {
+			s.persConns = append(s.persConns[:i], s.persConns[i+1:]...)
+			break
+		}
 	}
 	s.persMu.Unlock()
-	_ = c.Close()
 }
 
-// isConnError reports whether err is a data-connection failure (a broken
-// socket / a clean EOF) rather than a destination-side fault: only the former
-// requires re-accepting the persistent channel.
-func isConnError(err error) bool {
-	if err == nil {
-		return false
+// failUnitServe delivers an error report to the in-flight serve op for us
+// (its channel died before the unit's data arrived, or the run is over), so
+// the controller's WaitUnitDone unblocks with a failure instead of hanging.
+// A unit that already completed (finished) is left alone: a late channel
+// break must not override a successful report.
+func (s *DestServer) failUnitServe(us *unitServe, unitID uint32, err error) {
+	if us == nil || us.finished.Swap(true) {
+		return
 	}
-	if errors.Is(err, io.EOF) {
-		return true
+	select {
+	case us.done <- DestUnitDone{Op: "unit-done", Ok: false, UnitID: unitID, Error: errString(err)}:
+	default:
 	}
-	var ne net.Error
-	return errors.As(err, &ne)
 }
 
-// serveCoordinatorPersistent serves ONE coordinator unit over the persistent
-// channel: wait for the channel (bounded by AcceptTimeout, like the legacy
-// acceptOne) -> ReceiveUnit (blocks on the unit's UnitBegin, answering idle
-// Pings) -> staging -> COPY (+ inline digest) -> the swap, when requested.
-func (s *DestServer) serveCoordinatorPersistent(ctx context.Context, swap bool) (DestResult, error) {
-	waitCtx, wcancel := context.WithTimeout(ctx, s.opts.AcceptTimeout)
-	conn, err := s.takePersConn(waitCtx)
-	wcancel()
-	if err != nil {
-		return DestResult{}, fmt.Errorf("persistent serve: wait for channel: %w", err)
+// servePersistentChannel is the destination half of ONE persistent channel
+// (P1d): a loop that receives units off the connection (ReceiveUnit blocks
+// until the source sends the next UnitBegin, answering idle Pings) and
+// serves each — staging DDL -> COPY (+ inline digest) — on a connection
+// from the destination pg pool, then delivers the result to the in-flight
+// serve op (unitReg). The connection is NOT closed between units: the
+// source keeps it for the run and routes further units to it (channel
+// X%N). The loop exits when the connection breaks (the source tore the
+// channel down / the run ended).
+func (s *DestServer) servePersistentChannel(ctx context.Context, w *persConnW) {
+	rcv := NewPersistentReceiver(w, 0)
+	for {
+		spec, data, err := rcv.ReceiveUnit(ctx)
+		if err != nil {
+			// The channel broke (source teardown / run end). Fail every
+			// in-flight serve that is still waiting for a unit off THIS
+			// channel (its data will never arrive), then exit the loop.
+			s.failAllUnitServes(fmt.Errorf("persistent channel closed: %w", err))
+			return
+		}
+		// The in-flight serve op for this unit (launched by the control loop
+		// on its BeginServe) is waiting for the result.
+		s.unitMu.Lock()
+		us, ok := s.unitReg[spec.UnitID]
+		s.unitMu.Unlock()
+		if !ok {
+			// No serve op is waiting for this unit (stale channel / a run
+			// abort removed it before the data arrived). The UnitBegin +
+			// data are already off the wire: DRAIN the unit to its Trailer
+			// (io.EOF) so the channel stays in lock-step for the next unit,
+			// then drop it.
+			_, _ = io.Copy(io.Discard, data)
+			continue
+		}
+		res := s.serveUnitData(ctx, spec, data)
+		// Mark the unit terminal BEFORE delivering: a concurrent channel
+		// break (failUnitServe) must not override a completed report. The
+		// serve op consumes the report (buffered: if the op was already
+		// cancelled — a run abort — the report is dropped, not lost).
+		us.finished.Store(true)
+		select {
+		case us.done <- res:
+		default:
+		}
 	}
-	res, err := ServePersistentUnit(ctx, s.dq, dest.New(s.dq), NewPersistentReceiver(conn, 0), swap, s.opts.StreamTimeout)
-	// Tear down the channel on a broken connection OR when the run context
-	// was cancelled (a run abort / crash-simulation): the in-flight unit's
-	// source-side COPY must then fail (its write hits the closed channel),
-	// unblocking the source agent's control loop for the release. A unit
-	// failure on a HEALTHY channel (a transient destination PG fault) keeps
-	// the connection: the next unit re-streams over it.
-	if err != nil && (isConnError(err) || ctx.Err() != nil) {
-		s.dropPersConn(conn) // re-accept the source's re-dial (or the run is over)
+}
+
+// failAllUnitServes fails every in-flight serve (the run is over / the
+// channel pool is being torn down).
+func (s *DestServer) failAllUnitServes(err error) {
+	s.unitMu.Lock()
+	inflight := make([]*unitServe, 0, len(s.unitReg))
+	for u, us := range s.unitReg {
+		inflight = append(inflight, us)
+		_ = u
 	}
-	return res, err
+	s.unitMu.Unlock()
+	for _, us := range inflight {
+		s.failUnitServe(us, 0, err)
+	}
+}
+
+// serveUnitData serves a unit whose data has already been received off the
+// persistent channel (P1d): staging DDL + COPY (+ inline digest) on a
+// connection from the destination pg pool. The swap is NOT performed (the
+// Manager decides it, post-unit-done — the coordinator path's invariant).
+func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *unitDataReader) DestUnitDone {
+	var done DestUnitDone
+	done.Op = "unit-done"
+	done.UnitID = spec.UnitID
+	if s.dq == nil {
+		done.Error = "persistent serve: no destination pg pool"
+		return done
+	}
+	q, release, aerr := s.dq.AcquireSnapshotConn(ctx)
+	if aerr != nil {
+		done.Error = fmt.Sprintf("persistent serve: acquire dest conn: %v", aerr)
+		return done
+	}
+	defer release()
+	res, err := ServeUnitData(ctx, q, dest.New(q), spec, data, false, s.opts.StreamTimeout)
+	done.Rows, done.Logical, done.Swapped, done.Digest = res.Rows, res.Logical, res.Swapped, res.Digest
+	done.Ok = err == nil
+	done.Error = errString(err)
+	return done
+}
+
+// registerUnitServe (P1d) registers an in-flight persistent serve in
+// unitReg (keyed by the unit's UnitID). Called by the control loop BEFORE
+// the ack is sent, so the channel loop can never see the unit's UnitBegin
+// before its serve is registered (the race guard — see the serve-unit case).
+func (s *DestServer) registerUnitServe(unitID uint32) {
+	us := &unitServe{done: make(chan DestUnitDone, 1)}
+	s.unitMu.Lock()
+	// A retry of the same unit (a resume within the run) replaces the stale
+	// registration: the old one's serve op has already been drained by the
+	// controller (its WaitUnitDone failed on the earlier unit-done).
+	s.unitReg[unitID] = us
+	s.unitMu.Unlock()
+}
+
+// serveUnitPersistentWait (P1d) waits for the persistent serve the control
+// loop already registered (registerUnitServe) for this unit: the per-channel
+// serve loop delivers the result on the unitServe.done channel once the
+// source's UnitBegin+data arrive and the COPY finishes. Bounded by the run
+// ctx (a run abort interrupts the wait and fails the unit's report, so the
+// channel loop is not stranded).
+func (s *DestServer) serveUnitPersistentWait(ctx context.Context, req *DestServeReq) DestUnitDone {
+	s.unitMu.Lock()
+	us := s.unitReg[req.UnitID]
+	s.unitMu.Unlock()
+	defer func() {
+		s.unitMu.Lock()
+		if s.unitReg[req.UnitID] == us {
+			delete(s.unitReg, req.UnitID)
+		}
+		s.unitMu.Unlock()
+	}()
+	if us == nil {
+		return DestUnitDone{Op: "unit-done", Ok: false, UnitID: req.UnitID, ReqID: req.ReqID, Error: "serve: not registered"}
+	}
+	select {
+	case res := <-us.done:
+		res.ReqID = req.ReqID
+		return res
+	case <-ctx.Done():
+		// Run abort: the source may still be (or about to be) streaming this
+		// unit's data. Fail the unit's report (the channel loop then drains
+		// the data to its Trailer and keeps the channel in lock-step); the
+		// serve op returns the cancellation to the controller.
+		s.failUnitServe(us, req.UnitID, ctx.Err())
+		return DestUnitDone{Op: "unit-done", Ok: false, UnitID: req.UnitID, ReqID: req.ReqID, Error: "run context cancelled"}
+	}
 }
 
 // dataListener is the listener the serves accept from (the TLS-wrapped one
