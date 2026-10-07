@@ -2,30 +2,32 @@
 
 A working FAQ for `gpstream`: what a failed command means, why it failed,
 and how to recover. Every symptom here maps to a **real** command, flag, or
-behavior in the tool (the 9 subcommands: `doctor`, `dry-run`, `run`, `status`,
-`resume`, `cleanup`, `selftest`, `version`, `man`); nothing is invented.
+behavior in the tool (the 9 subcommands: `dry-run`, `run`, `bench`,
+`status`, `resume`, `cleanup`, `selftest`, `version`, `help`); nothing is
+invented.
 
-> If you are stuck, start with the diagnostics: `gpstream doctor`,
-> `gpstream selftest`, and `gpstream dry-run --timeout 60`. They tell you
-> almost everything without touching live data.
+> If you are stuck, start with the diagnostics: `gpstream dry-run`
+> (self-diagnostic + plan), `gpstream selftest`, and
+> `gpstream dry-run --timeout 60`. They tell you almost everything without
+> touching live data.
 
 ---
 
-## 1. `doctor` says FAIL / reachability
+## 1. `dry-run` says FAIL / reachability
 
-**Symptom:** `gpstream doctor` prints a FAIL.
+**Symptom:** `gpstream dry-run` prints a FAIL in its diagnostic section.
 
 | Cause | Check | Fix |
 |-------|-------|-----|
 | Missing / bad connection string | `--source` / `--dest` (or the config file) | set a valid connstring |
-| Cluster unreachable | network / host / port | fix network; re-run `doctor` |
+| Cluster unreachable | network / host / port | fix network; re-run `dry-run` |
 | **0 up-segments** | segment count | a 0-up report is a **FAIL**, not a pass — bring segments up |
 | TLS too old | `--ssl-min-tls` (default `1.2`) | TLS is **always** enforced; use >= 1.2 |
 
 Key facts: a **missing connection string is a reachability FAIL** (not a
-silent pass), and **0 up-segments is a FAIL**. `doctor` will never report a
+silent pass), and **0 up-segments is a FAIL**. `dry-run` will never report a
 healthy cluster that is actually down. There is **no `security-check`
-subcommand** — TLS/certificate findings are part of `doctor` (`tls` check).
+subcommand** — TLS/certificate findings are part of `dry-run` (`tls` check).
 
 ---
 
@@ -114,11 +116,11 @@ the default is to **stop**, not to skip.
 ## 5. Collation / locale / distribution mismatch
 
 **Symptom:** a warning about collation, locale, or distribution in
-`doctor` / `dry-run`.
+`dry-run`.
 
 | Check | Flag | Meaning |
 |-------|------|---------|
-| Collation | (built into `doctor` + `dry-run`) | `LC_COLLATE` / explicit column collation differences (warn) |
+| Collation | (built into `dry-run`) | `LC_COLLATE` / explicit column collation differences (warn) |
 | Redistribution | (built into `dry-run`) | raw segment skew + layout verdict, always reported |
 
 A **distribution** difference may require redistribution on the destination.
@@ -195,7 +197,7 @@ problem.
 
 | Symptom | First command | Likely cause |
 |---------|---------------|--------------|
-| `doctor` FAIL | `gpstream doctor` | bad/missing connstring, 0 segments |
+| `dry-run` FAIL | `gpstream dry-run` | bad/missing connstring, 0 segments |
 | copy stopped | `gpstream status` → `resume` | crash; resume, don't restart |
 | slow | metrics endpoint + `events.jsonl` | CPU/disk/NIC bottleneck |
 | stopped on a table | review `conflicts.jsonl` | non-destructive default `stop`; opt into a policy |
@@ -207,7 +209,7 @@ problem.
 
 ## 10. When to escalate
 
-- If `doctor` FAILs on a cluster you expect to be up, that is a
+- If `dry-run` FAILs on a cluster you expect to be up, that is a
   reachability/segment problem, not a `gpstream` bug.
 - If a copy dies and `resume` does not continue it, inspect the journal
   (`journal.jsonl`) and the `events.jsonl` / `audit.log` files before

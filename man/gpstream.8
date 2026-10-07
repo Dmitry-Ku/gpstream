@@ -21,7 +21,10 @@ plan.
 Execute the copy: stream source to dest with no intermediate storage.
 .TP
 .B dry-run
-Plan the copy without executing (\fB--timeout\fR S bounds the plan; the plan JSON is always persisted to \fB<state-dir>/<operation-id>/plan.json\fR).
+Self-diagnose the source/dest clusters (the former \fBdoctor\fR command, folded
+in at P1e: any FAIL aborts with the report), then plan the copy without
+executing (\fB--timeout\fR S bounds the plan; the plan JSON is always persisted
+to \fB<state-dir>/<operation-id>/plan.json\fR).
 .TP
 .B bench
 Measure the input stream: stream the selected source tables through the real
@@ -55,9 +58,6 @@ drop
 (surviving staging, renamed-in or created final tables, renamed-in schemas)
 to restore the pre-operation state.
 .TP
-.B doctor
-Self-diagnose source/dest clusters; output PASS/FAIL/WARN.
-.TP
 .B selftest
 Internal sanity checks: schema, checksums, limiter, plan determinism, framing.
 .TP
@@ -82,7 +82,7 @@ Destination cluster connection string. Segment-to-segment writes
 (\fB--copy-mode\fR on_segment: routed, direct_1to1) build per-segment
 utility DSNs from it and therefore require the URL form
 (postgres://user@host:port/db); a keyword/value form silently degrades
-the run to the merge path through the destination coordinator (doctor
+the run to the merge path through the destination coordinator (dry-run
 reports it as a WARN).
 .TP
 .BR --dbs
@@ -225,6 +225,24 @@ or the config file keys
 .BR source_agent_binary /
 .BR dest_agent_binary /
 .BR seg_binary .
+.TP
+.BR --source-agent-ssh
+user@host[:port]
+Host of the source cluster master where the source agent must run (P1e).
+May be omitted (or name a local host): then the source agent runs as a local
+subprocess on the gpstream host. A remote host is launched over SSH
+(key-based auth, \fB~/.ssh\fR defaults). The agent binary is invoked by name
+from \fBPATH\fR (packaged install).
+.TP
+.BR --dest-agent-ssh
+user@host[:port]
+Host of the destination cluster coordinator where the dest agent must run
+(P1e). Same semantics as \fB--source-agent-ssh\fR.
+.P
+Each agent verifies before serving that it runs on the coordinator of
+exactly the cluster its DSN points to (P1e coordinator guard); a violation
+aborts the agent and the \fBrun\fR/\fBbench\fR fails with the verdict from the
+agent log. A non-Greenplum (single-node) database always passes.
 For
 .B --copy-mode on_segment
 the gpstream package must be installed on every SOURCE segment host (the

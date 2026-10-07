@@ -49,13 +49,13 @@ health / readiness use the commands below, which carry real semantics:
 | Check | Command | What it tells you |
 |-------|---------|-------------------|
 | Liveness / operation state | `gpstream status --operation-id <id>` | per-unit state |
-| Cluster readiness | `gpstream doctor` | reachability + `PASS`/`FAIL` |
+| Cluster readiness | `gpstream dry-run` | reachability + `PASS`/`FAIL` |
 | Live counters (Prometheus) | scrape `http://<addr>/metrics` (served by `run --metrics-addr`) | throughput / latency / error rate |
 | Error health | `gpstream_errors_total`, `gpstream_frame_errors_total` (via `/metrics`) | rising errors = unhealthy |
 
 If you need a probe, scrape `/metrics` and alert on
 `gpstream_frame_errors_total` / `gpstream_errors_total`, or use
-`gpstream doctor`. A dedicated `/health` route is **not** currently wired
+`gpstream dry-run`. A dedicated `/health` route is **not** currently wired
 into the metrics server.
 
 ## The counters (Prometheus exposition)
@@ -226,7 +226,7 @@ event stream. The `jobmeta.json` is the source of truth for resume/cleanup
 |---------|---------|
 | `run --metrics-addr <A>` | serves the live Prometheus endpoint during the copy |
 | `gpstream status --operation-id <id>` | per-unit state from the durable manifest |
-| `gpstream doctor` | reachability + `PASS`/`FAIL` on both clusters |
+| `gpstream dry-run` | reachability + `PASS`/`FAIL` on both clusters |
 | `tail -f <state-dir>/<operation-id>/events.jsonl` | per-transition event stream (with rate-shifts, conflicts, etc.) |
 
 ## Honest notes

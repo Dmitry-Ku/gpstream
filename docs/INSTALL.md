@@ -34,7 +34,7 @@ repository, so build directly from the source tree.
 | **Go** | `go 1.27` (the module declares `go 1.27.1`). A Go 1.27 toolchain is required to build. |
 | **Kernel** | Linux **6.1+** kernel for the Linux package/runtime targets. |
 | **Network (build only)** | Module fetches need a reachable Go module proxy (see note below). |
-| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help`, `dry-run`, or `plan` (these use a built-in fake connection). A **reachable live cluster is required for `copy`** (and for `doctor`, which must not mask an unreachable cluster). |
+| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help` or `selftest`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`/`bench`**. |
 
 ### Module proxy note (important)
 
@@ -71,8 +71,9 @@ Verify the build immediately:
 ./bin/gpstream selftest
 ```
 
-> A live Greenplum cluster is **not** needed for `--help`, `selftest`, `dry-run`,
-> or `plan`. `copy` (and `doctor`) require a reachable cluster.
+> A live Greenplum cluster is **not** needed for `--help` or `selftest`.
+> `dry-run` (self-diagnostic + plan) and `run`/`bench` require reachable
+> clusters.
 
 ---
 
@@ -90,7 +91,6 @@ The project ships a `Makefile` with the following targets:
 | `cover` | `go test -cover ./...`. |
 | `vet` | `go vet ./...`. |
 | `fmt` | Runs `gofmt -l .` then `gofmt -w .`. |
-| `doctor` | Builds, then runs `./bin/gpstream doctor`. |
 | `selftest` | Builds, then runs `./bin/gpstream selftest`. |
 | `clean` | Removes `bin/`. |
 
@@ -189,12 +189,16 @@ package on the segment hosts.
 rpm -i gpstream-<ver>-amd64.rpm            # or .deb
 # on_segment: also on every source segment host
 rpm -i gpstream-<ver>-amd64.rpm
-gpstream doctor --config /etc/gpstream/gpstream.toml
-# default layout: both agents on the controller host
+gpstream dry-run --config /etc/gpstream/gpstream.toml
+# agents are placed by the --*-agent-ssh flags (P1e): the source agent on the
+# source master, the dest agent on the destination coordinator. Omit a flag
+# to run that agent locally (when gpstream itself runs on that coordinator).
 gpstream run --config /etc/gpstream/gpstream.toml \
+  --source-agent-ssh gp@<source-master-host> \
+  --dest-agent-ssh gp@<dest-coordinator-host>
 ```
 
-`doctor` probes the segreceiver on **every** segment host
+The `dry-run` diagnostic probes the segreceiver on **every** segment host
 (`--check` via `COPY ... TO PROGRAM ... ON SEGMENT`) and reports a WARN naming
 the hosts where it is missing.
 
@@ -241,18 +245,19 @@ Expected tail:
 selftest: OK
 ```
 
-### 9.2 `gpstream doctor`
+### 9.2 `gpstream dry-run`
 
-Runs the self-diagnostic against the source/dest clusters. Unlike `dry-run`,
-`doctor` **must not** report healthy for an unconfigured or unreachable cluster —
-a missing connstring is a reachability `FAIL`, not a masked healthy fake.
-Provide reachable connstrings (via flags, `GPSTREAM_*` env, or `--config`):
+Runs the self-diagnostic against the source/dest clusters (the former
+`doctor` command, folded in at P1e), **then** plans the copy without
+executing. The diagnostic **must not** report healthy for an unconfigured or
+unreachable cluster — a missing connstring is a reachability `FAIL`, not a
+masked healthy fake. Provide reachable connstrings (via flags or `--config`):
 
 ```bash
-gpstream doctor --source "host=... user=... dbname=..." --dest "host=... user=... dbname=..."
+gpstream dry-run --source "host=... user=... dbname=..." --dest "host=... user=... dbname=..."
 ```
 
-It prints findings with severity (`FAIL` / `WARN` / `INFO`), the side
+It prints findings with severity (`FAIL` / `WARN` / `PASS`), the side
 (source/dest), the name, and a recommendation, then an overall result:
 
 ```
@@ -265,11 +270,14 @@ or, if issues exist:
 overall: N FAIL finding(s)
 ```
 
+Any FAIL aborts the dry-run with the report and a non-zero exit; on a clean
+diagnostic it goes on to render the plan summary (units, volume, conflicts,
+redistribution, plan hash).
+
 ### 9.3 Makefile shortcuts
 
 ```bash
 make selftest   # build, then gpstream selftest
-make doctor     # build, then gpstream doctor
 ```
 
 ---
@@ -304,4 +312,4 @@ are shown commented with mode `0600` for the key file.
 - [ ] `export GOPROXY=https://proxy.golang.org,direct` set (proxy 403 fallback).
 - [ ] `go build -o bin/gpstream ./cmd/gpstream` succeeds; `make cross` builds both archs.
 - [ ] `gpstream selftest` prints `selftest: OK`.
-- [ ] For a real copy: source and dest clusters are reachable (verify with `gpstream doctor`).
+- [ ] For a real copy: source and dest clusters are reachable (verify with `gpstream dry-run`).

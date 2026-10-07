@@ -17,9 +17,9 @@
 //     the agent there, detached (setsid+nohup) so it outlives the SSH
 //     session, then dials the control address.
 //
-// The controller's key must be in the agent host's authorized_keys; the agent
-// runs as the user who has pg access (on the lab that is gpadmin, so the SSH
-// command is `sudo -u gpadmin …` when the key belongs to another user).
+// The controller's key must be in the agent host's authorized_keys
+// (the administrator places it; P1e: no --key / --run-as knobs). The agent
+// runs as the SSH user.
 package launch
 
 import (
@@ -33,9 +33,8 @@ import (
 
 // Target describes how to bring one agent's control socket up.
 type Target struct {
-	// Binary is the agent binary path (as seen on the launch host — the same
-	// installed path in the packaged layout; for local, a path on the
-	// controller's host).
+	// Binary is the agent binary name (as seen on the launch host — the
+	// packaged install, resolved by name on PATH).
 	Binary string
 	// Args is the agent's full argument list (includes --control-listen and,
 	// for the dest agent, --data-listen). It is identical for local and SSH
@@ -43,18 +42,12 @@ type Target struct {
 	Args []string
 	// ControlAddr is the control socket address (host:port) the controller
 	// dials. For local launches it is a pre-bound loopback port; for remote
-	// launches it is a routable operator-configured address.
+	// launches it is a routable address the controller allocates.
 	ControlAddr string
 	// SSHHost is "user@host" or "user@host:port" to launch the agent on.
-	// Empty = local subprocess.
+	// Empty = local subprocess (single-host layout, the controller IS the
+	// cluster master).
 	SSHHost string
-	// SSHKey is the private key file for key-based auth ("" = default ssh
-	// agent / known keys).
-	SSHKey string
-	// RunAs is the user the agent runs as via sudo ("" = the SSH user).
-	// On the lab the SSH user is gp and the agent must run as gpadmin, so
-	// RunAs="gpadmin" makes the SSH command `sudo -u gpadmin <binary> …`.
-	RunAs string
 	// DialFirst adopts a daemon already listening on ControlAddr instead of
 	// launching (no probe — the control listener is one-shot; the caller's
 	// bounded retry dial is the readiness check).
@@ -163,9 +156,6 @@ func Ensure(ctx context.Context, t Target) (*Handle, error) {
 // outlives the SSH session, appending its output to LogPath.
 func remoteStart(ctx context.Context, t Target) error {
 	remoteCmd := t.Binary + " " + strings.Join(shellQuoteAll(t.Args), " ")
-	if t.RunAs != "" {
-		remoteCmd = "sudo -u " + t.RunAs + " " + remoteCmd
-	}
 	// setsid: new session (survives the SSH session); nohup: ignore HUP;
 	// redirect stdio (a daemon has no tty); & : return immediately.
 	full := fmt.Sprintf("setsid nohup %s </dev/null >>%s 2>&1 &", remoteCmd, t.LogPath)
@@ -184,7 +174,7 @@ func remoteStop(t Target) {
 		base = base[i+1:]
 	}
 	host := sshHostOnly(t.SSHHost)
-	_ = runSSH(context.Background(), Target{SSHHost: host, SSHKey: t.SSHKey, RunAs: t.RunAs},
+	_ = runSSH(context.Background(), Target{SSHHost: host},
 		fmt.Sprintf("pkill -f %s", base))
 }
 
@@ -213,9 +203,6 @@ func runSSH(ctx context.Context, t Target, remote string) error {
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "ConnectTimeout=10",
 		"-o", "NumberOfPasswordPrompts=0",
-	}
-	if t.SSHKey != "" {
-		args = append(args, "-i", t.SSHKey)
 	}
 	if i := strings.LastIndex(t.SSHHost, "@"); i >= 0 && strings.Contains(t.SSHHost[i+1:], ":") {
 		// user@host:port -> -p port user@host

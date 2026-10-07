@@ -208,8 +208,6 @@ func TestRemoteStartBuildsCommand(t *testing.T) {
 		Binary:  "/usr/bin/gpstream-source-agent",
 		Args:    []string{"--src", "postgresql://u@h/db", "--serve", "1.2.3.4:9"},
 		SSHHost: "gp@192.0.2.85:2224",
-		SSHKey:  "/tmp/key",
-		RunAs:   "gpadmin",
 		LogPath: "/var/log/agent.log",
 	}); err != nil {
 		t.Fatalf("remoteStart: %v", err)
@@ -221,13 +219,18 @@ func TestRemoteStartBuildsCommand(t *testing.T) {
 	s := string(data)
 	for _, want := range []string{
 		"-p", "2224", "gp@192.0.2.85",
-		"-i", "/tmp/key",
-		"sudo -u gpadmin",
-		"setsid nohup sudo -u gpadmin /usr/bin/gpstream-source-agent '--src' 'postgresql://u@h/db' '--serve' '1.2.3.4:9'",
+		// P1e: no -i (key) and no sudo -u (runas) — the admin places the key,
+		// the agent runs as the SSH user.
+		"setsid nohup /usr/bin/gpstream-source-agent '--src' 'postgresql://u@h/db' '--serve' '1.2.3.4:9'",
 		"/var/log/agent.log",
 	} {
 		if !contains(s, want) {
 			t.Fatalf("ssh argv missing %q\nfull:\n%s", want, s)
+		}
+	}
+	for _, banned := range []string{"-i", "sudo -u"} {
+		if contains(s, banned) {
+			t.Fatalf("ssh argv must not contain %q (P1e removed key/runas)\nfull:\n%s", banned, s)
 		}
 	}
 }

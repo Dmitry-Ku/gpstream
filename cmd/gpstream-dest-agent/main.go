@@ -117,6 +117,13 @@ func main() {
 		if *dest == "" {
 			fail("--dest is required")
 		}
+		// P1e: the agent must run on the destination cluster coordinator and
+		// connect to pg LOCALLY. Verified before the listeners are bound: a
+		// failing agent never accepts the controller's control dial, so the
+		// run aborts with this verdict (from the agent log).
+		if cerr := agent.CheckOnCoordinator(ctx, *dest, *sslCert, *sslKey, *sslCA, *sslMinTLS); cerr != nil {
+			fail("coordinator check: %v", cerr)
+		}
 		portAlloc, perr := portalloc.ParseRange(*portRange)
 		if perr != nil {
 			fail("invalid --port-range %q: %v", *portRange, perr)

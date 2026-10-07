@@ -36,7 +36,7 @@ cron / scheduler / process manager of choice).
   `github.com/klauspost/compress`, so the build environment sets
   `GOPROXY=https://proxy.golang.org,direct`.
 - A **live Greenplum 6 cluster is required for `copy`**, but **not** for
-  `--help`, `dry-run`, `plan`, or `doctor` against a built-in fake connection.
+  `--help` or `selftest` without a cluster (`dry-run` needs a reachable one).
   (See `INSTALL.md`.)
 
 ---
@@ -57,7 +57,7 @@ make amd64      # -> bin/gpstream-amd64
 ```
 The build matrix is linux/amd64 only (arm64 dropped 01.10).
 The Makefile targets: `all build cross amd64 test cover vet fmt
-doctor selftest clean`.
+dry-run selftest clean`.
 
 ### 3.3 Linux package
 `packaging/` ships `deb/`, `rpm/`, and `logrotate.conf`. Install the deb/rpm
@@ -66,9 +66,9 @@ and run the CLI (or schedule it with your own cron / process manager).
 Verify after install:
 ```
 gpstream selftest   # internal consistency checks
-gpstream doctor     # reachability + segment + glibc checks
+gpstream dry-run    # reachability + segment + glibc checks, then plan
 ```
-`doctor` is **strict**: a missing connection string is a reachability **FAIL**,
+`dry-run` is **strict**: a missing connection string is a reachability **FAIL**,
 and 0 up-segments is a **FAIL** (not a pass).
 
 ---
@@ -82,7 +82,7 @@ never touch the filesystem as data. Compatibility is checked by
 
 | Check | Flag | What it looks at |
 |-------|------|------------------|
-| Collation / locale | (built into `doctor` + `dry-run`) | `LC_COLLATE` / locale / encoding differences (warn, F-16) — always reported |
+| Collation / locale | (built into `dry-run`) | `LC_COLLATE` / locale / encoding differences (warn, F-16) — always reported |
 | Distribution / skew | (built into `dry-run`) | raw segment skew + layout verdict, always reported (F-15/CR-5) |
 
 A **distribution** difference may require redistribution on the destination.
@@ -162,7 +162,7 @@ Before upgrading a running deployment:
 ## 9. Admin checklist
 
 - [ ] Built or packaged for the target arch (linux/amd64).
-- [ ] `gpstream doctor` returns **PASS** against the real clusters.
+- [ ] `gpstream dry-run` returns **PASS** against the real clusters.
 - [ ] `compatibility-check` (collation/locale/distribution) clean or
       explained.
 - [ ] Secrets supplied via env / EnvironmentFile, **not** argv.

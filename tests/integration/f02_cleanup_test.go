@@ -75,7 +75,7 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	// controller host and the agents are driven over SSH (env); local mode
 	// keeps the convention-resolved local build.
 	controllerBin := liveControllerBinary(t, bin.gpstream)
-	runEnv := liveCLIEnv(t, srcCl.URL(), dstCl.URL())
+	runArgs := liveCLIArgs(t, srcCl.URL(), dstCl.URL())
 	stateDir := t.TempDir()
 	opID := "f02kill9"
 
@@ -85,11 +85,10 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	cmd := exec.Command(controllerBin, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
 		"--operation-id", opID, "--state-dir", stateDir,
-		// agent binaries resolve by convention / GPSTREAM_AGENT_BIN_DIR
+		// P1e: agent launch via CLI flags (live mode: --source-agent-ssh /
+		// --dest-agent-ssh; local mode: runArgs is nil, local agents).
 		"--workers", "1", "--verify", "on")
-	if runEnv != nil {
-		cmd.Env = append(os.Environ(), runEnv...)
-	}
+	cmd.Args = append(cmd.Args, runArgs...)
 	var runErr strings.Builder
 	cmd.Stderr = &runErr
 	if err := cmd.Start(); err != nil {
@@ -193,9 +192,6 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	cl := exec.Command(controllerBin, "cleanup",
 		"--state-dir", stateDir, "--operation-id", opID,
 		"--mode", "drop", "--dest", dstCl.URL(), "--yes")
-	if runEnv != nil {
-		cl.Env = append(os.Environ(), runEnv...)
-	}
 	out, err := cl.CombinedOutput()
 	if err != nil {
 		t.Fatalf("cleanup --mode drop: %v\n%s", err, out)
@@ -223,12 +219,8 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	rr := exec.Command(controllerBin, "run",
 		"--source", srcCl.URL(), "--dest", dstCl.URL(),
-		"--operation-id", opID, "--state-dir", stateDir,
-		// agent binaries resolve by convention / GPSTREAM_AGENT_BIN_DIR
-	)
-	if runEnv != nil {
-		rr.Env = append(os.Environ(), runEnv...)
-	}
+		"--operation-id", opID, "--state-dir", stateDir)
+	rr.Args = append(rr.Args, runArgs...)
 	rrOut, err := rr.CombinedOutput()
 	if err != nil {
 		t.Fatalf("re-run: %v\n%s", err, rrOut)

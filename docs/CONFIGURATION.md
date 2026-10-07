@@ -66,11 +66,17 @@ from the flags or the file.
 ### 1.6a Transport (two-agent, ADR-002)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
+| `SourceAgentSSH` | string | `""` | `--source-agent-ssh` (CLI only) | P1e: `user@host[:port]` of the source cluster's master. **May be omitted** (or name a local host) → the source agent runs as a local subprocess on the gpstream host. Remote host → launched over SSH. No env/file source (the Inc2c env vars were removed, P1e). |
+| `DestAgentSSH` | string | `""` | `--dest-agent-ssh` (CLI only) | P1e: `user@host[:port]` of the destination cluster's coordinator. Same semantics as `SourceAgentSSH`. |
 | `SourceAgentBinary` | string | `""` → resolved | `source_agent_binary` / `GPSTREAM_SOURCE_AGENT_BINARY` | gpstream-source-agent path. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `run` / `bench`. |
 | `DestAgentBinary` | string | `""` → resolved | `dest_agent_binary` / `GPSTREAM_DEST_AGENT_BINARY` | gpstream-dest-agent path. Resolved by convention as above. |
 
 The data path is always the two-agent transport: the data plane lives in the
-agents, the controller holds no data connections.
+agents, the controller holds no data connections. The agent binaries are
+invoked **by name from `PATH`** (packaged install). Each agent verifies
+before serving that it runs on the coordinator of exactly the cluster its
+DSN points to (P1e coordinator guard; a violation aborts the agent and the
+`run`/`bench` fails).
 
 ### 1.7 Resilience (F-06/F-07)
 | Field | Type | Default | Source | Notes |

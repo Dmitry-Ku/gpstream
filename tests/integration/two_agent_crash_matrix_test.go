@@ -66,18 +66,19 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 	// mode keeps the convention-resolved local build (agents sit next to the
 	// controller binary).
 	controllerBin := liveControllerBinary(t, bin.gpstream)
-	runEnv := liveCLIEnv(t, srcCl.URL(), dstCl.URL())
+	// P1e: agent launch is CLI-only — live mode appends --source-agent-ssh /
+	// --dest-agent-ssh (the agent hosts); local mode appends nothing (local
+	// agents, resolved by convention next to the controller binary).
+	agentArgs := liveCLIArgs(t, srcCl.URL(), dstCl.URL())
 	runArgs := func(stateDir, opID string) []string {
-		return []string{
+		return append([]string{
 			"run",
 			"--source", srcCl.URL(), "--dest", dstCl.URL(),
 			"--operation-id", opID, "--state-dir", stateDir,
 			"--dbs", srcCl.DB,
-			// no agent-binary flags: the agents resolve by convention
-			// (sibling of the controller binary / GPSTREAM_AGENT_BIN_DIR).
 			"--workers", "1",
 			"--resolve-conflicts", "overwrite",
-		}
+		}, agentArgs...)
 	}
 
 	// killPID SIGKILLs the process.
@@ -365,9 +366,6 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			rctx, rcancel := context.WithCancel(context.Background())
 			defer rcancel()
 			cmd := exec.CommandContext(rctx, controllerBin, runArgs(stateDir, sc.opID)...)
-			if runEnv != nil {
-				cmd.Env = append(os.Environ(), runEnv...)
-			}
 			var runErr strings.Builder
 			cmd.Stderr = &runErr
 			if err := cmd.Start(); err != nil {
@@ -415,9 +413,6 @@ func TestTwoAgentCrashRecoveryMatrix(t *testing.T) {
 			liveKillAgents(t, srcCl.URL(), dstCl.URL())
 			time.Sleep(2 * time.Second)
 			rc := exec.Command(controllerBin, runArgs(stateDir, sc.opID)...)
-			if runEnv != nil {
-				rc.Env = append(os.Environ(), runEnv...)
-			}
 			out, err := rc.CombinedOutput()
 			if err != nil {
 				t.Fatalf("resume run failed: %v\n%s", err, out)

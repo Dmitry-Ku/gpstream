@@ -36,14 +36,14 @@ reference and the TOML/YAML key table.
 
 ---
 
-## Commands (10 dispatch entries)
+## Commands (9 dispatch entries)
 
 The dispatcher (`run`) accepts the following subcommands. `copy`/`plan` from
 older drafts are **not** separate commands: **`dry-run`** performs the
 planning (without executing) and **`run`** performs the copy (with executing).
 There is no `cancel`, `rollback`, `metrics`, `logs`, `indexes`,
 `compatibility-check`, `security-check`, `package-info`, or `upgrade-check`
-command — the capability they described is folded into `run`/`doctor`/
+command — the capability they described is folded into `run`/`dry-run`/
 `status`/`resume` (see per-command notes). **`man` is not a subcommand** —
 `man gpstream` renders the installed OS man page (`man/gpstream.8`), so it is
 not counted here.
@@ -51,18 +51,17 @@ not counted here.
 | # | Command | Class | Consumes full contract? |
 |---|---------|-------|-------------------------|
 | 1 | `run` | core (copy) | yes (`parseConfig`) |
-| 2 | `dry-run` | core (plan) | yes |
-| 3 | `doctor` | core (diagnose) | yes |
-| 4 | `bench` | core (measure) | yes |
-| 5 | `status` | state | no (bespoke) |
-| 6 | `resume` | state | no (bespoke) |
-| 7 | `cleanup` | state | no (bespoke) |
-| 8 | `selftest` | utility | no |
-| 9 | `version` | utility | no |
-| 10 | `help` / `-h` / `--help` | utility | no |
+| 2 | `dry-run` | core (diagnose + plan) | yes |
+| 3 | `bench` | core (measure) | yes |
+| 4 | `status` | state | no (bespoke) |
+| 5 | `resume` | state | no (bespoke) |
+| 6 | `cleanup` | state | no (bespoke) |
+| 7 | `selftest` | utility | no |
+| 8 | `version` | utility | no |
+| 9 | `help` / `-h` / `--help` | utility | no |
 
 The commands that go through `parseConfig` (honouring **every** flag) are:
-**`run`, `dry-run`, `doctor`, `bench`**. The state commands parse only a small
+**`run`, `dry-run`, `bench`**. The state commands parse only a small
 subset of flags (listed per-command below) and ignore the rest.
 
 ---
@@ -85,12 +84,18 @@ subset of flags (listed per-command below) and ignore the rest.
   `gp_segment_id`, F-15) and prints it in the final report, warning when a
   table exceeds the fixed F-15 segment-fill gate (1.5). `run` is the command that used
   to be called `copy`.
-- **`dry-run`** — plans **without executing** (F-10); full contract. Renders
-  the deterministic plan summary (units, volume, conflicts, redistribution,
-  plan hash); on `--timeout` prints the collected fragment as a
-  prediction/forecast. `run` always persists the plan JSON to
-  `<state-dir>/<operation-id>/plan.json`. `dry-run` is the command that used to
-  be called `plan`.
+- **`dry-run`** — **self-diagnoses src/dest clusters (F-05), then plans
+  without executing** (F-10); full contract. Runs the full capability
+  matrix (reachability, version, segments, route mode, `on_segment`
+  transport, disk, permissions, collation, TLS, `max_connections` sizing,
+  `--max-snapshot-delta`) over a live connection that **never** fabricates a
+  healthy fake for a missing/unreachable cluster (CR-7); a missing connstring
+  is a reachability FAIL, not a silent PASS. **Any FAIL aborts with the
+  report (no plan is built).** On success it renders the deterministic plan
+  summary (units, volume, conflicts, redistribution, plan hash); on
+  `--timeout` prints the collected fragment as a prediction/forecast. `run`
+  always persists the plan JSON to `<state-dir>/<operation-id>/plan.json`.
+  The former `doctor` command (and `plan`) were folded into `dry-run` (P1e).
 - **`bench`** — measures the **input stream** (F-14): streams the selected
   source tables through the real data path (read → frame → compress) and
   **discards** the payload instead of writing a
@@ -99,12 +104,6 @@ subset of flags (listed per-command below) and ignore the rest.
   does not throttle the benchmark). Prints per-table and total
   rows, wire/logical bytes, elapsed and MB/s. `--timeout S` is the benchmark
   wall-time limit (unlimited when not passed).
-- **`doctor`** — self-diagnoses src/dest clusters (F-05); full contract. Uses
-  a live connection that **never** fabricates a healthy fake for a
-  missing/unreachable cluster (CR-7); a missing connstring is a reachability
-  FAIL, not a silent PASS. Reports the capability matrix (reachability,
-  version, segments, route mode, `on_segment` transport, disk, permissions,
-  collation, TLS). Exits non-zero if any FAIL remains.
 - **`status`** — reports an operation's state (F-02/06/07) from the durable
   manifest (operation-id, snap-epoch, per-unit id/state/kind/
   db.schema.table/bytes/epoch). **Flags:** `--operation-id <id|latest>`
@@ -141,7 +140,7 @@ subset of flags (listed per-command below) and ignore the rest.
 > then `resume`); rollback is `resume` (re-copy non-terminal units); live
 > metrics are served over HTTP at `--metrics-addr` during `run`; the operation
 > log is what `status` prints; index rebuilds happen inside `run` (F-17);
-> compatibility/security posture is what `doctor` reports; and `version`
+> compatibility/security posture is what `dry-run` reports; and `version`
 > covers package/version info.
 
 ---
@@ -149,7 +148,7 @@ subset of flags (listed per-command below) and ignore the rest.
 ## Full flag surface (shared contract)
 
 The following flags are bound by `parseConfig` and honoured by
-`run`, `dry-run`, and `doctor`. Values fold into the `Config` struct; the
+`run`, `dry-run`, and `bench`. Values fold into the `Config` struct; the
 defaults below are the exact ones from `config.Default()` and the flag
 bindings in `cmd/gpstream/main.go`.
 
@@ -222,6 +221,30 @@ Conflict policy semantics:
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
 |------|--------------|---------|
+| `--source-agent-ssh user@host[:port]` | `SourceAgentSSH` | `""` (P1e) |
+| `--dest-agent-ssh user@host[:port]` | `DestAgentSSH` | `""` (P1e) |
+
+**Agent placement (P1e).** The controller launches the agents on the hosts
+named by these flags: `--source-agent-ssh` = the source cluster's master
+(coordinator), `--dest-agent-ssh` = the destination cluster's coordinator.
+**Either or both may be omitted** (or name a local host — `127.0.0.1`,
+`localhost`, this host's name/IP): an omitted flag means that agent runs as a
+**local subprocess** on the gpstream host (the case where gpstream itself runs
+on a coordinator). A remote host is launched over **SSH** (key-based auth,
+`~/.ssh` defaults — the administrator provisions the keys; no key/runas
+flags). The transport is selected by the host in the flag: local = subprocess,
+remote = SSH. The agent binary is invoked **by name from `PATH`** (packaged
+install) — never by an absolute path.
+
+**Coordinator guard (P1e).** Before an agent binds its control listener it
+verifies it runs on the coordinator of **exactly the cluster its DSN points
+to** (source agent — the source cluster, dest agent — the destination
+cluster): the DSN host must be local, the local master must be responding,
+and — for Greenplum — the coordinator row (`content = -1`) in the DSN
+cluster's own `gp_segment_configuration` must name this host. A violation
+aborts the agent, and `run`/`bench` fail with the verdict from the agent
+log. A non-Greenplum (single-node) database always passes.
+
 There are no `--source-agent-binary` / `--dest-agent-binary` flags: a packaged install always lays all four binaries in the same directory, so the controller resolves the agent binaries by convention (sibling of the `gpstream` binary, then `PATH`). Override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` (or config keys `source_agent_binary` / `dest_agent_binary`) for dev builds where the binaries are not beside each other.
 
 The data path is always the two-agent transport: the source agent reads the
@@ -368,7 +391,7 @@ gpstream is deliberately conservative about overwriting destination data:
 
 Only **`cleanup`** modifies or destroys operation state. With `--mode drop`
 it also removes destination-side objects, so use it deliberately. `run`,
-`dry-run`, `doctor`, `status`, `resume`, `selftest`, `version`, `man` and
+`dry-run`, `status`, `resume`, `selftest`, `version`, `man` and
 `help` are **not** destructive.
 
 ---
@@ -378,10 +401,12 @@ it also removes destination-side objects, so use it deliberately. `run`,
 Environment variables are read by `ApplyEnv()` (the env layer of
 CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 
-`RATE_LIMIT`, `WORKERS`, `COMPRESS`, `SMALL_TABLE_THRESHOLD`,
-`AUTO_RESUME`, `ON_UNIT_FAILURE`, `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`,
-`RETRANSMIT_BUFFER_MAX`, `SSL_CERT`, `SSL_KEY`, `SSL_CA`, `SEG_TLS_CERT`,
-`SEG_TLS_KEY`, `SEG_TLS_CA`.
+`RATE_LIMIT`, `WORKERS`, `MAX_SNAPSHOT_DELTA`, `COMPRESS`,
+`SMALL_TABLE_THRESHOLD`, `AUTO_RESUME`, `ON_UNIT_FAILURE`, `SSL_CERT`,
+`SSL_KEY`, `SSL_CA`, `SOURCE_AGENT_BINARY`, `DEST_AGENT_BINARY`,
+`SEG_BINARY`, `SEG_LISTEN`, `DATA_PORT_RANGE`, `SEG_TLS_CERT`, `SEG_TLS_KEY`,
+`SEG_TLS_CA`, `CONTROL_TLS_CERT`, `CONTROL_TLS_KEY`, `CONTROL_TLS_CA`,
+`FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`, `RETRANSMIT_BUFFER_MAX`.
 
 Boolean env vars accept `true`/`1`. See
 [CONFIGURATION.md](CONFIGURATION.md) for the full env/TOML/YAML/precedence

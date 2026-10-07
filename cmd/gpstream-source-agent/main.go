@@ -106,6 +106,13 @@ func main() {
 	// Long-lived mode (P3): the controller drives this agent over the control
 	// socket; the FR-02 snapshot spans the whole run.
 	if *serve != "" {
+		// P1e: the agent must run on the cluster master (coordinator) and
+		// connect to pg LOCALLY. Verified before the control listener is
+		// bound: a failing agent never accepts the controller's dial, so the
+		// run aborts with this verdict (from the agent log).
+		if cerr := agent.CheckOnCoordinator(ctx, *src, *sslCert, *sslKey, *sslCA, *sslMinTLS); cerr != nil {
+			fail("coordinator check: %v", cerr)
+		}
 		srv := agent.NewSourceServer(agent.ServerOptions{
 			SrcConn:          *src,
 			SSLCert:          *sslCert,

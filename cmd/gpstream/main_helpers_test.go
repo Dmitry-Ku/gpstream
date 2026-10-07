@@ -225,31 +225,32 @@ func TestCmdVersionMan(t *testing.T) {
 	}
 }
 
-// TestCmdDryRunFake: with no source/dest connstrings the dry-run falls back to
-// the healthy fake (openOrFake) and renders the full plan summary — covering
-// cmdDryRun, printPlanSummary and the note helpers end-to-end.
+// TestCmdDryRunFake: P1e — dry-run runs the self-diagnostic (former doctor)
+// before planning. With no source/dest connstrings the reachability check is a
+// FAIL (diagnoseConn: "no source connstring configured"), so the command must
+// error with the report. (The --map-db / --map-schema flag parsing is covered
+// in main_coverage_test.go.)
 func TestCmdDryRunFake(t *testing.T) {
-	if err := run([]string{"dry-run"}); err != nil {
-		t.Fatalf("dry-run (fake): %v", err)
+	if err := run([]string{"dry-run"}); err == nil {
+		t.Fatal("dry-run (no connstrings): want error (reachability FAIL), got nil")
 	}
-
-	// --map-db / --map-schema flag parsing (splitKV/setRename in parseConfig).
-	if err := run([]string{"dry-run", "--map-db", "sales=finance", "--map-schema", "old=new"}); err != nil {
-		t.Errorf("dry-run renames: %v", err)
+	if err := run([]string{"dry-run", "--map-db", "sales=finance", "--map-schema", "old=new"}); err == nil {
+		t.Error("dry-run (no connstrings, renames): want error (reachability FAIL), got nil")
 	}
 }
 
-// TestCmdDoctorUnreachable: doctor against an unconfigured/unreachable cluster
-// must emit FAIL findings (CR-7) and return an error.
-func TestCmdDoctorUnreachable(t *testing.T) {
-	if err := run([]string{"doctor"}); err == nil {
-		t.Error("doctor unconfigured: want error (CR-7: no silent PASS)")
+// TestCmdDryRunUnreachable: dry-run against an unconfigured/unreachable
+// cluster must emit FAIL findings (CR-7) and return an error (the doctor
+// command was folded into dry-run, P1e).
+func TestCmdDryRunUnreachable(t *testing.T) {
+	if err := run([]string{"dry-run"}); err == nil {
+		t.Error("dry-run unconfigured: want error (CR-7: no silent PASS)")
 	}
 	// An unreachable DSN (closed port, no listener) takes the connect-failure
 	// path of diagnoseConn.
-	err := run([]string{"doctor", "--source", "postgres://nouser:nowhere@127.0.0.1:1/db?sslmode=disable&connect_timeout=2"})
+	err := run([]string{"dry-run", "--source", "postgres://nouser:***@127.0.0.1:1/db?sslmode=disable&connect_timeout=2"})
 	if err == nil {
-		t.Error("doctor unreachable: want error")
+		t.Error("dry-run unreachable: want error")
 	}
 }
 

@@ -1,11 +1,15 @@
-# gpstream — Doctor & Capability Matrix
+# gpstream — Capability Matrix (formerly `doctor`)
 
-`gpstream doctor` (FR-05) is the pre-flight self-diagnostic. It runs a
+> **P1e: the `doctor` subcommand was removed.** These pre-flight checks
+> (FR-05) now run inside **`gpstream dry-run`**, before the plan is built:
+> any FAIL aborts with the report, WARNs are printed, then the plan summary
+> renders. This document is the **capability matrix**: what each check
+> probes, what each severity means for your run, and how the segment-direct
+> capability (`on_segment`) composes from its three prerequisites.
+
+The diagnostic (FR-05) runs a
 fixed set of checks against the source and destination clusters and prints
-each as `PASS` / `WARN` / `FAIL` with an actionable recommendation. This
-document is the **capability matrix**: what each check probes, what each
-severity means for your run, and how the segment-direct capability
-(`on_segment`) composes from its three prerequisites.
+each as `PASS` / `WARN` / `FAIL` with an actionable recommendation.
 
 Grounded in `internal/doctor/doctor.go` and
 `internal/transfer/segstream` (probe), live-verified on the lab.
@@ -20,7 +24,7 @@ Grounded in `internal/doctor/doctor.go` and
 | 2 | `version` | source, dest | `SELECT version()` | Query failed (privilege or connection) | — |
 | 3 | `segments` | source, dest | `gp_segment_configuration` present? count of `status='u'` | Catalog unreadable, or **0 up segments** (cannot copy) | Not a Greenplum cluster (plain PostgreSQL single-node mode — expected for the kernel PoC) |
 | 4 | `route` | src→dst | segment counts S, D; eligible (s,d) pair count; S==D? | — (never fails) | Endpoint is plain PostgreSQL — no route to report (coordinator path only) |
-| 5 | `on_segment` | source | the 3-prerequisite probe below (only when the segreceiver binary resolves) | — (never fails the doctor) | Capability degraded — the job runs on the coordinator path instead |
+| 5 | `on_segment` | source | the 3-prerequisite probe below (only when the segreceiver binary resolves) | — (never fails the diagnostic) | Capability degraded — the job runs on the coordinator path instead |
 | 6 | `disk` | dest | disk probe (sentinel in the test bench; live = free space on the dest) | Probe failed / no data | — |
 | 7 | `permissions` | source, dest | `has_database_privilege(current_database(), 'CREATE')` / `'CONNECT'` | — | Role lacks CREATE/CONNECT — `GRANT CREATE, CONNECT ON DATABASE` |
 | 8 | `collation` | network | `datcollate` source vs dest | — | `LC_COLLATE` differs — affects routing; review before start (FR-10) |
@@ -28,7 +32,7 @@ Grounded in `internal/doctor/doctor.go` and
 | 10 | `extensions` | network | `pg_extension` set: source vs dest | — | A source extension is missing in the destination (MADlib/PostGIS/orafce or any other) — install it in the receiver before the data load (FR-05/FR-11) |
 | 11 | `column-collation` | network | distinct explicit `COLLATE` names (public schema) source vs `pg_collation` dest | — | An explicit column collation on the source is not installed in the destination — `CREATE COLLATION` in the receiver (or accept the DB default) before the data load (FR-16) |
 
-Overall health: the doctor is **healthy iff there is no FAIL**. WARNs do
+Overall health: the diagnostic is **healthy iff there is no FAIL**. WARNs do
 not block a run — they degrade an *option* (segment-direct, collation
 review) and say so in the recommendation.
 
@@ -48,7 +52,7 @@ finding, not a column one.
 ### The `route` check (informational, M4)
 
 `route` never fails: routing is a **planning** concern — the per-table
-mode is resolved by the plan, not by doctor. On a GP6 pair it prints,
+mode is resolved by the plan, not by the diagnostic. On a GP6 pair it prints,
 e.g.:
 
 ```
@@ -68,12 +72,12 @@ route  src->dst  PASS  route-mode: src=2 dst=2 segments, 2 eligible (s,d) pair(s
   dest write always goes through the dest coordinator, so this line is
   informational for planning, not a live capability.
 
-Doctor output format (`printReport`, FAILs first, then WARNs, then
+Diagnostic output format (`printReport`, FAILs first, then WARNs, then
 PASSes, alphabetical within severity):
 
 ```
-gpstream doctor
-===============
+gpstream dry-run — diagnostics
+=============================
   [WARN] source      on_segment   segment-direct capability degraded: GUC ycmdb.yc_allow_copy_to_program = "off" (want "on"; set in postgresql.conf of EVERY data-dir, then gpstop -ar); ON SEGMENT dispatch: ok; gpstream-segreceiver present on all segment hosts
            -> the job will fall back to the coordinator path; fix the items above to enable the 2.0x segment-direct fast path
   [PASS] src->dst    route        route-mode: src=2 dst=2 segments, 2 eligible (s,d) pair(s) — direct_1to1 possible
@@ -117,10 +121,10 @@ is green.
 | Doctor `on_segment` = **WARN** (or the segreceiver does not resolve) | default coordinator path — correct, slower on the source side |
 | Plain PostgreSQL endpoint | coordinator path only — there are no segments to read from |
 
-## 3. How to read a doctor run
+## 3. How to read a dry-run diagnostic
 
 ```
-$ gpstream doctor \
+$ gpstream dry-run \
     --source "host=prod-coordinator   port=5432 user=gpstream dbname=postgres" \
     --dest   "host=preprod-coordinator  port=5432 user=gpstream dbname=postgres" \
     # the segreceiver path resolves by convention (sibling of the gpstream binary); pass it via GPSTREAM_SEG_BINARY only for non-standard installs
@@ -129,7 +133,7 @@ $ gpstream doctor \
 - **Any FAIL** → fix before running. The recommendation string names the
   exact step (credentials, `gp_segment_configuration`, disk, grants).
 - **`on_segment` WARN** → decide: run coordinator-path now (safe), or
-  apply the named fix (GUC / dispatch / binary) and re-run doctor to
+  apply the named fix (GUC / dispatch / binary) and re-run the dry-run to
   enable the fast path.
 - **`topology` check (always PASS, ADR-002)** → confirms the data-plane
   architecture: the data stream runs source agent → dest agent (compressed on
@@ -151,9 +155,9 @@ $ gpstream doctor \
 ## 4. Honest notes
 
 - `disk` on a live dest is a probe of dest free space; the test bench
-  seeds it as a sentinel (CR-7: the doctor must detect a no-space fault).
+  seeds it as a sentinel (CR-7: the diagnostic must detect a no-space fault).
 - `tls` in v0.1 reports the configured minimum and defers full
   certificate-chain validation; provide `--ssl-ca` (CA bundle), and
   `--ssl-cert`/`--ssl-key` for mTLS (FR-13).
-- The doctor never mutates the clusters — every probe is a read or a
+- The diagnostic never mutates the clusters — every probe is a read or a
   no-op program (`true`, `--check`).

@@ -13,7 +13,7 @@ monitor, and recover if needed.
 > `truncate` (replace / truncate+load).
 
 > **Cluster requirement:** `--help` and `selftest` need no cluster. **`run`,
-> `dry-run`, and `doctor` require a reachable source and destination cluster**
+> `dry-run` and `run`/`bench` require a reachable source and destination cluster**
 > (a dry-run plans against the live topology).
 >
 > **Where it installs:** the `gpstream` package goes on the **controller

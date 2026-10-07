@@ -43,7 +43,7 @@ SRC="host=prod-coordinator   port=5432 user=gpstream dbname=postgres"
 DST="host=preprod-coordinator  port=5432 user=gpstream dbname=postgres"
 
 # 1. Check the two clusters are reachable and healthy BEFORE you touch anything.
-gpstream doctor --source "$SRC" --dest "$DST"
+gpstream dry-run --source "$SRC" --dest "$DST"
 
 # 2. See exactly what would happen, with no side effects.
 gpstream dry-run --source "$SRC" --dest "$DST" \

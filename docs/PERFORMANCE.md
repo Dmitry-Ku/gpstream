@@ -179,7 +179,7 @@ lives on as the per-table auto sub-paths of `on_segment`):
   read bottleneck; grows with segment count). Requirements: the
   `gpstream-segreceiver` binary on the source segment hosts
   (the `gpstream` package on every source segment host, optionally `--seg-listen`) and, on the open-gpdb 6.x fork, the GUC
-  `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream doctor`
+  `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream dry-run`
   reports the capability as `on_segment` (PASS / WARN — WARN only degrades
   the *option*, the coordinator path always works).
 - **`direct_1to1` fast-path** — when the planner proves a table's route

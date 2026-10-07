@@ -50,8 +50,6 @@ func run(args []string) error {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "doctor":
-		return cmdDoctor(rest)
 	case "dry-run":
 		return cmdDryRun(rest)
 	case "run":
@@ -71,7 +69,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		return printHelp()
 	default:
-		return fmt.Errorf("unknown subcommand %q (valid: doctor, dry-run, run, bench, status, resume, cleanup, selftest, version, help)", cmd)
+		return fmt.Errorf("unknown subcommand %q (valid: dry-run, run, bench, status, resume, cleanup, selftest, version, help)", cmd)
 	}
 }
 
@@ -278,6 +276,18 @@ func parseConfig(args []string) (config.Config, error) {
 			i++
 			cfg.ControlTLSCA = args[i]
 
+		// Agent launch (P1e): where the source/dest agents run. Either may
+		// be omitted (or name a local host): then that agent runs as a local
+		// subprocess on the gpstream host — correct when gpstream itself runs
+		// on that cluster's master. A remote host = SSH launch there. The
+		// agent's coordinator-check enforces the topology either way.
+		case "--source-agent-ssh":
+			i++
+			cfg.SourceAgentSSH = args[i]
+		case "--dest-agent-ssh":
+			i++
+			cfg.DestAgentSSH = args[i]
+
 		// Indexes (FR-17).
 		case "--index-workers":
 			i++
@@ -400,9 +410,6 @@ func parseDuration(s string) time.Duration {
 	return d
 }
 
-// cmdDryRun runs `gpstream dry-run` (FR-10). It binds the full §5 contract
-// (parseConfig, incl. Validate) and renders the deterministic plan without
-// executing it.
 func cmdDryRun(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
@@ -418,6 +425,32 @@ func cmdDryRun(args []string) error {
 	defer cancel()
 	srcQ := openOrFake(ctx, cfg, "source")
 	dstQ := openOrFake(ctx, cfg, "dest")
+
+	// P1e: the self-diagnostic (the former `doctor` command) runs BEFORE the
+	// plan: reachability, version, segments, disk, permissions, collation,
+	// encoding, TLS, extensions, max_connections vs --workers, on_segment,
+	// route. diagnoseConn (not openOrFake): a missing/unreachable cluster is
+	// a FAIL finding, never a masked healthy fake. Any FAIL aborts the
+	// dry-run with the report; WARNs are printed and the plan proceeds.
+	segBin := cfg.SegBinary
+	if segBin == "" {
+		segBin, _ = config.ResolveSegBinaryOrEmpty()
+	}
+	rep := doctor.Run(ctx, diagnoseConn(ctx, cfg, "source"), diagnoseConn(ctx, cfg, "dest"),
+		doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
+	if cfg.CopyMode == config.CopyOnSegment && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
+		rep.Add(doctor.Check{
+			Name: "dest-dsn-form",
+			Side: "dest",
+			Sev:  doctor.Warn,
+			Msg:  fmt.Sprintf("--dest %q is not URL-form (postgres://user@host:port/db)", cfg.Dest),
+			Rec:  "on_segment segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
+		})
+	}
+	printReport(rep)
+	if !rep.Healthy {
+		return fmt.Errorf("dry-run: %d FAIL finding(s) — fix and re-run", rep.Failures())
+	}
 
 	p, err := plan.Build(ctx, &cfg, srcQ, dstQ)
 	if err != nil {
@@ -445,52 +478,6 @@ func cmdDryRun(args []string) error {
 	fmt.Println("===============")
 	printPlanSummary(p, cfg)
 
-	return nil
-}
-
-// cmdDoctor runs the self-diagnostic (FR-05). It binds the §5 contract and
-// connects live; on failure it still surfaces FAIL/WARN findings (CR-7).
-func cmdDoctor(args []string) error {
-	cfg, err := parseConfig(args)
-	if err != nil {
-		if errors.Is(err, errHelpRequested) {
-			return printHelp()
-		}
-		return err
-	}
-	ctx := context.Background()
-	// CR-7: the diagnostic must NEVER report healthy for an unconfigured or
-	// unreachable cluster. It uses diagnoseConn (not openOrFake), so a missing
-	// connstring is a reachability FAIL, not a masked healthy fake.
-	srcQ := diagnoseConn(ctx, cfg, "source")
-	dstQ := diagnoseConn(ctx, cfg, "dest")
-
-	// Resolve the segreceiver by convention (sibling of the gpstream binary,
-	// then PATH) so doctor probes the segment-direct capability without a
-	// flag; when it cannot be found the on_segment probe is simply skipped.
-	segBin := cfg.SegBinary
-	if segBin == "" {
-		segBin, _ = config.ResolveSegBinaryOrEmpty()
-	}
-	rep := doctor.Run(ctx, srcQ, dstQ, doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
-	// on_segment segment-to-segment writes (routed + direct_1to1) build
-	// per-segment utility DSNs from the operator's --dest; that requires the
-	// URL form (postgres://user@host:port/db). A keyword/value --dest would
-	// silently degrade the run to the merge path, so flag it now (a WARN —
-	// the coordinator path still works with either form).
-	if cfg.CopyMode == config.CopyOnSegment && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
-		rep.Add(doctor.Check{
-			Name: "dest-dsn-form",
-			Side: "dest",
-			Sev:  doctor.Warn,
-			Msg:  fmt.Sprintf("--dest %q is not URL-form (postgres://user@host:port/db)", cfg.Dest),
-			Rec:  "on_segment segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
-		})
-	}
-	printReport(rep)
-	if !rep.Healthy {
-		return fmt.Errorf("doctor: %d FAIL finding(s)", rep.Failures())
-	}
 	return nil
 }
 
@@ -568,8 +555,8 @@ func healthyFake() pg.Querier {
 }
 
 func printReport(rep *doctor.Report) {
-	fmt.Println("gpstream doctor")
-	fmt.Println("===============")
+	fmt.Println("gpstream dry-run — diagnostics")
+	fmt.Println("=============================")
 	for _, c := range rep.Sorted() {
 		fmt.Printf("  [%-4s] %-11s %-10s %s\n", c.Sev, c.Side, c.Name, c.Msg)
 		if c.Rec != "" {
@@ -1600,8 +1587,8 @@ Usage:
   gpstream <command> [flags]
 
 Commands:
-  doctor    self-diagnose source/dest clusters
-  dry-run   plan the copy without executing
+  dry-run   self-diagnose source/dest clusters, then plan the copy without
+            executing (a FAIL finding aborts with the report)
   run       execute the copy (streams source -> dest, no intermediate storage)
   bench     measure the input stream: stream the selected source tables
             through the real data path (read -> frame -> compress) and
@@ -1710,6 +1697,25 @@ TLS:
   --control-tls-ca F                 trusted CA; an agent --control-tls-ca
                                    enables mTLS (the controller then presents its
                                    --control-tls-cert/key)
+
+Agent launch (run / bench / dry-run):
+  --source-agent-ssh user@host[:port]
+                                   host of the source cluster master (where the
+                                   source agent must run). LOCAL host (127.0.0.1 /
+                                   localhost / this host) = the agent runs as a
+                                   subprocess here; a REMOTE host = the agent is
+                                   launched there over key-based SSH. OMITTED (or
+                                   a local host) = local launch on the gpstream
+                                   host — correct when gpstream itself runs on
+                                   the source cluster master.
+  --dest-agent-ssh user@host[:port] host of the destination cluster coordinator
+                                   (where the dest agent must run), same
+                                   semantics; omitted = local launch on the
+                                   gpstream host.
+  Either flag may be omitted (local launch), but the agent ALWAYS verifies it
+  sits on its cluster's coordinator with a LOCAL pg connection: an agent that
+  is not on the coordinator (or whose local pg does not answer) reports the
+  verdict and exits, and the command fails.
 
 Config file: /etc/gpstream/gpstream.toml; state: /var/lib/gpstream/<operation-id>/.
 See docs/ for the full guide.`)

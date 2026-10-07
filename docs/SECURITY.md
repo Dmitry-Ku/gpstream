@@ -22,7 +22,7 @@ not a file on disk. The security concerns are therefore:
 | Overwriting live data by accident | **Non-destructive default** (§4) |
 | Corrupted / truncated copy | Checksum + verify (§5) |
 | Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
-| Wrong cluster / wrong target | `doctor` (§7) |
+| Wrong cluster / wrong target | `dry-run` (§7) |
 | Undocumented operator action | **Audit log** (`audit.log`, §10) |
 
 ---
@@ -148,14 +148,15 @@ accidental destructive operation.
 
 ---
 
-## 7. Pre-flight: `doctor`
+## 7. Pre-flight: `dry-run` (self-diagnostic)
 
 There is **no separate `security-check` subcommand** — TLS findings are part
-of `doctor` (the `tls` check), which prints a severity table:
+of the `dry-run` self-diagnostic (the `tls` check), which prints a severity
+table:
 
 ```
-gpstream doctor
-===============
+gpstream dry-run — diagnostics
+=============================
   [PASS] src->dst    route        route-mode: src=2 dst=2 segments ...
   [WARN] source      on_segment   segment-direct capability degraded: ...
   [PASS] network     tls          min TLS 1.2 required (full cert validation in M2)
@@ -164,9 +165,9 @@ overall: PASS (no FAIL)
 
 - A **missing connection string is a reachability FAIL** (not a silent pass).
 - **0 up-segments is a FAIL** (not a pass).
-- `doctor` returns non-zero if there are any FAIL findings.
+- `dry-run` returns non-zero if there are any FAIL findings.
 
-Use `doctor` before a copy and after any change to credentials or TLS
+Use `dry-run` before a copy and after any change to credentials or TLS
 material.
 
 ---
@@ -186,7 +187,7 @@ material.
 - [ ] Secrets via env / EnvironmentFile, **not** argv (FR-08).
 - [ ] TLS enforced; `--ssl-min-tls >= 1.2`.
 - [ ] Server certificate covers the DSN host (`verify-full` hostname check).
-- [ ] `doctor` returns **PASS** against the real clusters.
+- [ ] `dry-run` returns **PASS** against the real clusters.
 - [ ] `ConflictAction = stop` (non-destructive) unless a specific copy
       intentionally opts into `overwrite`/`truncate` via `--resolve-conflicts`.
 - [ ] `--verify on` for critical copies.
@@ -223,4 +224,4 @@ never fails the action.
 - `CONFIGURATION.md` — config fields, defaults, precedence, validation.
 - `ADMIN_GUIDE.md` — deployment, logrotate, upgrade.
 - `METRICS.md` — the counters (including `Errors`/`FrameErrors`).
-- `TROUBLESHOOTING.md` — diagnosing a failed `doctor` run.
+- `TROUBLESHOOTING.md` — diagnosing a failed `dry-run` run.

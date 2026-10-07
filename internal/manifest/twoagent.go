@@ -334,14 +334,14 @@ func controlDialDeadline(sshHost string) time.Duration {
 // startSource brings up the long-lived source agent (owns the FR-02 snapshot)
 // and dials its control socket.
 func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
-	srcCtrlAddr, err := r.controlListen(r.cfg.SourceAgentSSH, r.cfg.SourceDialFirst, r.cfg.SourceControlAddr)
+	srcCtrlListen, srcCtrlDial, err := r.controlListen(r.agentHost(r.cfg.SourceAgentSSH))
 	if err != nil {
 		return err
 	}
 	srcArgs := []string{
 		"--src", r.cfg.Source,
 		"--snapshot", r.snapshotMode(),
-		"--serve", srcCtrlAddr,
+		"--serve", srcCtrlListen,
 		"--connect-timeout", "10s",
 		"--frame-ack", r.cfg.FrameAckArg(),
 		"--ack-timeout", r.cfg.AckTimeout,
@@ -365,16 +365,16 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 	if r.cfg.SegTLSCA != "" {
 		srcArgs = append(srcArgs, "--data-tls-ca", r.cfg.SegTLSCA)
 	}
-	h, err := launch.Ensure(ctx, r.target("gpstream-source-agent", srcArgs, srcCtrlAddr, r.cfg.SourceAgentSSH, r.cfg.SourceDialFirst))
+	h, err := launch.Ensure(ctx, r.target("gpstream-source-agent", srcArgs, srcCtrlDial, r.cfg.SourceAgentSSH))
 	if err != nil {
 		return fmt.Errorf("two-agent: launch source agent: %w", err)
 	}
 	r.srcHandle = h
-	client, err := dialControlRetry(ctx, srcCtrlAddr, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
+	client, err := dialControlRetry(ctx, srcCtrlDial, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.srcHandle = nil
-		return fmt.Errorf("two-agent: source control dial %s: %w", srcCtrlAddr, err)
+		return fmt.Errorf("two-agent: source control dial %s: %w (agent log: %s)\n%s", srcCtrlDial, err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
 	}
 	r.ctrl = client
 	return nil
@@ -384,20 +384,20 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 // listener) and dials its control socket (reading the hello for the data
 // address).
 func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
-	destCtrlAddr, err := r.controlListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, r.cfg.DestControlAddr)
+	destCtrlListen, destCtrlDial, err := r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
 	if err != nil {
 		return err
 	}
-	dataAddr, err := r.dataListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, r.cfg.DestDataAddr)
+	dataAddr, err := r.dataListen(r.agentHost(r.cfg.DestAgentSSH))
 	if err != nil {
 		return err
 	}
 	// P1c: the dedicated persistent-coordinator listener (a third listener;
 	// the source agent dials it ONCE per run and every coordinator unit
 	// rides the same connection). Local agents get a pre-bound loopback
-	// port; remote/dial-first agents use auto :0 (the agent restricts it to
+	// port; remote agents use auto :0 (the agent restricts it to
 	// --port-range itself) — the hello reports the real address.
-	persistListen, perr := r.dataListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, "")
+	persistListen, perr := r.dataListen(r.agentHost(r.cfg.DestAgentSSH))
 	if perr != nil {
 		return fmt.Errorf("two-agent: persist listen: %w", perr)
 	}
@@ -407,7 +407,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--dest", r.cfg.Dest,
 		"--serve",
 		"--data-listen", dataAddr,
-		"--control-listen", destCtrlAddr,
+		"--control-listen", destCtrlListen,
 		"--persist-listen", persistListen,
 		// P1d: size the destination pg pool for the concurrent persistent
 		// serves (the run's data-worker count).
@@ -439,16 +439,16 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	if r.cfg.SegTLSCA != "" {
 		dargs = append(dargs, "--data-tls-ca", r.cfg.SegTLSCA)
 	}
-	h, err := launch.Ensure(ctx, r.target("gpstream-dest-agent", dargs, destCtrlAddr, r.cfg.DestAgentSSH, r.cfg.DestDialFirst))
+	h, err := launch.Ensure(ctx, r.target("gpstream-dest-agent", dargs, destCtrlDial, r.cfg.DestAgentSSH))
 	if err != nil {
 		return fmt.Errorf("two-agent: launch dest agent: %w", err)
 	}
 	r.destHandle = h
-	client, err := dialDestControlRetry(ctx, destCtrlAddr, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
+	client, err := dialDestControlRetry(ctx, destCtrlDial, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.destHandle = nil
-		return fmt.Errorf("two-agent: dest control dial %s: %w", destCtrlAddr, err)
+		return fmt.Errorf("two-agent: dest control dial %s: %w (agent log: %s)\n%s", destCtrlDial, err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
 	}
 	r.destCtrl = client
 	// The hello reports the real bound data address (auto :0 mode). It is the
@@ -463,57 +463,54 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	return nil
 }
 
-// target builds a launch.Target for one agent. For a remote (SSH) launch the
-// binary path is the operator-configured install dir on the AGENT host; for a
-// local launch it is the convention-resolved binary on the controller's host.
-// dial-first agents are not launched (the operator pre-ran them), so the
-// binary is irrelevant (adopted before use).
-func (r *processTwoAgentRunner) target(base string, args []string, controlAddr, sshHost string, dialFirst bool) launch.Target {
+// target builds a launch.Target for one agent. The binary is the packaged
+// install name (resolved on PATH on whichever host it runs — the controller's
+// own host for local, the agent host over SSH for remote).
+func (r *processTwoAgentRunner) target(base string, args []string, controlAddr, sshHost string) launch.Target {
 	bin := r.cfg.SourceAgentBinary
 	if base == "gpstream-dest-agent" {
 		bin = r.cfg.DestAgentBinary
 	}
-	if sshHost != "" && !dialFirst {
-		bin = filepath.Join(r.cfg.AgentBinDir, base)
+	if bin == "" {
+		bin = base
 	}
 	return launch.Target{
 		Binary:      bin,
 		Args:        args,
 		ControlAddr: controlAddr,
 		SSHHost:     sshHost,
-		SSHKey:      r.cfg.AgentSSHKey,
-		RunAs:       r.cfg.AgentSSHRunAs,
-		DialFirst:   dialFirst,
 		LogPath:     agentLogPath(base),
 		WaitTimeout: 30 * time.Second,
 	}
 }
 
-// controlListen returns the control address to use. A remote or dial-first
-// agent needs a FIXED routable address (the controller dials it); a local
-// agent gets a pre-bound loopback port.
-func (r *processTwoAgentRunner) controlListen(sshHost string, dialFirst bool, fixed string) (string, error) {
-	if sshHost != "" || dialFirst {
-		if fixed == "" {
-			return "", fmt.Errorf("two-agent: a remote/dial-first agent needs a fixed control address (source_control_addr / dest_control_addr)")
-		}
-		return fixed, nil
+// controlListen returns (listenAddr, dialAddr) for the agent's control
+// socket. A local (same-host) agent gets a pre-bound loopback port for both.
+// A remote agent gets a controller-allocated port: the agent binds
+// "0.0.0.0:port" (listenAddr — it binds all its interfaces; the host in the
+// flag may be a hostname it cannot bind) and the controller dials
+// "host:port" (dialAddr).
+func (r *processTwoAgentRunner) controlListen(host string) (listenAddr, dialAddr string, err error) {
+	if host == "" || agent.IsLocalHost(host) {
+		addr, e := r.prebindLocal()
+		return addr, addr, e
 	}
-	return r.prebindLocal()
+	port, e := r.allocRemoteControlPort(host)
+	if e != nil {
+		return "", "", fmt.Errorf("two-agent: allocate remote control port on %s: %w", host, e)
+	}
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
 // dataListen returns the data address for the dest agent. A local agent gets a
-// pre-bound loopback port (auto :0, reported in the hello); a remote/dial-first
-// agent uses its fixed address, or "0.0.0.0:0" (auto :0, the hello carries the
-// real port — the agent restricts it to --port-range itself).
-func (r *processTwoAgentRunner) dataListen(sshHost string, dialFirst bool, fixed string) (string, error) {
-	if sshHost != "" || dialFirst {
-		if fixed == "" {
-			return "0.0.0.0:0", nil
-		}
-		return fixed, nil
+// pre-bound loopback port (auto :0, reported in the hello); a remote agent
+// uses "0.0.0.0:0" (auto :0 — the agent restricts it to --port-range itself,
+// and the hello carries the real address).
+func (r *processTwoAgentRunner) dataListen(host string) (string, error) {
+	if host == "" || agent.IsLocalHost(host) {
+		return r.prebindLocal()
 	}
-	return r.prebindLocal()
+	return "0.0.0.0:0", nil
 }
 
 // prebindLocal learns a free loopback port for a local (same-host) agent and
@@ -529,6 +526,57 @@ func (r *processTwoAgentRunner) prebindLocal() (string, error) {
 		return "", err
 	}
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+}
+
+// agentHost extracts the bare host from a --*-agent-ssh target
+// ("user@host[:port]" / "host" / "" -> host or ""). The host decides the
+// transport: local host = subprocess, remote host = SSH.
+func (r *processTwoAgentRunner) agentHost(sshTarget string) string {
+	host := sshTarget
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+// allocRemoteControlPort picks a control port on a REMOTE agent host: within
+// --data-port-range when set (the allocator probes via loopback, which is a
+// local hint, not a remote probe — a remote collision is caught by the
+// bounded control dial), else a kernel-picked loopback port as a fresh-port
+// candidate.
+func (r *processTwoAgentRunner) allocRemoteControlPort(host string) (int, error) {
+	if r.portAlloc == nil {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, err
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		return port, nil
+	}
+	port, err := r.portAlloc.Next("127.0.0.1")
+	if err != nil {
+		return 0, err
+	}
+	return port, nil
+}
+
+// tailLog returns the last ~10 non-empty lines of a log file ("" when absent
+// or unreadable) for embedding in dial errors — the remote agent's stderr
+// carries its master-check verdict.
+func tailLog(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	return "  " + strings.Join(lines, "\n  ")
 }
 
 // agentLogPath is the agent's stderr sink path (GPSTREAM_AGENT_STDERR when set

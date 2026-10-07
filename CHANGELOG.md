@@ -7,6 +7,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added: remote agent launch + coordinator guard (P1e)
+
+- **`--source-agent-ssh user@host[:port]`** and **`--dest-agent-ssh
+  user@host[:port]`** (CLI-only): the controller launches the source agent on
+  the source cluster's master and the dest agent on the destination cluster's
+  coordinator. **Either or both may be omitted** (or name a local host, e.g.
+  `127.0.0.1`): an omitted flag runs that agent as a **local subprocess** on
+  the gpstream host — the case where gpstream itself runs on a coordinator.
+  The transport is selected by the host in the flag: local = subprocess,
+  remote = SSH (key-based, `~/.ssh` defaults; the administrator provisions
+  the keys). The agent binary is invoked **by name from `PATH`** (packaged
+  install), never by an absolute path.
+- **Coordinator guard (30986/30989).** Before an agent binds its control
+  listener it verifies it runs on the coordinator of **exactly the cluster
+  its DSN points to** (source agent — the source cluster, dest agent — the
+  destination cluster): the DSN host must be local, the local master must be
+  responding, and — for Greenplum — the coordinator row (`content = -1`) in
+  the DSN cluster's own `gp_segment_configuration` must name this host. A
+  violation aborts the agent and `run`/`bench` fail with the verdict from the
+  agent log. A non-Greenplum (single-node) database always passes.
+
+### Removed (P1e, breaking)
+
+- The **`doctor`** subcommand: its ~15 read-only checks now run inside
+  **`dry-run`** before the plan is built (any FAIL aborts with the report,
+  then the plan renders). `docs/DOCTOR.md` is now the capability-matrix
+  reference for the dry-run diagnostic; the `gpstream-doctor` man alias and
+  the `make doctor` target are gone.
+- **Inc2c env vars (10)** — never agreed, removed (agent launch is CLI-only):
+  `SOURCE_AGENT_SSH`, `DEST_AGENT_SSH`, `AGENT_SSH_KEY`, `AGENT_SSH_RUNAS`,
+  `AGENT_BIN_DIR`, `SOURCE_DIAL_FIRST`, `DEST_DIAL_FIRST`,
+  `SOURCE_CONTROL_ADDR`, `DEST_CONTROL_ADDR`, `DEST_DATA_ADDR`. Control/data
+  addresses are auto-assigned by the controller.
+
 ### Added: snapshot-epoch foundation (P1d-1)
 
 Foundation for `--workers N > 1` (N parallel data streams) on the coordinator

@@ -190,10 +190,10 @@ func TestCopyConnectError(t *testing.T) {
 // TestCopyNoClusterDryRun: a --dry-run with no cluster runs against the healthy
 // fake and succeeds (covers cmdDryRun's fake path, already exercised, but
 // ensures the two-way openOrFake path is covered from the copy entry).
-func TestDoctorConnectError(t *testing.T) {
+func TestDryRunConnectError(t *testing.T) {
 	// A malformed source DSN drives diagnoseConn's error branch (the live
 	// NewConn error path, not the missing-connstring fake path).
-	if err := run([]string{"doctor", "--source", "not-a-valid-dsn://x"}); err == nil {
-		t.Fatal("expected doctor to fail on an unparseable source DSN")
+	if err := run([]string{"dry-run", "--source", "not-a-valid-dsn://x"}); err == nil {
+		t.Fatal("expected dry-run to fail on an unparseable source DSN")
 	}
 }

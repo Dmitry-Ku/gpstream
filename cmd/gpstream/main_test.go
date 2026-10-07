@@ -125,12 +125,13 @@ func TestSetRename(t *testing.T) {
 	}
 }
 
-// TestDryRunNoCluster exercises the dry-run command end-to-end against the
-// built-in healthy fake (no live cluster required). It must succeed and print
-// the plan summary.
+// TestDryRunNoCluster: P1e — dry-run now runs the source/dest self-diagnostic
+// (the former doctor) BEFORE planning. CR-7: an unconfigured/unreachable
+// cluster is a reachability FAIL, so a bare `dry-run` (no connstring) must
+// error with the report — not silently plan against a healthy fake.
 func TestDryRunNoCluster(t *testing.T) {
-	if err := run([]string{"dry-run"}); err != nil {
-		t.Fatalf("dry-run: %v", err)
+	if err := run([]string{"dry-run"}); err == nil {
+		t.Fatal("dry-run without a reachable cluster: want error (CR-7), got nil")
 	}
 }
 
@@ -170,15 +171,6 @@ func TestCleanupNeedsYes(t *testing.T) {
 func TestCopyNoCluster(t *testing.T) {
 	if err := run([]string{"copy"}); err == nil {
 		t.Fatal("expected copy to fail without a reachable cluster")
-	}
-}
-
-// TestDoctorNoCluster: CR-7 — the doctor must NOT report healthy for an
-// unconfigured cluster. Before the fix it returned a healthy fake and passed;
-// now a missing connstring is a reachability FAIL, so the command must error.
-func TestDoctorNoCluster(t *testing.T) {
-	if err := run([]string{"doctor"}); err == nil {
-		t.Fatal("expected doctor to fail (report FAIL) without a reachable cluster, got nil")
 	}
 }
 
@@ -255,8 +247,8 @@ func TestHelpFlag(t *testing.T) {
 	if err := run([]string{"dry-run", "-h"}); err != nil {
 		t.Fatalf("dry-run -h: %v", err)
 	}
-	if err := run([]string{"doctor", "--source", "s", "--help"}); err != nil {
-		t.Fatalf("doctor --help: %v", err)
+	if err := run([]string{"dry-run", "--source", "s", "--help"}); err != nil {
+		t.Fatalf("dry-run --help: %v", err)
 	}
 	if err := run([]string{"run", "--bogus-flag"}); err == nil {
 		t.Fatal("expected error for unknown flag")

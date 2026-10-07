@@ -8,9 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,8 +33,6 @@ func TestMain(m *testing.M) {
 		pgtest.SetLivePool(clusters)
 		pgtest.LiveCreate = liveDBCreate
 		pgtest.LiveDrop = liveDBDrop
-		// The agents are the DEPLOYED package on the cluster hosts.
-		os.Setenv("GPSTREAM_AGENT_BIN_DIR", "/usr/bin")
 	}
 	os.Exit(m.Run())
 }
@@ -56,25 +52,11 @@ func setTwoAgentRunner(t *testing.T, m *manifest.Manager, cfg *config.Config, sr
 	m.SetTwoAgentRunner(manifest.NewInProcTwoAgentRunner(cfg))
 }
 
-// liveControlPorts returns a unique (source, dest) control-port pair for one
-// operation, drawn from a shared atomic counter so concurrent operations
-// (TestF02TwoDBConcurrentSnapshot runs two managers at once) never bind the
-// same control port on a shared cluster host. The 29000-29999 range is free
-// on the lab; the dest DATA port is auto (":0", self-assigned + reported in
-// the hello), so only the two control ports need to be reserved here.
-var liveControlPortBase atomic.Int64
-
-func liveControlPorts() (srcPort, dstPort int) {
-	base := 29000 + int(liveControlPortBase.Add(2))
-	return base + 1, base + 2
-}
-
-// applyLiveAgentConfig points the process runner at the DEPLOYED agents on the
-// source/destination cluster hosts (the DSN host is the agent host): SSH
-// launch as gpadmin, fixed routable control addrs (the controller dials them),
-// /usr/bin install dir. The dest data listener is left auto (":0"); the dest
-// agent's hello reports its routable data address, which the source agent and
-// the kernel segreceivers dial.
+// applyLiveAgentConfig points the process runner at the DEPLOYED agents on
+// the source/destination cluster hosts (the DSN host is the agent host): SSH
+// launch there (key-based, the SSH user). P1e: agent launch is CLI-only — the
+// SSH hosts are the whole config; control/data addrs are controller-allocated
+// (auto), no runas, no key, no install dir.
 func applyLiveAgentConfig(cfg *config.Config, srcDSN, dstDSN string) {
 	srcHost := dsnHost(srcDSN)
 	dstHost := dsnHost(dstDSN)
@@ -84,20 +66,6 @@ func applyLiveAgentConfig(cfg *config.Config, srcDSN, dstDSN string) {
 	}
 	cfg.SourceAgentSSH = user + "@" + srcHost
 	cfg.DestAgentSSH = user + "@" + dstHost
-	// Unique per-operation control ports (concurrent ops on a shared host
-	// must not collide); the src/dst agents are on different clusters.
-	srcPort, dstPort := liveControlPorts()
-	cfg.SourceControlAddr = net.JoinHostPort(srcHost, strconv.Itoa(srcPort))
-	cfg.DestControlAddr = net.JoinHostPort(dstHost, strconv.Itoa(dstPort))
-	if runas := os.Getenv("GP6_LAB_SSH_RUNAS"); runas != "" {
-		cfg.AgentSSHRunAs = runas
-	} else {
-		cfg.AgentSSHRunAs = "gpadmin"
-	}
-	if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
-		cfg.AgentSSHKey = key
-	}
-	cfg.AgentBinDir = "/usr/bin"
 }
 
 // dsnHost extracts "host=<h>" from a keyword connection string.
@@ -145,45 +113,27 @@ func dsnDBName(dsn string) string {
 	return ""
 }
 
-// liveCLIEnv returns the GPSTREAM_* env vars a `gpstream` CLI subprocess
-// (f02, crash-matrix) needs to drive the DEPLOYED agents over SSH in live
-// mode: the source/dest agent hosts (parsed from the DSNs), the runas user,
-// the SSH key, the install dir, and the fixed control addrs. In local mode it
-// returns nil (the convention-resolved local agents, no SSH).
-func liveCLIEnv(t *testing.T, srcDSN, dstDSN string) []string {
+// liveCLIArgs returns the CLI flags a `gpstream` CLI subprocess (f02,
+// crash-matrix) needs to drive the DEPLOYED agents over SSH in live mode:
+// --source-agent-ssh / --dest-agent-ssh with the agent hosts (parsed from the
+// DSNs). P1e: agent launch is CLI-only (the Inc2c env vars are gone) — no
+// runas, no key (default ~/.ssh keys), no install dir (packaged name on PATH),
+// no operator control addrs (the controller allocates them). In local mode it
+// returns nil (the in-process runner launches no agents).
+func liveCLIArgs(t *testing.T, srcDSN, dstDSN string) []string {
 	t.Helper()
 	if !pgtest.LiveMode() {
 		return nil
 	}
-	env := []string{
-		"GPSTREAM_AGENT_BIN_DIR=/usr/bin",
-	}
-	applyLiveAgentConfigToEnv(&env, srcDSN, dstDSN)
-	return env
-}
-
-// applyLiveAgentConfigToEnv appends the SSH-launch GPSTREAM_* vars to env
-// (the same values applyLiveAgentConfig sets on a *config.Config), including
-// a unique per-operation control-port pair from the shared counter.
-func applyLiveAgentConfigToEnv(env *[]string, srcDSN, dstDSN string) {
 	srcHost := dsnHost(srcDSN)
 	dstHost := dsnHost(dstDSN)
 	user := os.Getenv("GP6_LAB_SSH_USER")
 	if user == "" {
 		user = "gp"
 	}
-	srcPort, dstPort := liveControlPorts()
-	*env = append(*env,
-		"GPSTREAM_SOURCE_AGENT_SSH="+user+"@"+srcHost,
-		"GPSTREAM_DEST_AGENT_SSH="+user+"@"+dstHost,
-		"GPSTREAM_SOURCE_CONTROL_ADDR="+net.JoinHostPort(srcHost, strconv.Itoa(srcPort)),
-		"GPSTREAM_DEST_CONTROL_ADDR="+net.JoinHostPort(dstHost, strconv.Itoa(dstPort)),
-	)
-	if runas := os.Getenv("GP6_LAB_SSH_RUNAS"); runas != "" {
-		*env = append(*env, "GPSTREAM_AGENT_SSH_RUNAS="+runas)
-	}
-	if key := os.Getenv("GP6_LAB_SSH_KEY"); key != "" {
-		*env = append(*env, "GPSTREAM_AGENT_SSH_KEY="+key)
+	return []string{
+		"--source-agent-ssh", user + "@" + srcHost,
+		"--dest-agent-ssh", user + "@" + dstHost,
 	}
 }
 

@@ -7,7 +7,7 @@ GOFLAGS ?= -mod=mod
 # fallback resolves it (ADR-000).
 export GOPROXY ?= https://proxy.golang.org,direct
 
-.PHONY: all build cross amd64 test cover vet fmt doctor selftest man-pages package dist clean
+.PHONY: all build cross amd64 test cover vet fmt selftest man-pages package dist clean
 
 all: build
 
@@ -33,9 +33,6 @@ vet:
 fmt:
 	gofmt -l .
 	@gofmt -w .
-
-doctor: build
-	./$(BIN) doctor
 
 selftest: build
 	./$(BIN) selftest
