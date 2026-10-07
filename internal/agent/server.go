@@ -243,7 +243,17 @@ func (s *SourceServer) serveControl(l net.Listener) {
 		}
 		line, rerr := r.ReadBytes('\n')
 		if rerr != nil {
-			return // controller closed the control conn (run end / stop)
+			// Controller closed the control conn (run end) or was killed.
+			// WAIT for the in-flight ops before exiting: the data path is
+			// independent of the control conn (F-02), so an in-flight COPY
+			// must finish (the destination commits the staging) BEFORE this
+			// function returns and the agent's main calls srv.Close() —
+			// which closes the source PG pool and would cut the COPY short.
+			// (The old serial control loop had this property implicitly: it
+			// ran the stream op inline, so the loop only exited after the
+			// op's report.)
+			s.opsWg.Wait()
+			return
 		}
 		var probe struct {
 			Op    string `json:"op"`
@@ -890,7 +900,13 @@ func (s *SourceServer) teardownPoolLocked() {
 		}
 	}
 	for i := range s.persConns {
-		s.persConns[i] = nil
+		// Closing the connection (not just the sender) makes the destination's
+		// serve loop on that channel unblock: its ReceiveUnit hits EOF and the
+		// loop exits, so the channel slot frees for the source's re-dial.
+		if s.persConns[i] != nil {
+			_ = s.persConns[i].Close()
+			s.persConns[i] = nil
+		}
 	}
 	s.persReady = false
 }

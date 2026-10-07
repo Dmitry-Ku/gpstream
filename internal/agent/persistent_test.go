@@ -188,11 +188,11 @@ func TestPersistentRedialBudget(t *testing.T) {
 	// destination): the next ensurePersistent must fail FAST, without a dial.
 	s.persFails = s.reconnectBudget()
 	start := time.Now()
-	if err := s.ensurePersistent(context.Background(), deadAddr); err == nil {
-		t.Fatal("ensurePersistent with an exhausted budget: want an error, got nil")
+	if err := s.ensurePersistentPool(context.Background(), deadAddr); err == nil {
+		t.Fatal("ensurePersistentPool with an exhausted budget: want an error, got nil")
 	}
 	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("exhausted-budget ensurePersistent took %v, want fast-fail (<5s)", d)
+		t.Fatalf("exhausted-budget ensurePersistentPool took %v, want fast-fail (<5s)", d)
 	}
 	if s.persFails != s.reconnectBudget() {
 		t.Fatalf("persFails = %d after an exhausted-budget check, want it capped at the budget (%d)", s.persFails, s.reconnectBudget())
@@ -204,14 +204,16 @@ func TestPersistentRedialBudget(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 	s.persistMu.Lock()
-	s.persConn = a
-	s.persSnd = NewPersistentSender(a, 0)
+	s.persReady = true
+	s.persN = 1
+	s.persConns = []net.Conn{a}
+	s.persSnds = []*PersistentSender{NewPersistentSender(a, 0)}
 	s.persistMu.Unlock()
-	if err := s.ensurePersistent(context.Background(), deadAddr); err != nil {
-		t.Fatalf("ensurePersistent with a live channel: want nil, got %v", err)
+	if err := s.ensurePersistentPool(context.Background(), deadAddr); err != nil {
+		t.Fatalf("ensurePersistentPool with a live channel: want nil, got %v", err)
 	}
 	// The live channel is still intact (not torn down by the budget check).
-	if s.persSnd == nil {
+	if len(s.persSnds) != 1 || s.persSnds[0] == nil {
 		t.Fatal("live channel was torn down by the budget check")
 	}
 }

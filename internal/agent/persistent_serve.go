@@ -22,7 +22,10 @@ import (
 // staging→COPY→swap sequence Serve() performs on a per-unit connection, but
 // the unit arrives over the long-lived connection (delimited by UnitBegin/
 // Trailer frames) instead of a fresh TCP+TLS+UnitSpec handshake.
-func ServePersistentUnit(ctx context.Context, dq *pg.Conn, da *dest.Agent, rcv *PersistentReceiver, swap bool, streamTimeout time.Duration) (DestResult, error) {
+// ServePersistentUnit serves ONE unit off a persistent coordinator channel
+// (P1c): it receives the unit and serves it (ServeUnitData). Kept for the
+// one-shot / test callers that drive a single unit on their own connection.
+func ServePersistentUnit(ctx context.Context, dq pg.StreamingQuerier, da *dest.Agent, rcv *PersistentReceiver, swap bool, streamTimeout time.Duration) (DestResult, error) {
 	var out DestResult
 	if streamTimeout <= 0 {
 		streamTimeout = 6 * time.Hour
@@ -33,6 +36,21 @@ func ServePersistentUnit(ctx context.Context, dq *pg.Conn, da *dest.Agent, rcv *
 		return out, fmt.Errorf("persistent serve: receive unit: %w", err)
 	}
 	out.Spec = spec
+	res, err := ServeUnitData(ctx, dq, da, spec, data, swap, streamTimeout)
+	res.Spec = spec
+	return res, err
+}
+
+// ServeUnitData is the data half of a persistent-channel unit serve (P1d):
+// staging DDL + COPY (+ inline digest) + the swap, on the destination
+// connection q. The persistent-channel serve loop (DestServer) calls it for
+// every unit off a channel; the staging table is created per unit, so
+// concurrent units (different tables) never collide.
+func ServeUnitData(ctx context.Context, dq pg.StreamingQuerier, da *dest.Agent, spec UnitSpec, data *unitDataReader, swap bool, streamTimeout time.Duration) (DestResult, error) {
+	var out DestResult
+	if streamTimeout <= 0 {
+		streamTimeout = 6 * time.Hour
+	}
 
 	sctx, cancel := context.WithTimeout(ctx, streamTimeout)
 	defer cancel()
