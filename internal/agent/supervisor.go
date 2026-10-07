@@ -82,6 +82,12 @@ type UnitReportReq struct {
 	// VerifyDigest asks each mini to tee the data-path digest (the supervisor
 	// combines the per-segment accumulators).
 	VerifyDigest bool
+	// SourceSegments (S) — how many source segreceivers stream sub-streams to
+	// each mini-agent (0 or 1 = direct: one slice; >1 = routed mesh, P4).
+	SourceSegments int32 `json:"source_segments,omitempty"`
+	// Workers (W) — sub-streams per source segment (each source segment fans
+	// its rows to a destination segment over W sub-streams).
+	Workers int `json:"workers,omitempty"`
 }
 
 // CombinedUnitResult is the supervisor's per-unit report after combining the
@@ -295,14 +301,16 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 			mc := s.minis[seg]
 			s.mu.Unlock()
 			mreq := MiniUnitReq{
-				Op:           "mini-unit",
-				ReqID:        req.ReqID,
-				UnitID:       req.UnitID,
-				JobID:        req.JobID,
-				Schema:       req.Schema,
-				Staging:      req.Staging,
-				Compress:     req.Compress,
-				VerifyDigest: req.VerifyDigest,
+				Op:             "mini-unit",
+				ReqID:          req.ReqID,
+				UnitID:         req.UnitID,
+				JobID:          req.JobID,
+				Schema:         req.Schema,
+				Staging:        req.Staging,
+				Compress:       req.Compress,
+				VerifyDigest:   req.VerifyDigest,
+				SourceSegments: req.SourceSegments,
+				Workers:        req.Workers,
 			}
 			if werr := SendLine(mc.w, mreq); werr != nil {
 				results <- segResult{seg: seg, err: fmt.Errorf("send mini-unit: %w", werr)}

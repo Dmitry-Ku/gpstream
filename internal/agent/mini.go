@@ -138,6 +138,12 @@ type MiniUnitReq struct {
 	Staging      string `json:"staging"`
 	Compress     string `json:"compress"`
 	VerifyDigest bool   `json:"verify_digest"`
+	// SourceSegments (S) — how many source segreceivers stream sub-streams to
+	// this mini-agent for this unit (0 or 1 = direct: exactly one slice).
+	SourceSegments int32 `json:"source_segments,omitempty"`
+	// Workers (W) — sub-streams per source segment (each source segment fans
+	// its rows to this segment over W sub-streams).
+	Workers int `json:"workers,omitempty"`
 }
 
 // MiniUnitResp is the mini-agent's per-unit report over the report channel.
@@ -267,7 +273,14 @@ func ServeMini(ctx context.Context, o MiniOptions) (MiniResult, error) {
 		}
 		switch req.Op {
 		case "mini-unit":
-			resp := serveMiniUnit(ctx, o, l, req)
+			// P4: routed (S>1) units take the S×W merge path; direct units
+			// take the P2 single-slice path.
+			var resp MiniUnitResp
+			if req.SourceSegments > 1 {
+				resp = serveMiniUnitRouted(ctx, o, l, req)
+			} else {
+				resp = serveMiniUnit(ctx, o, l, req)
+			}
 			out.UnitsServed++
 			out.Rows += resp.Rows
 			out.Wire += resp.Wire

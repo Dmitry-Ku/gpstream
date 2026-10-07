@@ -7,6 +7,48 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (P4)
+
+- **Routed mesh (S≠D) — the mini-agent accepts and merges S×W sub-streams.**
+  The P2/P3 mesh was DIRECT_1TO1 (one source slice per destination segment).
+  P4 adds the ROUTED (S≠D) shape on the same per-segment mesh: S source
+  segreceivers each fan their rows to D destination segments over W
+  sub-streams (the source's `RoutedSender`: d = the destination segment the
+  row belongs to, w = per-pair round-robin), and each destination segment's
+  mini-agent MERGES the S×W sub-streams into one binary-COPY stream loaded by
+  a single utility-mode COPY (the same merge `ServeRouted` performs on the
+  coordinator for the P9 non-mesh routed path; here it runs on the segment
+  host — design 04.10). Changes:
+  - `internal/transfer/segstream/destaddr.go` (`ParseDestAddrs`): the
+    segreceiver's `--dest-addr` is now an ADDRESS BOOK — either one host:port
+    (broadcast to the destination AGENT, P9, unchanged behavior) or D
+    comma-separated host:port entries (one per destination segment's
+    MINI-AGENT data endpoint, mesh). Any other shape is a hard error.
+  - `cmd/gpstream-segreceiver`: routed mode dials the per-segment grid
+    (`grid[d]` for sub-stream (d,w)) instead of one broadcast address, so the
+    cluster carries S×D×W segment-to-mini-agent streams and NEITHER cluster
+    coordinator is in the data path.
+  - `internal/agent/mini_routed.go` (`serveMiniUnitRouted`): accepts the S×W
+    compressed sub-stream connections, one `SliceStripper` per sub-stream
+    (strips the sub-stream's own header/EOF) all writing the single
+    utility-COPY pipe under one lock, tees the destination digest over the
+    MERGED stream (header once + rows + EOF once = a valid binary-COPY
+    payload), and reports `srcContrib = XOR over the S×W sub-stream trailers`
+    + `dstAcc` (both row-order-independent, so the merge order is immaterial,
+    FR-02). `MiniUnitReq` gains `SourceSegments`/`Workers` (the supervisor's
+    `UnitReportReq` carries them); the direct (S≤1) path is unchanged.
+  - Acceptance: `tests/integration/two_agent_mesh_routed_test.go` (S=3, D=3,
+    W=2, 30k rows, zstd, verify on): S real `RoutedSender` sources fan to D
+    real `ServeMini` minis on separate pgtest clusters emulating D segment
+    hosts; asserts combined rows == seeded, perSeg covers every row once
+    (disjoint and complete across the S×D×W sub-streams), wire < logical
+    (compressed on the network), each staging slice's count == PerSeg, and
+    BOTH combined srcDigest and dstDigest == the buffered reference digest
+    (XOR_D == the full accumulator). `internal/transfer/segstream/
+    destaddr_test.go` covers the address-book parse (broadcast, D-list, and
+    the hard-error shapes). The live S≠D A→D multi-segment validation is the
+    P5 live increment (SVG-topology confirmation rule).
+
 ### Added (P3)
 
 - **Supervisor in the dest-agent (direct_1to1 mesh coordinator side)** — the

@@ -298,6 +298,15 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 		fail("route-key: no keys parsed")
 	}
 
+	// P4 mesh routed: --dest-addr is either one host:port (broadcast to the
+	// destination AGENT, P9) or D comma-separated host:port entries (one per
+	// destination segment's MINI-AGENT data endpoint, mesh). The grid maps
+	// sub-stream (d, w) -> entry d; each sub-stream dials grid[d].
+	grid, gerr := segstream.ParseDestAddrs(destAddr, D)
+	if gerr != nil {
+		fail("dest-addr: %v", gerr)
+	}
+
 	mode, level, perr := compress.Parse(compressMode)
 	if perr != nil {
 		if compressMode == "" {
@@ -317,16 +326,16 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 		for d := 0; d < D; d++ {
 			conns[d] = make([]net.Conn, W)
 			for w := 0; w < W; w++ {
-				raw, derr := net.DialTimeout("tcp", destAddr, 10*time.Second)
+				raw, derr := net.DialTimeout("tcp", grid[d], 10*time.Second)
 				if derr != nil {
-					return derr
+					return fmt.Errorf("dest segment %d: %w", d, derr)
 				}
 				var conn net.Conn = raw
 				if transfer.TLSEnabled(sslCert, sslKey, sslCA) {
-					host, herr := hostOf(destAddr)
+					host, herr := hostOf(grid[d])
 					if herr != nil {
 						_ = raw.Close()
-						return fmt.Errorf("tls: bad --dest-addr %q: %v", destAddr, herr)
+						return fmt.Errorf("tls: bad --dest-addr %q (segment %d): %v", grid[d], d, herr)
 					}
 					ccfg, cerr := transfer.ClientTLSConfig(host, sslCert, sslKey, sslCA, "")
 					if cerr != nil {
@@ -385,7 +394,7 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 	for d := 0; d < D; d++ {
 		dataConns[d] = make([]transfer.Pipe, W)
 		for w := 0; w < W; w++ {
-			dataConns[d][w] = wrapFrameAck(ctx, fail, conns[d][w], destAddr, sslCert, sslKey, sslCA, ackTimeout, maxReconnects, retransmitMax, on,
+			dataConns[d][w] = wrapFrameAck(ctx, fail, conns[d][w], grid[d], sslCert, sslKey, sslCA, ackTimeout, maxReconnects, retransmitMax, on,
 				transfer.StreamID{JobID: uint32(jobID), UnitID: uint32(unitID), Content: int16(contentID), DstContent: int16(d), Worker: int32(w)})
 		}
 	}
