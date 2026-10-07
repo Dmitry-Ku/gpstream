@@ -166,3 +166,52 @@ func copyFromReader(w *bytes.Buffer, r interface{ Read([]byte) (int, error) }) (
 		}
 	}
 }
+
+// TestPersistentRedialBudget is the P1c re-dial budget acceptance (FR-06):
+// once a destination has stayed dead for the whole budget (MaxReconnects
+// consecutive units failing on a down channel), the next unit fails FAST
+// (no 30s dial window) so the manager can record the failure and the run can
+// resume. A live channel bypasses the budget (the reuse path short-circuits
+// before the check).
+func TestPersistentRedialBudget(t *testing.T) {
+	// A local port that refuses instantly (nothing listens).
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadAddr := l.Addr().String()
+	_ = l.Close() // nothing dials it: every dial is refused
+
+	s := &SourceServer{opts: ServerOptions{MaxReconnects: 2, ConnectTimeout: time.Second}}
+
+	// Exhaust the budget (as if two consecutive units failed on the dead
+	// destination): the next ensurePersistent must fail FAST, without a dial.
+	s.persFails = s.reconnectBudget()
+	start := time.Now()
+	if err := s.ensurePersistent(context.Background(), deadAddr); err == nil {
+		t.Fatal("ensurePersistent with an exhausted budget: want an error, got nil")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("exhausted-budget ensurePersistent took %v, want fast-fail (<5s)", d)
+	}
+	if s.persFails != s.reconnectBudget() {
+		t.Fatalf("persFails = %d after an exhausted-budget check, want it capped at the budget (%d)", s.persFails, s.reconnectBudget())
+	}
+
+	// A live channel bypasses the budget (the reuse path short-circuits
+	// before the check): a recovered destination re-serves the next unit.
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	s.persistMu.Lock()
+	s.persConn = a
+	s.persSnd = NewPersistentSender(a, 0)
+	s.persistMu.Unlock()
+	if err := s.ensurePersistent(context.Background(), deadAddr); err != nil {
+		t.Fatalf("ensurePersistent with a live channel: want nil, got %v", err)
+	}
+	// The live channel is still intact (not torn down by the budget check).
+	if s.persSnd == nil {
+		t.Fatal("live channel was torn down by the budget check")
+	}
+}

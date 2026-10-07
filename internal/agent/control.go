@@ -48,6 +48,15 @@ type StreamReq struct {
 	// controller verifies against the destination's inline digest without
 	// re-reading either table. Set by the manager when --verify is on.
 	VerifyDigest bool `json:"verify_digest"`
+	// Persistent (P1c) routes the unit over the persistent coordinator data
+	// channel: the source holds ONE connection to the destination's
+	// dedicated persistent-coordinator listener for the whole run and sends
+	// the unit as a UnitBegin frame + framed data + Trailer (no per-unit
+	// dial/UnitSpec/close). DestAddr is then the persistent-coordinator
+	// listener address (from the destination hello's Persist field). False
+	// (the one-shot bench / legacy per-unit path) dials DestAddr fresh and
+	// sends the legacy UnitSpec header + framed stream.
+	Persistent bool `json:"persistent,omitempty"`
 }
 
 // OnSegmentReq is the controller's per-unit instruction for the P4

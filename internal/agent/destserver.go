@@ -31,13 +31,18 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/dest"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -46,6 +51,13 @@ type DestHello struct {
 	Op      string `json:"op"` // "hello"
 	Data    string `json:"data"`
 	Control string `json:"control"`
+	// Persist (P1c) is the dedicated persistent-coordinator data listener's
+	// address: the source agent dials it ONCE per run and keeps the
+	// connection for every coordinator unit (the per-unit dial + UnitSpec
+	// header + close are eliminated). Empty when the listener is off
+	// (legacy builds / the one-shot single-unit modes, which have no
+	// persistent channel).
+	Persist string `json:"persist,omitempty"`
 }
 
 // DestServeReq is the controller's per-unit instruction to a long-lived
@@ -127,10 +139,28 @@ type DestServerOptions struct {
 	// carries its parameters.
 	FrameAck     bool
 	ReliablePipe transfer.ReliablePipeConfig
+	// PersistListen (P1c) is the dedicated persistent-coordinator data
+	// listener address (host:port; :0 = auto-pick, reported in the hello).
+	// Empty = the listener is off (the legacy per-unit coordinator path is
+	// used; the hello's Persist field is empty). When set, the listener
+	// accepts the ONE persistent coordinator connection and serves its
+	// units sequentially (ReceiveUnit -> staging -> COPY -> unit-done).
+	// The data-plane TLS settings apply to it exactly as to the mesh data
+	// listener.
+	PersistListen string
+	// RunCtx, when set, is the base context every serve is bounded by (in
+	// addition to AcceptTimeout/StreamTimeout). The IN-PROC runner sets it to
+	// the controller's run context so a run abort / crash-simulation (a soft
+	// ctx cancel) interrupts an in-flight unit's COPY exactly as the legacy
+	// per-unit agent.Serve(ctx) did (the process runner leaves it nil: its
+	// agent is a separate process whose serves are bounded by its own signal
+	// ctx, and a crash is a hard kill, not a cancel).
+	RunCtx context.Context
 }
 
 // DestServer is the long-lived destination agent (one data + one control
-// listener for the run).
+// listener for the run; plus the P1c dedicated persistent-coordinator
+// listener when enabled).
 type DestServer struct {
 	opts DestServerOptions
 	// dataL is the PLAIN listener; tlsL (when data TLS is on) is the wrapped
@@ -138,6 +168,25 @@ type DestServer struct {
 	dataL net.Listener
 	tlsL  net.Listener
 	ctrlL net.Listener
+	// persistL (P1c): the dedicated persistent-coordinator listener (plain
+	// when data TLS is off, TLS-wrapped when on). nil = off.
+	persistL net.Listener
+	// dq (P1c): the destination pg conn the persistent serve uses (nil when
+	// the persist listener is off).
+	dq *pg.Conn
+	// runCtx: the base context every serve is bounded by (RunCtx when set,
+	// else context.Background() — the process-runner behavior).
+	runCtx context.Context
+	// persConn (P1c): the live persistent coordinator connection (nil = none
+	// up yet / broken). persWait is closed whenever a connection is stored
+	// (takePersConn waits on it); a fresh unclosed one is created each time.
+	persMu   sync.Mutex
+	persConn *persConnW
+	persWait chan struct{}
+	// persAccepts (P1c): the number of persistent coordinator connections
+	// accepted so far (the first unit's dial + one per re-dial after a
+	// break) — a runtime signal that the persistent channel is in use.
+	persAccepts atomic.Int64
 
 	ctrlDone chan struct{}
 	stopOnce sync.Once
@@ -161,7 +210,20 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 		_ = dataL.Close()
 		return nil, fmt.Errorf("dest server: control listen %s: %w", o.ControlListen, err)
 	}
-	s := &DestServer{opts: o, dataL: dataL, ctrlL: ctrlL, ctrlDone: make(chan struct{})}
+	var persistL net.Listener
+	if o.PersistListen != "" {
+		persistL, err = o.bindListener(o.PersistListen)
+		if err != nil {
+			_ = dataL.Close()
+			_ = ctrlL.Close()
+			return nil, fmt.Errorf("dest server: persist listen %s: %w", o.PersistListen, err)
+		}
+	}
+	runCtx := context.Background()
+	if o.RunCtx != nil {
+		runCtx = o.RunCtx
+	}
+	s := &DestServer{opts: o, dataL: dataL, ctrlL: ctrlL, persistL: persistL, ctrlDone: make(chan struct{}), runCtx: runCtx}
 	if transfer.TLSEnabled(o.ControlTLSCert, o.ControlTLSKey, o.ControlTLSCA) {
 		ccfg, cerr := transfer.ServerTLSConfig(o.ControlTLSCert, o.ControlTLSKey, o.ControlTLSCA, "")
 		if cerr != nil {
@@ -177,6 +239,28 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 			return nil, fmt.Errorf("dest server: data tls config: %w", terr)
 		}
 		s.tlsL = segstream.HandshakeFilter(tls.NewListener(dataL, cfg))
+		if s.persistL != nil {
+			// The persistent channel is the SAME data-plane TLS as the mesh
+			// data listener (the source agent is the client either way).
+			pcfg, perr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
+			if perr != nil {
+				s.Close()
+				return nil, fmt.Errorf("dest server: persist tls config: %w", perr)
+			}
+			s.persistL = tls.NewListener(s.persistL, pcfg)
+		}
+	}
+	// P1c: the destination pg connection the persistent serve uses (staging
+	// DDL, the COPY, the swap) + the persistent-coordinator accept loop.
+	if s.persistL != nil {
+		dq, derr := pg.NewConn(context.Background(), o.DestConn, o.SSLCert, o.SSLKey, o.SSLCA, o.SSLMinTLS)
+		if derr != nil {
+			s.Close()
+			return nil, fmt.Errorf("dest server: connect dest (persistent serve): %w", derr)
+		}
+		s.dq = dq
+		s.persWait = make(chan struct{})
+		go s.acceptPersistent()
 	}
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
 	return s, nil
@@ -195,7 +279,41 @@ func (o DestServerOptions) bindListener(addr string) (net.Listener, error) {
 
 // Hello is the agent's first control message (its real bound addresses).
 func (s *DestServer) Hello() DestHello {
-	return DestHello{Op: "hello", Data: s.DataAddr(), Control: s.ControlAddr()}
+	h := DestHello{Op: "hello", Data: s.DataAddr(), Control: s.ControlAddr()}
+	if s.persistL != nil {
+		h.Persist = s.PersistAddr()
+	}
+	return h
+}
+
+// PersistAccepts is the number of persistent coordinator connections the
+// server has accepted (the first unit's dial + one per re-dial after a
+// break). A test signal that the persistent channel is actually in use.
+func (s *DestServer) PersistAccepts() int64 {
+	if s.persistL == nil {
+		return 0
+	}
+	return s.persAccepts.Load()
+}
+
+// PersistAddr is the dedicated persistent-coordinator listener's real bound
+// address (routable, like DataAddr). Empty when the listener is off.
+func (s *DestServer) PersistAddr() string {
+	if s.persistL == nil {
+		return ""
+	}
+	raw := s.persistL.Addr().String()
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return raw
+	}
+	if host != "0.0.0.0" && host != "::" && host != "[::]" {
+		return raw
+	}
+	if ip, ierr := primaryIPv4(); ierr == nil {
+		return net.JoinHostPort(ip, port)
+	}
+	return raw
 }
 
 // DataAddr / ControlAddr are the real bound listener addresses. DataAddr
@@ -249,11 +367,49 @@ func primaryIPv4() (string, error) {
 // the run was released, or the listeners failed).
 func (s *DestServer) Done() <-chan struct{} { return s.ctrlDone }
 
+// Kill simulates an EXTERNAL death of the agent's network plane (a SIGKILL
+// analog for tests): the listeners (control + data + persistent) and the
+// live persistent connection are closed hard, WITHOUT a graceful release and
+// WITHOUT closing the destination pg connection (the in-process agent has no
+// process to kill; the pg conn is closed when the test's cluster stops). An
+// in-flight unit's data COPY breaks on the closed persistent connection, so
+// the unit fails and the surviving partial staging is left for the resume
+// (FR-07). Unlike Close, Kill never waits on the control loop (which may be
+// blocked in a unit's serve) and never touches the pg conn (which the
+// in-flight COPY is using — closing it would race).
+func (s *DestServer) Kill() {
+	s.stopOnce.Do(func() {
+		_ = s.ctrlL.Close()
+		_ = s.dataL.Close()
+		if s.persistL != nil {
+			_ = s.persistL.Close()
+			s.persMu.Lock()
+			if w := s.persConn; w != nil {
+				_ = w.Conn.Close() // hard: the in-flight COPY's read breaks
+				s.persConn = nil
+			}
+			s.persMu.Unlock()
+		}
+	})
+}
+
 // Close shuts the listeners down (the agent's clean exit).
 func (s *DestServer) Close() {
 	s.stopOnce.Do(func() {
 		_ = s.ctrlL.Close()
 		_ = s.dataL.Close()
+		if s.persistL != nil {
+			_ = s.persistL.Close()
+			s.persMu.Lock()
+			if w := s.persConn; w != nil {
+				_ = w.Close()
+				s.persConn = nil
+			}
+			s.persMu.Unlock()
+		}
+		if s.dq != nil {
+			s.dq.Close()
+		}
 	})
 }
 
@@ -291,9 +447,10 @@ func (s *DestServer) serveControl(l net.Listener) {
 			if !ack.Ok {
 				continue
 			}
-			// Each unit gets its own context (the control loop is
-			// long-lived; the serve bounds itself with StreamTimeout).
-			done := s.serveOne(context.Background(), &req)
+			// Each unit is bounded by the run ctx (the in-proc runner's
+			// run context, so a run abort / crash-simulation interrupts an
+			// in-flight COPY) + the serve's own StreamTimeout.
+			done := s.serveOne(s.runCtx, &req)
 			if serr := SendLine(conn, done); serr != nil {
 				return
 			}
@@ -314,9 +471,22 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 	done.Op = "unit-done"
 	switch req.Kind {
 	case "coordinator":
-		// The UnitSpec rides the data connection (the source agent writes it
-		// as the first thing after dialing), so it is not in the control
-		// request.
+		if s.persistL != nil {
+			// P1c: the unit rides the run's ONE persistent coordinator
+			// channel (the UnitBegin frame carries the spec; the connection
+			// stays open between units). The control loop stays sequential:
+			// ReceiveUnit blocks until the source sends the UnitBegin during
+			// the Stream (after the ack), exactly like the legacy acceptOne
+			// blocked for the source's dial.
+			res, err := s.serveCoordinatorPersistent(ctx, req.Swap)
+			done.Rows, done.Logical, done.Swapped = res.Rows, res.Logical, res.Swapped
+			done.Digest = res.Digest
+			done.Ok = err == nil
+			done.Error = errString(err)
+			return done
+		}
+		// Legacy per-unit connection: the UnitSpec rides the data connection
+		// (the source agent writes it as the first thing after dialing).
 		res, err := Serve(ctx, DestOptions{
 			SharedListen:  s.dataListener(),
 			DestConn:      s.opts.DestConn,
@@ -403,6 +573,127 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		done.Error = "unknown serve kind " + req.Kind
 	}
 	return done
+}
+
+// P1c: the dedicated persistent-coordinator channel.
+//
+// The persist listener accepts the ONE persistent coordinator connection (the
+// source agent's channel) and stores it. The control loop is SEQUENTIAL (one
+// unit at a time) and drives the persistent serve SYNCHRONOUSLY: a
+// serve-unit(kind=coordinator) on a persistent-capable server blocks in
+// ReceiveUnit (the next UnitBegin, answering idle Pings) -> staging -> COPY,
+// exactly like the legacy serve blocks in acceptOne+ReadUnitSpec. The
+// connection is kept open between units (that is the point of P1c); on a
+// break the unit fails and the connection is re-accepted for the next unit
+// (the source re-dials; FR-07: the surviving staging is truncated + re-COPYd).
+
+// persConnW wraps a persistent coordinator connection and signals on Close
+// (the accept loop waits on it to know when to re-accept).
+type persConnW struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *persConnW) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// acceptPersistent accepts the persistent coordinator connection(s) and keeps
+// the latest one stored (s.persConn). It runs for the life of the server.
+func (s *DestServer) acceptPersistent() {
+	for {
+		conn, err := s.persistL.Accept()
+		if err != nil {
+			return // listener closed (run end / stop)
+		}
+		w := &persConnW{Conn: conn, closed: make(chan struct{})}
+		s.persAccepts.Add(1)
+		s.persMu.Lock()
+		old := s.persConn
+		s.persConn = w
+		ch := s.persWait
+		s.persWait = make(chan struct{})
+		s.persMu.Unlock()
+		if old != nil {
+			_ = old.Close() // a stale channel (the source re-dialed) — replace it
+		}
+		close(ch)  // wake waiters: a connection is now stored
+		<-w.closed // wait for this connection to be torn down, then re-accept
+	}
+}
+
+// takePersConn returns the live persistent coordinator connection, waiting
+// (bounded by ctx) until one is accepted if none is up yet (the first unit,
+// or a re-accept after a break).
+func (s *DestServer) takePersConn(ctx context.Context) (net.Conn, error) {
+	for {
+		s.persMu.Lock()
+		if c := s.persConn; c != nil {
+			s.persMu.Unlock()
+			return c.Conn, nil
+		}
+		ch := s.persWait
+		s.persMu.Unlock()
+		select {
+		case <-ch:
+			// A connection was stored: re-check (it may already be replaced).
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// dropPersConn tears down the persistent connection after a unit failure on
+// a broken channel (the accept loop re-accepts the source's re-dial). A unit
+// failure on a HEALTHY channel (e.g. a destination PG fault) keeps the
+// connection: the next unit re-streams over it.
+func (s *DestServer) dropPersConn(c net.Conn) {
+	s.persMu.Lock()
+	if w := s.persConn; w != nil && w.Conn == c {
+		s.persConn = nil
+	}
+	s.persMu.Unlock()
+	_ = c.Close()
+}
+
+// isConnError reports whether err is a data-connection failure (a broken
+// socket / a clean EOF) rather than a destination-side fault: only the former
+// requires re-accepting the persistent channel.
+func isConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}
+
+// serveCoordinatorPersistent serves ONE coordinator unit over the persistent
+// channel: wait for the channel (bounded by AcceptTimeout, like the legacy
+// acceptOne) -> ReceiveUnit (blocks on the unit's UnitBegin, answering idle
+// Pings) -> staging -> COPY (+ inline digest) -> the swap, when requested.
+func (s *DestServer) serveCoordinatorPersistent(ctx context.Context, swap bool) (DestResult, error) {
+	waitCtx, wcancel := context.WithTimeout(ctx, s.opts.AcceptTimeout)
+	conn, err := s.takePersConn(waitCtx)
+	wcancel()
+	if err != nil {
+		return DestResult{}, fmt.Errorf("persistent serve: wait for channel: %w", err)
+	}
+	res, err := ServePersistentUnit(ctx, s.dq, dest.New(s.dq), NewPersistentReceiver(conn, 0), swap, s.opts.StreamTimeout)
+	// Tear down the channel on a broken connection OR when the run context
+	// was cancelled (a run abort / crash-simulation): the in-flight unit's
+	// source-side COPY must then fail (its write hits the closed channel),
+	// unblocking the source agent's control loop for the release. A unit
+	// failure on a HEALTHY channel (a transient destination PG fault) keeps
+	// the connection: the next unit re-streams over it.
+	if err != nil && (isConnError(err) || ctx.Err() != nil) {
+		s.dropPersConn(conn) // re-accept the source's re-dial (or the run is over)
+	}
+	return res, err
 }
 
 // dataListener is the listener the serves accept from (the TLS-wrapped one

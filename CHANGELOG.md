@@ -7,6 +7,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added: persistent coordinator data channel (P1c)
+
+The coordinator (default `--copy-mode coordinator`) two-agent copy now rides
+ONE persistent source→destination data connection for the whole run instead
+of a fresh TCP+TLS+UnitSpec handshake per unit (≈4-5 RTT saved per unit —
+matters most on WAN RTT). The protocol is the existing frame v2 plus two
+control frames: a **UnitBegin** frame (carries the UnitSpec, which moves off
+"first bytes of the connection" into a frame) opens a unit, and the existing
+72-byte **Trailer** frame closes it (the connection is NOT closed between
+units); idle **Ping/Pong** frames (~30s watchdog) keep the channel alive and
+detect a dead peer. The frame-ack/retransmit transport is unchanged inside a
+unit, and per-unit checksums/digests are unchanged.
+
+The destination agent gets a **dedicated persistent-coordinator listener**
+(third listener, additive — the mesh data listener and its accepts are
+untouched, per the 06.10 fork decision). Its address is reported in the
+dest hello's new `persist` field; the long-lived source agent dials it once
+(at the first coordinator unit) and keeps the connection. Each coordinator
+unit is still driven by the unchanged control loop
+(`BeginServe` → source `Stream` → `WaitUnitDone`, serialized by the
+runner): the destination's serve blocks on the channel's next UnitBegin
+(exactly as it used to block in `acceptOne`), loads the unit
+(staging → COPY FROM → inline digest when `--verify on` → trailer row-count
+cross-check), and reports unit-done; the swap remains the manager's job.
+
+Resilience: a break mid-unit fails the unit (the source tears down the
+channel; the next unit — the manager's retry or the following unit — re-dials
+a fresh channel with backoff bounded by `--max-reconnects`). The destination
+truncates the surviving partial staging before re-loading the re-streamed
+unit (FR-07); a dead destination fails the unit so run-level resume (FR-06)
+retries it. The in-proc (local) runner now runs a long-lived destination
+server for coordinator units, so the persistent path is exercised by the
+local e2e suite; the mesh path (on_segment / routed) is unchanged. Covered by
+unit tests (protocol round-trip, flag isolation, multi-unit over one
+connection, ping tolerance, dest persistent-serve over a real PG) and
+manager-level e2e (12 tables over ONE persistent connection with `--verify
+on`, all digests verified; dest killed mid-COPY of a unit → the unit and the
+remaining units fail without aborting the run, a resume over a fresh channel
+completes them and truncates the partial staging, all 12 tables end correct).
+
 ### Added: small-table → coordinator fallback under --copy-mode on_segment (P1b)
 
 Under `--copy-mode on_segment`, a table whose estimated size (`pg_total_relation_size`, read once per table at planning) is below the existing `--small-table-threshold` now takes the **coordinator** data path instead of the segment-direct pipeline: the same single knob that auto-disables compression for tiny payloads (F-12) now also routes them off the mesh. The segment-direct path's fixed cost (S segreceivers, S destination connections, per-slice framing) does not pay back on a payload that does not even justify compression. The coordinator path carries the inline content digest (P9-E), so the small table verifies without a re-read for free. The decision is per unit (a run copies small tables through the coordinator and large ones through the mesh), is strict at the boundary (a table exactly at the threshold stays on the segment path), and is recorded in events.jsonl as `onsegment_coordinator_fallback {table, rows, bytes, threshold, reason}`. No new option; a zero threshold or an unknown size keeps the operator's mode. Covered by a boundary unit test and a local e2e (on_segment mode + a small table copies through the coordinator with the fallback event recorded), plus a live-gated e2e (small → coordinator + large → mesh in one run).

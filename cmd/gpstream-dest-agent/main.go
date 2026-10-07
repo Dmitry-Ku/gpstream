@@ -91,6 +91,10 @@ func main() {
 	dataListen := flag.String("data-listen", "0.0.0.0:0", "long-lived mode: data listener address host:port (0 = pick a free port; the real address is reported in the hello)")
 	ctrlListen := flag.String("control-listen", "0.0.0.0:0", "long-lived mode: control listener address host:port (0 = pick a free port)")
 	portRange := flag.String("port-range", "", "restrict auto-picked (port 0) listener ports to LO-HI (strict firewall); empty = no range (kernel picks)")
+	// P1c: the dedicated persistent-coordinator data listener (the source
+	// agent dials it ONCE per run; every coordinator unit rides the same
+	// connection). Empty = off (legacy per-unit coordinator connections).
+	persistListen := flag.String("persist-listen", "", "long-lived mode: persistent-coordinator listener address host:port (0 = pick a free port; the real address is reported in the hello); empty = off")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -119,6 +123,7 @@ func main() {
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
 			DataListen:     *dataListen,
 			ControlListen:  *ctrlListen,
+			PersistListen:  *persistListen,
 			PortAlloc:      portAlloc,
 			DestConn:       *dest,
 			SSLCert:        *sslCert,
@@ -142,8 +147,13 @@ func main() {
 		}
 		// Report the real bound addresses (auto :0 mode: the operator or
 		// the remote launch reads this line to learn the data endpoint).
-		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: serve data=%s control=%s ready\n",
-			srv.DataAddr(), srv.ControlAddr())
+		if pa := srv.PersistAddr(); pa != "" {
+			fmt.Fprintf(os.Stderr, "gpstream-dest-agent: serve data=%s control=%s persist=%s ready\n",
+				srv.DataAddr(), srv.ControlAddr(), pa)
+		} else {
+			fmt.Fprintf(os.Stderr, "gpstream-dest-agent: serve data=%s control=%s ready\n",
+				srv.DataAddr(), srv.ControlAddr())
+		}
 		// Block until the run ends (release / controller disconnect) or a
 		// signal.
 		select {
@@ -259,7 +269,7 @@ func main() {
 			StreamTimeout: *streamTO,
 			FrameAck:      *frameAck != "off",
 			ReliablePipe:  transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
-			})
+		})
 		if err != nil {
 			fail("%v", err)
 		}

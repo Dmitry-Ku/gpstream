@@ -60,10 +60,10 @@ func TestPersistentChannelDestServe(t *testing.T) {
 
 	// Two units of different shapes, streamed over the ONE connection.
 	units := []struct {
-		unitID uint32
-		table  string
+		unitID  uint32
+		table   string
 		staging string
-		rows   int
+		rows    int
 	}{
 		{1, "pers_t1", "_gs_pers_1", 5000},
 		{2, "pers_t2", "_gs_pers_2", 3000},

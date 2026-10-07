@@ -59,11 +59,11 @@ type PersistentSender struct {
 	conn  transfer.Pipe
 	jobID uint32
 
-	mu       sync.Mutex // serializes unit sends + ping writes (one writer at a time)
-	seq      uint64     // monotonically increasing frame seq (shared by units + pings)
-	closed   bool
-	pingCtx  context.Context
-	pingDone chan struct{} // non-nil once StartPing has launched the watchdog
+	mu            sync.Mutex // serializes unit sends + ping writes (one writer at a time)
+	seq           uint64     // monotonically increasing frame seq (shared by units + pings)
+	closed        bool
+	pingCtx       context.Context
+	pingDone      chan struct{} // non-nil once StartPing has launched the watchdog
 	pingEndCancel context.CancelFunc
 }
 
@@ -73,6 +73,15 @@ type PersistentSender struct {
 func NewPersistentSender(conn transfer.Pipe, jobID uint32) *PersistentSender {
 	pctx, pcancel := context.WithCancel(context.Background())
 	return &PersistentSender{conn: conn, jobID: jobID, pingCtx: pctx, pingEndCancel: pcancel}
+}
+
+// SetJobID sets the job id the channel's frames carry (the sender is created
+// before the run's job id is known; the source agent sets it per unit before
+// SendUnit). Safe to call concurrently with the ping loop.
+func (s *PersistentSender) SetJobID(id uint32) {
+	s.mu.Lock()
+	s.jobID = id
+	s.mu.Unlock()
 }
 
 // StartPing launches the idle-watchdog goroutine (a Ping every pingInterval).

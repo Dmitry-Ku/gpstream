@@ -118,6 +118,7 @@ func main() {
 			ControlTLSCA:   *ctrlCA,
 			ConnectTimeout: *connectTO,
 			StreamTimeout:  *streamTO,
+			MaxReconnects:  *maxReconnects, // P1c: persistent channel re-dial budget
 			FrameAck:       *frameAck != "off",
 			ReliablePipe:   transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 		})

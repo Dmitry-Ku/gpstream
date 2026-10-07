@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
@@ -244,6 +245,11 @@ type processTwoAgentRunner struct {
 	destCtrl     *agent.DestControlClient
 	destHandle   *launch.Handle
 	destDataAddr string // the dest agent's real data address (from its hello)
+	// destPersistAddr (P1c): the dest agent's dedicated persistent-
+	// coordinator listener address (from its hello). Empty when the agent
+	// has no persist listener (legacy build / off) -> coordinator units
+	// use the legacy per-unit connection.
+	destPersistAddr string
 	// streamMu serializes the WHOLE per-unit dest exchange
 	// (BeginServe -> source stream -> WaitUnitDone). The long-lived dest
 	// agent has ONE control socket and a SEQUENTIAL control loop (one
@@ -373,6 +379,15 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// P1c: the dedicated persistent-coordinator listener (a third listener;
+	// the source agent dials it ONCE per run and every coordinator unit
+	// rides the same connection). Local agents get a pre-bound loopback
+	// port; remote/dial-first agents use auto :0 (the agent restricts it to
+	// --port-range itself) — the hello reports the real address.
+	persistListen, perr := r.dataListen(r.cfg.DestAgentSSH, r.cfg.DestDialFirst, "")
+	if perr != nil {
+		return fmt.Errorf("two-agent: persist listen: %w", perr)
+	}
 	// --dest comes FIRST so the agent stays identifiable by its conn string
 	// (the crash-recovery test finds it via pgrep "<bin> --dest ").
 	dargs := []string{
@@ -380,6 +395,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--serve",
 		"--data-listen", dataAddr,
 		"--control-listen", destCtrlAddr,
+		"--persist-listen", persistListen,
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",
 		"--frame-ack", r.cfg.FrameAckArg(),
@@ -425,6 +441,9 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	if r.destDataAddr == "" {
 		r.destDataAddr = dataAddr
 	}
+	// P1c: the persistent-coordinator address (empty = the agent has no
+	// persist listener: coordinator units fall back to the per-unit conn).
+	r.destPersistAddr = client.Hello.Persist
 	return nil
 }
 
@@ -571,10 +590,17 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 	if !ack.Ok {
 		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
 	}
-	// 2. Instruct the source agent to stream the unit to the dest agent's
-	//    data address (the shared listener; unit_id rides the frames).
+	// 2. Instruct the source agent to stream the unit. P1c: when the dest
+	//    agent exposes a persistent-coordinator listener, the unit rides the
+	//    run's ONE persistent channel (UnitBegin + frames + Trailer, the
+	//    connection stays open); otherwise the legacy per-unit connection.
 	sreq := req.StreamReq
-	sreq.DestAddr = r.destDataAddr
+	if r.destPersistAddr != "" {
+		sreq.DestAddr = r.destPersistAddr
+		sreq.Persistent = true
+	} else {
+		sreq.DestAddr = r.destDataAddr
+	}
 	resp, err := r.ctrl.Stream(sreq)
 	if err != nil {
 		// Drain the in-flight serve so the next unit's BeginServe is clean.
@@ -872,6 +898,62 @@ type InProcTwoAgentRunner struct {
 	srv       *agent.SourceServer
 	ctrl      *agent.ControlClient
 	srcCancel context.CancelFunc
+	// P1c: the LONG-LIVED in-proc destination agent (one data + one control
+	// + one persistent-coordinator listener for the whole run). Coordinator
+	// units ride its persistent channel; mesh units (StreamSegment /
+	// StreamRouted) still use their per-unit serves.
+	dest       *agent.DestServer
+	destCtrl   *agent.DestControlClient
+	destCancel context.CancelFunc
+	// finalPersAccepts (P1c): the persistent-connection count captured when
+	// the dest agent is torn down (Release / KillDestAgent) — PersistAccepts
+	// falls back to it, so the count survives the runner's cleanup. Atomic:
+	// KillDestAgent runs in a foreign goroutine (the test's kill).
+	finalPersAccepts atomic.Int64
+	// streamMu serializes the whole per-unit dest exchange (BeginServe ->
+	// stream -> WaitUnitDone): the dest agent's control loop is sequential,
+	// so concurrent manager workers must not interleave (mirrors the
+	// process runner).
+	streamMu sync.Mutex
+}
+
+// KillDestAgent (P1c test hook) kills the in-proc destination agent the way
+// a SIGKILL kills the real one: its listeners (control + data + persistent)
+// and its pg connection are closed WITHOUT a graceful release, so an
+// in-flight unit's data COPY and control exchange break hard. The source
+// agent survives (a dest-process crash does not take the source down); the
+// next unit's Stream finds the dest gone and fails fast (the run continues,
+// the manager records the failures, and a resume with a fresh runner
+// completes them — the FR-06/FR-07 contract).
+func (r *InProcTwoAgentRunner) KillDestAgent() {
+	// No streamMu and no field writes: this simulates an EXTERNAL process
+	// death (no runner coordination) — a concurrent in-flight exchange may
+	// be using the client/server pointers, so only the objects are closed
+	// (Close is safe under concurrent use): the in-flight unit's
+	// WaitUnitDone/BeginServe unblock on the closed conns and fail the unit.
+	// The fields are niled by the runner's own Release (run end, no
+	// concurrency).
+	if c := r.destCtrl; c != nil {
+		_ = c.Close()
+	}
+	if d := r.dest; d != nil {
+		r.finalPersAccepts.Store(d.PersistAccepts())
+		d.Kill() // hard network-plane death (no pg-conn close: no race)
+	}
+	if c := r.destCancel; c != nil {
+		c()
+	}
+}
+
+// PersistAccepts (P1c) is the number of persistent coordinator connections
+// the in-proc dest agent has accepted (the first unit's dial + one per
+// re-dial after a break). A test signal that the persistent channel is in
+// use; 0 when the dest server is not started.
+func (r *InProcTwoAgentRunner) PersistAccepts() int64 {
+	if r.dest != nil {
+		return r.dest.PersistAccepts()
+	}
+	return r.finalPersAccepts.Load()
 }
 
 // NewInProcTwoAgentRunner builds an in-process two-agent runner for the
@@ -912,87 +994,118 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 		return fmt.Errorf("two-agent: dial in-proc control: %w", err)
 	}
 	r.ctrl = client
+
+	// P1c: the long-lived in-proc destination agent. Its dedicated
+	// persistent-coordinator listener is what the in-proc source agent
+	// dials for coordinator units (the mesh path keeps its per-unit
+	// serves). DstConn is read from the first unit's request at Stream
+	// time — but the agent needs a dest conn at start, so use cfg.Dest
+	// (the manager's destination; the per-unit DstConn is the same value).
+	dataAddr, releaseData, err := r.prebindData()
+	if err != nil {
+		return fmt.Errorf("two-agent: pre-bind in-proc dest data port: %w", err)
+	}
+	_ = releaseData // long-lived: the port stays bound for the run
+	persistAddr, releasePersist, err := r.prebindData()
+	if err != nil {
+		return fmt.Errorf("two-agent: pre-bind in-proc dest persist port: %w", err)
+	}
+	_ = releasePersist
+	ctlAddr, releaseCtl, err := r.prebindData()
+	if err != nil {
+		return fmt.Errorf("two-agent: pre-bind in-proc dest control port: %w", err)
+	}
+	_ = releaseCtl
+	dctx, dcancel := context.WithCancel(ctx)
+	r.destCancel = dcancel
+	dsrv, derr := agent.NewDestServer(agent.DestServerOptions{
+		DataListen:    dataAddr,
+		ControlListen: ctlAddr,
+		PersistListen: persistAddr,
+		PortAlloc:     r.portAlloc,
+		DestConn:      r.cfg.Dest,
+		AcceptTimeout: 5 * time.Minute,
+		StreamTimeout: 6 * time.Hour,
+		FrameAck:      r.cfg.FrameAckOn(),
+		ReliablePipe:  r.cfg.ReliablePipeConfig(),
+		// Bound the serves by the run context: a run abort / crash-simulation
+		// (a soft ctx cancel in local mode) interrupts an in-flight unit's
+		// COPY exactly as the legacy per-unit agent.Serve(ctx) did.
+		RunCtx: dctx,
+	})
+	if derr != nil {
+		dcancel()
+		return fmt.Errorf("two-agent: start in-proc dest server: %w", derr)
+	}
+	r.dest = dsrv
+	dclient, derr := agent.DialDestControl(dctx, dsrv.ControlAddr())
+	if derr != nil {
+		dcancel()
+		dsrv.Close()
+		return fmt.Errorf("two-agent: dial in-proc dest control: %w", derr)
+	}
+	r.destCtrl = dclient
 	return nil
 }
 
-// Stream launches a per-unit in-process destination agent (agent.Serve) on a
-// pre-bound port, instructs the source agent to stream the unit to it, and
-// waits for the destination to finish. The destination is the authoritative
-// row-count source; the wire volume comes from the source agent.
+// Stream drives one coordinator unit through the LONG-LIVED in-proc
+// destination agent (P1c): BeginServe (the agent acks immediately and blocks
+// on the persistent channel's next UnitBegin) -> the source agent streams the
+// unit over the run's ONE persistent coordinator channel -> WaitUnitDone.
+// The destination is the authoritative row-count source; the wire volume
+// comes from the source agent. The swap is NOT performed (the Manager does it).
 func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, error) {
-	listen, release, err := r.prebindData()
-	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: pre-bind data port: %w", err)
+	if r.dest == nil || r.destCtrl == nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: in-proc dest server not started")
 	}
-	// The per-unit data port is reused across units: release it as soon as the
-	// unit's listener is closed. Releasing early (before the dest goroutine has
-	// fully unwound) is safe — a later prebind that probes the still-bound port
-	// gets EADDRINUSE and skips to the next one.
-	defer release()
-	// 1. Launch the per-unit destination agent (agent.Serve, no swap).
-	dresCh := make(chan agent.DestResult, 1)
-	derrCh := make(chan error, 1)
-	go func() {
-		res, err := agent.Serve(ctx, agent.DestOptions{
-			Listen:        listen,
-			DestConn:      req.DstConn,
-			SSLCert:       req.DstCert,
-			SSLKey:        req.DstKey,
-			SSLCA:         req.DstCA,
-			Swap:          false,
-			AcceptTimeout: 5 * time.Minute,
-			StreamTimeout: 6 * time.Hour,
-			FrameAck:      r.cfg.FrameAckOn(),
-			ReliablePipe:  r.cfg.ReliablePipeConfig(),
-		})
-		if err != nil {
-			derrCh <- err
-			return
-		}
-		dresCh <- res
-	}()
-	fail := func(format string, a ...any) (int64, uint64, uint64, string, string, error) {
-		// Unblock the Serve accept (ctx cancel does not close the listener).
-		if c, lerr := net.Dial("tcp", listen); lerr == nil {
-			_ = c.Close()
-		}
-		select {
-		case <-derrCh:
-		case <-dresCh:
-		case <-time.After(2 * time.Second):
-		}
-		return 0, 0, 0, "", "", fmt.Errorf(format, a...)
+	// Serialize the whole exchange (see streamMu): the dest agent's control
+	// loop is sequential, so BeginServe/WaitUnitDone must not interleave
+	// across concurrent workers.
+	r.streamMu.Lock()
+	defer r.streamMu.Unlock()
+
+	// 1. Tell the long-lived dest agent to serve this unit on the persistent
+	//    channel. The ack returns immediately (the serve is running, blocked
+	//    on the next UnitBegin).
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator"})
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
+	}
+	if !ack.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
 	}
 
-	// 2. Instruct the source agent to stream this unit to the destination agent.
-	// The source agent retries its dial while the destination is still binding
-	// its listen socket (dialDestRetry), so there is no launch/dial race to
-	// wait out here.
+	// 2. Instruct the source agent to stream the unit over the persistent
+	//    channel (the dest's persist address, from its hello). The source
+	//    dials it on the first unit and keeps the connection for the run.
 	sreq := req.StreamReq
-	sreq.DestAddr = listen
+	sreq.DestAddr = r.dest.PersistAddr()
+	sreq.Persistent = true
 	resp, err := r.ctrl.Stream(sreq)
 	if err != nil {
-		return fail("two-agent: stream unit %d: %w", sreq.UnitID, err)
+		// Drain the in-flight serve so the next unit's BeginServe is clean.
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
-		return fail("two-agent: source agent stream unit %d: %s", sreq.UnitID, resp.Error)
+		_, _ = r.destCtrl.WaitUnitDone()
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
 
-	// 3. Wait for the destination to finish the COPY.
-	var dres agent.DestResult
-	select {
-	case derr := <-derrCh:
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %w", sreq.UnitID, derr)
-	case dres = <-dresCh:
-	case <-time.After(6*time.Hour + time.Minute):
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: timed out", sreq.UnitID)
+	// 3. Wait for the destination to finish the COPY (the unit-done report).
+	done, err := r.destCtrl.WaitUnitDone()
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
+	}
+	if !done.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
 	}
 
-	// 5. Destination row count is authoritative; wire volume from the source.
+	// Destination row count is authoritative; wire volume from the source.
 	// P9-E: return the inline content digests (both empty when the controller
 	// did not request verify): the source's (from the stream reply) and the
-	// destination's (from the Serve result), for the manager to compare.
-	return dres.Rows, resp.Wire, dres.Logical, resp.Digest, dres.Digest, nil
+	// destination's (from the unit-done report), for the manager to compare.
+	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
 }
 
 // StreamSegment (P4, in-proc) launches an in-process destination agent
@@ -1198,8 +1311,22 @@ func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table strin
 	return r.srv.Checksum(ctx, schema, table)
 }
 
-// Release ends the run (commits the source snapshot) and stops the source agent.
+// Release ends the run (commits the source snapshot) and stops the agents.
 func (r *InProcTwoAgentRunner) Release(ctx context.Context) error {
+	if r.destCtrl != nil {
+		_, _ = r.destCtrl.Release() // end the run on the dest agent (best effort)
+		_ = r.destCtrl.Close()
+		r.destCtrl = nil
+	}
+	if r.dest != nil {
+		r.finalPersAccepts.Store(r.dest.PersistAccepts())
+		r.dest.Close()
+		r.dest = nil
+	}
+	if r.destCancel != nil {
+		r.destCancel()
+		r.destCancel = nil
+	}
 	if r.ctrl != nil {
 		if _, err := r.ctrl.Release(); err != nil {
 			_ = r.ctrl.Close()
