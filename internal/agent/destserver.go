@@ -551,11 +551,15 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 			s.miniMapMu.Unlock()
 		}()
 	}
-	// 1F: the peer listener (supervisor mode): the source agent dials it ONCE
-	// before the first mesh unit to report its own + the segreceivers'
-	// versions; the cross-check runs on the destination (own + minis +
-	// source + segreceivers must be equal).
-	if o.PeerListen != "" && s.supervisor != nil {
+	// 1F/Phase 2: the peer listener (ALL serve modes): the source agent dials
+	// it to establish the persistent source->dest channel — the 1F version
+	// exchange (own + minis + source + segreceivers must be equal, supervisor
+	// mode) as the first message, then the read-only dst-query loop (2A plan,
+	// 2E resume, 2C dry-run: the destination runs each query on its LOCAL
+	// pool). The cross-check waits for the MiniMap in supervisor mode; in
+	// coordinator mode there are no minis (the check is own + source +
+	// segreceivers).
+	if o.PeerListen != "" {
 		pL, perr := o.bindListener(o.PeerListen)
 		if perr != nil {
 			s.Close()
@@ -777,9 +781,13 @@ func (s *DestServer) Hello() DestHello {
 	if s.supervisor != nil {
 		h.Report = s.supervisor.Addr()
 		h.MiniCount = s.opts.MiniCount
-		if s.peerL != nil {
-			h.Peer = s.peerL.Addr().String()
-		}
+	}
+	// Peer (1F/Phase 2): the peer listener address, reported in ALL serve
+	// modes (the source agent dials it for the persistent source->dest
+	// channel: the 1F version exchange + the read-only dst-query loop for
+	// plan/resume/dry-run).
+	if s.peerL != nil {
+		h.Peer = s.peerL.Addr().String()
 	}
 	return h
 }

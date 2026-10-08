@@ -353,9 +353,14 @@ func main() {
 			fail("invalid --port-range %q: %v", *portRange, perr)
 		}
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
-			DataListen:     *dataListen,
-			ControlListen:  *ctrlListen,
-			PersistListen:  *persistListen,
+			DataListen:    *dataListen,
+			ControlListen: *ctrlListen,
+			PersistListen: *persistListen,
+			// 1F/Phase 2: the peer listener (the source agent's persistent
+			// source->dest channel: the 1F version exchange + the read-only
+			// dst-query loop for plan/resume/dry-run). Present in coordinator
+			// mode too (the plan is built by the source agent in all modes).
+			PeerListen:     *peerListen,
 			PortAlloc:      portAlloc,
 			DestConn:       *dest,
 			SSLCert:        *sslCert,

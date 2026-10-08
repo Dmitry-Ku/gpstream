@@ -1351,11 +1351,45 @@ func cmdRun(args []string) error {
 	}
 	defer dstQ.Close()
 
-	// --timeout bounds the planning phase so a hung segment cannot stall the
-	// plan. The execution phase is bounded by the journal/ctx.
-	plctx, cancelPlan := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancelPlan()
-	p, err := plan.Build(plctx, &cfg, srcQ, dstQ)
+	// 2A (architecture 08.10): the PLAN IS BUILT ON THE SOURCE AGENT. The
+	// operation identity + journal + manager must exist FIRST (the manager
+	// owns the two agents, and mgr.Plan asks the source agent to run
+	// plan.Build — its LOCAL source pool + a destination querier proxied over
+	// the source->dest peer channel). The controller therefore opens NO direct
+	// destination connection for planning. (The srcQ/dstQ pools above are
+	// still used by the Manager's PER-UNIT catalog ops + the journal — those
+	// move to the agents in 2B.)
+	//
+	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
+	// <state-dir>/<operation-id>/journal.jsonl so status/resume/cleanup
+	// (which take only --operation-id/--state-dir) find it. When the operator
+	// did not pass --operation-id, a timestamp id is generated (UTC,
+	// chronologically sorted, collision-safe) so the state dir is a readable
+	// history of runs; "latest" is resolved on the read-side commands.
+	var idNote string
+	cfg.OperationID, idNote, err = resolveOperationID(cfg.OperationID, cfg.StateDir, true)
+	if err != nil {
+		return fmt.Errorf("run: %w", err)
+	}
+	journalPath := filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
+	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
+		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(journalPath), err)
+	}
+	if idNote != "" {
+		fmt.Println(idNote)
+	} else {
+		fmt.Printf("operation-id:   %s\n", cfg.OperationID)
+	}
+	fmt.Printf("state:          %s\n", journalPath)
+
+	j := manifest.NewJournal(dstQ, journalPath)
+	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
+
+	// 2A: the source agent builds the plan (its local source pool + the
+	// destination catalog proxied over the source->dest peer channel). On a
+	// failure the agents are released (mgr.Plan does that) and the run aborts
+	// (the same hard-error semantics as the old controller-side plan.Build).
+	p, err := mgr.Plan(ctx)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
@@ -1372,12 +1406,14 @@ func cmdRun(args []string) error {
 	fmt.Printf("plan hash:      %s\n", p.Hash)
 	if len(p.Units) == 0 {
 		fmt.Println("\nrun: plan empty; nothing to copy.")
+		mgr.ReleaseAgents()
 		return nil
 	}
 	// Design 04.10: verify the --port-range size against the mode's
-	// requirement (fail fast, before any agent starts).
+	// requirement (fail fast, before the copy starts).
 	if cfg.CopyMode != "" && p.Route.Resolved {
 		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
+			mgr.ReleaseAgents()
 			return fmt.Errorf("run: %w", err)
 		}
 	}
@@ -1387,42 +1423,21 @@ func cmdRun(args []string) error {
 	// a multi-homed controller should pass --seg-listen explicitly.
 	if cfg.CopyMode == config.CopyMesh {
 		if err := cfg.ResolveSegListen(len(p.Units)); err != nil {
+			mgr.ReleaseAgents()
 			return fmt.Errorf("run: %w", err)
 		}
 		fmt.Printf("seg-listen:     %s (auto; base+unitID per unit)\n", cfg.SegListen)
 	}
 
-	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
-	// <state-dir>/<operation-id>/journal.jsonl so status/resume/cleanup
-	// (which take only --operation-id/--state-dir) find it. When the operator
-	// did not pass --operation-id, a timestamp id is generated (UTC,
-	// chronologically sorted, collision-safe) so the state dir is a readable
-	// history of runs; "latest" is resolved on the read-side commands.
-	var idNote string
-	cfg.OperationID, idNote, err = resolveOperationID(cfg.OperationID, cfg.StateDir, true)
-	if err != nil {
-		return fmt.Errorf("run: %w", err)
-	}
-	journalPath := filepath.Join(cfg.StateDir, cfg.OperationID, "journal.jsonl")
-	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
-		return fmt.Errorf("run: state dir %s: %w", filepath.Dir(journalPath), err)
-	}
 	// The deterministic plan (CR-4) is persisted alongside the journal so it
 	// is always findable with the operation that produced it; the on-screen
 	// "plan hash:" line is the same value.
 	planPath, err := persistPlan(cfg.StateDir, cfg.OperationID, p)
 	if err != nil {
+		mgr.ReleaseAgents()
 		return fmt.Errorf("run: %w", err)
 	}
-	if idNote != "" {
-		fmt.Println(idNote)
-	} else {
-		fmt.Printf("operation-id:   %s\n", cfg.OperationID)
-	}
-	fmt.Printf("state:          %s\n", journalPath)
 	fmt.Printf("plan:           %s\n", planPath)
-
-	j := manifest.NewJournal(dstQ, journalPath)
 
 	// F-10 §8: persist the conflict diagnosis to conflicts.jsonl (alongside
 	// the journal) so the operator can audit what would collide — and with
@@ -1449,8 +1464,6 @@ func cmdRun(args []string) error {
 	audit.Log("run", "operation-id", cfg.OperationID, "units", len(p.Units),
 		"copy-mode", copyMode, "on-unit-failure", onFailure,
 		"compression", string(cfg.Compression))
-
-	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
 
 	// F-04: expose the metrics over HTTP so throughput, error rate and the
 	// limiter/compression state are observable during the copy.

@@ -9,17 +9,17 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
-	"github.com/gpstream/gpstream/internal/version"
 )
 
 // SourceServer is the long-lived source agent (ADR-002 remediation, P3). It
@@ -88,6 +88,12 @@ type SourceServer struct {
 	peerOnce sync.Once
 	peerDone chan struct{}
 	peerErr  error
+	// peerConn (Phase 2) is the PERSISTENT source->dest peer channel: the
+	// 1F version exchange as the first message, then a multiplexed
+	// read-only dst-query loop (plan/resume/dry-run ride it; the destination
+	// runs each query on its own LOCAL pool). Established once by
+	// ensurePeerChannel (guarded by peerOnce, shared with the 1F exchange).
+	peerConn *peerChannel
 }
 
 // ServerOptions configures a long-lived source agent.
@@ -324,6 +330,13 @@ func (s *SourceServer) serveControl(l net.Listener) {
 					return
 				}
 				_ = s.sendResp(conn, s.handleChecksum(req))
+			case "build-plan":
+				var req PlanReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = s.sendResp(conn, PlanResp{ReqID: probe.ReqID, Error: uerr.Error()})
+					return
+				}
+				_ = s.sendResp(conn, s.handlePlan(req))
 			default:
 				_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 			}
@@ -399,79 +412,13 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 // unreachable) is a hard unit error — a mixed-version deployment must not
 // stream silently.
 func (s *SourceServer) peerExchange(ctx context.Context, req OnSegmentReq) error {
-	s.peerOnce.Do(func() {
-		defer close(s.peerDone)
-		cctx, ccancel := context.WithTimeout(ctx, 60*time.Second)
-		defer ccancel()
-		// 1. The source segment hosts (the catalog's role='p' primaries; the
-		//    source agent reads its own cluster locally).
-		segHosts := []string{}
-		if s.pool != nil {
-			if rows, qerr := s.pool.Query(cctx, "SELECT hostname FROM gp_segment_configuration WHERE role = 'p' ORDER BY content"); qerr == nil {
-				for _, row := range rows {
-					if len(row) > 0 {
-						segHosts = append(segHosts, fmt.Sprint(row[0]))
-					}
-				}
-			}
-			// A query error / empty result = a plain-PostgreSQL source (no
-			// gp_segment_configuration): the mesh unit would not have been
-			// dispatched in the first place, so an empty host list (S=0) is
-			// the correct report, not an error.
-		}
-		// 2. Gather "segriver --version" on every segment host (SSH; the
-		//    single-host layout uses the local shell path).
-		var segs []SegVersion
-		for _, h := range segHosts {
-			ssh := ""
-			if req.SegSSH != "" {
-				ssh = req.SegSSH + h
-			}
-			remote := "'" + req.SegBinary + "' --version"
-			v, gerr := RunRemoteOutput(cctx, ssh, remote)
-			if gerr != nil {
-				s.peerErr = fmt.Errorf("version exchange: segriver --version on %s: %w", h, gerr)
-				return
-			}
-			// The segreceiver prints "<name> <ver (commit)>": drop the binary
-			// name token so it compares against the destination's identity.
-			fields := strings.Fields(v)
-			if len(fields) < 2 {
-				s.peerErr = fmt.Errorf("version exchange: segriver --version on %s: empty (got %q)", h, v)
-				return
-			}
-			segs = append(segs, SegVersion{Host: h, Version: strings.Join(fields[1:], " ")})
-		}
-		// 3. Report to the destination's peer listener.
-		conn, derr := net.DialTimeout("tcp", req.PeerAddr, 10*time.Second)
-		if derr != nil {
-			s.peerErr = fmt.Errorf("version exchange: dial dest peer %s: %w", req.PeerAddr, derr)
-			return
-		}
-		defer conn.Close()
-		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		sv := SourceVersion{Op: "source-version", Version: version.String(), S: len(segHosts), SegReceivers: segs}
-		if werr := SendLine(conn, sv); werr != nil {
-			s.peerErr = fmt.Errorf("version exchange: send: %w", werr)
-			return
-		}
-		var ack PeerAck
-		if rerr := recvLine(bufio.NewReader(conn), &ack); rerr != nil {
-			s.peerErr = fmt.Errorf("version exchange: read ack: %w", rerr)
-			return
-		}
-		if !ack.Ok {
-			s.peerErr = fmt.Errorf("version exchange: %s", ack.Error)
-			return
-		}
-	})
-	// A concurrent first unit (N workers): wait for the exchange outcome.
-	select {
-	case <-s.peerDone:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return s.peerErr
+	// Phase 2: the 1F version exchange now rides the PERSISTENT source->dest
+	// peer channel (ensurePeerChannel): the SourceVersion is the first message
+	// (the destination's cross-check is unchanged), and the channel stays open
+	// for the dst-query loop (plan/resume/dry-run). This shares the channel
+	// with the plan-build (handlePlan) — one connection, established once.
+	_, err := s.ensurePeerChannel(ctx, req.PeerAddr, req.SegBinary, req.SegSSH)
+	return err
 }
 
 // handleOnSegment runs the P4 on_segment data path on the source agent's FR-02
@@ -660,6 +607,70 @@ func (s *SourceServer) handleChecksum(req ChecksumReq) ChecksumResp {
 		return ChecksumResp{ReqID: req.ReqID, Ok: false, Error: err.Error()}
 	}
 	return ChecksumResp{ReqID: req.ReqID, Ok: true, Checksum: sum}
+}
+
+// handlePlan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it
+// establishes the persistent source->dest peer channel (the 1F version
+// exchange as the first message), runs plan.Build with its LOCAL source pool
+// + a remote destination querier (which proxies read-only destination-catalog
+// queries to the destination agent over the peer channel), and returns the
+// finished plan. The controller therefore opens NO direct destination
+// connection for planning (architecture 08.10).
+func (s *SourceServer) handlePlan(req PlanReq) PlanResp {
+	// Reconstruct the run config (selection, renames, conflict action, the
+	// Source/Dest DSNs for metadata parsing, workers, timeout).
+	var cfg config.Config
+	if len(req.Config) > 0 {
+		if uerr := json.Unmarshal(req.Config, &cfg); uerr != nil {
+			return PlanResp{ReqID: req.ReqID, Ok: false, Error: "build-plan: bad config: " + uerr.Error()}
+		}
+	}
+	// The destination querier: a remote proxy over the peer channel (2A-2).
+	// The source NEVER connects to the destination with cfg.Dest — it is
+	// parsed for host:port + database name only; the catalog reads ride the
+	// peer channel. A non-mesh / no-destination layout has no peer channel
+	// (PeerAddr empty): the plan is built from the source catalog only (dst
+	// nil — plan.Build guards nil).
+	var dst pg.Querier
+	if req.PeerAddr != "" {
+		pc, perr := s.ensurePeerChannel(context.Background(), req.PeerAddr, req.SegBinary, req.SegSSH)
+		if perr != nil {
+			return PlanResp{ReqID: req.ReqID, Ok: false, Error: "build-plan: " + perr.Error()}
+		}
+		dst = &remoteQuerier{ch: pc}
+	}
+	// Plan formation is bounded by the run's --timeout (a hung segment must
+	// not stall the plan; FR-10 §6.6).
+	timeout := cfg.Timeout
+	if req.TimeoutSeconds > 0 {
+		timeout = time.Duration(req.TimeoutSeconds) * time.Second
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	p, berr := s.BuildPlan(context.Background(), timeout, &cfg, dst)
+	if berr != nil {
+		// A partial plan (timed out) is returned with Partial=true (the
+		// controller prints it as a forecast, FR-10 §6.6) — the plan fragment
+		// is still useful even though formation did not complete.
+		if p != nil && p.Partial {
+			return PlanResp{ReqID: req.ReqID, Ok: false, Plan: p, Partial: true, Error: berr.Error()}
+		}
+		return PlanResp{ReqID: req.ReqID, Ok: false, Error: berr.Error()}
+	}
+	return PlanResp{ReqID: req.ReqID, Ok: true, Plan: p, Partial: p != nil && p.Partial}
+}
+
+// BuildPlan runs plan.Build on the SOURCE AGENT with its LOCAL source pool
+// (separate catalog connections, NOT the pinned FR-02 snapshot connection —
+// the catalog is read at plan time, before any unit) + the given destination
+// querier (a remoteQuerier over the peer channel in production; a local pool
+// in the in-process test runner). It is the shared core of handlePlan (the
+// control-socket path) and the InProc runner's Plan (the test double).
+func (s *SourceServer) BuildPlan(ctx context.Context, timeout time.Duration, cfg *config.Config, dst pg.Querier) (*plan.Plan, error) {
+	pctx, pcancel := context.WithTimeout(ctx, timeout)
+	defer pcancel()
+	return plan.Build(pctx, cfg, s.pool, dst)
 }
 
 // Checksum re-derives a table's content checksum on the run's FR-02 snapshot

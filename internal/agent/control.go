@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer"
 )
 
@@ -192,9 +193,58 @@ type ReleaseReq struct {
 	Op string `json:"op"` // "release"
 	// ReqID (P1d) is the controller's per-request correlation id, echoed in
 	// ReleaseResp. Release must be sent after every in-flight op has
-	// completed (the client guarantees this), so the agent can wait for
+	// completed (the client guarantees this), so the agent can wait for its
 	// ops to drain before committing the snapshot.
 	ReqID uint64 `json:"req_id,omitempty"`
+}
+
+// PlanReq (Phase 2, 2A) asks the SOURCE agent to build the copy plan: it
+// establishes the persistent source->dest peer channel (the 1F version
+// exchange as the first message), runs plan.Build with its LOCAL source pool
+// + a remote destination querier (which proxies read-only destination-catalog
+// queries to the destination agent), and returns the finished plan. The
+// controller therefore opens NO direct destination connection for planning.
+type PlanReq struct {
+	Op string `json:"op"` // "build-plan"
+	// ReqID (P1d) is the controller's per-request correlation id, echoed in
+	// PlanResp.
+	ReqID uint64 `json:"req_id,omitempty"`
+	// PeerAddr is the destination agent's peer listener address (the source
+	// dials it to establish the persistent channel). Empty = no peer channel
+	// (a non-mesh / no-destination layout: the source builds the plan from
+	// the source catalog only).
+	PeerAddr string `json:"peer_addr,omitempty"`
+	// SegBinary / SegSSH feed the 1F version exchange (the segreceiver path +
+	// the "user@" SSH prefix the source uses to gather the segreceiver
+	// versions from its segments).
+	SegBinary string `json:"segbin,omitempty"`
+	SegSSH    string `json:"seg_ssh,omitempty"`
+	// Config is the run's config (selection: DBs/Schemas/Tables/Exclude,
+	// renames, conflict action, rate limit, workers, timeout + the Source/Dest
+	// DSNs for metadata parsing). The source reconstructs a *config.Config
+	// and passes it to plan.Build. The source NEVER connects to the
+	// destination with this DSN (it is parsed for host:port + database name
+	// only; the destination catalog reads ride the peer channel).
+	Config json.RawMessage `json:"config"`
+	// Timeout bounds plan formation (seconds; the run's --timeout). 0 = the
+	// config's default.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// PlanResp is the source agent's report after plan.Build: the finished plan
+// (JSON) or an error.
+type PlanResp struct {
+	Ok bool `json:"ok"`
+	// ReqID echoes PlanReq.ReqID (concurrent-op correlation, P1d).
+	ReqID uint64 `json:"req_id,omitempty"`
+	// Plan is the finished *plan.Plan (the controller uses it directly).
+	Plan *plan.Plan `json:"plan,omitempty"`
+	// Partial is set when the plan was formed under a --timeout (FR-10 §6.6):
+	// the fragment is what was collected before the deadline. The controller
+	// prints it as a forecast (the same partial semantics as the old
+	// controller-side plan.Build).
+	Partial bool   `json:"partial,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // StreamResp is the source agent's report after streaming a unit (the
@@ -398,6 +448,8 @@ func (c *ControlClient) call(req, resp any) error {
 		r.ReqID = id
 	case *ReleaseReq:
 		r.ReqID = id
+	case *PlanReq:
+		r.ReqID = id
 	}
 	ch := make(chan []byte, 1)
 	c.pendingMu.Lock()
@@ -509,10 +561,23 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 }
 
 // Checksum asks the source agent (which holds the FR-02 snapshot) for the
-// content checksum of a table.
+// table's content checksum.
 func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
 	var resp ChecksumResp
 	req := ChecksumReq{Op: "checksum", Schema: schema, Table: table}
+	if err := c.call(&req, &resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+// Plan (Phase 2, 2A) asks the SOURCE agent to build the copy plan: it
+// establishes the persistent source->dest peer channel, runs plan.Build with
+// its LOCAL source pool + a remote destination querier (proxied over the peer
+// channel), and returns the finished plan. The controller opens NO direct
+// destination connection for planning.
+func (c *ControlClient) Plan(req PlanReq) (PlanResp, error) {
+	var resp PlanResp
 	if err := c.call(&req, &resp); err != nil {
 		return resp, err
 	}

@@ -457,7 +457,11 @@ func (c *Config) RequiredDataPorts(dstSegments int) int {
 	if c.CopyMode == CopyMesh {
 		return 4 + dstSegments
 	}
-	return 3
+	// Coordinator: source control + dest control + dest data + dest PEER
+	// (1F/Phase 2: the peer listener is allocated in ALL modes — the source
+	// agent dials it for the persistent source->dest channel: the 1F version
+	// exchange + the read-only dst-query loop for plan/resume/dry-run).
+	return 4
 }
 
 // CheckPortRange verifies the configured range (if any) is large enough

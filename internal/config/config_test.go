@@ -148,24 +148,26 @@ func TestPortRangeValidation(t *testing.T) {
 }
 
 func TestPortRangeCheck(t *testing.T) {
-	// coordinator: needs 3 ports
+	// coordinator: needs 4 ports (source control + dest control + dest data
+	// + dest peer — the peer listener is allocated in ALL modes, 1F/Phase 2:
+	// the source agent dials it for the persistent source->dest channel).
 	cfg := Default()
 	cfg.CopyMode = CopyCoordinator
-	cfg.PortRange = "9000-9002"
+	cfg.PortRange = "9000-9003"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckPortRange(3); err != nil {
-		t.Fatalf("coordinator 3-port range should pass: %v", err)
+		t.Fatalf("coordinator 4-port range should pass: %v", err)
 	}
 	small := Default()
 	small.CopyMode = CopyCoordinator
-	small.PortRange = "9000-9001"
+	small.PortRange = "9000-9002"
 	if err := small.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := small.CheckPortRange(3); err == nil {
-		t.Fatal("coordinator 2-port range should fail")
+		t.Fatal("coordinator 3-port range should fail (needs 4: + the peer listener)")
 	}
 	// mesh (P2, direct_1to1): needs 4 + D (source control + dest control +
 	// dest report + dest data + D mini-agent data ports). D=3 -> 7, D=4 -> 8.

@@ -242,6 +242,47 @@ func (m *Manager) SetTwoAgentRunner(r TwoAgentRunner) {
 	m.twoAgent = r
 }
 
+// Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
+// the two agents (Start), asks the source agent to run plan.Build (its LOCAL
+// source pool + a destination querier proxied over the source->dest peer
+// channel), and returns the finished plan. The controller opens NO direct
+// destination connection for planning (architecture 08.10). On SUCCESS the
+// agents are left running (Run reuses them — Start is idempotent); on FAILURE
+// the agents are released. The production run flow is:
+//
+//	mgr.Plan(ctx) -> p  (agents up, plan from the source agent)
+//	mgr.Run(ctx, p)     (agents already up; the copy)
+//
+// A test may inject an in-process runner (SetTwoAgentRunner) whose Plan builds
+// the plan in-process (no subprocesses).
+func (m *Manager) Plan(ctx context.Context) (*plan.Plan, error) {
+	if m.twoAgent == nil {
+		m.twoAgent = newProcessTwoAgentRunner(m.cfg)
+	}
+	if err := m.twoAgent.Start(ctx); err != nil {
+		return nil, fmt.Errorf("two-agent: %w", err)
+	}
+	p, err := m.twoAgent.Plan(ctx)
+	if err != nil {
+		// Plan failed: release the agents (Run is not reached on a hard
+		// error; on a PARTIAL plan Run may still be called — the runner is
+		// idempotent, so a second Start/Plan/Run is safe).
+		_ = m.twoAgent.Release(context.Background())
+		return p, fmt.Errorf("two-agent: plan: %w", err)
+	}
+	return p, nil
+}
+
+// ReleaseAgents tears down the two agents if they were started (by Plan). It
+// is idempotent (the runner's Release nil-guards), so calling it before Run
+// (the empty-plan case) is safe. Run's own deferred Release is the normal
+// teardown; this is for the paths that never reach Run.
+func (m *Manager) ReleaseAgents() {
+	if m.twoAgent != nil {
+		_ = m.twoAgent.Release(context.Background())
+	}
+}
+
 func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// Ensure the primary journal table exists (ADR-001 §4.3); the file
 	// mirror is the durable fallback if this fails (FR-07).

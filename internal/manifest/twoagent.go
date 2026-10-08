@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -16,9 +17,11 @@ import (
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/launch"
+	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -37,6 +40,16 @@ type TwoAgentRunner interface {
 	// snapshot (a REPEATABLE READ tx lives on one server-side backend, so one
 	// process must run every unit's data COPY under it).
 	Start(ctx context.Context) error
+	// Plan (Phase 2, 2A) asks the SOURCE agent to build the copy plan: it
+	// runs plan.Build with its LOCAL source pool + a destination querier
+	// (production: a remoteQuerier that proxies read-only destination-catalog
+	// queries to the destination agent over the persistent source->dest peer
+	// channel; in-process test runner: the local destination pool). The
+	// controller therefore opens NO direct destination connection for
+	// planning (architecture 08.10). The process runner issues the
+	// "build-plan" control op; the InProc runner (test double) builds the
+	// plan in-process.
+	Plan(ctx context.Context) (*plan.Plan, error)
 	// Stream launches a destination agent for the unit, instructs the source
 	// agent to stream the unit to it, and waits for the destination to finish
 	// the COPY. It returns the authoritative row count + the wire/logical
@@ -353,6 +366,14 @@ func NewProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
 // its hello reports the real data address the source agent / segreceivers
 // dial.
 func (r *processTwoAgentRunner) Start(ctx context.Context) error {
+	// Idempotent (Phase 2): Manager.Plan (the source-agent plan-build) calls
+	// Start to bring the agents up, then Manager.Run calls it again before
+	// the copy. A second Start on an already-started runner is a no-op (the
+	// agents + control clients are already connected; the FR-02 snapshot is
+	// already pinned by the first Start).
+	if r.srcHandle != nil {
+		return nil
+	}
 	if err := r.startSource(ctx); err != nil {
 		return err
 	}
@@ -377,6 +398,47 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// Plan (Phase 2, 2A) asks the SOURCE agent to build the copy plan over the
+// control socket: the source establishes the persistent source->dest peer
+// channel (the 1F version exchange), runs plan.Build with its LOCAL source
+// pool + a remote destination querier (proxied over the peer channel), and
+// returns the finished plan. The controller opens NO direct destination
+// connection for planning. The destination agent's peer address comes from
+// the dest hello (r.destPeerAddr, set by startDest in ALL modes).
+func (r *processTwoAgentRunner) Plan(ctx context.Context) (*plan.Plan, error) {
+	if r.ctrl == nil {
+		return nil, fmt.Errorf("two-agent: source agent not started (call Start first)")
+	}
+	cfgBytes, err := json.Marshal(r.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("two-agent: marshal config for build-plan: %w", err)
+	}
+	req := agent.PlanReq{
+		Op:             "build-plan",
+		PeerAddr:       r.destPeerAddr,
+		SegBinary:      r.cfg.SegBinary,
+		SegSSH:         r.sshUserPrefix(r.cfg.SourceAgentSSH),
+		Config:         cfgBytes,
+		TimeoutSeconds: int(r.cfg.Timeout / time.Second),
+	}
+	resp, err := r.ctrl.Plan(req)
+	if err != nil {
+		return nil, fmt.Errorf("two-agent: build-plan: %w", err)
+	}
+	if !resp.Ok {
+		// A partial plan (timed out) is still returned (resp.Plan) — the
+		// caller prints it as a forecast (FR-10 §6.6).
+		if resp.Plan != nil && resp.Partial {
+			return resp.Plan, fmt.Errorf("two-agent: build-plan (partial): %s", resp.Error)
+		}
+		return nil, fmt.Errorf("two-agent: build-plan: %s", resp.Error)
+	}
+	if resp.Plan == nil {
+		return nil, fmt.Errorf("two-agent: build-plan: empty plan in response")
+	}
+	return resp.Plan, nil
 }
 
 // controlDialDeadline bounds the bounded-retry dial after an agent launch.
@@ -483,21 +545,23 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// destination coordinator) reads its OWN catalog, derives D, and
 	// launches the D mini-agents itself. The controller only allocates the
 	// report-listen port and hands the agent --supervisor + --report-listen.
-	var reportListen, peerListen string
+	var reportListen string
 	if mesh {
-		var reportDial, peerDial string
+		var reportDial string
 		reportListen, reportDial, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
 		_ = reportDial
 		if err != nil {
 			return err
 		}
-		// 1F: the PEER listener (the source agent dials it once before the
-		// first mesh unit for the version exchange).
-		peerListen, peerDial, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
-		_ = peerDial
-		if err != nil {
-			return err
-		}
+	}
+	// 1F/Phase 2: the PEER listener (the source agent dials it for the
+	// persistent source->dest channel: the 1F version exchange + the read-only
+	// dst-query loop for plan/resume/dry-run). Allocated in ALL modes (the
+	// plan is built by the source agent in both coordinator and mesh modes).
+	var peerListen string
+	peerListen, _, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
+	if err != nil {
+		return err
 	}
 	// --dest comes FIRST so the agent stays identifiable by its conn string
 	// (the crash-recovery test finds it via pgrep "<bin> --dest ").
@@ -514,7 +578,6 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		dargs = append(dargs,
 			"--supervisor",
 			"--report-listen", reportListen,
-			"--peer-listen", peerListen,
 			"--mini-ssh-user", r.sshUserPrefix(r.cfg.DestAgentSSH),
 			"--port-range", r.cfg.PortRange,
 		)
@@ -524,6 +587,8 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 			"--data-listen", dataAddr,
 		)
 	}
+	// --peer-listen in BOTH modes (the source agent's persistent channel).
+	dargs = append(dargs, "--peer-listen", peerListen)
 	dargs = append(dargs,
 		"--control-listen", destCtrlListen,
 		"--persist-listen", persistListen,
@@ -1315,6 +1380,11 @@ func NewInProcTwoAgentRunner(cfg *config.Config) *InProcTwoAgentRunner {
 // Start launches the in-process source agent (SourceServer) on a pre-bound
 // loopback port and connects the control client to it.
 func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
+	// Idempotent (Phase 2): Manager.Plan (the source-agent plan-build) calls
+	// Start, then Manager.Run calls it again. A second Start is a no-op.
+	if r.srv != nil {
+		return nil
+	}
 	ctrlAddr, releaseCtrl, err := r.prebindData()
 	if err != nil {
 		return fmt.Errorf("two-agent: pre-bind control port: %w", err)
@@ -1402,6 +1472,32 @@ func (r *InProcTwoAgentRunner) Start(ctx context.Context) error {
 	}
 	r.destCtrl = dclient
 	return nil
+}
+
+// Plan (Phase 2, 2A, in-proc test double) builds the plan IN-PROCESS: the
+// source agent's BuildPlan (its LOCAL source pool) + the destination catalog
+// via a local pool on cfg.Dest (the test double has no cross-process peer
+// channel — the production process runner exercises the real proxy). The
+// Manager's unit-test doubles (fakeBenchRunner) implement Plan directly; this
+// is the in-proc runner used by the pg6lab integration tests.
+func (r *InProcTwoAgentRunner) Plan(ctx context.Context) (*plan.Plan, error) {
+	if r.srv == nil {
+		return nil, fmt.Errorf("two-agent: in-proc source agent not started (call Start first)")
+	}
+	var dst pg.Querier
+	if r.cfg.Dest != "" {
+		dp, err := pg.NewPool(ctx, r.cfg.Dest, r.cfg.SSLCert, r.cfg.SSLKey, r.cfg.SSLCA, r.cfg.SSLMinTLS, 2)
+		if err != nil {
+			return nil, fmt.Errorf("two-agent: in-proc plan: connect dest: %w", err)
+		}
+		defer dp.Close()
+		dst = dp
+	}
+	timeout := r.cfg.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	return r.srv.BuildPlan(ctx, timeout, r.cfg, dst)
 }
 
 // Stream drives one coordinator unit through the LONG-LIVED in-proc
