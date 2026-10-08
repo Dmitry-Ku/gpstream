@@ -250,6 +250,7 @@ type DestServerOptions struct {
 	// with each mini's hello data port to form the full data-listener
 	// address the segreceivers dial. Empty value / empty slice = 127.0.0.1
 	// (single-host layout / the local test stand).
+
 	MiniHosts []string
 }
 
@@ -465,7 +466,9 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 		s.supervisor = sup
 		// Set the per-segment hosts BEFORE the AcceptMinis goroutine: it
 		// applies them to the MiniMap once all D hellos arrive (the hello
-		// carries the data port only).
+		// carries the data port only). The dest-agent process (main.go,
+		// architecture 08.10) reads its OWN catalog and launches the D
+		// mini-agents, then passes D (MiniCount) + the hosts here.
 		s.miniHosts = o.MiniHosts
 		go func() {
 			mm, aerr := sup.AcceptMinis(s.runCtx, o.MiniCount)

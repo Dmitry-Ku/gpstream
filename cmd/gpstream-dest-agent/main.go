@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
+	"github.com/gpstream/gpstream/internal/launch"
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 )
@@ -123,6 +124,11 @@ func main() {
 	miniCount := flag.Int("mini-count", 0, "supervisor mode: D, the number of destination segments / mini-agents (required with --supervisor)")
 	reportListen := flag.String("report-listen", "0.0.0.0:0", "supervisor mode: the report listener address the D minis dial (0 = pick a free port, restricted by --port-range; the real address is in the hello)")
 	miniHosts := flag.String("mini-hosts", "", "supervisor mode: the D segment hosts, comma-separated in seg order (the catalog's DstDSN hosts; the hello carries the data port only). Empty = 127.0.0.1 for all (single-host layout)")
+	// Architecture 08.10: the dest-agent launches the D mini-agents itself.
+	// --mini-ssh-user "user@" (or "" = no SSH / single-host) is how it reaches
+	// a segment host that is not this host (the operator's --dest-agent-ssh
+	// user; the agent runs on the destination coordinator, same key).
+	miniSSHUser := flag.String("mini-ssh-user", "", "supervisor mode: SSH user@ to launch the D mini-agents on the segment hosts (empty = no SSH / single-host layout; the agent launches the minis itself)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -192,7 +198,10 @@ func main() {
 			fail("--dest is required in --supervisor mode (the fallback coordinator path's pg conn)")
 		}
 		if *miniCount < 1 {
-			fail("--mini-count D (>=1) is required in --supervisor mode")
+			// --mini-count is OPTIONAL: when 0 (the architecture 08.10
+			// default — the controller does not read the destination
+			// catalog, so it cannot pass D), the agent reads its OWN catalog
+			// to derive D and launches the D mini-agents itself.
 		}
 		// P1e: the agent must run on the destination cluster coordinator and
 		// connect to pg LOCALLY (verified before the listeners are bound).
@@ -206,7 +215,7 @@ func main() {
 		// The per-segment hosts from the catalog's DstDSNs (the hello carries
 		// the data port only; the supervisor combines them). Empty = 127.0.0.1.
 		var hosts []string
-		if *miniHosts != "" {
+		if *miniHosts != "" && *miniCount > 0 {
 			parts := strings.Split(*miniHosts, ",")
 			if len(parts) != *miniCount {
 				fail("--mini-hosts has %d entries, want %d (one per segment)", len(parts), *miniCount)
@@ -217,6 +226,25 @@ func main() {
 					h = "127.0.0.1"
 				}
 				hosts = append(hosts, h)
+			}
+		}
+		// Architecture 08.10: the controller does NOT read the destination
+		// catalog (so it cannot pass --mini-count). When --mini-count is 0,
+		// this agent reads its OWN catalog to derive D + the per-segment
+		// hosts, then (after the server is up) launches the D mini-agents
+		// itself. Read the catalog ONCE (the agent's own cluster) and reuse
+		// it for both D/hosts and the mini launch.
+		var autoSegs []miniSegTarget
+		if *miniCount == 0 {
+			segs, cerr := readDestCatalog(ctx, *dest, *sslCert, *sslKey, *sslCA, *sslMinTLS)
+			if cerr != nil {
+				fail("dest catalog (supervisor auto-D): %v", cerr)
+			}
+			autoSegs = segs
+			*miniCount = len(segs)
+			hosts = make([]string, len(segs))
+			for i, seg := range segs {
+				hosts[i] = seg.Hostname
 			}
 		}
 		// The shared mesh data listener is OFF in supervisor mode (the mini
@@ -256,6 +284,30 @@ func main() {
 		if err != nil {
 			fail("start supervisor dest agent: %v", err)
 		}
+		// Architecture 08.10: the dest-agent (on the destination coordinator)
+		// LAUNCHES the D mini-agents itself, now that its report listener is
+		// bound (the minis dial srv.Hello().Report). The controller does not
+		// launch them and does not read the destination catalog.
+		var miniHandles []*launch.Handle
+		if *miniCount > 0 {
+			segs := autoSegs
+			if segs == nil {
+				// --mini-count was passed explicitly (no auto-D read): read
+				// the catalog once for the launch targets.
+				var cerr error
+				segs, cerr = readDestCatalog(ctx, *dest, *sslCert, *sslKey, *sslCA, *sslMinTLS)
+				if cerr != nil {
+					srv.Close()
+					fail("dest catalog (launch minis): %v", cerr)
+				}
+			}
+			miniHandles, err = launchDestMinis(ctx, srv.Hello().Report, *miniSSHUser, *portRange,
+				*sslCert, *sslKey, *sslCA, *dataCert, *dataKey, *dataCA, segs)
+			if err != nil {
+				srv.Close()
+				fail("launch D mini-agents: %v", err)
+			}
+		}
 		// Report the real bound addresses (auto :0 mode): the operator /
 		// remote launch reads this to learn the data + persist + report
 		// endpoints (the report address is the mini's --report-addr).
@@ -265,7 +317,12 @@ func main() {
 		case <-ctx.Done():
 		case <-srv.Done():
 		}
+		// The supervisor's Close already sent each mini a mini-done (the
+		// clean exit); stop the handles as the last-resort kill.
 		srv.Close()
+		for _, h := range miniHandles {
+			h.Stop()
+		}
 		fmt.Fprintln(os.Stderr, "gpstream-dest-agent: supervisor stopped")
 		os.Exit(0)
 	}
