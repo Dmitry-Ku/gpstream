@@ -393,7 +393,8 @@ type DDReq struct {
 	Op    string `json:"op"` // "ddl"
 	ReqID uint64 `json:"req_id"`
 	// Action: exists | create-table | drop-staging | swap | truncate |
-	// create-sequence | set-sequence-value | add-constraints | balance.
+	// create-sequence | set-sequence-value | add-constraints | balance |
+	// create-indexes.
 	Action string `json:"action"`
 	// Schema is the destination schema (the object's schema).
 	Schema string `json:"schema,omitempty"`
@@ -424,6 +425,14 @@ type DDReq struct {
 	// Constraints are the add-constraints action's definitions (already
 	// rewritten to the destination names by the controller).
 	Constraints []pg.ConstraintDef `json:"constraints,omitempty"`
+	// 2B-4 (FR-17, create-indexes action):
+	// Indexes are the (already PK-filtered, destination-rewritten) index
+	// definitions to build on Table; SrcSchema/SrcTable carry the source
+	// names the verbatim definitions still reference (the agent rewrites
+	// them to Schema.Table, the same way the data path rewrites the copy).
+	Indexes   []pg.IndexDef `json:"indexes,omitempty"`
+	SrcSchema string        `json:"src_schema,omitempty"`
+	SrcTable  string        `json:"src_table,omitempty"`
 }
 
 // DDResp is the destination agent's report for a DDReq.

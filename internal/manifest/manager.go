@@ -379,6 +379,46 @@ func (m *Manager) dstBalance(ctx context.Context, schema, table string) (dest.Ba
 	return m.dst.BalanceTable(ctx, schema, table, dest.DefaultBalanceThreshold), nil
 }
 
+// --- 2B-4 (architecture 08.10): FR-17 index ops delegated to the agents. ---
+// The source-catalog read (the table's index definitions) runs on the SOURCE
+// agent; the build runs on the DESTINATION agent. The controller keeps only
+// the pure poolIndexDefs filter (PK exclusion — the post-swap constraint pass
+// builds the PK index atomically) — no DB. Single-process fallback (dead in
+// production) uses the controller's own pools; 2B-7 removes it.
+
+// srcIndexes reads the table's index definitions (FR-17) via the source
+// agent's catalog op (its local source pool — the catalog-querier
+// convention, not the pinned snapshot).
+func (m *Manager) srcIndexes(ctx context.Context, schema, table string) ([]pg.IndexDef, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "indexes", Schema: schema, Table: table})
+		if err != nil {
+			return nil, err
+		}
+		return resp.Indexes, nil
+	}
+	return source.New(m.srcQ).Indexes(ctx, schema, table)
+}
+
+// dstCreateIndexes builds the (already destination-rewritten) index
+// definitions on the destination (FR-17) via the destination agent's
+// create-indexes ddl op (fresh LOCAL coordinator connection, idempotent
+// per index: existing -> REINDEX, so a resume re-run never duplicates).
+func (m *Manager) dstCreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{
+			Action:    "create-indexes",
+			Schema:    schema,
+			Table:     table,
+			SrcSchema: srcSchema,
+			SrcTable:  srcTable,
+			Indexes:   defs,
+		})
+		return err
+	}
+	return m.dst.CreateIndexes(ctx, schema, table, srcSchema, srcTable, defs)
+}
+
 // Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
 // the two agents (Start), asks the source agent to run plan.Build (its LOCAL
 // source pool + a destination querier proxied over the source->dest peer
@@ -2356,7 +2396,7 @@ func (m *Manager) syncSequenceValues(ctx context.Context, u *Unit) {
 // non-fatal by design: the unit's data is already in place, and the journal
 // scan in Run (requeueIndexes) re-enqueues the build on the next resume.
 func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
-	defs, err := m.src.Indexes(ctx, u.Schema, u.Table)
+	defs, err := m.srcIndexes(ctx, u.Schema, u.Table)
 	if err != nil {
 		return
 	}
@@ -2376,7 +2416,7 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 	m.idxMu.Unlock()
 	m.idxPool.Enqueue(index.Job{
 		UnitID:    uint32(u.UnitID),
-		Dst:       m.dst,
+		Dst:       m.indexDst(),
 		Schema:    u.DstSchema,
 		Table:     u.DstName,
 		SrcSchema: u.Schema,
@@ -2384,6 +2424,17 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 		Defs:      defs,
 		Priority:  u.Bytes, // --index-priority=size: larger tables first
 	})
+}
+
+// indexDst is the pool worker's destination-side build capability (2B-4):
+// the destination AGENT in the two-agent topology (the controller holds no
+// direct destination connection); the controller's own m.dst pool in the
+// single-process fallback (dead in production, removed in 2B-7).
+func (m *Manager) indexDst() index.DST {
+	if m.twoAgent != nil {
+		return m
+	}
+	return m.dst
 }
 
 // poolIndexDefs filters the source index definitions to the ones the FR-17
@@ -2428,7 +2479,7 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 		if seen {
 			continue
 		}
-		defs, err := m.src.Indexes(ctx, u.Schema, u.Table)
+		defs, err := m.srcIndexes(ctx, u.Schema, u.Table)
 		if err != nil {
 			continue
 		}
@@ -2437,7 +2488,7 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 		}
 		m.idxPool.Enqueue(index.Job{
 			UnitID:    uint32(u.UnitID),
-			Dst:       m.dst,
+			Dst:       m.indexDst(),
 			Schema:    u.DstSchema,
 			Table:     u.DstName,
 			SrcSchema: u.Schema,
@@ -2446,6 +2497,14 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 			Priority:  u.Bytes,
 		})
 	}
+}
+
+// CreateIndexes (2B-4) is the destination-agent build capability the FR-17
+// index pool invokes when the controller holds no direct destination
+// connection: it forwards to dstCreateIndexes (the dest agent's
+// create-indexes ddl op). It satisfies index.DST.
+func (m *Manager) CreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
+	return m.dstCreateIndexes(ctx, schema, table, srcSchema, srcTable, defs)
 }
 
 // primarySegmentCount returns the number of up primary CONTENTS on the

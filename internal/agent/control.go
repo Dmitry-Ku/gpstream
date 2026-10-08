@@ -310,7 +310,7 @@ type CatalogReq struct {
 	// ReqID (P1d) is the controller's per-request correlation id, echoed in
 	// CatalogResp (concurrent ops on one control connection).
 	ReqID uint64 `json:"req_id,omitempty"`
-	// Action: sequences | sequence-last-value | constraints.
+	// Action: sequences | sequence-last-value | constraints | indexes.
 	Action string `json:"action"`
 	Schema string `json:"schema"`
 	Table  string `json:"table"`
@@ -334,7 +334,11 @@ type CatalogResp struct {
 	// Constraints is the constraints action's answer (the table's PK/FK /
 	// user CHECK definitions).
 	Constraints []pg.ConstraintDef `json:"constraints,omitempty"`
-	Error       string             `json:"error,omitempty"`
+	// Indexes is the indexes action's answer (2B-4, FR-17): the table's
+	// index definitions, JSON-safe (Name/Unique/PK/Def — no function
+	// fields), so the wire round-trip is value-identical.
+	Indexes []pg.IndexDef `json:"indexes,omitempty"`
+	Error   string        `json:"error,omitempty"`
 }
 
 // SendLine writes one control message (JSON + newline) to w.

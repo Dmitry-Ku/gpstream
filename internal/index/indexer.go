@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -52,6 +51,19 @@ func (b *Builder) Rebuild(ctx context.Context, q pg.StreamingQuerier, schema, ta
 	return nil
 }
 
+// DST is the destination-side index-build capability a pool worker invokes
+// after the owning unit has been swapped to its final name. It is the single
+// method of *dest.Agent the pool needs — 2B-4 (architecture 08.10) narrowed
+// the field to an interface so the background pool writes indexes through
+// the DESTINATION AGENT (its fresh LOCAL coordinator connection, the
+// "create-indexes" ddl op) instead of the controller's own m.dst pool: the
+// controller holds no direct destination connection. *dest.Agent satisfies
+// DST (the single-process fallback, dead in production, removed in 2B-7);
+// tests fake it.
+type DST interface {
+	CreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error
+}
+
 // Job is one enqueued index-build task (FR-17). Dst is invoked by a pool
 // worker after the owning unit has been swapped to its final name; the
 // definitions must be ordered secondary-first with PK/unique last (the caller
@@ -64,7 +76,7 @@ func (b *Builder) Rebuild(ctx context.Context, q pg.StreamingQuerier, schema, ta
 //   - "fifo": Priority is ignored and jobs run in enqueue order.
 type Job struct {
 	UnitID    uint32
-	Dst       *dest.Agent
+	Dst       DST
 	Schema    string // destination schema
 	Table     string // final (post-swap) table name
 	SrcSchema string // source schema (for the name rewrite)

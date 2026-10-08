@@ -647,6 +647,17 @@ func (s *SourceServer) handleCatalog(req CatalogReq) CatalogResp {
 			break
 		}
 		resp.Constraints = defs
+	case "indexes":
+		// 2B-4 (FR-17): the table's index definitions (pg_get_indexdef,
+		// source schema/table names verbatim — the destination agent
+		// rewrites them to the destination names when it applies the
+		// definitions). JSON-safe: IndexDef has no function fields.
+		defs, err := a.Indexes(ctx, req.Schema, req.Table)
+		if err != nil {
+			resp = CatalogResp{ReqID: req.ReqID, Error: err.Error()}
+			break
+		}
+		resp.Indexes = defs
 	default:
 		resp = CatalogResp{ReqID: req.ReqID, Error: "catalog: unknown action " + req.Action}
 	}

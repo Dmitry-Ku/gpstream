@@ -1310,6 +1310,19 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}
+	case "create-indexes":
+		// 2B-4 (FR-17): the background index pool's delegated build. The
+		// agent applies the definitions on a fresh LOCAL coordinator
+		// connection (the same rewrite + idempotency the controller used
+		// to do in-process: existing index -> REINDEX, no duplicates on a
+		// resume re-run). One fresh connection per job — the pool's
+		// workers may issue jobs concurrently, and the agent's long-lived
+		// pool is untouched.
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).CreateIndexes(context.Background(), dd.Schema, dd.Table, dd.SrcSchema, dd.SrcTable, dd.Indexes)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
 	default:
 		resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: "ddl: unknown action " + dd.Action}
 	}
