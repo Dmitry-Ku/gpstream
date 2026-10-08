@@ -155,7 +155,7 @@ agent↔agent stream reuse `--ssl-cert/--ssl-key/--ssl-ca` (mTLS).
   per-segment dest COPYs in the dest agent. Acceptance: direct e2e +
   balance checks (F-15).
 - **P6 — metrics + docs.** `gpstream_bytes_total` = on-wire bytes;
-  OPERATOR_GUIDE/SECURITY/METRICS updated (ADR-002 closed); doctor
+  OPERATOR_GUIDE/SECURITY/METRICS updated (ADR-002 closed); the dry-run
   topology WARN removed (replaced by `topology: two-agent` PASS).
   Acceptance: the ADR-002 acceptance (network-measured bytes).
 

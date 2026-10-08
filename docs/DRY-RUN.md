@@ -1,7 +1,6 @@
-# gpstream — Capability Matrix (formerly `doctor`)
+# gpstream dry-run — Capability Matrix
 
-> **P1e: the `doctor` subcommand was removed.** These pre-flight checks
-> (FR-05) now run inside **`gpstream dry-run`**, before the plan is built:
+> These pre-flight checks (FR-05) run inside **`gpstream dry-run`**, before the plan is built:
 > any FAIL aborts with the report, WARNs are printed, then the plan summary
 > renders. This document is the **capability matrix**: what each check
 > probes, what each severity means for your run, and how the segment-direct
@@ -11,7 +10,7 @@ The diagnostic (FR-05) runs a
 fixed set of checks against the source and destination clusters and prints
 each as `PASS` / `WARN` / `FAIL` with an actionable recommendation.
 
-Grounded in `internal/doctor/doctor.go` and
+Grounded in `internal/dryrun/dryrun.go` and
 `internal/transfer/segstream` (probe), live-verified on the lab.
 
 ---
@@ -91,7 +90,7 @@ overall: PASS (no FAIL)
 controller (`COPY ... TO PROGRAM ... ON SEGMENT` under the coordinator's
 snapshot, delivered by `gpstream-segreceiver` on the segment hosts),
 while the destination write still goes through the dest coordinator.
-Doctor probes it **only when the segreceiver binary resolves** (the binary
+The diagnostic probes it **only when the segreceiver binary resolves** (the binary
 path on the segment hosts) and **only on a Greenplum source**.
 
 It composes from **three prerequisites**, all reported in the check
@@ -117,8 +116,8 @@ is green.
 
 | Situation | Use |
 |-----------|-----|
-| Doctor `on_segment` = **PASS** | `--copy-mode mesh` — source segments stream directly (the fast path) |
-| Doctor `on_segment` = **WARN** (or the segreceiver does not resolve) | default coordinator path — correct, slower on the source side |
+| dry-run `on_segment` = **PASS** | `--copy-mode mesh` — source segments stream directly (the fast path) |
+| dry-run `on_segment` = **WARN** (or the segreceiver does not resolve) | default coordinator path — correct, slower on the source side |
 | Plain PostgreSQL endpoint | coordinator path only — there are no segments to read from |
 
 ## 3. How to read a dry-run diagnostic

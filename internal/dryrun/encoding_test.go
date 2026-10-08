@@ -1,14 +1,14 @@
-package doctor
+package dryrun
 
 import (
 	"context"
 	"testing"
 )
 
-// TestDoctorEncodingDiff verifies (F-16) that the doctor reports a WARN when
+// TestDryrunEncodingDiff verifies (F-16) that the diagnostic reports a WARN when
 // the source and destination databases use different character encodings
 // (data-destructive: string bytes are reinterpreted on the destination).
-func TestDoctorEncodingDiff(t *testing.T) {
+func TestDryrunEncodingDiff(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_encoding_to_char", [][]any{{"SQL_ASCII"}})
@@ -20,9 +20,9 @@ func TestDoctorEncodingDiff(t *testing.T) {
 	}
 }
 
-// TestDoctorEncodingSame verifies no encoding finding when the encodings
+// TestDryrunEncodingSame verifies no encoding finding when the encodings
 // match.
-func TestDoctorEncodingSame(t *testing.T) {
+func TestDryrunEncodingSame(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_encoding_to_char", [][]any{{"UTF8"}})
@@ -36,9 +36,9 @@ func TestDoctorEncodingSame(t *testing.T) {
 	}
 }
 
-// TestDoctorEncodingProbeFault verifies a resolution fault degrades to no
-// finding (never a WARN, never an unhealthy doctor).
-func TestDoctorEncodingProbeFault(t *testing.T) {
+// TestDryrunEncodingProbeFault verifies a resolution fault degrades to no
+// finding (never a WARN, never an unhealthy diagnostic).
+func TestDryrunEncodingProbeFault(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	// no pg_encoding_to_char answer on either side -> RowStr "" -> no check.
@@ -49,6 +49,6 @@ func TestDoctorEncodingProbeFault(t *testing.T) {
 		}
 	}
 	if !rep.Healthy {
-		t.Fatalf("probe fault must not make the doctor unhealthy")
+		t.Fatalf("probe fault must not make the diagnostic unhealthy")
 	}
 }

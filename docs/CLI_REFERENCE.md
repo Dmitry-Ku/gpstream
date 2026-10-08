@@ -56,9 +56,8 @@ not counted here.
 | 4 | `status` | state | no (bespoke) |
 | 5 | `resume` | state | no (bespoke) |
 | 6 | `cleanup` | state | no (bespoke) |
-| 7 | `selftest` | utility | no |
-| 8 | `version` | utility | no |
-| 9 | `help` / `-h` / `--help` | utility | no |
+| 7 | `version` | utility | no |
+| 8 | `help` / `-h` / `--help` | utility | no |
 
 The commands that go through `parseConfig` (honouring **every** flag) are:
 **`run`, `dry-run`, `bench`**. The state commands parse only a small
@@ -95,7 +94,6 @@ subset of flags (listed per-command below) and ignore the rest.
   summary (units, volume, conflicts, redistribution, plan hash); on
   `--timeout` prints the collected fragment as a prediction/forecast. `run`
   always persists the plan JSON to `<state-dir>/<operation-id>/plan.json`.
-  The former `doctor` command (and `plan`) were folded into `dry-run` (P1e).
 - **`bench`** — measures the **input stream** (F-14): streams the selected
   source tables through the real data path (read → frame → compress) and
   **discards** the payload instead of writing a
@@ -127,8 +125,6 @@ subset of flags (listed per-command below) and ignore the rest.
   the state dir is removed (F-13). **Flags:** `--operation-id <id>` (or
   `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest
   <connstring>`, `--ssl-ca`.
-- **`selftest`** — internal sanity checks; no flags, no cluster connection.
-  Prints PASS/FAIL per case, exits non-zero on any failure.
 - **`version`** — prints the gpstream build version. No flags.
 - **`help`** / `-h` / `--help` — prints built-in help (commands + flags).
   The man page is installed by the package (`man gpstream`).
@@ -455,7 +451,7 @@ gpstream is deliberately conservative about overwriting destination data:
 
 Only **`cleanup`** modifies or destroys operation state. With `--mode drop`
 it also removes destination-side objects, so use it deliberately. `run`,
-`dry-run`, `status`, `resume`, `selftest`, `version`, `man` and
+`dry-run`, `status`, `resume`, `version`, `man` and
 `help` are **not** destructive.
 
 ---

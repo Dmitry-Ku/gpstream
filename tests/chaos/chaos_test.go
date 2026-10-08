@@ -16,7 +16,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// delay hook — the doctor/manager must not treat a hung segment as healthy.
+// delay hook — the dry-run/manager must not treat a hung segment as healthy.
 func TestHungSegmentIsDetected(t *testing.T) {
 	f := pg.NewFakeConn()
 	f.SetPingDelay(3 * time.Second)

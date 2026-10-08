@@ -1,6 +1,6 @@
 // Package topology models Greenplum cluster topology (the
 // gp_segment_configuration catalog) and provides probes that the rest of
-// gpstream (doctor, planner) use to reason about segment counts, roles, and
+// gpstream (dry-run, planner) use to reason about segment counts, roles, and
 // whether a connected cluster is a Greenplum at all.
 //
 // The catalog is the single source of truth for "how many segments, where,
@@ -71,7 +71,7 @@ func (t *Topology) SegmentCount() int {
 // UpCount returns how many distinct contents have an up primary
 // (role 'p', status 'u'). Mirrors are never counted: a content is usable
 // when its primary is up, regardless of mirror sync state. Zero means the
-// cluster has no usable segment — the doctor fails it.
+// cluster has no usable segment — dry-run fails it.
 func (t *Topology) UpCount() int {
 	up := make(map[int]bool)
 	for _, s := range t.Segments {
@@ -96,12 +96,12 @@ func (t *Topology) IsGreenplum() bool {
 // unqualified form resolves).
 const ProbeSQL = `SELECT COALESCE(to_regclass('gp_toolkit.gp_segment_configuration'), to_regclass('gp_segment_configuration'))`
 
-// catalogSQL reads the rows we need for planning and doctor.
+// catalogSQL reads the rows we need for planning and dry-run.
 //
 // NOTE 1: this open-gpdb 6.x build's gp_segment_configuration has NO
 // `datname` column (verified live: address, content, datadir, dbid, hostname,
 // mode, port, preferred_role, role, status). Selecting it makes the whole
-// query error, which doctor reports as "could not enumerate segments".
+// query error, which dry-run reports as "could not enumerate segments".
 //
 // NOTE 2: role/preferred_role/mode/status are "char" (pg_char, OID 18); pgx
 // decodes them as int32 ASCII codes (112='p'), so cast ::text in SQL to keep
@@ -117,7 +117,7 @@ ORDER BY content, role`
 // (the type name, e.g. "gp_segment_configuration") in the text protocol — NOT
 // a numeric OID — so this must NOT numeric-coerce the value (toInt("gp_segment_
 // configuration") == 0 would mis-detect a real cluster as plain-PG and make
-// Read return (nil, nil), which doctor reports as "could not enumerate
+// Read return (nil, nil), which dry-run reports as "could not enumerate
 // segments"). The correct test is "non-nil / non-empty", consistent with the
 // other to_regclass call sites (source.go, plan/route.go, planner.go).
 func IsGreenplum(ctx context.Context, q pg.Querier) bool {

@@ -34,7 +34,7 @@ repository, so build directly from the source tree.
 | **Go** | `go 1.27` (the module declares `go 1.27.1`). A Go 1.27 toolchain is required to build. |
 | **Kernel** | Linux **6.1+** kernel for the Linux package/runtime targets. |
 | **Network (build only)** | Module fetches need a reachable Go module proxy (see note below). |
-| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help` or `selftest`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`/`bench`**. |
+| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`/`bench`**. |
 
 ### Module proxy note (important)
 
@@ -68,10 +68,10 @@ Verify the build immediately:
 
 ```bash
 ./bin/gpstream --help
-./bin/gpstream selftest
+./bin/gpstream version
 ```
 
-> A live Greenplum cluster is **not** needed for `--help` or `selftest`.
+> A live Greenplum cluster is **not** needed for `--help` or `version`.
 > `dry-run` (self-diagnostic + plan) and `run`/`bench` require reachable
 > clusters.
 
@@ -91,7 +91,6 @@ The project ships a `Makefile` with the following targets:
 | `cover` | `go test -cover ./...`. |
 | `vet` | `go vet ./...`. |
 | `fmt` | Runs `gofmt -l .` then `gofmt -w .`. |
-| `selftest` | Builds, then runs `./bin/gpstream selftest`. |
 | `clean` | Removes `bin/`. |
 
 The Makefile exports `GOPROXY ?= https://proxy.golang.org,direct` and sets
@@ -230,25 +229,17 @@ gpstream logs under `/var/log/gpstream/` daily, keeping 14 rotations.
 
 Two built-in commands confirm a working build:
 
-### 9.1 `gpstream selftest`
+### 9.1 `gpstream version`
 
-Runs internal sanity checks (no cluster required). Each case prints `PASS` or
-`FAIL`, and the command exits non-zero if any case fails:
+Prints the build version — no cluster required:
 
 ```bash
-gpstream selftest
-```
-
-Expected tail:
-
-```
-selftest: OK
+gpstream version
 ```
 
 ### 9.2 `gpstream dry-run`
 
-Runs the self-diagnostic against the source/dest clusters (the former
-`doctor` command, folded in at P1e), **then** plans the copy without
+Runs the self-diagnostic against the source/dest clusters, **then** plans the copy without
 executing. The diagnostic **must not** report healthy for an unconfigured or
 unreachable cluster — a missing connstring is a reachability `FAIL`, not a
 masked healthy fake. Provide reachable connstrings (via flags or `--config`):
@@ -277,7 +268,7 @@ redistribution, plan hash).
 ### 9.3 Makefile shortcuts
 
 ```bash
-make selftest   # build, then gpstream selftest
+make build      # -> bin/gpstream
 ```
 
 ---
@@ -311,5 +302,5 @@ are shown commented with mode `0600` for the key file.
 - [ ] Go 1.27 toolchain present.
 - [ ] `export GOPROXY=https://proxy.golang.org,direct` set (proxy 403 fallback).
 - [ ] `go build -o bin/gpstream ./cmd/gpstream` succeeds; `make cross` builds both archs.
-- [ ] `gpstream selftest` prints `selftest: OK`.
+- [ ] `gpstream version` prints the build version.
 - [ ] For a real copy: source and dest clusters are reachable (verify with `gpstream dry-run`).

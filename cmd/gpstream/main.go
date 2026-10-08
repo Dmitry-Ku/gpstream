@@ -1,7 +1,7 @@
 // Command gpstream is the entry point for the gpstream CLI (FR-18). It
 // dispatches the subcommands from the §5 contract:
 //
-//	gpstream run|dry-run|status|resume|cleanup|doctor|selftest|man
+//	gpstream dry-run|run|bench|status|resume|cleanup|version|help
 //
 // The full flag surface (§5) is bound here by a single shared parser so every
 // subcommand honours the same contract; CLI flags > env > file > defaults.
@@ -21,12 +21,11 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
-	"github.com/gpstream/gpstream/internal/doctor"
+	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/manifest/resume"
 	"github.com/gpstream/gpstream/internal/monitor"
 	"github.com/gpstream/gpstream/internal/plan"
-	"github.com/gpstream/gpstream/internal/selftest"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -62,34 +61,13 @@ func run(args []string) error {
 		return cmdResume(rest)
 	case "cleanup":
 		return cmdCleanup(rest)
-	case "selftest":
-		return cmdSelftest(rest)
 	case "version":
 		return cmdVersion(rest)
 	case "-h", "--help", "help":
 		return printHelp()
 	default:
-		return fmt.Errorf("unknown subcommand %q (valid: dry-run, run, bench, status, resume, cleanup, selftest, version, help)", cmd)
+		return fmt.Errorf("unknown subcommand %q (valid: dry-run, run, bench, status, resume, cleanup, version, help)", cmd)
 	}
-}
-
-func cmdSelftest(args []string) error {
-	rep := selftest.Run(context.Background())
-	fmt.Println("gpstream selftest")
-	fmt.Println("===============")
-	for _, c := range rep.Cases {
-		status := "PASS"
-		if !c.OK {
-			status = "FAIL"
-		}
-		fmt.Printf("  [%s] %-18s %s\n", status, c.Name, c.Detail)
-	}
-	if rep.OK {
-		fmt.Println("\nselftest: OK")
-		return nil
-	}
-	fmt.Println("\nselftest: FAILED")
-	return fmt.Errorf("selftest failures present")
 }
 
 // parseConfig is the single binding point for the §5 CLI contract. It folds
@@ -426,7 +404,7 @@ func cmdDryRun(args []string) error {
 	srcQ := openOrFake(ctx, cfg, "source")
 	dstQ := openOrFake(ctx, cfg, "dest")
 
-	// P1e: the self-diagnostic (the former `doctor` command) runs BEFORE the
+	// P1e: the self-diagnostic runs BEFORE the
 	// plan: reachability, version, segments, disk, permissions, collation,
 	// encoding, TLS, extensions, max_connections vs --workers, on_segment,
 	// route. diagnoseConn (not openOrFake): a missing/unreachable cluster is
@@ -436,13 +414,13 @@ func cmdDryRun(args []string) error {
 	if segBin == "" {
 		segBin, _ = config.ResolveSegBinaryOrEmpty()
 	}
-	rep := doctor.Run(ctx, diagnoseConn(ctx, cfg, "source"), diagnoseConn(ctx, cfg, "dest"),
-		doctor.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
+	rep := dryrun.Run(ctx, diagnoseConn(ctx, cfg, "source"), diagnoseConn(ctx, cfg, "dest"),
+		dryrun.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
 	if cfg.CopyMode == config.CopyMesh && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
-		rep.Add(doctor.Check{
+		rep.Add(dryrun.Check{
 			Name: "dest-dsn-form",
 			Side: "dest",
-			Sev:  doctor.Warn,
+			Sev:  dryrun.Warn,
 			Msg:  fmt.Sprintf("--dest %q is not URL-form (postgres://user@host:port/db)", cfg.Dest),
 			Rec:  "mesh segment-to-segment writes (routed, direct_1to1) need a URL-form --dest or the run degrades to the merge path",
 		})
@@ -491,10 +469,11 @@ func urlFormDSN(conn string) bool {
 }
 
 // diagnoseConn opens a live connection for the diagnostic, or — on failure — a
-// fake whose Ping reports the error so the doctor can still emit a FAIL/WARN
-// (CR-7). Unlike openOrFake it NEVER returns a healthy fake for a missing
-// connstring: an unconfigured cluster is a reachability FAIL, not a silent PASS
-// (CR-7: the doctor must not mask seeded faults). Used by cmdDoctor.
+// fake whose Ping reports the error so the diagnostic can still emit a
+// FAIL/WARN (CR-7). Unlike openOrFake it NEVER returns a healthy fake for a
+// missing connstring: an unconfigured cluster is a reachability FAIL, not a
+// silent PASS (CR-7: the diagnostic must not mask seeded faults). Used by
+// cmdDryRun (P1e: the standalone self-diagnostic was folded into dry-run).
 func diagnoseConn(ctx context.Context, cfg config.Config, side string) pg.Querier {
 	conn := cfg.Source
 	if side == "dest" {
@@ -517,9 +496,9 @@ func diagnoseConn(ctx context.Context, cfg config.Config, side string) pg.Querie
 }
 
 // openOrFake tries a live connection; on failure it returns a fake whose Ping
-// reports the error so the doctor can still emit a FAIL/WARN (CR-7). When no
+// reports the error so the diagnostic can still emit a FAIL/WARN (CR-7). When no
 // connstring is given (CI/exercise mode) a healthy fake is returned so the
-// doctor/dry-run can be demonstrated.
+// dry-run can be demonstrated.
 func openOrFake(ctx context.Context, cfg config.Config, side string) pg.Querier {
 	conn := cfg.Source
 	if side == "dest" {
@@ -554,7 +533,7 @@ func healthyFake() pg.Querier {
 	return f
 }
 
-func printReport(rep *doctor.Report) {
+func printReport(rep *dryrun.Report) {
 	fmt.Println("gpstream dry-run — diagnostics")
 	fmt.Println("=============================")
 	for _, c := range rep.Sorted() {
@@ -1503,7 +1482,7 @@ func cmdRun(args []string) error {
 		mgr.Units, mgr.Rows, mgr.Skipped, mgr.Failures)
 	// F-16: the detected collation differences (DB-level LC_COLLATE/LC_CTYPE
 	// and column-level attcollation) are re-surfaced in the FINAL report —
-	// the spec requires the warning in doctor/dry-run AND the final report.
+	// the spec requires the warning in dry-run AND the final report.
 	// An admin reviews and accepts the risk (string sort/index semantics may
 	// differ) rather than gpstream silently deciding.
 	if len(p.Collations) > 0 {
@@ -1599,7 +1578,6 @@ Commands:
             [--all-incomplete] [--mode drop --dest <conn>] [--yes])
 
 Service:
-  selftest  internal sanity checks
   version   print the build version
   help      this help (also: --help / -h)
 

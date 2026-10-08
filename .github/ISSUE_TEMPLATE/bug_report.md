@@ -6,7 +6,7 @@ labels: bug
 
 <!--
 gpstream is a 100 TB–1 PB Greenplum-to-Greenplum copy tool. Before posting,
-check: `gpstream doctor` output, the run's journal.jsonl + audit.log under the
+check: `gpstream dry-run` output (the self-diagnostic), the run's journal.jsonl + audit.log under the
 state dir, and events.jsonl (rate-shift/conflict/unit_failed/collation_diff
 events). Attach those — a bug report without them will be closed as
 incomplete.
@@ -30,7 +30,7 @@ appear in env or .pgpass in the report). Smallest failing table set.
 - `journal.jsonl` (the durable unit state mirror)
 - `audit.log` (run/run-finished/resume/cleanup)
 - `events.jsonl` (diagnostic events)
-- `gpstream doctor` output, `gpstream status` output
+- `gpstream dry-run` output, `gpstream status` output
 - full stderr of the failing command
 
 **State-dir snapshot** (crash/resume bugs): `tar czf state.tar.gz <state-dir>/<operation-id>` (journal, audit, events, conflicts.jsonl).

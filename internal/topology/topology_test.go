@@ -101,7 +101,7 @@ func TestReadCatalogError(t *testing.T) {
 	}
 }
 
-// TestReadProbeReturnsRegclassString — regression for the live GP6 doctor
+// TestReadProbeReturnsRegclassString — regression for the live GP6 dry-run
 // "could not enumerate segments" FAIL. pgx decodes a bare to_regclass as its
 // TEXT form (the type name) in the text protocol, NOT a numeric OID. The old
 // IsGreenplum did toInt(oid) > 0, so toInt("gp_segment_configuration") == 0
@@ -131,7 +131,7 @@ func TestReadProbeReturnsRegclassString(t *testing.T) {
 // TestCatalogSQLColumnsExistOnTargetKernel — regression guard: every column
 // in catalogSQL must exist in the open-gpdb 6.x gp_segment_configuration.
 // A stray column (the historical `datname`, absent on this build) makes the
-// whole query error and doctor reports "could not enumerate segments".
+// whole query error and dry-run reports "could not enumerate segments".
 func TestCatalogSQLColumnsExistOnTargetKernel(t *testing.T) {
 	// Columns present on open-gpdb 6.x gp_segment_configuration (verified
 	// live): address, content, datadir, dbid, hostname, mode, port,

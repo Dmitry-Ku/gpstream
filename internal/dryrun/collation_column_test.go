@@ -1,4 +1,4 @@
-package doctor
+package dryrun
 
 import (
 	"context"
@@ -17,17 +17,17 @@ func hasColumnCollationWarn(r *Report) bool {
 	return false
 }
 
-// TestDoctorColumnCollationMissing verifies (F-16) that the doctor's
+// TestDryrunColumnCollationMissing verifies (F-16) that the diagnostic's
 // column-level collation pre-flight reports a WARN when the source's
 // public-schema tables use an explicit collation the destination does not
 // have installed, while the DB-level "collation" check is unaffected.
-func TestDoctorColumnCollationMissing(t *testing.T) {
+func TestDryrunColumnCollationMissing(t *testing.T) {
 	// Source has an explicit "C.utf8" column collation; the destination's
 	// pg_collation (pg_catalog, oid 11) does NOT list it.
 	src := healthy()
-	src.On("gs-collation-doctor", [][]any{{"C.utf8"}})
+	src.On("gs-collation-dryrun", [][]any{{"C.utf8"}})
 	dst := healthy()
-	dst.On("gs-collation-doctor-dst", [][]any{{"default"}, {"C"}, {"POSIX"}})
+	dst.On("gs-collation-dryrun-dst", [][]any{{"default"}, {"C"}, {"POSIX"}})
 	// Same DB-level collation so the only finding is the column one.
 	src.On("pg_database", [][]any{{"C"}})
 	dst.On("pg_database", [][]any{{"C"}})
@@ -42,13 +42,13 @@ func TestDoctorColumnCollationMissing(t *testing.T) {
 	}
 }
 
-// TestDoctorColumnCollationInstalled verifies (F-16) that when the destination
+// TestDryrunColumnCollationInstalled verifies (F-16) that when the destination
 // has the explicit collation installed, no column-collation WARN is raised.
-func TestDoctorColumnCollationInstalled(t *testing.T) {
+func TestDryrunColumnCollationInstalled(t *testing.T) {
 	src := healthy()
-	src.On("gs-collation-doctor", [][]any{{"C.utf8"}})
+	src.On("gs-collation-dryrun", [][]any{{"C.utf8"}})
 	dst := healthy()
-	dst.On("gs-collation-doctor-dst", [][]any{{"default"}, {"C"}, {"POSIX"}, {"C.utf8"}})
+	dst.On("gs-collation-dryrun-dst", [][]any{{"default"}, {"C"}, {"POSIX"}, {"C.utf8"}})
 	src.On("pg_database", [][]any{{"C"}})
 	dst.On("pg_database", [][]any{{"C"}})
 
@@ -58,14 +58,14 @@ func TestDoctorColumnCollationInstalled(t *testing.T) {
 	}
 }
 
-// TestDoctorColumnCollationNone verifies (F-16) that a source with no explicit
-// column collation (empty gs-collation-doctor answer) raises no
+// TestDryrunColumnCollationNone verifies (F-16) that a source with no explicit
+// column collation (empty gs-collation-dryrun answer) raises no
 // column-collation WARN.
-func TestDoctorColumnCollationNone(t *testing.T) {
+func TestDryrunColumnCollationNone(t *testing.T) {
 	src := healthy()
-	src.On("gs-collation-doctor", [][]any{}) // no explicit collations
+	src.On("gs-collation-dryrun", [][]any{}) // no explicit collations
 	dst := healthy()
-	dst.On("gs-collation-doctor-dst", [][]any{{"default"}, {"C"}})
+	dst.On("gs-collation-dryrun-dst", [][]any{{"default"}, {"C"}})
 	src.On("pg_database", [][]any{{"C"}})
 	dst.On("pg_database", [][]any{{"C"}})
 

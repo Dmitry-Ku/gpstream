@@ -81,9 +81,9 @@ func main() {
 	// connections); --max-snapshot-delta bounds the pin spread (seconds).
 	workers := flag.Int("workers", 1, "parallel data workers (1 = strict, N>1 = snapshot-epoch)")
 	snapDelta := flag.Float64("max-snapshot-delta", 1, "snapshot-epoch pin-spread limit, seconds (0 disables)")
-	// Doctor probe: print a marker and exit 0 (no stream), proving the binary
+	// dry-run probe: print a marker and exit 0 (no stream), proving the binary
 	// is installed on the source host.
-	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
+	check := flag.Bool("check", false, "print a marker and exit 0 (dry-run binary probe)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {

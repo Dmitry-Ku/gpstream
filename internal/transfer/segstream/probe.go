@@ -8,7 +8,7 @@ import (
 )
 
 // CheckOnSegment probes the source cluster for the segment-direct
-// capability (DESIGN §1.3: doctor sets capability on_segment; planner fixes
+// capability (DESIGN §1.3: dry-run sets capability on_segment; planner fixes
 // copy_mode; the operator can override with --copy-mode). All probes run on
 // the coordinator (gpstream never connects to segments directly). binPath is
 // the absolute path the segreceiver binary will have on the segment hosts
@@ -63,7 +63,7 @@ func CheckOnSegment(ctx context.Context, q pg.Querier, binPath string) *OnSegmen
 	return p
 }
 
-// Summary renders the probe for the doctor report (one line per facet).
+// Summary renders the probe for the dry-run report (one line per facet).
 func (p *OnSegmentProbe) Summary() []string {
 	out := make([]string, 0, 3)
 	if p.GUC {

@@ -2,13 +2,13 @@
 
 A working FAQ for `gpstream`: what a failed command means, why it failed,
 and how to recover. Every symptom here maps to a **real** command, flag, or
-behavior in the tool (the 9 subcommands: `dry-run`, `run`, `bench`,
-`status`, `resume`, `cleanup`, `selftest`, `version`, `help`); nothing is
+behavior in the tool (the 8 subcommands: `dry-run`, `run`, `bench`,
+`status`, `resume`, `cleanup`, `version`, `help`); nothing is
 invented.
 
 > If you are stuck, start with the diagnostics: `gpstream dry-run`
-> (self-diagnostic + plan), `gpstream selftest`, and
-> `gpstream dry-run --timeout 60`. They tell you almost everything without
+> (self-diagnostic + plan, and `--timeout 60` for the reachability probe).
+> They tell you almost everything without
 > touching live data.
 
 ---

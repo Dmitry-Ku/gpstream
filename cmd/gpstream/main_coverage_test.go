@@ -8,17 +8,9 @@ import (
 )
 
 // These tests exercise the large surface of parseConfig and the small helper
-// functions (compress, parseDuration) plus cmdSelftest, raising the cmd/gpstream
+// functions (compress, parseDuration) raising the cmd/gpstream
 // coverage toward the v2 unit bar. They use only real APIs and real config
 // fields; no feature is invented.
-
-// TestSelftestCommand: `gpstream selftest` runs the built-in self-check and
-// returns nil when all cases pass (FR-05). This covers cmdSelftest (0%).
-func TestSelftestCommand(t *testing.T) {
-	if err := run([]string{"selftest"}); err != nil {
-		t.Fatalf("selftest: %v", err)
-	}
-}
 
 // TestParseConfigFull exercises the many --flag cases that the v2-selection
 // tests do not cover, so the big parseConfig switch is exercised end to end.

@@ -126,7 +126,7 @@ func TestSetRename(t *testing.T) {
 }
 
 // TestDryRunNoCluster: P1e — dry-run now runs the source/dest self-diagnostic
-// (the former doctor) BEFORE planning. CR-7: an unconfigured/unreachable
+// BEFORE planning. CR-7: an unconfigured/unreachable
 // cluster is a reachability FAIL, so a bare `dry-run` (no connstring) must
 // error with the report — not silently plan against a healthy fake.
 func TestDryRunNoCluster(t *testing.T) {
@@ -224,7 +224,7 @@ func TestMetricsEndpoint(t *testing.T) {
 }
 
 // TestSecurityCheckNoCluster: CR-7/v2 §4.12 — security-check must FAIL (not pass)
-// for an unconfigured cluster, mirroring doctor's no-mask guarantee.
+// for an unconfigured cluster, mirroring the dry-run diagnostic's no-mask guarantee.
 func TestSecurityCheckNoCluster(t *testing.T) {
 	if err := run([]string{"security-check"}); err == nil {
 		t.Fatal("expected security-check to fail without a reachable cluster")

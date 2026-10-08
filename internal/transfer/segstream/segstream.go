@@ -609,15 +609,15 @@ func quoteIdent(s string) string {
 // then gpstop -ar).
 const GUCName = "ycmdb.yc_allow_copy_to_program"
 
-// CheckOnSegment is a doctor-side probe (capability on_segment). It runs
+// CheckOnSegment is a dry-run-side probe (capability on_segment). It runs
 // three checks against the source coordinator:
 //
 //  1. the GUC is on (current_setting),
 //  2. ON SEGMENT dispatch works at all (a trivial COPY TO PROGRAM 'true'),
 //  3. the segreceiver binary is on the segment hosts (command -v).
 //
-// Each returns (ok, detail). The caller (doctor) maps them to PASS/WARN/FAIL.
-// On non-Greenplum clusters all three fail with "not Greenplum" — the doctor
+// Each returns (ok, detail). The caller (dry-run) maps them to PASS/WARN/FAIL.
+// On non-Greenplum clusters all three fail with "not Greenplum" — dry-run
 // skips the capability then.
 type OnSegmentProbe struct {
 	GUC        bool   // ycmdb.yc_allow_copy_to_program = on

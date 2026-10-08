@@ -117,7 +117,7 @@ type Plan struct {
 	// extensions (MADlib/PostGIS/orafce, ...): extension types used by the
 	// selected tables' columns that are NOT installed on the destination.
 	// Non-empty means the DDL of those columns will fail at run time — the
-	// operator must CREATE EXTENSION in the receiver first (the doctor does
+	// operator must CREATE EXTENSION in the receiver first (dry-run does
 	// the same diff over the full installed set as a pre-flight; this is the
 	// column-level, run-path signal).
 	MissingExtensions []string `json:"missing_extensions,omitempty"`
@@ -425,7 +425,7 @@ func detectOtherObjects(ctx context.Context, src pg.Querier, tabs []Table) Other
 // and reports the extensions that are NOT installed on the destination. A
 // non-empty result means the DDL of those columns will fail at run time until
 // the operator CREATE EXTENSIONs the missing one in the receiver — the
-// column-level, run-path counterpart of the doctor's whole-set diff. A catalog
+// column-level, run-path counterpart of dry-run's whole-set diff. A catalog
 // fault yields an empty result (detection must never fail the plan).
 func detectMissingExtensions(ctx context.Context, src, dst pg.Querier, tabs []Table) []string {
 	schemas := map[string]bool{}
@@ -470,7 +470,7 @@ func detectMissingExtensions(ctx context.Context, src, dst pg.Querier, tabs []Ta
 	// The destination's installed extensions.
 	dstRows, err := dst.Query(ctx, `SELECT extname FROM pg_extension`)
 	if err != nil {
-		return nil // destination extensions unreadable; the doctor pre-flight covers it
+		return nil // destination extensions unreadable; the dry-run pre-flight covers it
 	}
 	installed := make(map[string]bool, len(dstRows))
 	for _, r := range dstRows {

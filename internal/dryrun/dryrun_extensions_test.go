@@ -1,4 +1,4 @@
-package doctor
+package dryrun
 
 import (
 	"context"
@@ -15,11 +15,11 @@ func extRow(names ...string) [][]any {
 	return rows
 }
 
-// TestDoctorExtensionsMissing is the FR-05/FR-11 criterion: an extension
+// TestDryrunExtensionsMissing is the FR-05/FR-11 criterion: an extension
 // present in the source database but absent from the destination (the classic
 // MADlib/PostGIS/orafce restore trap) must be surfaced as a WARN naming the
-// exact missing extension(s), without failing the doctor.
-func TestDoctorExtensionsMissing(t *testing.T) {
+// exact missing extension(s), without failing the diagnostic.
+func TestDryrunExtensionsMissing(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	// Source DB has plpgsql + postgis; dest only plpgsql.
@@ -28,7 +28,7 @@ func TestDoctorExtensionsMissing(t *testing.T) {
 
 	rep := Run(context.Background(), src, dst, Options{MinTLS: "1.2"})
 	if !rep.Healthy {
-		t.Fatalf("missing extension must not FAIL the doctor, got %d FAILs", rep.Failures())
+		t.Fatalf("missing extension must not FAIL the diagnostic, got %d FAILs", rep.Failures())
 	}
 	if find(rep, "network", "extensions") != Warn {
 		t.Fatalf("extensions: got %v, want WARN", find(rep, "network", "extensions"))
@@ -45,9 +45,9 @@ func TestDoctorExtensionsMissing(t *testing.T) {
 	}
 }
 
-// TestDoctorExtensionsAllPresent: no source extension missing on the dest ->
+// TestDryrunExtensionsAllPresent: no source extension missing on the dest ->
 // PASS, no WARN.
-func TestDoctorExtensionsAllPresent(t *testing.T) {
+func TestDryrunExtensionsAllPresent(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_extension", extRow("plpgsql", "madlib"))
@@ -62,9 +62,9 @@ func TestDoctorExtensionsAllPresent(t *testing.T) {
 	}
 }
 
-// TestDoctorExtensionsQueryFault: an unreadable pg_extension degrades to WARN
+// TestDryrunExtensionsQueryFault: an unreadable pg_extension degrades to WARN
 // (with the error), never FAIL, and never blocks the rest of the report.
-func TestDoctorExtensionsQueryFault(t *testing.T) {
+func TestDryrunExtensionsQueryFault(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_extension", extRow("plpgsql"))
@@ -79,6 +79,6 @@ func TestDoctorExtensionsQueryFault(t *testing.T) {
 		t.Fatalf("extension query fault: got %v, want WARN", find(rep, "network", "extensions"))
 	}
 	if !rep.Healthy {
-		t.Fatalf("extension query fault must not FAIL the doctor")
+		t.Fatalf("extension query fault must not FAIL the diagnostic")
 	}
 }

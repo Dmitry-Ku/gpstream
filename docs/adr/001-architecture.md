@@ -41,12 +41,12 @@ CLI (cmd/gpstream) ── parses flags, binds config, dispatches subcommands
   │
   ├── metrics      progress + JSON/CSV + optional /metrics (FR-04)
   │
-  └── doctor       self-diagnostic, PASS/FAIL/WARN (FR-05/CR-7)
+  └── dryrun       self-diagnostic for dry-run, PASS/FAIL/WARN (FR-05/CR-7)
 ```
 
 Plus shared packages: `config` (defaults + flag/env binding, FR-08), `pg`
 (connection + pluggable `Querier` so components are testable without a live
-cluster), `selftest` (internal checks, FR-05).
+cluster).
 
 ### Data path (FR-01)
 
@@ -66,8 +66,8 @@ No intermediate disk storage; only RAM buffers with back-pressure.
 ### Framing (§4.2)
 
 Every frame carries a crc over its body so corruption is detected **without**
-re-copying the whole table (implemented and tested in `selftest` in M0; the
-production stream layer reuses this in M2).
+re-copying the whole table (the production stream layer implements this in
+`internal/transfer/segstream`; M0 carried a stand-alone selftest, removed 08.10).
 
 ### Journal (§4.3)
 
@@ -84,7 +84,7 @@ is done when all units are done plus a final report.
 
 - Separate worker processes (FR-06): a worker death does not kill the job;
   systemd `Restart=on-failure` + an internal watchdog.
-- The `pg.Querier` interface lets `doctor`, `planner`, and the source/dest
+- The `pg.Querier` interface lets `dryrun`, `planner`, and the source/dest
   agents be unit-tested with `pg.FakeConn` (no live cluster) — this is how
   CR-7 (detect all seeded faults) and plan-determinism (CR-4) are verified.
 - The plan hash is a pure function of (units, compression, workers, …) with no

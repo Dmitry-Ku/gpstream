@@ -21,8 +21,8 @@ plan.
 Execute the copy: stream source to dest with no intermediate storage.
 .TP
 .B dry-run
-Self-diagnose the source/dest clusters (the former \fBdoctor\fR command, folded
-in at P1e: any FAIL aborts with the report), then plan the copy without
+Self-diagnose the source/dest clusters (any FAIL aborts with the report),
+then plan the copy without
 executing (\fB--timeout\fR S bounds the plan; the plan JSON is always persisted
 to \fB<state-dir>/<operation-id>/plan.json\fR).
 .TP
@@ -57,10 +57,6 @@ drop
 <connstring> also drops the destination objects this operation created
 (surviving staging, renamed-in or created final tables, renamed-in schemas)
 to restore the pre-operation state.
-.TP
-.B selftest
-Internal sanity checks: schema, checksums, limiter, plan determinism, framing.
-.TP
 .B version
 Print the binary version.
 .TP
@@ -451,7 +447,7 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .SH SEE ALSO
 .BR gpstream(8) ,
 docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,
-OPERATOR_GUIDE, DOCTOR, TROUBLESHOOTING), docs/adr/000, docs/adr/001.
+OPERATOR_GUIDE, DRY-RUN, TROUBLESHOOTING), docs/adr/000, docs/adr/001.
 .SH NOTES
 The live destination segment-fill balance (max/avg) is always measured after
 each swap and reported; a fixed 1.5 gate emits the WARNING line (the former

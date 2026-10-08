@@ -21,7 +21,7 @@ package route
 //
 // (For the legacy opclass (REDUCE_BITMASK/LAZYMOD) congruence mod g would work,
 // but gp_use_legacy_hashops is a post-upgrade mode; v0.1 does not support it —
-// doctor will check and reject it.)
+// dry-run will check and reject it.)
 
 import (
 	"fmt"

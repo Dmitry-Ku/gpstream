@@ -12,7 +12,7 @@ monitor, and recover if needed.
 > conflicting units and continue), or `--resolve-conflicts overwrite` /
 > `truncate` (replace / truncate+load).
 
-> **Cluster requirement:** `--help` and `selftest` need no cluster. **`run`,
+> **Cluster requirement:** `--help` needs no cluster. **`run`,
 > `dry-run` and `run`/`bench` require a reachable source and destination cluster**
 > (a dry-run plans against the live topology).
 >

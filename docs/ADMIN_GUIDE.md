@@ -36,7 +36,7 @@ cron / scheduler / process manager of choice).
   `github.com/klauspost/compress`, so the build environment sets
   `GOPROXY=https://proxy.golang.org,direct`.
 - A **live Greenplum 6 cluster is required for `copy`**, but **not** for
-  `--help` or `selftest` without a cluster (`dry-run` needs a reachable one).
+  `--help` without a cluster (`dry-run` needs a reachable one).
   (See `INSTALL.md`.)
 
 ---
@@ -57,7 +57,7 @@ make amd64      # -> bin/gpstream-amd64
 ```
 The build matrix is linux/amd64 only (arm64 dropped 01.10).
 The Makefile targets: `all build cross amd64 test cover vet fmt
-dry-run selftest clean`.
+man-pages package clean`.
 
 ### 3.3 Linux package
 `packaging/` ships `deb/`, `rpm/`, and `logrotate.conf`. Install the deb/rpm
@@ -65,7 +65,7 @@ and run the CLI (or schedule it with your own cron / process manager).
 
 Verify after install:
 ```
-gpstream selftest   # internal consistency checks
+gpstream version    # build version
 gpstream dry-run    # reachability + segment + glibc checks, then plan
 ```
 `dry-run` is **strict**: a missing connection string is a reachability **FAIL**,

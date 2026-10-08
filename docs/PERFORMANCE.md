@@ -142,7 +142,7 @@ for). The ε-window is real but tiny: each of the N pinned connections gets its
 own snapshot (GP6 has no cross-session snapshot share), so the N points differ
 by the pin spread Δ = max(t_fix) − min(t_fix), which is ~ms in practice.
 `--max-snapshot-delta SEC` (default 1s, `0` disables) bounds that spread: a
-run whose N pins are more than that apart **refuses to start** (a doctor error
+run whose N pins are more than that apart **refuses to start** (a start error
 carrying the actual Δ) rather than copy a silently inconsistent snapshot.
 Within a single run without a failure there is one snapshot per worker; the
 ε-window is the only looseness, and it is the price of N parallel streams.

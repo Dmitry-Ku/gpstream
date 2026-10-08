@@ -1,10 +1,11 @@
-// Package doctor implements `gpstream doctor` (FR-05): a self-diagnostic that
-// reports PASS/FAIL/WARN for the source and destination clusters with
-// actionable recommendations. It is intentionally dependency-free of a live
-// cluster so it can be exercised against fakes (CR-7: the doctor must detect
-// all seeded faults on a test bench).
-package doctor
-
+// Package dryrun implements the self-diagnostic (FR-05) that reports
+// PASS/FAIL/WARN for the source and destination clusters with actionable
+// recommendations. It is invoked by `gpstream dry-run` before the plan is
+// rendered.
+// It is intentionally dependency-free of a live cluster so it can be exercised
+// against fakes (CR-7: the diagnostic must detect all seeded faults on a test
+// bench).
+package dryrun
 import (
 	"context"
 	"fmt"
@@ -49,7 +50,7 @@ type Check struct {
 	Rec  string // recommendation; empty if none
 }
 
-// Report is the aggregated doctor output.
+// Report is the aggregated diagnostic output.
 type Report struct {
 	Checks  []Check
 	Healthy bool // true only if no FAIL
@@ -108,7 +109,7 @@ type Options struct {
 	// the segment-direct capability; empty disables the on_segment check).
 	SegmentBinary string
 	// Workers is the run's --workers (the host-pair worker pool / the
-	// snapshot-epoch N). The doctor uses it to size the source DB's
+	// snapshot-epoch N). The diagnostic uses it to size the source DB's
 	// max_connections against the run's connection demand (P1d). 0 disables
 	// the connection-sizing check.
 	Workers int
@@ -269,7 +270,7 @@ func boolStr(cond bool, yes, no string) string {
 // the planner (copy_mode selection) — a missing piece downgrades the
 // capability to WARN (the job can still run on the coordinator path),
 // except a reachable cluster where the GUC is explicitly off is reported
-// with a precise fix. It never fails the whole doctor: the coordinator
+// with a precise fix. It never fails the whole run: the coordinator
 // path (C) always works.
 func (r *Report) checkOnSegment(side string, q pg.Querier, binPath string) {
 	if binPath == "" {
@@ -359,7 +360,7 @@ func (r *Report) checkSegments(side string, q pg.Querier) {
 }
 
 func (r *Report) checkDisk(side string, q pg.Querier) {
-	// Free disk is an OS metric; in a live run the doctor reads statvfs. For a
+	// Free disk is an OS metric; in a live run the diagnostic reads statvfs. For a
 	// testable path we query a sentinel the bench injects (CR-7: "no space").
 	rows, err := q.Query(context.Background(), "SELECT 1")
 	if err != nil {
@@ -415,7 +416,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 	// vs EL8, both "en_US.utf8", different sort order). The behavioral probe
 	// (CollationProbeSQL) is collation-sensitive and catches the glibc
 	// difference the name cannot. Measured once per connected cluster; a probe
-	// fault degrades to no finding (never blocks the doctor).
+	// fault degrades to no finding (never blocks the run).
 	srcSig, srcErr := pg.CollationSignature(src, context.Background())
 	dstSig, dstErr := pg.CollationSignature(dst, context.Background())
 	if srcErr == nil && dstErr == nil && srcSig != "" && dstSig != "" && srcSig != dstSig {
@@ -428,7 +429,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision (F-16)",
 		})
 	}
-	// F-16: column-level (attcollation) spot check. A doctor run has no
+	// F-16: column-level (attcollation) spot check. A dry-run has no
 	// table selection, so it reports the DISTINCT explicit collation names
 	// of the source's public-schema tables that the destination lacks — the
 	// cheap pre-flight signal that an explicit COLLATE would be lost. Per
@@ -451,7 +452,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 // character encoding. An encoding mismatch (e.g. SQL_ASCII -> UTF8) is
 // DATA-DESTRUCTIVE — string bytes are reinterpreted on the destination — so
 // it is reported with a recommendation to align the destination database
-// before the load. A query fault degrades to no finding (doctor is a
+// before the load. A query fault degrades to no finding (dry-run is a
 // pre-flight, never a hard gate).
 func (r *Report) checkEncoding(src, dst pg.Querier) {
 	srcEnc := pg.RowStr(context.Background(), src, `SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()`)
@@ -481,8 +482,8 @@ func orUnknown(s string) string {
 
 // missingCollations returns the distinct explicit collation names used by
 // columns of the source's public-schema tables that are NOT installed in the
-// destination database (F-16 doctor pre-flight). Both sides degrade to no
-// finding on a query fault (doctor is a pre-flight, never a hard gate on
+// destination database (F-16 dry-run pre-flight). Both sides degrade to no
+// finding on a query fault (dry-run is a pre-flight, never a hard gate on
 // collation — the dry-run plan carries the per-table detail).
 func missingCollations(ctx context.Context, src, dst pg.Querier) []string {
 	srcRows, err := src.Query(ctx,
@@ -493,12 +494,12 @@ func missingCollations(ctx context.Context, src, dst pg.Querier) []string {
 		 JOIN pg_collation co ON co.oid = a.attcollation
 		 WHERE c.relkind IN ('r','p') AND n.nspname = 'public'
 		   AND a.attnum > 0 AND NOT a.attisdropped
-		   AND co.collname IS DISTINCT FROM 'default' /* gs-collation-doctor */`)
+		   AND co.collname IS DISTINCT FROM 'default' /* gs-collation-dryrun */`)
 	if err != nil || len(srcRows) == 0 {
 		return nil
 	}
 	dstRows, err := dst.Query(ctx,
-		`SELECT collname FROM pg_collation WHERE collnamespace = 11 /* gs-collation-doctor-dst */`)
+		`SELECT collname FROM pg_collation WHERE collnamespace = 11 /* gs-collation-dryrun-dst */`)
 	if err != nil {
 		return nil
 	}
@@ -522,7 +523,7 @@ func missingCollations(ctx context.Context, src, dst pg.Querier) []string {
 }
 
 func (r *Report) checkTLS(minTLS string) {
-	// TLS chain validation is wired in internal/conn (M2, FR-13); doctor here
+	// TLS chain validation is wired in internal/conn (M2, FR-13); dry-run here
 	// reports the configured minimum and defers cert inspection.
 	r.Add(Check{Name: "tls", Side: "network", Sev: Warn,
 		Msg: fmt.Sprintf("min TLS %s required (full cert validation in M2)", minTLS),
@@ -535,7 +536,7 @@ func (r *Report) checkTLS(minTLS string) {
 // orafce, ...) must be installed in the receiver BEFORE the data load, or
 // the restore of extension-typed columns fails. The check is a diff over the
 // full installed set (not just the three named examples), so any dependent
-// extension is caught. WARN, never FAIL: the doctor is a pre-flight, and the
+// extension is caught. WARN, never FAIL: dry-run is a pre-flight, and the
 // copy of plain-table data can still succeed — the recommendation names the
 // exact missing extensions. A query fault is reported as WARN with the error
 // (unreachable sides already fail reachability).

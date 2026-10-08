@@ -225,7 +225,7 @@ func TestCmdVersionMan(t *testing.T) {
 	}
 }
 
-// TestCmdDryRunFake: P1e — dry-run runs the self-diagnostic (former doctor)
+// TestCmdDryRunFake: P1e — dry-run runs the self-diagnostic
 // before planning. With no source/dest connstrings the reachability check is a
 // FAIL (diagnoseConn: "no source connstring configured"), so the command must
 // error with the report. (The --map-db / --map-schema flag parsing is covered
@@ -240,7 +240,7 @@ func TestCmdDryRunFake(t *testing.T) {
 }
 
 // TestCmdDryRunUnreachable: dry-run against an unconfigured/unreachable
-// cluster must emit FAIL findings (CR-7) and return an error (the doctor
+// cluster must emit FAIL findings (CR-7) and return an error (the diagnostic
 // command was folded into dry-run, P1e).
 func TestCmdDryRunUnreachable(t *testing.T) {
 	if err := run([]string{"dry-run"}); err == nil {

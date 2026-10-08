@@ -80,9 +80,9 @@ func main() {
 	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
 	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per connection")
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
-	// Doctor probe: print a marker and exit 0 (no serve), proving the binary
+	// dry-run probe: print a marker and exit 0 (no serve), proving the binary
 	// is installed on the destination host.
-	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe)")
+	check := flag.Bool("check", false, "print a marker and exit 0 (dry-run binary probe)")
 	// --serve = LONG-LIVED mode (design 04.10): the agent binds ONE data
 	// listener + ONE control listener for the whole run (port economy) and
 	// serves units over the control protocol (hello / serve-unit /

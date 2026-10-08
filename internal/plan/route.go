@@ -1,7 +1,7 @@
 package plan
 
 // route.go — M4: embedding routeMode (T4b) into the plan (FR-03/FR-10) and
-// a cluster-level route summary for doctor/dry-run.
+// a cluster-level route summary for dry-run.
 //
 // For each table (unit) the plan determines how the data of the source cluster
 // (S primary segments) lands in the destination cluster (D primary segments):
@@ -26,7 +26,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// RouteSummary — cluster-level route summary (for doctor/dry-run, "before start"):
+// RouteSummary — cluster-level route summary (for dry-run, "before start"):
 // how many segments on each side, whether the major versions are equal, how many
 // eligible (s,d) pairs are available for the given (S,D) and whether direct_1to1 is possible.
 type RouteSummary struct {

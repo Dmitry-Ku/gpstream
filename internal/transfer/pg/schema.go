@@ -28,7 +28,7 @@ type Column struct {
 	// (pg_collation.collcollate), or "" for the database-default
 	// collation — only explicitly collated columns carry it. The
 	// destination DDL must reproduce it, and the planner compares
-	// source vs destination per table (doctor/dry-run/final-report
+	// source vs destination per table (dry-run/final-report
 	// warnings when they differ).
 	Collation string
 }

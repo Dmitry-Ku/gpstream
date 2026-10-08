@@ -84,7 +84,7 @@ plan the two-agent remediation:
   should expect the raw volume on the wire.
 - The controller must be treated as a data trust root (SECURITY.md §threat
   model): place it where the data is allowed to be read.
-- `doctor` warns (WARN) when the controller host differs from both cluster
+- The self-diagnostic (in `dry-run`) warns (WARN) when the controller host differs from both cluster
   hosts and compression is on (the debt is most visible there).
 - The two-agent refactor is tracked as the next major work item (plan in
   `docs/adr/002-...` follow-up / T30 backlog); acceptance: compressed bytes
@@ -117,7 +117,7 @@ this ADR are met:
    the source agent + per-segment utility COPYs). `--topology single`
    remains available as the fallback, still documented as the ADR-002 debt.
 
-`doctor` reports the topology check as **PASS** under `--topology two-agent`
+`dry-run` (the self-diagnostic) reports the topology check as **PASS** under `--topology two-agent`
 (data runs agent → agent, compressed on the wire; the controller holds no
 data connections) and keeps the WARN for the single-controller build.
 OPERATOR_GUIDE, SECURITY.md, METRICS.md, CLI_REFERENCE and CONFIGURATION are

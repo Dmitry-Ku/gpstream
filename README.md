@@ -17,8 +17,7 @@ encryption, observability. [Open full-size SVG](assets/architecture.svg).*
 > **Milestone status (this build):** M1 core **verified**. `run` now performs a
 > real transfer — it is wired into the job Manager (source → stream → dest) and
 > proven against live PostgreSQL clusters by the `tests/integration`
-> suite (build tag `integration`). `doctor` reports real reachability failures
-> (no silent fake fallback). Greenplum-specific paths (segment fan-out,
+> suite (build tag `integration`). `dry-run` reports real reachability failures (no silent fake fallback). Greenplum-specific paths (segment fan-out,
 > `gp_segment_connect`) and live-cluster chaos (`kill -9` resume, 100 Gbit/s
 > channel) are validated via the PG/fake substitute, not a live Greenplum — see
 > `RC-CHECKLIST.md`.
@@ -86,8 +85,6 @@ gpstream bench    [--timeout S]                     # input-stream rate: read so
 gpstream status   --operation-id <id|latest>
 gpstream resume   --operation-id <id|latest>
 gpstream cleanup  --operation-id <id|latest> [--all-incomplete] [--mode drop] [--dest <conn>] --yes
-gpstream doctor   [--source ...] [--dest ...]
-gpstream selftest
 gpstream version
 man gpstream
 ```
@@ -133,10 +130,9 @@ gpstream/
 │   ├── monitor/             # metrics, events, /metrics
 │   ├── ratelimit/           # adaptive rate limit (AIMD), /proc metrics
 │   ├── index/               # background index builder
-│   ├── doctor/              # self-diagnostic
+│   ├── dryrun/              # self-diagnostic (dry-run pre-flight)
 │   ├── config/              # config file + env + defaults
 │   ├── pgtest/              # live-PG test harness
-│   └── selftest/            # internal sanity checks
 ├── man/gpstream.8
 ├── docs/                    # CLI reference, metrics, quickstart, guides
 ├── packaging/               # systemd, rpm/deb, logrotate, examples

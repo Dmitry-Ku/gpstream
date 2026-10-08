@@ -72,7 +72,7 @@ const (
 )
 
 // CopyMode selects the source data-path transport (DESIGN §1.3 / T-B). The
-// operator can override the doctor-detected capability with --copy-mode.
+// operator can override the dry-run-detected capability with --copy-mode.
 type CopyMode string
 
 const (
@@ -127,7 +127,7 @@ type Config struct {
 	// MaxSnapshotDelta (P1d) bounds the snapshot-epoch pin spread for
 	// --workers N > 1, in SECONDS: the N REPEATABLE READ pins are taken in
 	// one ε-window and their spread (max(t_fix) − min(t_fix)) must be <=
-	// this limit or the run refuses to start (a doctor error carrying the
+	// this limit or the run refuses to start (a start error carrying the
 	// actual delta). 0 disables the check. Default 1s (the live pin spread
 	// is ~ms, a 3-orders-of-magnitude margin). strict mode (--workers 1)
 	// never pins an epoch, so this has no effect there.
@@ -909,7 +909,7 @@ func assignConfigString(c *Config, key, v string) {
 // file/env) is never clobbered. It fails loud when a binary cannot be found
 // — the on_segment path additionally needs the segreceiver to be installed
 // on the SOURCE SEGMENT HOSTS at the same path (the GP kernel executes it
-// there), which is verified by doctor and by the segreceivers' dial.
+// there), which is verified by dry-run and by the segreceivers' dial.
 func (c *Config) ResolveAgentBinaries() error {
 	var err error
 	if c.SourceAgentBinary == "" {
@@ -951,7 +951,7 @@ func resolveSibling(name string) (string, error) {
 	return "", fmt.Errorf("%s not found (looked next to %s and on PATH)", name, "the gpstream binary")
 }
 
-// ResolveSegBinaryOrEmpty is the soft variant for doctor: it resolves the
+// ResolveSegBinaryOrEmpty is the soft variant for dry-run: it resolves the
 // segreceiver by convention but returns "" (no error) when it is not found,
 // so the on_segment probe is skipped instead of failing the diagnostic.
 func ResolveSegBinaryOrEmpty() (string, error) {

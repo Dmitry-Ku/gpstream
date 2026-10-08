@@ -4,7 +4,7 @@
 // streaming path (ReadCopy/WriteCopy) that the source and destination agents
 // use to move data between clusters without touching local storage (FR-01).
 //
-// FakeConn is an in-memory Querier used by unit tests and by the doctor when a
+// FakeConn is an in-memory Querier used by unit tests and by the dry-run diagnostic when a
 // live cluster is unavailable.
 package pg
 
@@ -37,7 +37,7 @@ type Querier interface {
 }
 
 // StreamingQuerier is a Querier that can also run a raw COPY (FR-01). The live
-// Conn implements it; a fake need not (the fake is for planning/doctor only,
+// Conn implements it; a fake need not (the fake is for planning/dry-run only,
 // never for the data path — which is exactly why the data path used to be
 // unreachable from the binary).
 type StreamingQuerier interface {

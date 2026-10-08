@@ -46,7 +46,7 @@ func main() {
 	job := flag.String("job", "0", "job id (decimal)")
 	unit := flag.String("unit", "0", "unit id (decimal)")
 	content := flag.String("content", "", "segment content id (decimal; the kernel substitutes <SEGID>)")
-	check := flag.Bool("check", false, "print a marker and exit 0 (doctor binary probe; no stream)")
+	check := flag.Bool("check", false, "print a marker and exit 0 (dry-run binary probe; no stream)")
 	// F-13 data-plane TLS (embedded by the controller in the COPY TO PROGRAM
 	// string when the operator enabled it). All three empty = plain TCP.
 	sslCert := flag.String("ssl-cert", "", "client certificate PEM (data-plane TLS)")
@@ -92,7 +92,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *check {
-		// The doctor runs `COPY (SELECT 1) TO PROGRAM 'gpstream-segreceiver
+		// The dry-run diagnostic runs `COPY (SELECT 1) TO PROGRAM 'gpstream-segreceiver
 		// --check --content <SEGID>' ON SEGMENT`: a clean exit 0 on every
 		// segment proves the binary is installed on all segment hosts (a
 		// missing binary makes the kernel fail the COPY with

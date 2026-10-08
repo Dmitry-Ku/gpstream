@@ -1,8 +1,8 @@
 package segstream
 
-// CheckOnSegment capability probe (doctor on_segment): the three probe
+// CheckOnSegment capability probe (dry-run on_segment): the three probe
 // facets (GUC / dispatch / binary) and their Summary/OK rendering, on the
-// fake querier (the live path is covered by the doctor on GP6).
+// fake querier (the live path is covered by dry-run on GP6).
 
 import (
 	"context"

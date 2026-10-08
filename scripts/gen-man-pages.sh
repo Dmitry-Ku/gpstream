@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 MAIN=man/gpstream.8
 [ -f "$MAIN" ] || { echo "missing $MAIN" >&2; exit 1; }
 
-for cmd in run dry-run status resume cleanup selftest version; do
+for cmd in run dry-run status resume cleanup version; do
   out="man/gpstream-${cmd}.8"
   {
     echo ".so ${MAIN##*/}"

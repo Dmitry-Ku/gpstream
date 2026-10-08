@@ -143,7 +143,7 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 
 	// Pool sizing: strict needs 4; the snapshot-epoch reserves N dedicated
 	// connections (plus headroom for catalog reads), matching the
-	// controller's --workers+4 sizing the doctor checks (P1d).
+	// controller's --workers+4 sizing the dry-run checks (P1d).
 	poolSize := 4
 	if s.opts.Workers > 1 {
 		poolSize = s.opts.Workers + 4

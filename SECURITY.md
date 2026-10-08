@@ -29,7 +29,7 @@ gpstream moves production data between Greenplum clusters. The security
 boundaries that matter most:
 
 - **Transport** — TLS ≥ 1.2 with cert validation on the streaming path
-  (F-13); `--ssl-ca` / `--ssl-cert` for mTLS. The doctor reports the
+  (F-13); `--ssl-ca` / `--ssl-cert` for mTLS. The dry-run diagnostic reports the
   configured minimum before start.
 - **Credentials** — connection strings via environment (`GPSTREAM_SRC_*`,
   `GPSTREAM_DST_*`) or `--config` file (mode 0600). Credentials are never
@@ -37,7 +37,7 @@ boundaries that matter most:
 - **Integrity** — per-frame checksums, per-chunk manifest records, and
   destination reconciliation after resume (F-17).
 - **Least privilege** — the streaming role needs only the privileges the
-  doctor checks (CREATE/CONNECT on the target database plus COPY privileges
+  dry-run checks (CREATE/CONNECT on the target database plus COPY privileges
   on the objects being copied); run it as a dedicated role.
 
 ## Disclosure

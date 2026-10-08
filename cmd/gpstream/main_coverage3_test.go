@@ -1,7 +1,7 @@
 package main
 
 // F-09 coverage (item 11), second pass: the remaining cheap cmd/gpstream
-// branches — cmdSelftest (OK path), cmdCleanup
+// branches — cmdCleanup
 // --mode drop with an unreachable --dest (connect-fail path + the TLS/dest
 // flag parsing), cmdStatus with a valid runstats.json (live table: pair,
 // progress, throughput, by_status, per-table) plus jobmeta.json (snap-epoch
@@ -19,15 +19,6 @@ import (
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/monitor"
 )
-
-// TestCmdSelftest runs `gpstream selftest` end to end. The selftest is
-// environment-independent (it exercises the in-process fake plane), so the
-// OK path must print "selftest: OK" and return nil.
-func TestCmdSelftest(t *testing.T) {
-	if err := run([]string{"selftest"}); err != nil {
-		t.Fatalf("selftest: %v", err)
-	}
-}
 
 // TestCleanupModeDropConnectFail runs `cleanup --mode drop --dest <unreachable>
 // --yes` and verifies the connect-fail path: the flags are parsed (dest +

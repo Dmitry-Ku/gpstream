@@ -23,8 +23,6 @@ echo "binary built on: $(uname -s) agent host (Fedora 44, glibc 2.40) — static
 V1=$($BIN version 2>&1); RC1=$?
 echo "  vm1 (CentOS7, glibc 2.17): $V1"
 [ $RC1 -eq 0 ] && ok "version OK on vm1 (EL7/glibc 2.17)" || bad "version failed on vm1: $V1"
-S1=$($BIN selftest 2>&1 | tail -1)
-echo "  vm1 selftest: $S1"
 # vm4 (EL8/glibc 2.28) is the DESTINATION cluster: the same static binary
 # drives the cross-distro copy below (controller on EL7, data path to EL8
 # segments). The strictest glibc bound is vm1 (2.17) — if the binary runs
@@ -58,11 +56,7 @@ $C -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname='f16_dst'" | grep -
 $C -d f16_dst -Atc "SELECT datcollate FROM pg_database WHERE datname='f16_dst';" | sed 's/^/  f16_dst locale: /'
 $C -d f16_dst -qc "DROP SCHEMA IF EXISTS d1 CASCADE;" 2>/dev/null
 
-echo "########## 4. doctor + dry-run: collation warning C -> en_US.utf8 ##########"
-DOC=$($BIN doctor --source "postgres://gpadmin@10.0.0.11:5432/f16_src?sslmode=disable" \
-  --dest "postgres://gpadmin@10.0.0.14:7432/f16_dst?sslmode=disable" 2>&1 | G)
-echo "$DOC" | grep -iE "collation|encoding|locale" | sed 's/^/  /'
-echo "$DOC" | grep -qiE "collation" && echo "$DOC" | grep -qiE "warn" && ok "doctor: collation difference detected (WARN)" || bad "doctor: no collation warning"
+echo "########## 4. dry-run: collation warning C -> en_US.utf8 ##########"
 
 DRY=$($BIN dry-run --source "postgres://gpadmin@10.0.0.11:5432/f16_src?sslmode=disable" \
   --dest "postgres://gpadmin@10.0.0.14:7432/f16_dst?sslmode=disable" --dbs f16_src --rate-limit 10 2>&1 | G)

@@ -1,7 +1,7 @@
 // Package pg provides the PostgreSQL/Greenplum 6 access layer for gpstream.
 //
-// FakeConn is an in-memory Querier used by unit tests and by the doctor when a
-// live cluster is unavailable: it lets doctor/selftest produce meaningful
+// FakeConn is an in-memory Querier used by unit tests and by the dry-run diagnostic when a
+// live cluster is unavailable: it lets dry-run produce meaningful
 // PASS/FAIL/WARN output (CR-7) and deterministic test fixtures without a
 // running Greenplum.
 package pg
@@ -431,7 +431,7 @@ func contains(s, substr string) bool {
 	return false
 }
 
-// FormatConn is a small helper used by doctor to normalise a connection string
+// FormatConn is a small helper used by dry-run to normalise a connection string
 // for display (it strips the password so secrets never appear in output,
 // FR-08).
 func FormatConn(connStr string) string {

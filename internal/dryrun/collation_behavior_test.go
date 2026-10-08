@@ -1,4 +1,4 @@
-package doctor
+package dryrun
 
 import (
 	"context"
@@ -16,12 +16,12 @@ func hasBehaviorCollationWarn(r *Report) bool {
 	return false
 }
 
-// TestDoctorCollationBehaviorDiff is the Fix-2 core case (lab, 29.09):
+// TestDryrunCollationBehaviorDiff is the Fix-2 core case (lab, 29.09):
 // both clusters report the SAME LC_COLLATE name ("en_US.utf8") but the
 // behavioral probe (CollationProbeSQL) yields different orderings — a glibc
-// difference the name comparison cannot see. The doctor must raise a
+// difference the name comparison cannot see. The diagnostic must raise a
 // collation-behavior WARN while the name-based "collation" check stays PASS.
-func TestDoctorCollationBehaviorDiff(t *testing.T) {
+func TestDryrunCollationBehaviorDiff(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_database", [][]any{{"en_US.utf8"}})
@@ -39,9 +39,9 @@ func TestDoctorCollationBehaviorDiff(t *testing.T) {
 	}
 }
 
-// TestDoctorCollationBehaviorSame verifies no behavioral WARN when the probe
+// TestDryrunCollationBehaviorSame verifies no behavioral WARN when the probe
 // signatures match (same glibc behavior).
-func TestDoctorCollationBehaviorSame(t *testing.T) {
+func TestDryrunCollationBehaviorSame(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_database", [][]any{{"en_US.utf8"}})
@@ -55,9 +55,9 @@ func TestDoctorCollationBehaviorSame(t *testing.T) {
 	}
 }
 
-// TestDoctorCollationBehaviorProbeFault verifies a probe fault degrades to no
-// behavioral finding (never a WARN, never a doctor failure).
-func TestDoctorCollationBehaviorProbeFault(t *testing.T) {
+// TestDryrunCollationBehaviorProbeFault verifies a probe fault degrades to no
+// behavioral finding (never a WARN, never a diagnostic failure).
+func TestDryrunCollationBehaviorProbeFault(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 	src.On("pg_database", [][]any{{"en_US.utf8"}})
@@ -70,6 +70,6 @@ func TestDoctorCollationBehaviorProbeFault(t *testing.T) {
 		t.Fatalf("probe fault must not raise a collation-behavior WARN, got %+v", rep.Checks)
 	}
 	if !rep.Healthy {
-		t.Fatalf("probe fault must not make the doctor unhealthy, got %+v", rep.Checks)
+		t.Fatalf("probe fault must not make the diagnostic unhealthy, got %+v", rep.Checks)
 	}
 }

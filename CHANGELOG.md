@@ -7,6 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`gpstream selftest` subcommand + `internal/selftest` package** (removed
+  08.10, by Dmitry's decision — not in the TASK-SPEC-v4 CLI contract, §8:
+  doctor/dry-run/run/status/resume/cleanup). It exercised in-package stand-ins
+  (stdlib-only models of the checksum/limiter/plan-hash/frame-CRC), not the
+  production code paths, which are covered by the unit + gp6lab suites and by
+  the `dry-run` self-diagnostic (F-05). The no-cluster smoke in CI is now `version` + `--help`;
+  `man gpstream-selftest` alias removed; docs updated (CLI_REFERENCE, INSTALL,
+  ADMIN_GUIDE, TROUBLESHOOTING, QUICKSTART, README, ADR-001).
+
+### Fixed
+
+- **Stale `gpstream doctor` references** (the command was already folded into
+  `dry-run` at P1e, `6e82847`, but still referenced): the CI smoke step ran
+  `./bin/gpstream doctor` and FAILED on every push since 07.10 — removed (the
+  no-cluster smoke is now `version` + `--help`; dry-run without a cluster is a
+  reachability FAIL by design, CR-7). Also fixed: the main.go header line, the
+  `cmdDoctor` comment (it is `cmdDryRun`), `scripts/f16-acceptance.sh` section
+  4 (now dry-run only), README quick commands, the bug-report template, and
+  the behavioral wording in ADR-002 / PERFORMANCE.md. As part of the same
+cleanup the engine package was renamed `internal/doctor` ->
+`internal/dryrun` (9 files, `git mv`; the `doctor` identifier is gone
+from all live code and docs — only the historical journal retains it).
+The collation test-contract (SQL marker comments + the `FakeConn.On`
+substring tags) was renamed as a matched pair so the mock still binds.
+
+
 ### Added (P4)
 
 - **Routed mesh (S≠D) — the mini-agent accepts and merges S×W sub-streams.**

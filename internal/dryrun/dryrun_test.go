@@ -1,5 +1,4 @@
-package doctor
-
+package dryrun
 import (
 	"context"
 	"testing"
@@ -7,7 +6,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
-// healthy returns a fake that answers every doctor query with healthy values.
+// healthy returns a fake that answers every diagnostic query with healthy values.
 // FakeConn matches by longest substring, so the probe is registered under
 // "to_regclass" (the probe SQL does NOT contain the catalog key) and the
 // catalog under "FROM gp_segment_configuration" (the probe SQL does not
@@ -32,8 +31,8 @@ func healthy() *pg.FakeConn {
 	return f
 }
 
-// TestDoctorHealthy verifies a clean bench reports PASS with no FAIL.
-func TestDoctorHealthy(t *testing.T) {
+// TestDryrunHealthy verifies a clean bench reports PASS with no FAIL.
+func TestDryrunHealthy(t *testing.T) {
 	rep := Run(context.Background(), healthy(), healthy(), Options{MinTLS: "1.2"})
 	if !rep.Healthy {
 		t.Fatalf("expected healthy, got %d FAILs", rep.Failures())
@@ -54,10 +53,10 @@ func plainPG() *pg.FakeConn {
 	return f
 }
 
-// TestDoctorPlainPGMode is the M0 regression: against plain PostgreSQL (no
-// gp_segment_configuration) the doctor must degrade to WARN single-node mode
+// TestDryrunPlainPGMode is the M0 regression: against plain PostgreSQL (no
+// gp_segment_configuration) the diagnostic must degrade to WARN single-node mode
 // and stay healthy — never a hard FAIL on a working GP6-kernel instance.
-func TestDoctorPlainPGMode(t *testing.T) {
+func TestDryrunPlainPGMode(t *testing.T) {
 	rep := Run(context.Background(), plainPG(), plainPG(), Options{MinTLS: "1.2"})
 	if !rep.Healthy {
 		t.Fatalf("plain PG (GP6 kernel) must be healthy, got %d FAILs", rep.Failures())
@@ -69,10 +68,10 @@ func TestDoctorPlainPGMode(t *testing.T) {
 	}
 }
 
-// TestDoctorDetectsFaults is the CR-7 criterion: the doctor must detect every
+// TestDryrunDetectsFaults is the CR-7 criterion: the diagnostic must detect every
 // seeded fault. We inject distinct faults across source/dest and assert each
 // is surfaced (no fault is silently passed).
-func TestDoctorDetectsFaults(t *testing.T) {
+func TestDryrunDetectsFaults(t *testing.T) {
 	src := healthy()
 	dst := healthy()
 

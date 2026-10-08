@@ -48,7 +48,7 @@ func TestP1dSourceAgentEpochWiring(t *testing.T) {
 	if got := s.epoch.ConnCount(); got != n {
 		t.Fatalf("epoch ConnCount = %d, want %d", got, n)
 	}
-	// The pool is sized N+4 (the controller's --workers+4 sizing the doctor
+	// The pool is sized N+4 (the controller's --workers+4 sizing the dry-run
 	// checks), so the epoch's N reservations leave catalog headroom.
 	if err := s.epoch.ValidateDelta(time.Second); err != nil {
 		t.Fatalf("epoch Δ should pass the 1s gate (pins are ~ms apart): %v", err)
