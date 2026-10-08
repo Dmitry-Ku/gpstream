@@ -90,6 +90,11 @@ type UnitReportReq struct {
 	// Workers (W) — sub-streams per source segment (each source segment fans
 	// its rows to a destination segment over W sub-streams).
 	Workers int `json:"workers,omitempty"`
+	// Final is the FINAL destination table name (the staging is renamed to it
+	// by the destination agent's swap/commit decision, runUnit step 9).
+	// Overwrite is the conflict policy (drop the existing final table first).
+	Final     string
+	Overwrite bool
 }
 
 // CombinedUnitResult is the supervisor's per-unit report after combining the
@@ -402,10 +407,10 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 		return out, fmt.Errorf("supervisor: unit %d: %w", req.UnitID, first)
 	}
 	// Combine the XOR'd accumulators into the unit's "<rows>:<hex>" digests.
-	if req.VerifyDigest {
-		out.SrcDigest = transfer.CombinedDigestString(srcAcc, rows)
-		out.DstDigest = transfer.CombinedDigestString(dstAcc, rows)
-	}
+	// ALWAYS computed (no verify gate): the destination verifies on the data
+	// path without a re-read.
+	out.SrcDigest = transfer.CombinedDigestString(srcAcc, rows)
+	out.DstDigest = transfer.CombinedDigestString(dstAcc, rows)
 	return out, nil
 }
 

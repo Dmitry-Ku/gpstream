@@ -80,7 +80,12 @@ type TwoAgentRunner interface {
 	// when verify is on (srcDigest from the segreceivers' per-slice trailers
 	// combined by the supervisor, dstDigest from the minis' data-path
 	// digests). The swap is NOT performed (the Manager decides it).
-	StreamMini(ctx context.Context, req unitMiniRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, err error)
+	// StreamMini returns (in addition to the digests) whether the destination
+	// agent performed the swap/commit itself (swapped) and whether the SOURCE
+	// vs DEST digests matched (verified). The destination owns the swap
+	// decision (architecture 08.10); the controller reads the verdict and no
+	// longer verifies or swaps the mesh unit itself.
+	StreamMini(ctx context.Context, req unitMiniRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, swapped, verified bool, err error)
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
@@ -963,12 +968,12 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 // mini-agents' data endpoints — neither cluster coordinator is in the data
 // path). It returns the combined row count + wire + logical + (FR-02) the
 // inline digests when verify is on.
-func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, error) {
+func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
 	if r.destCtrl == nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: destination agent not started")
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: destination agent not started")
 	}
 	if r.miniAddrs == "" {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: no mini address book (the mesh MiniMap is not ready)")
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: no mini address book (the mesh MiniMap is not ready)")
 	}
 	r.streamMu.Lock() // serialize the whole exchange (see streamMu)
 	defer r.streamMu.Unlock()
@@ -977,10 +982,10 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 	//    returns the combined report (XOR_D) when the unit-done lands.
 	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "mini", Mini: &req.Launch, UnitID: req.UnitID})
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (mini) unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (mini) unit %d: %w", req.UnitID, err)
 	}
 	if !ack.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (mini) unit %d: %s", req.UnitID, ack.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (mini) unit %d: %s", req.UnitID, ack.Error)
 	}
 	// 2. Instruct the source agent to run the ON SEGMENT dispatch; the
 	//    segreceivers dial the D-entry address book (the mini data
@@ -993,22 +998,22 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: onsegment (mini) unit %d: %w", o.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: onsegment (mini) unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent onsegment (mini) unit %d: %s", o.UnitID, oresp.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: source agent onsegment (mini) unit %d: %s", o.UnitID, oresp.Error)
 	}
 	// 3. Wait for the destination (supervisor) to finish (the unit-done
 	//    report, correlated by the ack's ReqID).
 	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done (mini) unit %d: %w", o.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest unit-done (mini) unit %d: %w", o.UnitID, err)
 	}
 	if !done.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d (mini): %s", o.UnitID, done.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest agent unit %d (mini): %s", o.UnitID, done.Error)
 	}
-	return done.Rows, done.Wire, done.Logical, done.SrcDigest, done.Digest, nil
+	return done.Rows, done.Wire, done.Logical, done.SrcDigest, done.Digest, done.Swapped, done.Verified, nil
 }
 
 // MiniMap (P3 production-dispatch, mesh) polls the dest-agent (supervisor
@@ -1631,8 +1636,8 @@ func (r *InProcTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedR
 // mini-agents (a process layout). The in-process runner drives the
 // coordinator + segment-direct + routed paths; a mesh-mode run uses the
 // process runner (the production / live-e2e path).
-func (r *InProcTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, error) {
-	return 0, 0, 0, "", "", fmt.Errorf("two-agent: StreamMini (mesh mini path) requires the process runner (the in-process runner does not run the supervisor + mini-agents)")
+func (r *InProcTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
+	return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: StreamMini (mesh mini path) requires the process runner (the in-process runner does not run the supervisor + mini-agents)")
 }
 
 func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {

@@ -670,18 +670,11 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	}
 	defer s.releaseSnapshotConn(copyConn)
 	counted := &logicalCounter{}
-	var (
-		dataOut io.Writer = fw
-		dsum    *transfer.ContentDigestWriter
-	)
-	// P9-E: when the controller requested inline verify (--verify on), the
-	// source computes the row-order-independent content digest ON THE DATA
-	// PATH (O(1) memory) and reports it, so the verify step compares two
-	// inline digests instead of re-reading the source table.
-	if spec.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-		dataOut = &digestTee{next: fw, d: dsum}
-	}
+	// The row-order-independent content digest is ALWAYS computed on the data
+	// path (O(1) memory): the destination verifies on the data path without a
+	// re-read, so it is unconditional (no --verify gate).
+	dsum := transfer.NewContentDigest()
+	dataOut := &digestTee{next: fw, d: dsum}
 	tee := &teeWriter{logical: counted, out: dataOut}
 	rows, cerr := source.New(copyConn).CopyToStream(dctx, spec.SrcSchema, spec.SrcTable, tee)
 	if rp != nil {
@@ -703,13 +696,11 @@ func (s *SourceServer) streamUnit(ctx context.Context, spec UnitSpec, destAddr s
 	if cerr != nil {
 		return out, cerr
 	}
-	if dsum != nil {
-		d, derr := dsum.Sum()
-		if derr != nil {
-			return out, fmt.Errorf("inline digest %s.%s: %w", spec.SrcSchema, spec.SrcTable, derr)
-		}
-		out.Digest = d
+	d, derr := dsum.Sum()
+	if derr != nil {
+		return out, fmt.Errorf("inline digest %s.%s: %w", spec.SrcSchema, spec.SrcTable, derr)
 	}
+	out.Digest = d
 	return out, nil
 }
 
@@ -807,10 +798,9 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, id
 	// and brackets it with the UnitBegin/Trailer frames on the channel. The
 	// digest tee (verify on) computes the inline content digest on the data
 	// path.
-	var dsum *transfer.ContentDigestWriter
-	if spec.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-	}
+	// The digest tee ALWAYS computes the inline content digest on the data
+	// path (no --verify gate).
+	var dsum = transfer.NewContentDigest()
 	pr, pw := io.Pipe()
 	type copyOutcome struct {
 		rows   int64
@@ -819,10 +809,7 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, id
 	}
 	outcome := make(chan copyOutcome, 1)
 	go func() {
-		w := io.Writer(pw)
-		if spec.VerifyDigest {
-			w = &digestTee{next: pw, d: dsum}
-		}
+		w := io.Writer(&digestTee{next: pw, d: dsum})
 		cq, aerr := s.snapshotQuerier()
 		if aerr != nil {
 			_ = pw.CloseWithError(aerr)
@@ -832,7 +819,7 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, id
 		rows, cerr := source.New(cq).CopyToStream(ctx, spec.SrcSchema, spec.SrcTable, w)
 		s.releaseSnapshotConn(cq)
 		digest := ""
-		if cerr == nil && spec.VerifyDigest {
+		if cerr == nil {
 			d, derr := dsum.Sum()
 			if derr != nil {
 				cerr = fmt.Errorf("source agent: inline digest %s.%s: %w", spec.SrcSchema, spec.SrcTable, derr)

@@ -1189,12 +1189,21 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		rows          int64
 		wire, logical uint64
 		// P9-E (FR-02): the row-order-independent content digests computed ON
-		// THE DATA PATH when --verify is on (the coordinator two-agent path):
-		// srcDigest from the source agent, dstDigest from the destination
-		// agent. The verify step compares them instead of re-reading the
-		// tables. Empty on the segment/routed paths (which keep the re-read)
-		// and when --verify is off.
+		// THE DATA PATH (the coordinator two-agent path): srcDigest from the
+		// source agent, dstDigest from the destination agent. The verify step
+		// compares them instead of re-reading the tables.
 		srcDigest, dstDigest string
+		// MESH (architecture 08.10): the destination agent owns the verify +
+		// swap decision. streamTwoAgentMini returns its verdict —
+		// meshSwapped = the agent performed the atomic swap itself;
+		// meshVerified = the SOURCE vs DEST digests matched. When set, runUnit
+		// skips its own verify/swap for the unit (the destination already did
+		// it; re-doing it would double-swap / re-verify).
+		// meshSwapped = the destination agent performed the atomic swap itself
+		// (a true MESH mini unit that succeeded); meshVerified = the SOURCE vs
+		// DEST digests matched. A coordinator-downgraded mesh unit returns
+		// both false (the controller then verifies + swaps it as usual).
+		meshSwapped, meshVerified bool
 	)
 	// F-12: a small table (below --small-table-threshold) rides the transport
 	// with compression OFF; record the decision in events.jsonl (F-04) so the
@@ -1250,7 +1259,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// (one COPY through the destination coordinator, executed by the
 		// supervisor's fallback path) — the rest of the job keeps the mini
 		// path.
-		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgentMini(ctx, t, u, target, ds, dn, cols, dist, u.Partition, verify)
+		rows, wire, logical, srcDigest, dstDigest, meshSwapped, meshVerified, err = m.streamTwoAgentMini(ctx, t, u, target, ds, dn, cols, dist, u.Partition, verify)
 	case m.twoAgent != nil:
 		// Two-agent (ADR-002, P3): the data COPY runs ONLY in the agents over
 		// a real, compressed socket (source agent -> destination agent). The
@@ -1273,6 +1282,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("stream: %w", err)
 	}
 	u.RowCount = rows
+	if meshSwapped && dstDigest != "" {
+		// The MESH unit's content checksum is the destination's on-the-data-
+		// path digest (it matched the source's when --verify is on; with
+		// --verify off it is the recorded destination digest). The journal
+		// records it like the coordinator path does after its verify. The
+		// coordinator path (and a coordinator-downgraded mesh unit) stamps its
+		// own checksum in the verify step, so only a destination-swapped MESH
+		// unit needs it stamped here.
+		u.Checksum = dstDigest
+	}
 	m.statMu.Lock()
 	m.Rows += rows
 	m.statMu.Unlock()
@@ -1295,42 +1314,26 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	//        the data COPY.
 	//    Off by default — the COPY protocol's row count is then the
 	//    landed-data check.
-	if verify {
+	if verify && !meshVerified {
+		// A mesh unit the destination already verified (meshVerified) skips the
+		// controller's verify: the destination compared the SOURCE vs DEST
+		// digests itself and gated the swap on the match (architecture 08.10).
 		_ = m.setUnitState(u, StateVerifying)
-		var srcSum, dstSum string
-		if srcDigest != "" && dstDigest != "" {
-			// (a) P9-E: compare the two inline digests (identical format to
-			// the re-read checksum: "<rows>:<hex>").
-			srcSum, dstSum = srcDigest, dstDigest
-		} else {
-			// (b) fallback: re-derive on both sides.
-			srcSum, err = m.twoAgent.Checksum(ctx, t.Schema, t.Name)
-			if err != nil {
-				if !inPlace {
-					_ = m.dst.DropStaging(ctx, ds, target)
-				}
-				_ = m.setUnitState(u, StateFailed)
-				return fmt.Errorf("source checksum: %w", err)
+		// The two inline digests (the source's + the destination's, both
+		// computed ON THE DATA PATH) are always present now: the content
+		// digest is unconditional (no --verify gate). An empty pair is an
+		// internal invariant violation (a data path that stopped carrying the
+		// digest), NOT a case to re-read the tables for — the re-read verify
+		// was removed (08.10): it meant a full re-scan of both tables, which
+		// on the M7 pilot (100 TB -> 1 PB) is unacceptable.
+		if srcDigest == "" || dstDigest == "" {
+			if !inPlace {
+				_ = m.dst.DropStaging(ctx, ds, target)
 			}
-			ok, vrows, verr := m.dst.Verify(ctx, ds, target, srcSum)
-			if verr != nil {
-				if !inPlace {
-					_ = m.dst.DropStaging(ctx, ds, target)
-				}
-				_ = m.setUnitState(u, StateFailed)
-				return fmt.Errorf("verify: %w", verr)
-			}
-			if !ok {
-				if !inPlace {
-					_ = m.dst.DropStaging(ctx, ds, target)
-				}
-				_ = m.setUnitState(u, StateFailed)
-				// FR-04 "checksum errors": a content mismatch in the verify phase.
-				m.monitor.RecordChecksumError()
-				return fmt.Errorf("verify: checksum mismatch (rows=%d)", vrows)
-			}
-			dstSum = srcSum // the re-read confirmed destination == source
+			_ = m.setUnitState(u, StateFailed)
+			return fmt.Errorf("verify: inline digests missing (src=%q dst=%q) — the data path stopped carrying the content digest", srcDigest, dstDigest)
 		}
+		srcSum, dstSum := srcDigest, dstDigest
 		if srcSum != dstSum {
 			if !inPlace {
 				_ = m.dst.DropStaging(ctx, ds, target)
@@ -1366,15 +1369,19 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// 9. Atomically swap the staging table to its final name (FR-02). Only the
 	//    staging path swaps; the in-place path already wrote the final table.
 	if !inPlace {
-		// A re-read unit (u.Conflict, T5) replaces the previous result: the
-		// final name already exists on the destination and the verified
-		// staging must be swapped over it.
-		overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
-		if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
-			// A swap failure after a verified copy is still safe (the staging
-			// table holds the verified data); leave it and report so a resume
-			// can retry the swap.
-			return fmt.Errorf("swap: %w", err)
+		if !meshSwapped {
+			// A re-read unit (u.Conflict, T5) replaces the previous result: the
+			// final name already exists on the destination and the verified
+			// staging must be swapped over it. (A mesh unit the destination
+			// already swapped — meshSwapped — skips this: the destination
+			// agent performed the atomic rename itself, architecture 08.10.)
+			overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
+			if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
+				// A swap failure after a verified copy is still safe (the staging
+				// table holds the verified data); leave it and report so a resume
+				// can retry the swap.
+				return fmt.Errorf("swap: %w", err)
+			}
 		}
 	}
 	if err := m.setUnitState(u, StateSwapped); err != nil {
@@ -1618,7 +1625,13 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 // the destination coordinator, executed by the supervisor's fallback path),
 // logged so the operator sees why. The rest of the job keeps the mini path
 // (degradation is per table, not per job).
-func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, verifyDigest bool) (int64, uint64, uint64, string, string, error) {
+// streamTwoAgentMini runs the MESH (segment-to-segment) data path through the
+// agents. The destination agent (supervisor mode) owns the verify + swap
+// decision (architecture 08.10): it compares the SOURCE vs DEST digests and,
+// when they match (or --verify off), performs the atomic swap itself. The
+// manager returns the destination's verdict (swapped, verified) so runUnit
+// skips its own verify/swap for the mesh unit.
+func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, verifyDigest bool) (int64, uint64, uint64, string, string, bool, bool, error) {
 	uc, _ := m.unitCompressors(t)
 	jobID := jobIDFromHash(u.JobID)
 	compStr := m.twoAgentCompressString(uc)
@@ -1640,7 +1653,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 		m.events.Log("mesh_coordinator_fallback",
 			"table", t.Schema+"."+t.Name,
 			"reason", reason)
-		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		return rows, wire, logical, srcD, dstD, false, false, err
 	}
 
 	// 2. Route decision (the plan's per-table mode, re-checked against the
@@ -1659,7 +1673,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 		m.events.Log("mesh_coordinator_fallback",
 			"table", t.Schema+"."+t.Name,
 			"reason", reason+" — cannot be placed segment-to-segment")
-		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		return rows, wire, logical, srcD, dstD, false, false, err
 	}
 	// A live destination segment count that no longer matches the plan (a
 	// primary down since planning) breaks slice coverage: degrade this
@@ -1668,7 +1683,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 		m.events.Log("mesh_coordinator_fallback",
 			"table", t.Schema+"."+t.Name,
 			"reason", fmt.Sprintf("live destination segment count %d != planned %d (a primary down?) — slice coverage would break", D, S))
-		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		return rows, wire, logical, srcD, dstD, false, false, err
 	}
 
 	// 3. The MiniLaunch: the staging layout (the supervisor builds the
@@ -1710,10 +1726,15 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			Dist:           dist,
 			Part:           part,
 			Compress:       compStr,
-			VerifyDigest:   false, // re-read verify (the segment/routed path's model)
 			JobID:          jobID,
 			SourceSegments: fanIn,
 			Workers:        W,
+			// The destination agent owns the verify + swap decision (runUnit
+			// step 9 moved to the agent): it compares the SOURCE vs DEST
+			// digests and swaps the staging to its final name itself.
+			Final:     dn,
+			Overwrite: m.cfg.ConflictAction == config.Overwrite || u.Conflict,
+			Verify:    verifyDigest,
 		},
 		D: D,
 	}
@@ -1729,7 +1750,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			m.events.Log("mesh_coordinator_fallback",
 				"table", t.Schema+"."+t.Name,
 				"reason", fmt.Sprintf("distribution policy %q (no hash key) cannot be routed", dist.Kind))
-			return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+			rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+			return rows, wire, logical, srcD, dstD, false, false, err
 		}
 		colBy := map[string]int{}
 		for i, c := range cols {
@@ -1742,7 +1764,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 				m.events.Log("mesh_coordinator_fallback",
 					"table", t.Schema+"."+t.Name,
 					"reason", fmt.Sprintf("dist-key column %q is not in the source table", k))
-				return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+				rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+				return rows, wire, logical, srcD, dstD, false, false, err
 			}
 			pair := fmt.Sprintf("%d:%d", cols[idx].Oid, idx)
 			if i == 0 {

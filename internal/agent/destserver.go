@@ -113,6 +113,19 @@ type MiniLaunch struct {
 	JobID          uint32 `json:"job_id,omitempty"`
 	SourceSegments int32  `json:"source_segments,omitempty"`
 	Workers        int    `json:"workers,omitempty"`
+	// Final is the FINAL destination table name; the destination agent
+	// performs the atomic swap (staging -> Final) itself once the unit is
+	// verified (runUnit step 9 is the destination's decision, not the
+	// controller's). Empty = the agent does NOT swap (the controller still
+	// owns the swap for a non-mesh unit).
+	Final string `json:"final,omitempty"`
+	// Overwrite is the conflict policy (drop the existing Final table before
+	// the swap; the FR-11 stop default is false).
+	Overwrite bool `json:"overwrite,omitempty"`
+	// Verify gates the swap on the SOURCE vs DEST digest match (--verify on,
+	// the default). When false the digests are STILL computed + logged but
+	// the swap is not gated (a digest mismatch does not fail the unit).
+	Verify bool `json:"verify,omitempty"`
 }
 
 type DestServeReq struct {
@@ -159,6 +172,12 @@ type DestUnitDone struct {
 	Logical uint64 `json:"logical,omitempty"`
 	Wire    uint64 `json:"wire,omitempty"`
 	Swapped bool   `json:"swapped,omitempty"`
+	// Verified reports that the destination compared the SOURCE vs DEST
+	// content digests and they MATCHED (the --verify gate passed). The
+	// controller reads it to know the unit passed verification (the swap
+	// decision is the destination's; the controller no longer re-reads the
+	// tables to verify).
+	Verified bool `json:"verified,omitempty"`
 	// Digest is the row-order-independent content digest the destination
 	// computed on the data path (FR-02, P9-E) when the spec carried
 	// VerifyDigest; empty otherwise. The controller compares it against the
@@ -718,6 +737,27 @@ func (s *DestServer) ensureMiniStaging(ctx context.Context, ml *MiniLaunch) erro
 	return nil
 }
 
+// swapMiniFinal performs the destination's own atomic swap (staging -> final)
+// on a LOCAL coordinator connection (the fallback coordinator path's DSN).
+// This is runUnit step 9 moved to the destination agent: the destination
+// compares the SOURCE vs DEST digests, and when they match (or --verify off)
+// it commits the staging table to its final name itself. overwrite drops the
+// existing final table first (FR-11 --overwrite).
+func (s *DestServer) swapMiniFinal(ctx context.Context, schema, staging, final string, overwrite bool) error {
+	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("kind=mini: connect coordinator (swap): %w", err)
+	}
+	defer q.Close()
+	da := dest.New(q)
+	sctx, scancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer scancel()
+	if err := da.Swap(sctx, schema, final, staging, overwrite); err != nil {
+		return fmt.Errorf("kind=mini: swap %s.%s -> %s: %w", schema, staging, final, err)
+	}
+	return nil
+}
+
 func (s *DestServer) Close() {
 	s.stopOnce.Do(func() {
 		// P3 production-dispatch: stop the supervisor first (send mini-done
@@ -1048,19 +1088,46 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			Schema:         req.Mini.Schema,
 			Staging:        req.Mini.Staging,
 			Compress:       req.Mini.Compress,
-			VerifyDigest:   req.Mini.VerifyDigest,
+			VerifyDigest:   true, // digests are ALWAYS computed (no gate)
 			SourceSegments: req.Mini.SourceSegments,
 			Workers:        req.Mini.Workers,
+			Final:          req.Mini.Final,
+			Overwrite:      req.Mini.Overwrite,
 		})
 		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
-		done.Ok = err == nil
-		done.Error = errString(err)
-		// P9-E: the combined digests (XOR_D of the D per-segment
-		// accumulators) — the mesh analogue of the inline content digest.
-		if err == nil && req.Mini.VerifyDigest {
-			done.Digest = res.DstDigest
-			done.SrcDigest = res.SrcDigest
+		// The combined digests (XOR_D of the D per-segment accumulators) —
+		// the mesh analogue of the inline content digest. ALWAYS reported.
+		done.Digest = res.DstDigest
+		done.SrcDigest = res.SrcDigest
+		if err != nil {
+			// The unit failed on the data path: NO swap (the staging holds a
+			// partial/unverified load; a resume re-copies it). The digests
+			// are still reported above for diagnosis.
+			done.Error = errString(err)
+			return done
 		}
+		// Verify the content (FR-02): the destination compares the SOURCE vs
+		// DEST digests ITSELF (no re-read). When --verify is on (the default)
+		// a mismatch FAILS the unit (no swap); when off the digests are
+		// logged but the swap is not gated.
+		match := res.SrcDigest == res.DstDigest
+		done.Verified = match
+		if req.Mini.Verify && !match {
+			done.Error = fmt.Sprintf("verify: digest mismatch (src=%s dst=%s)", res.SrcDigest, res.DstDigest)
+			return done
+		}
+		// The destination's own swap/commit decision (runUnit step 9, moved to
+		// the agent): when the launch carried a final name the agent performs
+		// the atomic swap itself. An empty Final = the controller still owns
+		// the swap (a non-mesh degradation path).
+		if req.Mini.Final != "" {
+			if serr := s.swapMiniFinal(ctx, req.Mini.Schema, req.Mini.Staging, req.Mini.Final, req.Mini.Overwrite); serr != nil {
+				done.Error = serr.Error()
+				return done
+			}
+			done.Swapped = true
+		}
+		done.Ok = true
 	default:
 		done.Error = "unknown serve kind " + req.Kind
 	}

@@ -88,11 +88,10 @@ func main() {
 	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
 	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per slice")
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
-	// P0: when set, the slice's end-of-stream Trailer carries the raw per-row
-	// content-digest accumulator (mesh srcDigest building block). The
-	// controller embeds the flag when --verify on and the on_segment path is
-	// active; empty/off = the pre-P0 trailer (zero digest).
-	digest := flag.String("digest", "", "carry the per-row content digest in the trailer (on|off; default off)")
+	// The slice's end-of-stream Trailer ALWAYS carries the raw per-row
+	// content-digest accumulator (the mesh srcDigest building block, P0). The
+	// destination uses it to verify on the data path without a re-read, so it
+	// is unconditional (no flag).
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -162,7 +161,7 @@ func main() {
 	defer cancel()
 
 	if routed {
-		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), *digest == "on")
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), true)
 		return
 	}
 
@@ -219,9 +218,9 @@ func main() {
 		if perr != nil {
 			fail("compress %q: %v", *compressMode, perr)
 		}
-		rows, err = segstream.SendCompressed(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level, *digest == "on")
+		rows, err = segstream.SendCompressed(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), mode, level, true)
 	} else {
-		rows, err = segstream.Send(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), *digest == "on")
+		rows, err = segstream.Send(ctx, dataConn, os.Stdin, uint32(jobID), uint32(unitID), int16(contentID), true)
 	}
 	if err != nil {
 		fail("stream: %v", err)
@@ -424,7 +423,7 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 				transfer.StreamID{JobID: uint32(jobID), UnitID: uint32(unitID), Content: int16(contentID), DstContent: int16(d), Worker: int32(w)})
 		}
 	}
-	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, digest, dataConns)
+	sender := segstream.NewRoutedSender(ctx, os.Stdin, keyIdx, keyOid, int32(D), W, uint32(jobID), uint32(unitID), int16(contentID), mode, level, true, dataConns)
 	rows, err := sender.Run()
 	if err != nil {
 		fail("route: %v", err)

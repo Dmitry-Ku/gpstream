@@ -222,18 +222,11 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 		frameConn = rp
 	}
 	fr := transfer.NewFramedReader(frameConn, compress.NewDec(mode))
-	// P9-E: when the source requested inline verify (UnitSpec.VerifyDigest,
-	// set by the controller with --verify on), tee the decompressed binary-
-	// COPY stream into a ContentDigestWriter so the destination computes the
-	// row-order-independent content digest ON THE DATA PATH (O(1) memory) as
-	// the rows flow into the COPY FROM. The controller compares it against
-	// the source's inline digest instead of re-reading the staging table.
-	var dsum *transfer.ContentDigestWriter
-	var in io.Reader = fr
-	if spec.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-		in = &digestReader{next: dsum, src: fr}
-	}
+	// The row-order-independent content digest is ALWAYS computed on the data
+	// path (O(1) memory): the destination verifies on the data path without a
+	// re-read, so it is unconditional (no --verify gate).
+	dsum := transfer.NewContentDigest()
+	in := &digestReader{next: dsum, src: fr}
 	rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, in)
 	if cerr != nil {
 		if rp != nil {
@@ -248,13 +241,11 @@ func Serve(ctx context.Context, o DestOptions) (DestResult, error) {
 	if rp != nil {
 		_ = rp.Close() // clean end-of-stream (FIN) to the sender
 	}
-	if dsum != nil {
-		d, derr := dsum.Sum()
-		if derr != nil {
-			return out, fmt.Errorf("dest agent: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
-		}
-		out.Digest = d
+	d, derr := dsum.Sum()
+	if derr != nil {
+		return out, fmt.Errorf("dest agent: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
 	}
+	out.Digest = d
 
 	// 7. The swap is a controller decision (P3 passes o.Swap per unit).
 	if o.Swap {

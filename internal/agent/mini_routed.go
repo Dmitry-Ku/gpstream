@@ -96,10 +96,9 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 	// ContentDigestWriter, so the per-row XOR accumulator is computed over the
 	// exact bytes the utility COPY receives (row-order-independent).
 	pr, pw := io.Pipe()
-	var dsum *transfer.ContentDigestWriter
-	if req.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-	}
+	// The destination digest is ALWAYS computed (no verify gate): the
+	// destination verifies on the data path without a re-read.
+	var dsum = transfer.NewContentDigest()
 	var mergedW io.Writer = pw
 	if dsum != nil {
 		mergedW = &miniTeeWriter{a: dsum, b: pw}
@@ -251,17 +250,16 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 	resp.Rows = cres.rows
 	resp.SrcContrib = hexBytes(srcAcc)
 	// dst_acc = the destination's per-row XOR accumulator over the merged
-	// stream (row-order-independent: the merge order is immaterial).
-	if req.VerifyDigest && dsum != nil {
-		acc32, accRows, aerr := dsum.Accumulator()
-		if aerr != nil {
-			return fail("destination digest: %v", aerr)
-		}
-		if accRows != cres.rows {
-			return fail("digest rows %d != dest rows %d", accRows, cres.rows)
-		}
-		resp.DstAcc = hexBytes(acc32)
+	// stream (row-order-independent: the merge order is immaterial). ALWAYS
+	// computed (no verify gate).
+	acc32, accRows, aerr := dsum.Accumulator()
+	if aerr != nil {
+		return fail("destination digest: %v", aerr)
 	}
+	if accRows != cres.rows {
+		return fail("digest rows %d != dest rows %d", accRows, cres.rows)
+	}
+	resp.DstAcc = hexBytes(acc32)
 	resp.Ok = true
 	return resp
 }

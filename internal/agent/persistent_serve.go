@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
@@ -73,12 +72,11 @@ func ServeUnitData(ctx context.Context, dq pg.StreamingQuerier, da *dest.Agent, 
 	// The reader ends at the unit's Trailer frame (io.EOF), so the COPY sees
 	// exactly this unit's rows — the next unit's UnitBegin is left for the
 	// next ReceiveUnit.
-	var dsum *transfer.ContentDigestWriter
-	var in io.Reader = data
-	if spec.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-		in = &digestReader{next: dsum, src: data}
-	}
+	// The row-order-independent content digest is ALWAYS computed on the data
+	// path (O(1) memory): the destination verifies on the data path without a
+	// re-read, so it is unconditional (no --verify gate).
+	dsum := transfer.NewContentDigest()
+	in := &digestReader{next: dsum, src: data}
 	rows, cerr := da.CopyIntoStream(sctx, spec.Schema, spec.Staging, in)
 	if cerr != nil {
 		return out, fmt.Errorf("persistent serve: copy into %s.%s: %w", spec.Schema, spec.Staging, cerr)
@@ -86,15 +84,13 @@ func ServeUnitData(ctx context.Context, dq pg.StreamingQuerier, da *dest.Agent, 
 	out.Rows = rows
 	out.Logical = data.Logical()
 
-	// Inline content digest (P9-E): the destination's digest of the loaded
-	// rows, for the controller to compare against the source's.
-	if dsum != nil {
-		d, derr := dsum.Sum()
-		if derr != nil {
-			return out, fmt.Errorf("persistent serve: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
-		}
-		out.Digest = d
+	// The destination's digest of the loaded rows (ALWAYS computed), for the
+	// destination to compare against the source's.
+	d, derr := dsum.Sum()
+	if derr != nil {
+		return out, fmt.Errorf("persistent serve: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
 	}
+	out.Digest = d
 	// Cross-check the source's trailer row count against the COPY row count.
 	if tr := data.Trailer(); tr.Rows != 0 && tr.Rows != rows {
 		return out, fmt.Errorf("persistent serve: trailer row count %d != copy row count %d", tr.Rows, rows)

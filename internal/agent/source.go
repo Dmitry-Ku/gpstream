@@ -245,14 +245,11 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	// controller can verify against the destination's inline digest without
 	// re-reading either table.
 	counted := &logicalCounter{}
-	var (
-		dataOut io.Writer = fw
-		dsum    *transfer.ContentDigestWriter
-	)
-	if o.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-		dataOut = &digestTee{next: fw, d: dsum}
-	}
+	// The row-order-independent content digest is ALWAYS computed on the data
+	// path (O(1) memory): the destination verifies on the data path without a
+	// re-read, so it is unconditional (no --verify gate).
+	dsum := transfer.NewContentDigest()
+	dataOut := &digestTee{next: fw, d: dsum}
 	tee := &teeWriter{logical: counted, out: dataOut}
 	rows, cerr := srcAgent.CopyToStream(dctx, o.Schema, o.Table, tee)
 	if cerr != nil {
@@ -281,13 +278,11 @@ func Push(ctx context.Context, o SourceOptions) (SourceResult, error) {
 	}
 	// P9-E: finalize the inline content digest (the COPY completed cleanly,
 	// so the stream has its end marker; a Sum error is a genuine anomaly).
-	if dsum != nil {
-		d, derr := dsum.Sum()
-		if derr != nil {
-			return out, fmt.Errorf("source agent: inline digest %s.%s: %w", o.Schema, o.Table, derr)
-		}
-		out.Digest = d
+	d, derr := dsum.Sum()
+	if derr != nil {
+		return out, fmt.Errorf("source agent: inline digest %s.%s: %w", o.Schema, o.Table, derr)
 	}
+	out.Digest = d
 	return out, nil
 }
 

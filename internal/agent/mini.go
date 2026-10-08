@@ -379,15 +379,13 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 		copyRes <- res
 	}()
 
-	// 3. Decompress the slice into the pipe, teeing the destination digest when
-	// verify is on (O(1) memory, on the data path — the P9-E pattern).
-	var dsum *transfer.ContentDigestWriter
+	// 3. Decompress the slice into the pipe, teeing the destination digest
+	// ALWAYS (O(1) memory, on the data path — the P9-E pattern). The digest
+	// is unconditional: the destination verifies on the data path without a
+	// re-read, so it is computed for every unit (no gate).
+	var dsum = transfer.NewContentDigest()
 	var logicalN atomic.Uint64
 	w := &miniSliceWriter{pw: pw, dsum: dsum, logic: &logicalN}
-	if req.VerifyDigest {
-		dsum = transfer.NewContentDigest()
-		w.dsum = dsum
-	}
 	res := &segstream.SliceResult{}
 	derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, w.Write)
 	wire := cc.Bytes()
@@ -420,17 +418,15 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	}
 	resp.Rows = cres.rows
 	// dst_acc = the destination's own per-row XOR accumulator over the loaded
-	// bytes (composable; empty when verify is off).
-	if req.VerifyDigest && dsum != nil {
-		acc32, accRows, aerr := dsum.Accumulator()
-		if aerr != nil {
-			return fail("destination digest: %v", aerr)
-		}
-		if accRows != cres.rows {
-			return fail("digest rows %d != dest rows %d", accRows, cres.rows)
-		}
-		resp.DstAcc = hexBytes(acc32)
+	// bytes (composable; ALWAYS computed — no verify gate).
+	acc32, accRows, aerr := dsum.Accumulator()
+	if aerr != nil {
+		return fail("destination digest: %v", aerr)
 	}
+	if accRows != cres.rows {
+		return fail("digest rows %d != dest rows %d", accRows, cres.rows)
+	}
+	resp.DstAcc = hexBytes(acc32)
 	resp.Ok = true
 	return resp
 }
