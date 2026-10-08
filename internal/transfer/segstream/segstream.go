@@ -41,9 +41,9 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"time"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
 )
@@ -149,7 +149,7 @@ type SliceResult struct {
 	ContentID int16
 	Rows      int64
 	SHA256    [32]byte
-	Digest    [32]byte // the trailer's per-row XOR accumulator (zero if the sender did not carry it)
+	Digest    [32]byte          // the trailer's per-row XOR accumulator (zero if the sender did not carry it)
 	Trailer   *transfer.Trailer // the received trailer (nil if the stream truncated)
 	Bytes     uint64            // payload bytes received (excludes framing)
 	Err       error             // first error on this stream (nil = clean EOF after trailer)
@@ -342,6 +342,27 @@ func validListen(listen string) bool {
 	return err == nil && p > 0 && p < 65536
 }
 
+// validDestAddrList (P3 production-dispatch, mesh) validates a segreceiver
+// --dest-addr value that is either a single host:port (broadcast: the
+// destination agent's shared data listener) or a COMMA-SEPARATED list of
+// host:port entries (the D-entry address book: one per destination segment's
+// mini-agent data endpoint, parsed by ParseDestAddrs). An empty entry or a
+// malformed host:port is rejected (the segreceiver must not dial a wrong
+// endpoint).
+func validDestAddrList(addr string) bool {
+	parts := strings.Split(addr, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return false
+		}
+		if !validListen(p) {
+			return false
+		}
+	}
+	return true
+}
+
 // UnitListen derives the listen address for one unit from the operator's
 // base address: the same host with port + unitID. Units copy in parallel
 // (WorkersPerPair > 1) and each runs its own controller listener, so they
@@ -532,6 +553,66 @@ func ProgramCommandRoutedFrameAck(binPath, destAddr string, jobID, unitID uint32
 		return "", err
 	}
 	return cmd + fa, nil
+}
+
+// ProgramCommandMesh (P3 production-dispatch, mesh direct_1to1) builds the
+// segreceiver program for the DIRECT_1TO1 MESH: --dest-addr is the D-entry
+// address book (the comma-separated mini-agent data endpoints, one per
+// destination segment) and --dest-count is the number of SOURCE segments.
+// Each segreceiver (on source segment s) dials the entry s — its own
+// destination segment's mini-agent (S==D, equal hash keys: source segment
+// s's slice == destination segment s's slice) — and streams its slice to
+// that mini-agent's data listener. Neither cluster coordinator is in the
+// data path (design 04.10).
+func ProgramCommandMesh(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode string, srcSegs int) (string, error) {
+	if binPath == "" || listenBinChars(binPath) {
+		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
+	}
+	if !validDestAddrList(destAddr) {
+		return "", fmt.Errorf("segstream: bad mesh dest address %q (want host:port or a comma-separated D-entry address book)", destAddr)
+	}
+	if srcSegs < 1 {
+		return "", fmt.Errorf("segstream: bad mesh source segment count %d (want >= 1)", srcSegs)
+	}
+	if n := len(strings.Split(destAddr, ",")); n < srcSegs {
+		return "", fmt.Errorf("segstream: mesh dest address book has %d entries, want at least %d (the source segment count)", n, srcSegs)
+	}
+	cmd := fmt.Sprintf("%s --dest-addr %s --dest-count %d --job %d --unit %d --content <SEGID>",
+		binPath, destAddr, srcSegs, jobID, unitID)
+	switch {
+	case cert != "" && key != "":
+		if listenBinChars(cert) || listenBinChars(key) || (ca != "" && listenBinChars(ca)) {
+			return "", fmt.Errorf("segstream: unsafe TLS path set (cert=%q key=%q ca=%q)", cert, key, ca)
+		}
+		cmd += fmt.Sprintf(" --ssl-cert %s --ssl-key %s", cert, key)
+		if ca != "" {
+			cmd += " --ssl-ca " + ca
+		}
+	case cert != "" || key != "":
+		return "", fmt.Errorf("segstream: mesh TLS enabled with only one of --ssl-cert/--ssl-key (cert=%q key=%q); provide both or neither", cert, key)
+	}
+	if compressMode != "" {
+		if !validCompressMode(compressMode) {
+			return "", fmt.Errorf("segstream: bad compress mode %q", compressMode)
+		}
+		cmd += " --compress " + compressMode
+	}
+	return cmd, nil
+}
+
+// ProgramCommandMeshFrameAck is ProgramCommandMesh with the Inc3 frame-ack
+// transport flags (the destination's mini-agents are launched with the
+// matching --frame-ack).
+func ProgramCommandMeshFrameAck(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64, srcSegs int) (string, error) {
+	cmd, err := ProgramCommandMesh(binPath, destAddr, jobID, unitID, cert, key, ca, compressMode, srcSegs)
+	if err != nil {
+		return "", err
+	}
+	if frameAck != "off" {
+		cmd += fmt.Sprintf(" --frame-ack %s --ack-timeout %s --max-reconnects %d --retransmit-buffer-max %d",
+			frameAck, ackTimeout, maxReconnects, retransmitMax)
+	}
+	return cmd, nil
 }
 
 // validCompressMode accepts the compression tokens the controller may embed in

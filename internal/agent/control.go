@@ -98,6 +98,15 @@ type OnSegmentReq struct {
 	RouteKey     string `json:"route_key,omitempty"` // "oid:pos,oid:pos"
 	RouteD       int32  `json:"route_d,omitempty"`
 	RouteWorkers int    `json:"route_workers,omitempty"`
+	// Mesh (P3 production-dispatch, mesh direct_1to1): when set, DestAddr is
+	// the D-entry ADDRESS BOOK (the comma-separated destination-segment
+	// mini-agent data endpoints, seg order) and RouteD is the SOURCE segment
+	// count (S). Each segreceiver (on source segment s) dials the entry s —
+	// its own destination segment's mini-agent (S==D, equal hash keys) — and
+	// streams its slice to that mini-agent's data listener. Neither cluster
+	// coordinator is in the data path (design 04.10). The source agent builds
+	// ProgramCommandMesh (not ProgramCommandFull) for the ON SEGMENT dispatch.
+	Mesh bool `json:"mesh,omitempty"`
 	// Inc3: frame-level ACK + RST-resume on the segment<->agent data links
 	// (DESIGN §4.6). The source agent embeds the matching --frame-ack /
 	// --ack-timeout / --max-reconnects / --retransmit-buffer-max flags in the

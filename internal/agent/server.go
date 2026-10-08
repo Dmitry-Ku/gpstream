@@ -390,7 +390,23 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	reqID := req.ReqID
 	var prog string
 	var err error
-	if req.FrameAck != "off" {
+	if req.Mesh {
+		// P3 production-dispatch (mesh direct_1to1): DestAddr is the D-entry
+		// address book (the mini-agent data endpoints, seg order); each
+		// segreceiver (on source segment s) dials the entry s. Neither
+		// cluster coordinator is in the data path.
+		if req.FrameAck != "off" {
+			prog, err = segstream.ProgramCommandMeshFrameAck(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress,
+				req.FrameAck, req.AckTimeout, req.MaxReconnects, req.RetransmitMax, int(req.RouteD))
+		} else {
+			prog, err = segstream.ProgramCommandMesh(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, int(req.RouteD))
+		}
+		if err != nil {
+			return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("build program (mesh): %v", err)}
+		}
+	} else if req.FrameAck != "off" {
 		// Inc3: the segreceivers ride the frame-ack transport (identity
 		// HELLO per slice); the destination agent was launched with the
 		// matching parameters by the controller.

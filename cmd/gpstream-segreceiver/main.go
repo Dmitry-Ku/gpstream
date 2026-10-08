@@ -69,6 +69,14 @@ func main() {
 	routeKey := flag.String("route-key", "", "P9 routed mode: distribution-key type OIDs, comma-separated")
 	routeD := flag.Int("route-d", 0, "P9 routed mode: number of destination primary segments")
 	routeWorkers := flag.Int("route-workers", 1, "P9 routed mode: sub-streams per (source-seg,dest-seg) pair")
+	// P3 production-dispatch (mesh direct_1to1): --dest-count S (== D, the
+	// source segment count) makes --dest-addr the D-entry ADDRESS BOOK
+	// (comma-separated mini-agent data endpoints, seg order): this
+	// segreceiver (on source segment s = <SEGID>) dials the entry s — its
+	// own destination segment's mini-agent (S==D, equal hash keys) — and
+	// streams its slice to that mini-agent's data listener. Neither cluster
+	// coordinator is in the data path (design 04.10).
+	destCount := flag.Int("dest-count", 0, "P3 mesh direct_1to1: the source segment count S (== D); --dest-addr is the D-entry address book (each segreceiver dials entry <SEGID>)")
 	// Inc3: frame-level ACK + RST-resume on the segment<->agent data links
 	// (DESIGN §4.6). When on, each slice rides a ReliablePipe: a broken
 	// link re-dials the agent's data port and replays the un-ACKed frames;
@@ -127,6 +135,24 @@ func main() {
 	contentID, err := strconv.ParseInt(*content, 10, 16)
 	if err != nil {
 		fail("--content: %v (the kernel must substitute <SEGID>)", err)
+	}
+
+	// P3 production-dispatch (mesh direct_1to1): resolve this segreceiver's
+	// destination from the D-entry address book — source segment s streams
+	// to the destination segment s's mini-agent (entry s). The rest of the
+	// (non-routed) path is unchanged: it dials the resolved address.
+	if *destCount > 0 {
+		if *destAddr == "" {
+			fail("--dest-addr (the D-entry address book) is required with --dest-count")
+		}
+		grid, gerr := segstream.ParseDestAddrs(*destAddr, *destCount)
+		if gerr != nil {
+			fail("mesh --dest-addr: %v", gerr)
+		}
+		if contentID < 0 || contentID >= int64(*destCount) {
+			fail("mesh: content <SEGID> %d out of range (want 0..%d)", contentID, *destCount-1)
+		}
+		*listen = grid[contentID]
 	}
 
 	// The kernel runs us with a bounded lifetime (the COPY transaction);
