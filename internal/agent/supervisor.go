@@ -268,6 +268,21 @@ func (s *Supervisor) MiniDataAddr(seg int) string {
 	return ""
 }
 
+// ReportConn returns a segment's persistent report connection (the conn the
+// supervisor holds for that mini-agent). It exists so a crash-matrix test can
+// sever a mini's report channel to model the mini-agent process dying mid-unit
+// (the supervisor's next report read on the dropped channel surfaces the
+// orphan). Not used in production.
+func (s *Supervisor) ReportConn(seg int) (net.Conn, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mc, ok := s.minis[seg]
+	if !ok {
+		return nil, false
+	}
+	return mc.conn, true
+}
+
 // ServeUnit drives one unit across the D mini-agents: it sends a mini-unit
 // request to every mini-agent (concurrently, on each one's persistent report
 // connection), collects the D mini-unit-resp reports, and combines them into
