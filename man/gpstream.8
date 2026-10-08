@@ -165,15 +165,25 @@ agents) is backlog work (see PERFORMANCE.md).
 .BR --workers
 N
 Workers per host-pair (default 1: strict, one exact snapshot point; N>1 = snapshot-epoch). In the routed segment-to-segment data
-path (on_segment with different segment counts, or unequal distribution
+path (mesh with different segment counts, or unequal distribution
 keys) this also sets the sub-stream fan-out per (source segment,
 destination segment) pair: the cluster carries S x D x N segment-to-segment
 TCP connections, and a table's rows are split across them round-robin
 (after the per-row hash places each row on its destination segment).
 .TP
+.BR --max-snapshot-delta
+SEC
+Snapshot-epoch pin-spread limit in seconds for
+.BR --workers
+N>1 (default 1s; 0 disables). The run's N REPEATABLE READ pins must be no
+more than this apart, else the run refuses to start with the actual
+spread. No effect at
+.BR --workers
+1 (strict, one exact point).
+.TP
 .B --no-routed-write
 Disable the routed segment-to-segment data path for S!=D topologies:
-on_segment then always merges the source slices through the destination
+mesh then always merges the source slices through the destination
 coordinator (SliceMux) instead of routing in the segreceivers. Off by
 default (the routed path is used automatically when available).
 .TP
@@ -254,13 +264,13 @@ there); the package places it at
 .BR --copy-mode
 coordinator|mesh
 Data path (default coordinator). coordinator = one COPY through each
-coordinator; on_segment = the source segments stream in parallel (ON SEGMENT
+coordinator; mesh = the source segments stream in parallel (ON SEGMENT
 dispatch) and pick per table:
 When the planner proves a table is direct_1to1 (same segment count, equal
-distribution keys, same GP major), on_segment writes directly into the
+distribution keys, same GP major), mesh writes directly into the
 destination segments (no merge, no re-distribution) — logged as
 direct_1to1_fastpath. When the segment counts differ (or the keys
-differ), on_segment uses the routed segment-to-segment path: each source
+differ), mesh uses the routed segment-to-segment path: each source
 segment routes its rows to the destination segments by the distribution
 key (S x D x --workers connections) and NEITHER cluster coordinator is in
 the data path — logged as routed_write.
@@ -269,7 +279,7 @@ the data path — logged as routed_write.
 HOST:PORT
 Base listen address the segreceivers dial, for
 .B --copy-mode
-on_segment. Optional: when omitted it auto-resolves to the controller's
+mesh. Optional: when omitted it auto-resolves to the controller's
 primary non-loopback IP plus a free port. Each unit binds
 .BR base-port + unitID
 (units copy in parallel, so the ports must not collide); the segreceivers on
@@ -284,7 +294,7 @@ automatic — every long-lived agent binds
 .BR :0
 and reports its real address in the control handshake.
 A run needs exactly 3 ports in coordinator mode (source control + dest data +
-dest control — the on_segment segreceivers dial the dest agent's shared data
+dest control — the mesh segreceivers dial the dest agent's shared data
 listener, so the segment count adds no ports); in mesh (direct_1to1) mode it
 needs 4+D (source control + dest control + dest report + dest data + D
 mini-agent data ports, one per destination segment). When set, same-host agents

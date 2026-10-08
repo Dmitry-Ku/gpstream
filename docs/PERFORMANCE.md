@@ -119,19 +119,40 @@ host's metrics, so the ceiling is enforced where the load actually is — is
 backlog work; the correct home is the agents (ADR-002 moved the data path out
 of the controller).
 
-## Workers per pair
+## Workers per pair (`--workers`)
 
-`--workers N` controls the **bounded worker pool** (FR-03).
-`Manager.Run` dispatches `N` workers over a channel of units; `N` is
-validated (a value `< 1` is clamped to `1`). The flow is paced by
-backpressure; the planned shared pacer (one for the whole pool, so the
-*total* flow — not each worker — stays under the ceiling) is backlog work
+`--workers N` controls the **bounded worker pool** (FR-03) **and** the
+snapshot semantics of the run. `Manager.Run` dispatches `N` workers over a
+channel of units; `N` is validated (a value `< 1` is clamped to `1`). The flow
+is paced by backpressure; the planned shared pacer (one for the whole pool, so
+the *total* flow — not each worker — stays under the ceiling) is backlog work
 (FR-14).
+
+**`--workers 1` = strict (the default).** One pinned REPEATABLE READ
+connection on the source, one exact snapshot point, and the data phases are
+serial: the run reads every table under a single point in time (FR-02). This
+is the strongest consistency guarantee and the safe default.
+
+**`--workers N > 1` = snapshot-epoch.** The run pins an **N-connection
+snapshot-epoch**: N concurrent REPEATABLE READ transactions, each fixed to its
+snapshot point within one ε-window (a few ms) at run start, so N pipelines
+stream N tables concurrently under N near-identical snapshots. N parallel
+data streams move at once (the FR-03/§5 "parallel COPY FROM" the spec asks
+for). The ε-window is real but tiny: each of the N pinned connections gets its
+own snapshot (GP6 has no cross-session snapshot share), so the N points differ
+by the pin spread Δ = max(t_fix) − min(t_fix), which is ~ms in practice.
+`--max-snapshot-delta SEC` (default 1s, `0` disables) bounds that spread: a
+run whose N pins are more than that apart **refuses to start** (a doctor error
+carrying the actual Δ) rather than copy a silently inconsistent snapshot.
+Within a single run without a failure there is one snapshot per worker; the
+ε-window is the only looseness, and it is the price of N parallel streams.
 
 A higher `--workers` spreads more tables across the connection
 pool (useful for the "many small tables" case); a lower value limits
 concurrency on a constrained link. A dead worker's units are re-assigned
-to live workers (FR-06).
+to live workers (FR-06). The `max_connections` sizing check (dry-run, WARN)
+ensures the source DB can supply the epoch's N pinned connections plus pool
+headroom (N+4).
 
 ## Measuring the input stream (`gpstream bench`)
 
@@ -151,7 +172,7 @@ the source feed the pipeline?" before committing to a full run.
 Data ports are allocated automatically: every long-lived agent binds `:0`
 and reports its real (routable) address in the control handshake, so the
 stream needs no pre-planned port. A run uses exactly 3 ports in coordinator
-mode (source control + dest data + dest control) — the on_segment
+mode (source control + dest data + dest control) — the mesh
 segreceivers dial the dest agent's shared data listener, so the segment
 count adds no ports. In mesh (direct_1to1) mode a run uses **4+D** ports
 (source control + dest control + dest report + dest data + D mini-agent data
@@ -164,8 +185,8 @@ ports inside it (the operator opens exactly that range).
 **Status:** the two-agent data path (source agent + destination agent, the
 controller holds no data connection) is the only data path. Two copy modes
 are **implemented and live-verified** on the lab (`coordinator` and
-`on_segment`; the former `direct` mode was removed — its per-segment write
-lives on as the per-table auto sub-paths of `on_segment`):
+`mesh`; the former `direct` mode was removed — its per-segment write
+lives on as the per-table auto sub-paths of `mesh`):
 
 - **`--copy-mode coordinator` (default)** — the source agent reads the table
   with one `COPY ... TO STDOUT` on the source coordinator; the destination
@@ -183,22 +204,155 @@ lives on as the per-table auto sub-paths of `on_segment`):
   `gpstream-segreceiver` binary on the source segment hosts
   (the `gpstream` package on every source segment host, optionally `--seg-listen`) and, on the open-gpdb 6.x fork, the GUC
   `ycmdb.yc_allow_copy_to_program=on` (postgres superuser). `gpstream dry-run`
-  reports the capability as `on_segment` (PASS / WARN — WARN only degrades
-  the *option*, the coordinator path always works).
+  reports the capability as `on_segment` (the SQL mechanism name; PASS / WARN —
+  WARN only degrades the *option*, the coordinator path always works).
 - **`direct_1to1` fast-path** — when the planner proves a table's route
   is `direct_1to1` (S==D primaries, both tables `DISTRIBUTED BY` the same
   keys in the same order, same GP major, non-legacy hashops), `--copy-mode
-  on_segment` additionally takes the **fast-path write**: the destination
+  mesh` additionally takes the **fast-path write**: the destination
   agent loads the N content-tagged slices with N per-segment utility-mode
   COPYs (one per dest segment, routed by content-id) instead of merging them
   into one coordinator COPY — **no SliceMux, no destination re-distribution**.
   The source side is the same ON SEGMENT dispatch (the kernel streams the
   same slices). The run logs `direct_1to1_fastpath` per such table. A
   partitioned parent, or a live destination segment-count mismatch (a primary
-  down since planning), degrades to the on_segment merge path. The hash-aware
+  down since planning), degrades to the mesh merge path. The hash-aware
   routing kernel (`internal/route`, `ResolveMode`) is the single source of
   the mode; see `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27.md` (only
   `direct_1to1` (S==D) and `router_full` are correct under the GP jump-hash).
+
+### Small-table → coordinator fallback (P1b)
+
+Under `--copy-mode mesh`, a table **smaller than `--small-table-threshold`**
+(default 1 MiB) takes the **coordinator** data path instead of the mesh
+pipeline. One knob drives both small-table behaviors: the same table for which
+per-slice compression is not worth the encoder cost (F-12) is also one for
+which a segment-to-segment pipeline is not worth S segreceivers + S
+destination connections. The metric is `t.Bytes`
+(`pg_total_relation_size`: a cheap local coordinator catalog read, done once
+per table at planning). An unknown size (`0`) or a disabled threshold (`0`)
+keeps the mesh path; the boundary is strict (a table exactly at the threshold
+stays on the mesh path). The fallback is logged as
+`onsegment_coordinator_fallback` in `events.jsonl`, and the coordinator path
+carries the inline content digest (P9-E), so a small table verifies without a
+re-read for free. A `DISTRIBUTED REPLICATED` source table (a full copy on
+every source segment) **always** takes the coordinator path — an ON SEGMENT
+read would stream S identical copies — logged as `replicated_fallback`.
+
+## Mesh topology (per-segment mini-agents)
+
+The `mesh` mode's destination write side is being extended from the
+dest-agent-merge path to a **per-segment mini-agent** topology (design 04.10):
+one `gpstream-dest-agent --mini` on each destination segment host loads its
+own slice locally with a utility-mode `COPY`, and the coordinator dest-agent's
+**supervisor** combines the D per-segment reports. Neither cluster coordinator
+is in the data path. The components are implemented and e2e-verified (P2/P3/
+P4); the runtime dispatch (SSH-launch the D mini-agents, route their reports
+through the supervisor) is the live increment.
+
+```
+source cluster (S segments)                          destination cluster (D segments)
+┌─────────────────────────────┐                      ┌──────────────────────────────────────┐
+│ source agent (coordinator)  │                      │ dest agent (coordinator)             │
+│  strict: 1 pinned RR conn   │                      │  supervisor: D persistent report     │
+│  epoch:   N pinned RR conns │                      │   connections (one per mini)         │
+│  ON SEGMENT dispatch        │                      │   per-unit: broadcast mini-unit to   │
+│  (kernel launches           │                      │   all D minis, collect D reports,    │
+│   gpstream-segreceiver      │                      │   XOR_D(srcContrib)/XOR_D(dstAcc))   │
+│   on every primary)         │                      │   → DestUnitDone{src,dst,rows}       │
+└──────────────┬──────────────┘                      └───────▲──────────────────────────────┘
+               │ S segreceivers (one per source segment)     │ D persistent report channels
+               │ each streams its compressed slice           │ (mini-hello / mini-unit / resp)
+   ┌───────────┼──────────────────────────────┐              │
+   ▼           ▼            (S×D×W for routed) ▼              │
+segrecv s=0  segrecv s=1   ...  segrecv s=S-1  ──────data────┤
+   │ compressed slice(s) routed to destination segment(s)    │
+   ▼           ▼            ▼                                 │
+┌────────┐ ┌────────┐  ┌────────┐                            │
+│mini d=0│ │mini d=1│  │mini d=D│  (gpstream-dest-agent --mini, on segment hosts)
+└────────┘ └────────┘  └────────┘  each: 1 utility COPY into its own staging slice
+```
+
+- **direct_1to1 (S==D, equal hash keys):** each source segment's slice goes to
+  the matching destination segment (1 slice per mini). The fast-path write.
+- **routed (S≠D or unequal keys):** each source segreceiver routes each row to
+  its destination segment over W sub-streams (the `RoutedSender`); the cluster
+  carries S×D×W segment-to-mini-agent streams; each destination mini-agent
+  **merges** the S×W sub-streams into one binary-COPY stream (one
+  `SliceStripper` per sub-stream, all writing one utility-COPY pipe under one
+  lock). The segreceiver's `--dest-addr` is an address book: one `host:port`
+  (broadcast to the destination AGENT, the P9 coordinator-routed path) or D
+  comma-separated `host:port` (one per destination segment's mini-agent data
+  endpoint, the mesh path).
+- **Digests (composable, no re-read).** Each mini tees the rows it loads
+  through the row-order-independent per-row XOR digest (FR-02) and reports
+  `srcContrib` (XOR over the sub-stream trailers) + `dstAcc` (XOR over the
+  merged stream it feeds the COPY). Both are commutative/associative, so the
+  supervisor combines them across the D segments: `srcDigest =
+  XOR_D(srcContrib)`, `dstDigest = XOR_D(dstAcc)` over the summed row count.
+  The merge order is immaterial (FR-02), and the mini mesh verifies **without
+  re-reading any table** — the same guarantee the inline coordinator digest
+  gives, extended to the per-segment path. (Note: the *current* `--copy-mode
+  mesh` runtime path — the dest-agent `ServeSegments` merge — still keeps the
+  post-copy re-read; the inline digest groundwork for the segment path (P0b)
+  is in `ServeSegments` but not yet wired into the manager's verify step. The
+  mini-agent path above is what wires it through the per-segment write.)
+- **Crash / orphan (P2 guarantee).** A mini-agent whose report channel drops
+  (the supervisor process died) **exits immediately** (orphan-exit), not by
+  timeout — a destination cluster is never left with a mini-agent wedged on a
+  dead control channel. The supervisor treats a dropped report connection as a
+  unit failure (orphan) → the unit fails → resume re-copies it. The
+  kill-supervisor → mini orphan-exit scenario is e2e-covered
+  (`two_agent_mesh_crash_test.go`); the kill-mini (unit-fail + resume) and
+  kill-segreceiver (mid-unit data-break re-dial) scenarios are the live
+  increment (they need a real multi-segment stand).
+- **Ports (4+D).** A mesh run uses **4+D** ports: the 3 base ports (source
+  control + dest control + dest data) + the dest **report** listener + D
+  mini-agent data ports (one in-range port per destination segment, each mini
+  binds its own). `--port-range` is validated against that count at
+  `run`/`dry-run`.
+
+**Status (honest):** the mini-agent (`internal/agent/mini.go`), the routed
+merge (`mini_routed.go`), the supervisor + XOR_D combine (`supervisor.go`), and
+the address-book parse (`segstream/destaddr.go`) are implemented and e2e-
+verified (S=3, D=3, W=2, 30k rows, zstd, verify on: `srcDigest == dstDigest ==
+reference`, wire < logical). The **live** increment — SSH-launching the D
+mini-agents from the dest supervisor, wiring the `runUnit` dispatch to the
+mini path, and the kill-mini/kill-segreceiver crash scenarios — is gated on the
+multi-segment GP6 stand + the SVG-topology confirmation rule. Until then,
+`--copy-mode mesh` runs the segment-direct read with the destination served by
+the dest agent on the coordinator (the `ServeSegments` merge / `direct_1to1`
+fast-path write above).
+
+## Persistent connections
+
+The data path is built to keep sockets open across the whole run where it
+pays, rather than dialing a fresh connection (TCP + TLS handshake + spec
+exchange) per unit:
+
+- **Persistent coordinator data channel (P1c).** The source agent dials the
+  dest agent's dedicated persistent-coordinator listener **once per run** (TLS)
+  and rides every coordinator unit over that single connection: per unit it
+  sends `UnitBegin{UnitSpec}` → the framed stream → `Trailer` (the end-of-unit
+  marker; the connection is **not** closed). `Ping`/`Pong` (~30s idle-watchdog)
+  keep it alive across NAT/firewall idle-timeouts. A break mid-unit re-dials
+  (backoff bounded by `--max-reconnects`) and the unit restarts (truncate the
+  surviving staging + re-COPY, FR-07); a dial-refused that exhausts the budget
+  fails the unit → run-level resume. This saves ~4–5 RTT per unit versus the
+  legacy per-unit connection. e2e: 12 tables over **exactly one** persistent
+  connection, verify on, kill the dest agent mid-COPY → bounded blast radius
+  → resume (12/12 correct).
+- **Persistent mini → supervisor report channel (P2/P3).** Each mini-agent
+  dials the supervisor's report listener **once** (the `mini-hello` carries
+  `{seg, dataPort, ready}`) and holds it for the run; per-unit reports ride the
+  same connection. A drop is the orphan-exit signal (above).
+- **Snapshot-epoch pool (P1d).** With `--workers N>1` the source holds N
+  pinned REPEATABLE READ connections (the epoch) for the whole run, sized by
+  the `max_connections` sizing check (N+4 headroom).
+
+The data-plane sockets (segreceiver → mini/dest) are per-unit and
+kernel-driven (they live for the duration of the `COPY ... TO PROGRAM`), so
+they are not persistent — but the control/report/coordinator channels are.
 
 ## Content verification (`--verify on`)
 
@@ -222,7 +376,7 @@ read of ~100 TB); the inline digest removes both re-reads for the cost of a
 per-row SHA-256 that the copy already pays to touch the bytes.
 
 **Honest scope:** the inline path covers the coordinator data path (including
-the DISTRIBUTED REPLICATED fallback into it). The **on_segment** and **routed**
+the DISTRIBUTED REPLICATED fallback into it). The **mesh** and **routed**
 sub-paths (multi-slice, per-segment utility COPYs) keep the **legacy post-copy
 re-read** (re-derive on the source snapshot + verify the destination staging
 table) — wiring the inline digest through the N-slice merge is the remaining
@@ -286,7 +440,7 @@ suite as evidence for the target.**
 | Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | `--copy-mode mesh` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
-| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a content digest: on the coordinator path it is computed **inline on the data path** (no re-read of either table, P9-E); the on_segment/routed paths keep a post-copy re-read) |
+| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a content digest: on the coordinator path it is computed **inline on the data path** (no re-read of either table, P9-E); the mesh/routed paths keep a post-copy re-read) |
 
 ## Honest notes
 

@@ -49,6 +49,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
     the hard-error shapes). The live S≠D A→D multi-segment validation is the
     P5 live increment (SVG-topology confirmation rule).
 
+### Added (P5)
+
+- **Mesh crash-matrix: kill-supervisor → mini orphan-exit.** `tests/integration/two_agent_mesh_crash_test.go` (gp6lab, no pg): a real `ServeMini` dials a real report listener, the test plays the supervisor, reads the mini's `hello`, then CLOSES the report connection (simulating the supervisor process dying). The mini's next control read sees EOF and `ServeMini` returns promptly (units=0, clean exit) — well within the generous 60s accept/stream timeouts, proving the exit is the **orphan-exit** (report-channel drop → immediate self-exit), not a timeout. This is the coordinator-death side of the P2 guarantee: a mini-agent whose report channel is severed unwinds at once, so a destination cluster is never left with a mini-agent wedged on a dead control channel. The remaining crash-matrix scenarios (kill-mini → supervisor unit-fail + resume; kill-segreceiver → mid-unit data-break re-dial) plus the live S≠D A→D multi-segment validation are the P5 **live** increment, gated on the multi-segment GP6 stand + SVG-topology confirmation rule.
+
 ### Added (P3)
 
 - **Supervisor in the dest-agent (direct_1to1 mesh coordinator side)** — the

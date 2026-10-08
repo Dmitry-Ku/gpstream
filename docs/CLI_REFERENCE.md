@@ -216,7 +216,8 @@ Conflict policy semantics:
 | `--zstd-level <1-19>` | `ZstdLevel` | `3` |
 | `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
 | `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbps`, …). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
-| `--workers <N>` | `WorkersPerPair` | `1` (must be `>= 1`, validated; 1 = strict, N>1 = snapshot-epoch) |
+| `--workers <N>` | `WorkersPerPair` | `1` (must be `>= 1`, validated; **1 = strict** — one pinned REPEATABLE READ connection, one exact snapshot point, serial data phases; **N>1 = snapshot-epoch** — N pinned connections in an ε-window, N parallel data streams, bounded by `--max-snapshot-delta`) |
+| `--max-snapshot-delta SEC` | `MaxSnapshotDelta` | `1` (seconds; the snapshot-epoch pin-spread limit for `--workers N>1`: the run's N REPEATABLE READ pins must be no more than this apart, else the run refuses to start with the actual Δ. `0` disables the check. The live pin spread is ~ms, so the default leaves ~three orders of magnitude of headroom. No effect at `--workers 1`) |
 
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
@@ -251,14 +252,14 @@ The data path is always the two-agent transport: the source agent reads the
 table and pushes a compressed (optionally TLS) stream over a real socket to
 the dest agent; the controller orchestrates (plan, journal, verify, swap,
 indexes) and holds no data connections. Works with both `--copy-mode`
-values (`coordinator` / `on_segment`); `gpstream_bytes_total` is
+values (`coordinator` / `mesh`); `gpstream_bytes_total` is
 the on-wire agent-to-agent volume.
 
 ### Resilience (F-06/F-07)
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
-| `--verify on\|off` | `Verify` | `off` (content verification of the copied data; off = none, the COPY row count is the check. On the coordinator path the digest is computed inline on the data path (no re-read, P9-E); on_segment/routed keep a post-copy re-read) |
+| `--verify on\|off` | `Verify` | `off` (content verification of the copied data; off = none, the COPY row count is the check. On the coordinator path the digest is computed inline on the data path (no re-read, P9-E); mesh/routed keep a post-copy re-read) |
 | `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Transport / frame-ack (T-B, §4.6)
@@ -270,24 +271,87 @@ the on-wire agent-to-agent volume.
 | `--seg-tls-key <F>` | `SegTLSKey` | `""` (controller serving key) |
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
 | `--frame-ack on\|off` | `FrameAck` | `on` (frame-level ACK + RST-resume; `off` falls back to the plain pipe) |
-| `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: on_segment then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
-| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since on_segment segreceivers dial the shared data listener — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
+| `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: mesh then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
+| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since mesh segreceivers dial the shared data listener — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
 | `--ack-timeout 15s\|30s\|adaptive` | `AckTimeout` | `30s` (`adaptive` = 3x median RTT, min 1s) |
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
 
-`on_segment` (T-B segment-direct transport) requires the `gpstream` package on
+`mesh` (T-B segment-direct transport) requires the `gpstream` package on
 every SOURCE segment host (the kernel runs `gpstream-segreceiver` there); the
 source GUC `ycmdb.yc_allow_copy_to_program` must be `on`. The
 `--seg-listen` address must be routable from the segment hosts (auto-resolved
-to the controller's primary IP when omitted).
-`direct` (R5) routes rows to destination segments directly (dest coordinator
-out of the write path) and degrades to the coordinator per table when a table
-can't be routed. When the planner proves a table's route is `direct_1to1`
-(S==D primaries, equal hash keys, same GP major, non-legacy hashops),
-`on_segment` takes the **fast-path write** automatically: the destination
+to the controller's primary IP when omitted). The `dry-run` reports this
+capability under the name `on_segment` (the SQL mechanism name; the copy-mode
+value itself is `mesh`). When the planner proves a table's route is
+`direct_1to1` (S==D primaries, equal hash keys, same GP major, non-legacy
+hashops), `mesh` takes the **fast-path write** automatically: the destination
 loads the N content-tagged slices with N per-segment utility COPYs (no merge,
 no re-distribution) — the run logs `direct_1to1_fastpath` per such table. See
+[PERFORMANCE.md](PERFORMANCE.md).
+
+### Mesh (per-segment mini-agents, `--copy-mode mesh`)
+
+The `mesh` mode runs the data path **segment-to-segment**: the source agent
+triggers the ON SEGMENT dispatch (the kernel launches `gpstream-segreceiver`
+on every primary source segment), and each source segment's segreceiver
+streams its compressed slice directly to the destination **segment** hosts —
+no cluster coordinator is in the data path. On the destination, one
+**mini-agent** per destination segment receives the slice(s) and loads them
+with a local utility-mode `COPY` into its own staging slice.
+
+> **Status (read this).** The mini-agent + supervisor components are
+> **implemented and e2e-verified** (P2/P3/P4, `tests/integration/
+> two_agent_mini_test.go`, `two_agent_supervisor_test.go`,
+> `two_agent_mesh_routed_test.go`). The **runtime dispatch** that makes a
+> `run` launch the D mini-agents over SSH and route their reports through the
+> supervisor (instead of the current dest-agent merge) is the **live P3/P4
+> increment**, gated on the multi-segment GP6 stand + the SVG-topology
+> confirmation rule. Until that is live, `--copy-mode mesh` runs the
+> segment-direct **read** (source segments) with the destination served by the
+> dest agent on the coordinator (`ServeSegments` merge, or the `direct_1to1`
+> fast-path write). The mini-agent path is the destination write side that the
+> live increment wires in. See PERFORMANCE.md (mesh topology).
+
+**Mini-agent (`gpstream-dest-agent --mini`).** The mini-agent is a mode of the
+`gpstream-dest-agent` binary (there is no separate binary). It runs on a
+destination **segment** host (not the coordinator), connects to its OWN
+segment locally (`gp_session_role=utility`), and never touches the
+coordinator for data. New flags (mini-agent mode):
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--mini` | `false` | run as the per-segment mini-agent instead of the coordinator dest-agent |
+| `--seg <N>` | `0` | this segment's ordinal (0..D-1) |
+| `--report-addr <host:port>` | `""` (required in `--mini` mode) | the supervisor's (coordinator dest-agent's) report listener; the mini dials it **once** for the run |
+| `--dest <connstring>` | `""` (required in `--mini` mode) | the utility-mode DSN to **this segment** (the mini's own local pg) |
+| `--port-range <LO-HI>` | `""` | restricts the mini's auto-picked data port (one of the run's in-range ports) |
+
+Per unit the mini accepts one compressed slice on its data listener,
+decompresses it (teeing the content digest when `--verify` is on), loads it
+with one utility-mode `COPY`, and reports `{unit, srcContrib, dstAcc, rows,
+ok}` to the supervisor over the persistent report channel. A report-channel
+drop (the supervisor died) is an **orphan-exit**: the mini exits immediately,
+not by timeout. The coordinator dest-agent's **supervisor** (`internal/agent/
+supervisor.go`) collects the D mini reports and combines them into the unit's
+digests: `srcDigest = XOR_D(srcContrib)`, `dstDigest = XOR_D(dstAcc)` over the
+summed row count — the per-row XOR accumulator is commutative/associative, so
+segment order is immaterial and the mesh verifies **without re-reading any
+table** (FR-02).
+
+**Port formula (mesh = 4+D).** A mesh run uses **4+D** ports: the 3 base
+ports (source control + dest control + dest data) **plus** the dest report
+listener **plus** D mini-agent data ports (one per destination segment).
+`--port-range` is validated against that count at `run`/`dry-run`.
+
+**Routed mesh (S≠D).** When the source and destination segment counts differ
+(or the distribution keys differ), the source segreceivers route each row to
+its destination segment over W sub-streams (the `RoutedSender`), and each
+destination mini-agent **merges** the S×W sub-streams into one binary-COPY
+stream loaded by a single utility COPY. The segreceiver's `--dest-addr` is an
+address book: one `host:port` (broadcast to the destination AGENT, the P9
+coordinator-routed path) or D comma-separated `host:port` (one per
+destination segment's mini-agent data endpoint, the mesh path). See
 [PERFORMANCE.md](PERFORMANCE.md).
 
 ### Indexes (F-17)
