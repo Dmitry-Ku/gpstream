@@ -35,6 +35,7 @@ import (
 // (the Makefile, scripts/package.sh and the release workflow set it from
 // the git tag).
 var version = "0.1.0"
+var commit = "dev" // build-time: -X main.commit=<git short hash>
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -1294,7 +1295,11 @@ func listIncompleteOperations(stateDir string) ([]string, error) {
 
 // cmdVersion prints the gpstream version.
 func cmdVersion(args []string) error {
-	fmt.Printf("gpstream %s\n", version)
+	if commit != "" {
+		fmt.Printf("gpstream %s (%s)\n", version, commit)
+	} else {
+		fmt.Printf("gpstream %s\n", version)
+	}
 	return nil
 }
 

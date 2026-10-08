@@ -139,6 +139,9 @@ type miniConn struct {
 	w    *bufio.Writer
 	r    *bufio.Reader
 	data string // this segment's data-listener address (from the hello)
+	// version (1F) is this mini's build identity (from the hello) — the
+	// supervisor cross-checks it against its own before the first unit.
+	version string
 }
 
 // NewSupervisor binds the report listener (the mini-agents dial it once for
@@ -187,10 +190,11 @@ func (s *Supervisor) AcceptMinis(ctx context.Context, D int) (MiniMap, error) {
 		return nil, fmt.Errorf("supervisor: D %d (want >= 1)", D)
 	}
 	type helloOut struct {
-		seg  int
-		conn net.Conn
-		data string
-		err  error
+		seg     int
+		conn    net.Conn
+		data    string
+		version string
+		err     error
 	}
 	hellos := make(chan helloOut, D)
 	for i := 0; i < D; i++ {
@@ -219,7 +223,7 @@ func (s *Supervisor) AcceptMinis(ctx context.Context, D int) (MiniMap, error) {
 				hellos <- helloOut{err: fmt.Errorf("read mini hello: %w", rerr)}
 				return
 			}
-			hellos <- helloOut{seg: h.Seg, conn: c, data: net.JoinHostPort("", fmt.Sprint(h.DataPort))}
+			hellos <- helloOut{seg: h.Seg, conn: c, data: net.JoinHostPort("", fmt.Sprint(h.DataPort)), version: h.Version}
 		}()
 	}
 	mm := make(MiniMap, D)
@@ -246,11 +250,12 @@ func (s *Supervisor) AcceptMinis(ctx context.Context, D int) (MiniMap, error) {
 		// caller via SetMiniHost (see below) — here we store the port and let
 		// the data addr be resolved against the segment host.
 		s.minis[h.seg] = &miniConn{
-			seg:  h.seg,
-			conn: h.conn,
-			w:    bufio.NewWriter(h.conn),
-			r:    bufio.NewReader(h.conn),
-			data: h.data,
+			seg:     h.seg,
+			conn:    h.conn,
+			w:       bufio.NewWriter(h.conn),
+			r:       bufio.NewReader(h.conn),
+			data:    h.data,
+			version: h.version,
 		}
 		mm[h.seg] = h.data
 	}

@@ -35,6 +35,7 @@ import (
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 func main() {
@@ -84,7 +85,12 @@ func main() {
 	// dry-run probe: print a marker and exit 0 (no stream), proving the binary
 	// is installed on the source host.
 	check := flag.Bool("check", false, "print a marker and exit 0 (dry-run binary probe)")
+	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("gpstream-source-agent " + version.String())
+		os.Exit(0)
+	}
 
 	fail := func(format string, a ...any) {
 		fmt.Fprintf(os.Stderr, "gpstream-source-agent: "+format+"\n", a...)

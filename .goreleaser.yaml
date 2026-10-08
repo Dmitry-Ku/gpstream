@@ -31,7 +31,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{ .Version }}
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }} -X github.com/gpstream/gpstream/internal/version.Version={{ .Version }} -X github.com/gpstream/gpstream/internal/version.Commit={{ .ShortCommit }}
     goos:
       - linux
     goarch:
@@ -45,7 +45,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X github.com/gpstream/gpstream/internal/version.Version={{ .Version }} -X github.com/gpstream/gpstream/internal/version.Commit={{ .ShortCommit }}
     goos:
       - linux
     goarch:
@@ -59,7 +59,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X github.com/gpstream/gpstream/internal/version.Version={{ .Version }} -X github.com/gpstream/gpstream/internal/version.Commit={{ .ShortCommit }}
     goos:
       - linux
     goarch:
@@ -73,7 +73,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X github.com/gpstream/gpstream/internal/version.Version={{ .Version }} -X github.com/gpstream/gpstream/internal/version.Commit={{ .ShortCommit }}
     goos:
       - linux
     goarch:
@@ -84,7 +84,7 @@ archives:
     builds:
       - gpstream
     format: tar.gz
-    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-{{{ .Version }}}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
       - README.md
@@ -93,21 +93,21 @@ archives:
     builds:
       - gpstream-segreceiver
     format: tar.gz
-    name_template: "{{ .ProjectName }}-segreceiver-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-segreceiver-{{{ .Version }}}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
   - id: gpstream-source-agent
     builds:
       - gpstream-source-agent
     format: tar.gz
-    name_template: "{{ .ProjectName }}-source-agent-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-source-agent-{{{ .Version }}}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
   - id: gpstream-dest-agent
     builds:
       - gpstream-dest-agent
     format: tar.gz
-    name_template: "{{ .ProjectName }}-dest-agent-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-dest-agent-{{{ .Version }}}-{{ .Os }}-{{ .Arch }}"
     files:
       - LICENSE
 
@@ -125,7 +125,7 @@ nfpms:
       - gpstream-source-agent
       - gpstream-dest-agent
     package_name: gpstream
-    file_name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Arch }}"
+    file_name_template: "{{ .ProjectName }}-{{{ .Version }}}-{{ .Arch }}"
     formats:
       - deb
       - rpm

@@ -96,6 +96,9 @@ type MiniOptions struct {
 	// accepts from (the runner owns and closes it). When nil the mini-agent
 	// binds DataListen / PortAlloc itself.
 	SharedListen net.Listener
+	// Version (1F) is this mini's build identity, reported in the
+	// hello for the supervisor's pre-unit cross-check.
+	Version string
 }
 
 // MiniResult is what a mini-agent reports after it exits (clean "mini-done" or
@@ -124,6 +127,10 @@ type MiniHello struct {
 	Seg      int    `json:"seg"`
 	DataPort int    `json:"data_port"`
 	Ready    bool   `json:"ready"`
+	// Version (1F) is the mini's build identity (the supervisor cross-checks
+	// it against its own before the first unit — a mixed-version deployment
+	// would silently mis-slice the data).
+	Version string `json:"version,omitempty"`
 }
 
 // MiniUnitReq is the supervisor's per-unit instruction to a mini-agent: accept
@@ -253,7 +260,7 @@ func ServeMini(ctx context.Context, o MiniOptions) (MiniResult, error) {
 	defer report.Close()
 	rw := bufio.NewWriter(report)
 	rr := bufio.NewReader(report)
-	hello := MiniHello{Op: "mini-hello", Seg: o.Seg, DataPort: dataPort, Ready: true}
+	hello := MiniHello{Op: "mini-hello", Seg: o.Seg, DataPort: dataPort, Ready: true, Version: o.Version}
 	if err := SendLine(rw, hello); err != nil {
 		return out, fmt.Errorf("mini: send hello: %w", err)
 	}

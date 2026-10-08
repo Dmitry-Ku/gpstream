@@ -31,6 +31,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 // P9 routed mode: when --dest-addr is set, this segreceiver does not stream
@@ -92,7 +93,12 @@ func main() {
 	// content-digest accumulator (the mesh srcDigest building block, P0). The
 	// destination uses it to verify on the data path without a re-read, so it
 	// is unconditional (no flag).
+	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("gpstream-segreceiver " + version.String())
+		os.Exit(0)
+	}
 
 	fail := func(format string, a ...any) {
 		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: "+format+"\n", a...)

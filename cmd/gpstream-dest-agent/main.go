@@ -30,6 +30,7 @@ import (
 	"github.com/gpstream/gpstream/internal/launch"
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 func main() {
@@ -129,7 +130,12 @@ func main() {
 	// a segment host that is not this host (the operator's --dest-agent-ssh
 	// user; the agent runs on the destination coordinator, same key).
 	miniSSHUser := flag.String("mini-ssh-user", "", "supervisor mode: SSH user@ to launch the D mini-agents on the segment hosts (empty = no SSH / single-host layout; the agent launches the minis itself)")
+	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("gpstream-dest-agent " + version.String())
+		os.Exit(0)
+	}
 
 	fail := func(format string, a ...any) {
 		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: "+format+"\n", a...)
@@ -163,6 +169,7 @@ func main() {
 		}
 		res, err := agent.ServeMini(ctx, agent.MiniOptions{
 			Seg:           *seg,
+			Version:       version.String(),
 			DataListen:    *dataListen,
 			PortAlloc:     portAlloc,
 			PrimaryDSN:    *dest,
