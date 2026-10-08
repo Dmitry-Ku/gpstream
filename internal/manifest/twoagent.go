@@ -92,6 +92,12 @@ type TwoAgentRunner interface {
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
+	// PeerInfo (1F) is the mesh version-exchange wiring: the destination
+	// agent's peer listener address (the source agent dials it once before
+	// the first mesh unit) + the "user@" prefix the source SSHes to its
+	// source segments to gather "segriver --version". Empty peer = no
+	// exchange (the in-process runner / a dest without a peer listener).
+	PeerInfo() (peerAddr string, segSSH string)
 	// Release ends the run (commits the source snapshot) and stops the agents.
 	Release(ctx context.Context) error
 	// Bench streams ONE table through the two-agent source read (the F-14
@@ -294,6 +300,9 @@ type processTwoAgentRunner struct {
 	// has no persist listener (legacy build / off) -> coordinator units
 	// use the legacy per-unit connection.
 	destPersistAddr string
+	// destPeerAddr (1F): the dest agent's mesh peer listener address (the
+	// version exchange; empty when the dest has no peer listener).
+	destPeerAddr string
 	// --- P3 production-dispatch (mesh): the D destination-segment mini-agents ---
 	// supervisorReport is the dest-agent's (supervisor-mode) report listener
 	// address (from its hello): the D minis dial it once for the run. Empty
@@ -474,11 +483,18 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// destination coordinator) reads its OWN catalog, derives D, and
 	// launches the D mini-agents itself. The controller only allocates the
 	// report-listen port and hands the agent --supervisor + --report-listen.
-	var reportListen string
+	var reportListen, peerListen string
 	if mesh {
-		var reportDial string
+		var reportDial, peerDial string
 		reportListen, reportDial, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
 		_ = reportDial
+		if err != nil {
+			return err
+		}
+		// 1F: the PEER listener (the source agent dials it once before the
+		// first mesh unit for the version exchange).
+		peerListen, peerDial, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
+		_ = peerDial
 		if err != nil {
 			return err
 		}
@@ -498,6 +514,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		dargs = append(dargs,
 			"--supervisor",
 			"--report-listen", reportListen,
+			"--peer-listen", peerListen,
 			"--mini-ssh-user", r.sshUserPrefix(r.cfg.DestAgentSSH),
 			"--port-range", r.cfg.PortRange,
 		)
@@ -563,6 +580,9 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// P1c: the persistent-coordinator address (empty = the agent has no
 	// persist listener: coordinator units fall back to the per-unit conn).
 	r.destPersistAddr = client.Hello.Persist
+	// 1F: the mesh peer listener (the source agent dials it once before the
+	// first mesh unit for the version exchange).
+	r.destPeerAddr = client.Hello.Peer
 	// Mesh mode (P3 production-dispatch, architecture 08.10): the DEST-AGENT
 	// already launched the D mini-agents itself (in its constructor: it read
 	// its own catalog and started the minis, which dial the supervisor's
@@ -657,6 +677,15 @@ func (r *processTwoAgentRunner) agentHost(sshTarget string) string {
 		host = host[:i]
 	}
 	return host
+}
+
+// PeerInfo (1F) is the mesh version-exchange wiring: the destination agent's
+// peer listener address (the source agent dials it once before the first
+// mesh unit) + the "user@" prefix the source SSHes to its source segments to
+// gather "segriver --version". Empty peer = no exchange (a dest without a
+// peer listener / not in supervisor mode).
+func (r *processTwoAgentRunner) PeerInfo() (peerAddr string, segSSH string) {
+	return r.destPeerAddr, r.sshUserPrefix(r.cfg.SourceAgentSSH)
 }
 
 // sshUserPrefix extracts the "user@" prefix of an SSH target (the operator's
@@ -1651,6 +1680,8 @@ func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table strin
 }
 
 // Release ends the run (commits the source snapshot) and stops the agents.
+func (r *InProcTwoAgentRunner) PeerInfo() (string, string) { return "", "" }
+
 func (r *InProcTwoAgentRunner) Release(ctx context.Context) error {
 	if r.destCtrl != nil {
 		_, _ = r.destCtrl.Release() // end the run on the dest agent (best effort)

@@ -80,9 +80,21 @@ type OnSegmentReq struct {
 	Table     string `json:"table"`
 	JobID     uint32 `json:"job_id"`
 	UnitID    uint32 `json:"unit_id"`
-	DestAddr  string `json:"dest"`     // the destination agent's listen address (the segreceivers dial it)
-	SegBinary string `json:"segbin"`   // gpstream-segreceiver path on the source segment hosts
-	Compress  string `json:"compress"` // per-slice compression mode (the dest agent decompresses)
+	DestAddr  string `json:"dest"`   // the destination agent's listen address (the segreceivers dial it)
+	SegBinary string `json:"segbin"` // gpstream-segreceiver path on the source segment hosts
+	// PeerAddr (1F) is the destination agent's PEER listener address: before
+	// the first MESH unit, the source agent dials it ONCE and reports its own
+	// version + the segreceiver versions it SSH-gathered from the S source
+	// segments (the destination cross-checks them against its own + the mini
+	// versions before any data flows). Empty = no version exchange (a
+	// non-mesh unit / a dest without a peer listener).
+	PeerAddr string `json:"peer_addr,omitempty"`
+	// SegSSH (1F) is the "user@" prefix the source agent SSHes to its source
+	// segment hosts to gather "segriver --version" (the dry-run A+ mechanism;
+	// gpadmin has passwordless SSH to its segments). Empty = no SSH
+	// (single-host layout: the source host IS the segment).
+	SegSSH   string `json:"seg_ssh,omitempty"`
+	Compress string `json:"compress"` // per-slice compression mode (the dest agent decompresses)
 	// Data-plane TLS for the segment<->agent links (the segreceivers are the
 	// clients; the destination agent serves). All empty = plain TCP.
 	DataTLSCert string `json:"data_tls_cert,omitempty"`

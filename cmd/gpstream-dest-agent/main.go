@@ -122,6 +122,7 @@ func main() {
 	// the minis (each does a local utility COPY on its segment) and combined
 	// (XOR_D); kind="coordinator" serves take the fallback path.
 	supervisor := flag.Bool("supervisor", false, "P3 production-dispatch: supervisor mode — coordinate the D destination-segment mini-agents (mesh)")
+	peerListen := flag.String("peer-listen", "0.0.0.0:0", "supervisor mode: the PEER listener address the source agent dials ONCE before the first mesh unit for the version exchange (0 = pick a free port, restricted by --port-range; the real address is in the hello). Empty = off")
 	miniCount := flag.Int("mini-count", 0, "supervisor mode: D, the number of destination segments / mini-agents (required with --supervisor)")
 	reportListen := flag.String("report-listen", "0.0.0.0:0", "supervisor mode: the report listener address the D minis dial (0 = pick a free port, restricted by --port-range; the real address is in the hello)")
 	miniHosts := flag.String("mini-hosts", "", "supervisor mode: the D segment hosts, comma-separated in seg order (the catalog's DstDSN hosts; the hello carries the data port only). Empty = 127.0.0.1 for all (single-host layout)")
@@ -285,6 +286,7 @@ func main() {
 			FrameAck:         *frameAck != "off",
 			ReliablePipe:     transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 			SupervisorListen: *reportListen,
+			PeerListen:       *peerListen,
 			MiniCount:        *miniCount,
 			MiniHosts:        hosts,
 		})

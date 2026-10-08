@@ -50,6 +50,7 @@ func (f *fakeBenchRunner) StreamRouted(context.Context, unitRoutedRequest) (int6
 func (f *fakeBenchRunner) StreamMini(context.Context, unitMiniRequest) (int64, uint64, uint64, string, string, bool, bool, []string, error) {
 	return 0, 0, 0, "", "", false, false, nil, fmt.Errorf("fakeBenchRunner: StreamMini unused in bench")
 }
+func (f *fakeBenchRunner) PeerInfo() (string, string) { return "", "" }
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")
 }

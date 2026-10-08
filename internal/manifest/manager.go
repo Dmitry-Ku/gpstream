@@ -1723,6 +1723,13 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 	if routed {
 		fanIn = int32(S)
 	}
+	// 1F: the version-exchange wiring (the source agent dials the dest's peer
+	// listener once before the first mesh unit; it SSH-gathers the segreceiver
+	// versions from the source segments as the "user@" prefix).
+	peerAddr, segSSH := "", ""
+	if m.twoAgent != nil {
+		peerAddr, segSSH = m.twoAgent.PeerInfo()
+	}
 	mreq := unitMiniRequest{
 		OnSegmentReq: agent.OnSegmentReq{
 			Op:            "onsegment",
@@ -1731,6 +1738,8 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			JobID:         jobID,
 			UnitID:        uint32(u.UnitID),
 			SegBinary:     m.cfg.SegBinary,
+			PeerAddr:      peerAddr,
+			SegSSH:        segSSH,
 			Compress:      compStr,
 			DataTLSCert:   m.cfg.SegTLSCert,
 			DataTLSKey:    m.cfg.SegTLSKey,

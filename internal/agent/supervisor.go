@@ -262,6 +262,18 @@ func (s *Supervisor) AcceptMinis(ctx context.Context, D int) (MiniMap, error) {
 	return mm, nil
 }
 
+// MiniVersions (1F) is the per-segment mini build identity (from each
+// mini's hello) for the pre-unit cross-check.
+func (s *Supervisor) MiniVersions() map[int]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[int]string, len(s.minis))
+	for seg, mc := range s.minis {
+		out[seg] = mc.version
+	}
+	return out
+}
+
 // SetMiniHost sets the host part of a segment's data address (the segment
 // host from the catalog's DstDSN). The hello carries only the port; the
 // supervisor combines it with the known segment host to form the full

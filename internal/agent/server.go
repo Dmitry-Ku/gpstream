@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 // SourceServer is the long-lived source agent (ADR-002 remediation, P3). It
@@ -78,6 +80,14 @@ type SourceServer struct {
 	// release can wait for them to settle before committing the snapshot.
 	respMu sync.Mutex
 	opsWg  sync.WaitGroup
+	// peerOnce (1F) runs the one-shot version exchange with the destination
+	// agent before the first MESH unit (the source reports its own version +
+	// the segreceiver versions it SSH-gathered from the S source segments;
+	// the destination cross-checks them before any data flows). peerDone is
+	// closed on success; a failure is surfaced on the in-flight unit.
+	peerOnce sync.Once
+	peerDone chan struct{}
+	peerErr  error
 }
 
 // ServerOptions configures a long-lived source agent.
@@ -126,7 +136,7 @@ type ServerOptions struct {
 
 // NewSourceServer builds a long-lived source agent with the given options.
 func NewSourceServer(o ServerOptions) *SourceServer {
-	return &SourceServer{opts: o}
+	return &SourceServer{opts: o, peerDone: make(chan struct{})}
 }
 
 // Start opens the source pool, establishes the FR-02 snapshot, and starts the
@@ -140,6 +150,7 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 	}
 	s.stop = make(chan struct{})
 	s.stopped = make(chan struct{})
+	s.peerDone = make(chan struct{}) // 1F: the version exchange (closed on first mesh unit)
 
 	// Pool sizing: strict needs 4; the snapshot-epoch reserves N dedicated
 	// connections (plus headroom for catalog reads), matching the
@@ -374,6 +385,95 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 	return StreamResp{ReqID: reqID, Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical, Digest: res.Digest}
 }
 
+// peerExchange (1F-2) is the source->dest version exchange: the source
+// agent reads its OWN segment catalog (gp_segment_configuration, role='p':
+// the S primary hosts), SSH-gathers "segriver --version" from every segment
+// host (the dry-run A+ mechanism; gpadmin has passwordless SSH to its
+// segments — the launch.RunSSHOutput local path covers the single-host
+// layout), and reports its own build identity + the per-host segreceiver
+// versions to the destination agent's peer listener. The destination
+// cross-checks them against its own + the mini versions (CheckVersions) and
+// a mismatch fails the in-flight unit (the caller returns the error) before
+// any data flows. Runs ONCE per run (peerOnce); the first mesh unit pays the
+// exchange, later units skip it. A version-exchange FAILURE (the peer
+// unreachable) is a hard unit error — a mixed-version deployment must not
+// stream silently.
+func (s *SourceServer) peerExchange(ctx context.Context, req OnSegmentReq) error {
+	s.peerOnce.Do(func() {
+		defer close(s.peerDone)
+		cctx, ccancel := context.WithTimeout(ctx, 60*time.Second)
+		defer ccancel()
+		// 1. The source segment hosts (the catalog's role='p' primaries; the
+		//    source agent reads its own cluster locally).
+		segHosts := []string{}
+		if s.pool != nil {
+			if rows, qerr := s.pool.Query(cctx, "SELECT hostname FROM gp_segment_configuration WHERE role = 'p' ORDER BY content"); qerr == nil {
+				for _, row := range rows {
+					if len(row) > 0 {
+						segHosts = append(segHosts, fmt.Sprint(row[0]))
+					}
+				}
+			}
+			// A query error / empty result = a plain-PostgreSQL source (no
+			// gp_segment_configuration): the mesh unit would not have been
+			// dispatched in the first place, so an empty host list (S=0) is
+			// the correct report, not an error.
+		}
+		// 2. Gather "segriver --version" on every segment host (SSH; the
+		//    single-host layout uses the local shell path).
+		var segs []SegVersion
+		for _, h := range segHosts {
+			ssh := ""
+			if req.SegSSH != "" {
+				ssh = req.SegSSH + h
+			}
+			remote := "'" + req.SegBinary + "' --version"
+			v, gerr := RunRemoteOutput(cctx, ssh, remote)
+			if gerr != nil {
+				s.peerErr = fmt.Errorf("version exchange: segriver --version on %s: %w", h, gerr)
+				return
+			}
+			// The segreceiver prints "<name> <ver (commit)>": drop the binary
+			// name token so it compares against the destination's identity.
+			fields := strings.Fields(v)
+			if len(fields) < 2 {
+				s.peerErr = fmt.Errorf("version exchange: segriver --version on %s: empty (got %q)", h, v)
+				return
+			}
+			segs = append(segs, SegVersion{Host: h, Version: strings.Join(fields[1:], " ")})
+		}
+		// 3. Report to the destination's peer listener.
+		conn, derr := net.DialTimeout("tcp", req.PeerAddr, 10*time.Second)
+		if derr != nil {
+			s.peerErr = fmt.Errorf("version exchange: dial dest peer %s: %w", req.PeerAddr, derr)
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+		sv := SourceVersion{Op: "source-version", Version: version.String(), S: len(segHosts), SegReceivers: segs}
+		if werr := SendLine(conn, sv); werr != nil {
+			s.peerErr = fmt.Errorf("version exchange: send: %w", werr)
+			return
+		}
+		var ack PeerAck
+		if rerr := recvLine(bufio.NewReader(conn), &ack); rerr != nil {
+			s.peerErr = fmt.Errorf("version exchange: read ack: %w", rerr)
+			return
+		}
+		if !ack.Ok {
+			s.peerErr = fmt.Errorf("version exchange: %s", ack.Error)
+			return
+		}
+	})
+	// A concurrent first unit (N workers): wait for the exchange outcome.
+	select {
+	case <-s.peerDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.peerErr
+}
+
 // handleOnSegment runs the P4 on_segment data path on the source agent's FR-02
 // snapshot connection: it builds the COPY ... TO PROGRAM ... ON SEGMENT BINARY
 // statement (the segreceiver program string points at the destination agent,
@@ -388,6 +488,16 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.StreamTimeout)
 	defer cancel()
 	reqID := req.ReqID
+	// 1F: before the first MESH unit, the source agent reports its own
+	// version + the segreceiver versions it SSH-gathered from the S source
+	// segments to the destination agent (the peer channel). The destination
+	// cross-checks them (own + minis + source + segreceivers) and a mismatch
+	// fails the unit before any data flows.
+	if req.Mesh && req.PeerAddr != "" {
+		if verr := s.peerExchange(ctx, req); verr != nil {
+			return OnSegmentResp{ReqID: reqID, Ok: false, Error: verr.Error()}
+		}
+	}
 	var prog string
 	var err error
 	if req.Mesh && req.Routed {

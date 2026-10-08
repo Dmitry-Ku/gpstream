@@ -45,6 +45,7 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 // DestHello is the agent's first control message (its real bound addresses).
@@ -69,6 +70,11 @@ type DestHello struct {
 	// segments / mini-agents the supervisor coordinates. 0 = not in
 	// supervisor mode.
 	MiniCount int `json:"mini_count,omitempty"`
+	// Peer (1F) is the destination agent's PEER listener address: the source
+	// agent dials it ONCE before the first mesh unit to report its own + the
+	// segreceivers' versions (the destination cross-checks before any data
+	// flows). Empty = no peer listener (not in supervisor mode).
+	Peer string `json:"peer,omitempty"`
 }
 
 // DestServeReq is the controller's per-unit instruction to a long-lived
@@ -271,6 +277,11 @@ type DestServerOptions struct {
 	// agent is a separate process whose serves are bounded by its own signal
 	// ctx, and a crash is a hard kill, not a cancel).
 	RunCtx context.Context
+	// PeerListen (1F) is the destination agent's PEER listener address
+	// (host:port; :0 = auto-pick, reported in the hello's Peer field): the
+	// source agent dials it ONCE before the first mesh unit to report its
+	// own + the segreceivers' versions (the cross-check). Empty = off.
+	PeerListen string
 	// SupervisorListen (P3 production-dispatch) is the supervisor's REPORT
 	// listener address (host:port; :0 = auto-pick, reported in the hello's
 	// Report field). Empty = supervisor mode is OFF (the coordinator
@@ -304,6 +315,10 @@ type DestServer struct {
 	dataL net.Listener
 	tlsL  net.Listener
 	ctrlL net.Listener
+	// peerL (1F): the PEER listener (the source agent dials it once before the
+	// first mesh unit to report its own + the segreceivers' versions).
+	// nil = off (not in supervisor mode / PeerListen empty).
+	peerL net.Listener
 	// persistL (P1c): the dedicated persistent-coordinator listener (plain
 	// when data TLS is off, TLS-wrapped when on). nil = off.
 	persistL net.Listener
@@ -535,8 +550,85 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 			s.miniMapMu.Unlock()
 		}()
 	}
+	// 1F: the peer listener (supervisor mode): the source agent dials it ONCE
+	// before the first mesh unit to report its own + the segreceivers'
+	// versions; the cross-check runs on the destination (own + minis +
+	// source + segreceivers must be equal).
+	if o.PeerListen != "" && s.supervisor != nil {
+		pL, perr := o.bindListener(o.PeerListen)
+		if perr != nil {
+			s.Close()
+			return nil, fmt.Errorf("dest server: peer listen %s: %w", o.PeerListen, perr)
+		}
+		if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
+			pcfg, pterr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
+			if pterr != nil {
+				s.Close()
+				return nil, fmt.Errorf("dest server: peer tls config: %w", pterr)
+			}
+			pL = tls.NewListener(pL, pcfg)
+		}
+		s.peerL = pL
+		go s.acceptPeer(pL)
+	}
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
 	return s, nil
+}
+
+// acceptPeer (1F-4) serves the source agent's one-shot version exchange:
+// the source dials this listener before the first mesh unit and reports its
+// own build identity + the segreceiver versions it SSH-gathered from the S
+// source segments. The destination cross-checks them (own + the mini
+// versions from the hellos + the source + the segreceivers — all must be
+// equal) and replies PeerAck. A mismatch is a HARD error the source surfaces
+// on its in-flight unit (no data flows). It waits for the MiniMap to be
+// ready before the cross-check (the mini versions are only known once all D
+// hellos have arrived) so a source that arrives early is not judged against
+// an empty mini set.
+func (s *DestServer) acceptPeer(l net.Listener) {
+	conn, err := l.Accept()
+	if err != nil {
+		return // listener closed (run end / stop)
+	}
+	defer conn.Close()
+	s.handlePeerVersion(conn)
+}
+
+// handlePeerVersion is the actual cross-check (run on the single peer
+// connection). It is separate from acceptPeer so a test can drive it.
+func (s *DestServer) handlePeerVersion(conn net.Conn) {
+	// Wait for the MiniMap (the mini versions) before cross-checking.
+	deadline := time.Now().Add(s.opts.AcceptTimeout)
+	for {
+		s.miniMapMu.Lock()
+		ready, aerr := s.miniMapReady, s.miniAcceptErr
+		s.miniMapMu.Unlock()
+		if ready || aerr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: false, Error: "version check: mini-map not ready in time"})
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	var sv SourceVersion
+	if rerr := recvLine(bufio.NewReader(conn), &sv); rerr != nil {
+		return
+	}
+	minis := map[int]string{}
+	if s.supervisor != nil {
+		minis = s.supervisor.MiniVersions()
+	}
+	if cerr := CheckVersions(version.String(), sv, minis); cerr != nil {
+		_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: false, Error: cerr.Error()})
+		return
+	}
+	_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: true})
+}
+
+func sendPeerAck(conn net.Conn, ack PeerAck) error {
+	return SendLine(conn, ack)
 }
 
 // bindListener binds addr, honoring the --port-range (o.PortAlloc) when
@@ -559,6 +651,9 @@ func (s *DestServer) Hello() DestHello {
 	if s.supervisor != nil {
 		h.Report = s.supervisor.Addr()
 		h.MiniCount = s.opts.MiniCount
+		if s.peerL != nil {
+			h.Peer = s.peerL.Addr().String()
+		}
 	}
 	return h
 }
@@ -826,6 +921,9 @@ func (s *DestServer) Close() {
 			s.supervisor.Close()
 		}
 		_ = s.ctrlL.Close()
+		if s.peerL != nil {
+			_ = s.peerL.Close()
+		}
 		if s.dataL != nil {
 			_ = s.dataL.Close()
 		}
