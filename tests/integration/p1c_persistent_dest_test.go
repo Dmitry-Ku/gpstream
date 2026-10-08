@@ -157,7 +157,7 @@ func TestPersistentChannelDestServe(t *testing.T) {
 		if aerr != nil {
 			t.Fatalf("unit %d: source digest accumulator: %v", units[i].unitID, aerr)
 		}
-		if _, _, err := snd.SendUnit(ctx, spec, bytes.NewReader(payloads[i]), comp, acc, rows); err != nil {
+		if _, _, err := snd.SendUnit(ctx, spec, bytes.NewReader(payloads[i]), comp, func() ([32]byte, int64, error) { return acc, rows, nil }); err != nil {
 			t.Fatalf("unit %d: send: %v", units[i].unitID, err)
 		}
 	}

@@ -952,7 +952,15 @@ func (s *SourceServer) sendPersistentUnit(ctx context.Context, spec UnitSpec, id
 		outcome <- copyOutcome{rows: rows, digest: digest, err: cerr}
 	}()
 
-	wire, logical, err := snd.SendUnit(ctx, spec, pr, comp, [32]byte{}, 0)
+	// 2B-1 (architecture 08.10): the source's content digest rides the unit's
+	// Trailer to the destination, which compares it against its own
+	// on-the-data-path digest and performs the verify + swap decision itself
+	// (the coordinator analogue of the mesh mini path, 1C). The acc is read
+	// from dsum AFTER the data drained (the tee has the full payload incl.
+	// the COPY end marker) — exactly when SendUnit invokes the provider.
+	wire, logical, err := snd.SendUnit(ctx, spec, pr, comp, func() ([32]byte, int64, error) {
+		return dsum.Accumulator()
+	})
 	if err != nil {
 		// The channel broke mid-unit: abort the in-flight COPY by closing the
 		// read end of the pipe (the COPY goroutine's write then fails), so we

@@ -33,26 +33,30 @@ import (
 // Phase 1: `gpstream run` (real binary, subprocess, --verify on) copies one
 // ~130 MB table; the test waits until the durable journal shows the unit in
 // `copying` (the staging table already exists on the destination) and
-// kill -9 the controller mid-copy. The agent-to-agent data path is
-// independent of the controller, so the orphaned agents finish the in-flight
-// COPY and commit the staging (ALL rows), then exit on control loss. The
-// final table is never swapped in (the swap is the controller's decision,
-// and the controller is dead) — the "fully copied, not swapped" state the
-// spec allows.
+// kill -9 the controller mid-copy. The agent-to-agent data path (the
+// persistent coordinator channel) is independent of the control connection,
+// so the orphaned agents finish the in-flight COPY. 2B-1 (architecture
+// 08.10): the swap is the DESTINATION agent's decision, not the
+// controller's — the orphaned destination agent performs the atomic swap
+// itself once the COPY commits, so the final table lands with ALL rows
+// (the "fully copied" state FR-02 allows) and the staging is renamed away.
+// (Historically the swap was the controller's, so a mid-copy kill left the
+// staging full and the final absent — 2B-1 moved the swap to the
+// destination agent.)
 //
 // (Historical note: this test used to kill during the `verifying` phase —
 // the multi-second window between the COPY commit and the swap, back when
 // verify meant two full-table checksum re-reads. P9-E made verify an inline
 // data-path digest comparison (sub-millisecond), so that window no longer
 // exists as a reliable kill target; the copy itself (seconds for 130 MB) is
-// the window now, and the post-kill assertions cover both terminal states.)
+// the window now.)
 //
 // Phase 2: `gpstream cleanup --mode drop --dest ...` must remove exactly the
-// gpstream-owned objects (the surviving staging; the never-created final is
-// a no-op) and restore the receiver to its pre-operation state — a
+// gpstream-owned objects (the surviving staging + the dest-agent-swapped
+// final table) and restore the receiver to its pre-operation state — a
 // pre-existing operator table must survive untouched.
-// Phase 3: a plain re-run of the SAME operation-id completes the killed
-// unit (resume semantics) with the exact source count.
+// Phase 3: a plain re-run of the SAME operation-id re-copies the unit
+// (resume semantics) with the exact source count.
 func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 	srcCl, dstCl, src, dst := startPGPairFull(t, 5681, 5682)
 	ctx := context.Background()
@@ -149,11 +153,15 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	// Kill -9 the controller mid-copy (the exact spec scenario). The
-	// agent-to-agent data path is independent of the controller, so the
-	// orphaned agents finish the in-flight COPY (committing the staging)
-	// and then exit on control loss — the final table is never swapped in,
-	// because the swap is the controller's decision and the controller is
-	// dead.
+	// agent-to-agent data path (the persistent coordinator channel) is
+	// independent of the control connection, so the orphaned agents finish
+	// the in-flight COPY. 2B-1 (architecture 08.10): the swap is the
+	// DESTINATION agent's decision, not the controller's — so the orphaned
+	// destination agent performs the atomic swap itself once the COPY
+	// commits. The final table lands with ALL rows (the "fully copied" state
+	// FR-02 allows); the staging is renamed away. (Historically the swap was
+	// the controller's, so a mid-copy kill left the staging full and the
+	// final absent — 2B-1 moved the swap to the destination agent.)
 	if err := exec.Command("kill", "-9", strconv.Itoa(cmd.Process.Pid)).Run(); err != nil {
 		t.Fatalf("kill -9: %v", err)
 	}
@@ -162,30 +170,27 @@ func TestF02Kill9CleanupRestoresReceiver(t *testing.T) {
 		t.Fatal("killed process must not exit cleanly")
 	}
 
-	// Wait for the orphaned agents to finish the in-flight COPY. The staging
-	// table is one transaction, so its count is 0 while the COPY runs and
-	// jumps to ALL rows the moment the destination agent's COPY commits.
-	// A missing staging relation (the journal can mark `copying` a beat
-	// before the dest agent creates the table, and the kill can land in that
-	// beat) counts as 0 rows — the COPY has not committed yet.
-	commitDeadline := time.Now().Add(120 * time.Second)
+	// Wait for the orphaned destination agent to finish the in-flight COPY
+	// AND perform the swap (2B-1). The final table is one transaction: its
+	// count jumps to ALL rows the moment the destination's COPY commits and
+	// the staging is atomically renamed to the final name. A not-yet-swapped
+	// destination (final absent) means the COPY + swap has not landed yet.
+	finalDeadline := time.Now().Add(120 * time.Second)
 	for {
-		st, err := stagingRowCount(ctx, dst, staging)
-		if err != nil {
-			t.Fatalf("count staging: %v", err)
+		if stagingExists(ctx, dst, "public.f02kill") {
+			if fc := mustCount(t, dst, `SELECT count(*) FROM public.f02kill`); fc == rows {
+				break
+			}
 		}
-		if st == rows {
-			break
-		}
-		if time.Now().After(commitDeadline) {
-			t.Fatalf("staging never reached %d rows after the mid-copy kill (orphaned agents did not finish the COPY)", rows)
+		if time.Now().After(finalDeadline) {
+			t.Fatalf("final table never reached %d rows after the mid-copy kill (orphaned dest agent did not finish the COPY + swap)", rows)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	// Post-kill state: the committed COPY left ALL rows in staging, and the
-	// final table is still absent (no swap happened).
-	if stagingExists(ctx, dst, "public.f02kill") {
-		t.Fatal("final table must not exist after a mid-copy kill (no swap)")
+	// Post-kill state: the destination agent finished the COPY and swapped —
+	// the final table holds ALL rows and the staging is gone (renamed).
+	if !stagingExists(ctx, dst, "public.f02kill") {
+		t.Fatal("final table must exist after a mid-copy kill (the dest agent performs the swap, 2B-1)")
 	}
 
 	// --- Phase 2: cleanup --mode drop restores the pre-operation state --
@@ -381,36 +386,6 @@ func TestF02TwoDBConcurrentSnapshot(t *testing.T) {
 func stagingExists(ctx context.Context, q *pg.Pool, rel string) bool {
 	v, _ := pg.Row(ctx, q, `SELECT to_regclass($1)`, rel)
 	return v != nil
-}
-
-// stagingRowCount returns the row count of a staging table, treating a
-// not-yet-created relation as 0 rows. In the two-agent data path the
-// destination AGENT creates the staging table (the controller only names it),
-// so right after the journal flips a unit to `copying` the relation can still
-// be absent — the in-flight COPY has not committed yet either way.
-func stagingRowCount(ctx context.Context, q *pg.Pool, rel string) (int64, error) {
-	v, err := pg.Row(ctx, q, `SELECT to_regclass($1)`, rel)
-	if err != nil {
-		return 0, err
-	}
-	if v == nil {
-		return 0, nil // not created yet (or already dropped) = no committed rows
-	}
-	rows, err := q.Query(ctx, `SELECT count(*) FROM `+rel)
-	if err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 || len(rows[0]) == 0 {
-		return 0, nil
-	}
-	switch v := rows[0][0].(type) {
-	case int64:
-		return v, nil
-	case int32:
-		return int64(v), nil
-	default:
-		return 0, fmt.Errorf("stagingRowCount: unexpected count type %T", rows[0][0])
-	}
 }
 
 // readStateUnit returns (jobID, unitID) of the first journal record in the

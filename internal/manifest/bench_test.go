@@ -41,8 +41,8 @@ func (f *fakeBenchRunner) Start(context.Context) error { return nil }
 func (f *fakeBenchRunner) Plan(context.Context) (*plan.Plan, error) {
 	return nil, fmt.Errorf("fakeBenchRunner: Plan unused in bench")
 }
-func (f *fakeBenchRunner) Stream(context.Context, unitStreamRequest) (int64, uint64, uint64, string, string, error) {
-	return 0, 0, 0, "", "", fmt.Errorf("fakeBenchRunner: Stream unused in bench")
+func (f *fakeBenchRunner) Stream(context.Context, unitStreamRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
+	return 0, 0, 0, "", "", false, false, fmt.Errorf("fakeBenchRunner: Stream unused in bench")
 }
 func (f *fakeBenchRunner) StreamSegment(context.Context, unitSegmentRequest) (int64, uint64, uint64, error) {
 	return 0, 0, 0, fmt.Errorf("fakeBenchRunner: StreamSegment unused in bench")

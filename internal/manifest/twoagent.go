@@ -50,15 +50,20 @@ type TwoAgentRunner interface {
 	// "build-plan" control op; the InProc runner (test double) builds the
 	// plan in-process.
 	Plan(ctx context.Context) (*plan.Plan, error)
-	// Stream launches a destination agent for the unit, instructs the source
+	// Stream launches a destination agent for the unit, instructing the source
 	// agent to stream the unit to it, and waits for the destination to finish
 	// the COPY. It returns the authoritative row count + the wire/logical
 	// volume + (FR-02, P9-E) the inline content digests computed on the data
 	// path when VerifyDigest is requested — srcDigest from the source agent,
-	// dstDigest from the destination agent (both empty when not requested).
-	// The destination staging table is created + loaded by the dest agent;
-	// the swap is NOT performed (the Manager decides it).
-	Stream(ctx context.Context, req unitStreamRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, err error)
+	// dstDigest from the destination agent (both empty when not requested) +
+	// (2B-1) the destination's verdict: swapped (the destination performed the
+	// atomic rename itself) and verified (the destination compared the SOURCE
+	// vs DEST digests and they matched). The destination staging table is
+	// created + loaded by the dest agent; the verify + swap decision is the
+	// DESTINATION's (2B-1, architecture 08.10): the source digest rides the
+	// unit's Trailer, so the controller no longer re-reads the tables and no
+	// longer swaps the coordinator units.
+	Stream(ctx context.Context, req unitStreamRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, swapped, verified bool, err error)
 	// StreamSegment launches a destination agent in SEGMENT mode (P4,
 	// on_segment) and instructs the source agent to trigger the ON SEGMENT
 	// dispatch: the kernel launches the segreceiver on every primary source
@@ -854,11 +859,12 @@ func agentStderr() io.Writer {
 // instructs the source agent to stream the unit to the agent's data address
 // (from its hello), then waits for the unit-done report. The destination is
 // the authoritative row-count source; the wire volume comes from the source
-// agent (the bytes it wrote to the socket). The swap is NOT performed here —
-// the Manager decides it.
-func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, error) {
+// agent (the bytes it wrote to the socket). 2B-1: the verify + swap decision
+// is the DESTINATION's (the source digest rides the unit's Trailer) — the
+// runner returns the destination's verdict (swapped/verified) to the Manager.
+func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
 	if r.destCtrl == nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: destination agent not started")
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: destination agent not started")
 	}
 	// P1d: the persistent path is CONCURRENT (no streamMu): the dest agent's
 	// control loop serves N units in flight, correlated by ReqID. The legacy
@@ -866,60 +872,24 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 	if r.destPersistAddr != "" {
 		return r.streamCoordinatorPersistent(ctx, req)
 	}
-	r.streamMu.Lock()
-	defer r.streamMu.Unlock()
-	// 1. Tell the long-lived dest agent to serve this unit on the shared data
-	//    listener. The ack returns immediately (the serve is running,
-	//    accepting the source agent's connection).
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
-	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
-	}
-	if !ack.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
-	}
-	// 2. Instruct the source agent to stream the unit (legacy per-unit
-	//    connection: the UnitSpec rides the data connection).
-	sreq := req.StreamReq
-	sreq.DestAddr = r.destDataAddr
-	resp, err := r.ctrl.Stream(sreq)
-	if err != nil {
-		// The unit's data will not arrive: fail the in-flight serve so the
-		// unit-done returns promptly.
-		_, _ = r.destCtrl.CancelUnit(req.UnitID)
-		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
-	}
-	if !resp.Ok {
-		_, _ = r.destCtrl.CancelUnit(req.UnitID)
-		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
-	}
-	// 3. Wait for the destination to finish the COPY (the unit-done report,
-	// correlated to THIS serve by the ack's ReqID).
-	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
-	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
-	}
-	if !done.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
-	}
-	// P9-E: return the inline content digests (both empty when the controller
-	// did not request verify): the source's (from the stream reply) and the
-	// destination's (from the unit-done report), for the manager to compare.
-	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
+	// 2B-1: the legacy per-unit path cannot delegate the verify + swap to the
+	// destination (its FramedReader ends at the Trailer WITHOUT exposing the
+	// source digest, so the destination could not compare) — the production
+	// runner always uses the persistent channel, so this branch is
+	// unreachable in production (only a misconfigured test could hit it).
+	return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: legacy per-unit coordinator serve cannot carry the source digest to the destination (2B-1); use the persistent coordinator channel")
 }
 
 // streamCoordinatorPersistent (P1d) drives one coordinator unit over the
 // dest's persistent channel POOL (no streamMu: the dest control loop serves
 // N units in flight, correlated by ReqID; unit X rides channel X%N).
-func (r *processTwoAgentRunner) streamCoordinatorPersistent(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, error) {
+func (r *processTwoAgentRunner) streamCoordinatorPersistent(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
 	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
 	if !ack.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
 	}
 	sreq := req.StreamReq
 	sreq.DestAddr = r.destPersistAddr
@@ -928,24 +898,28 @@ func (r *processTwoAgentRunner) streamCoordinatorPersistent(ctx context.Context,
 	if err != nil {
 		_, _ = r.destCtrl.CancelUnit(req.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
 		_, _ = r.destCtrl.CancelUnit(req.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
 	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
 	}
 	if !done.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
 	}
 	// P9-E: return the inline content digests (both empty when the controller
 	// did not request verify): the source's (from the stream reply) and the
-	// destination's (from the unit-done report), for the manager to compare.
-	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
+	// destination's (from the unit-done report). 2B-1: the destination's
+	// verdict (swapped = it performed the atomic rename itself; verified =
+	// the SOURCE vs DEST digests matched, so the verify gate passed) — the
+	// Manager skips its own verify + swap for the unit when the destination
+	// handled them.
+	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, done.Swapped, done.Verified, nil
 }
 
 // StreamSegment (P4 on_segment) drives one unit through the LONG-LIVED
@@ -1506,9 +1480,9 @@ func (r *InProcTwoAgentRunner) Plan(ctx context.Context) (*plan.Plan, error) {
 // unit over the run's ONE persistent coordinator channel -> WaitUnitDone.
 // The destination is the authoritative row-count source; the wire volume
 // comes from the source agent. The swap is NOT performed (the Manager does it).
-func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, error) {
+func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
 	if r.dest == nil || r.destCtrl == nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: in-proc dest server not started")
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: in-proc dest server not started")
 	}
 	// P1d: NO streamMu — the dest agent's control loop is concurrent (N
 	// serves in flight on one control connection, correlated by ReqID), so
@@ -1520,10 +1494,10 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 	//    waiting for the unit's UnitBegin off its channel).
 	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
 	if !ack.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %s", req.UnitID, ack.Error)
 	}
 
 	// 2. Instruct the source agent to stream the unit over the persistent
@@ -1541,26 +1515,26 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 		// ctx.
 		_, _ = r.destCtrl.CancelUnit(req.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: stream unit %d: %w", req.UnitID, err)
 	}
 	if !resp.Ok {
 		_, _ = r.destCtrl.CancelUnit(req.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: source agent stream unit %d: %s", req.UnitID, resp.Error)
 	}
 
 	// 3. Wait for the destination to finish the COPY (the unit-done report,
 	//    correlated to THIS serve by the ack's ReqID).
 	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
 	if err != nil {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest unit-done unit %d: %w", req.UnitID, err)
 	}
 	if !done.Ok {
-		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
+		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: dest agent unit %d: %s", req.UnitID, done.Error)
 	}
 
 	// Destination row count is authoritative; wire volume from the source.
-	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, nil
+	return done.Rows, resp.Wire, done.Logical, resp.Digest, done.Digest, done.Swapped, done.Verified, nil
 }
 
 // StreamSegment (P4, in-proc) launches an in-process destination agent

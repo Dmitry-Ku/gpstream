@@ -73,6 +73,12 @@ type DestResult struct {
 	Logical uint64
 	// Swapped reports whether the atomic rename was performed.
 	Swapped bool
+	// Verified reports that the destination compared the SOURCE vs DEST
+	// content digests and they MATCHED (the --verify gate passed; 2B-1:
+	// the source digest rides the unit's Trailer, so the destination
+	// performs the compare itself — the controller no longer re-reads the
+	// tables). False when verify is off or the source sent no digest.
+	Verified bool
 	// Digest is the row-order-independent content digest of the payload the
 	// destination loaded (FR-02, P9-E inline verify), computed on the data
 	// path as the rows flow into the COPY FROM (O(1) memory). Empty when the

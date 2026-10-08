@@ -91,12 +91,42 @@ func ServeUnitData(ctx context.Context, dq pg.StreamingQuerier, da *dest.Agent, 
 		return out, fmt.Errorf("persistent serve: inline digest %s.%s: %w", spec.Schema, spec.Staging, derr)
 	}
 	out.Digest = d
+
+	// 2B-1 (architecture 08.10): the SOURCE digest rides the unit's Trailer
+	// (the source agent wrote its on-the-data-path acc before the Trailer
+	// frame). The destination performs the verify decision ITSELF — compare
+	// the source's combined digest against its own — instead of the
+	// controller re-reading either table. A missing source digest (an old
+	// source / a non-binary-COPY payload that has no accumulator) degrades
+	// to verify-off: the unit still swaps, the controller's own compare is
+	// skipped because the destination did not gate on it.
+	tr := data.Trailer()
+	srcDigest := ""
+	if tr.Digest != [32]byte{} {
+		srcDigest = transfer.CombinedDigestString(tr.Digest, tr.Rows)
+	}
+	if srcDigest != "" {
+		match := srcDigest == out.Digest
+		out.Verified = match
+		if spec.VerifyDigest && !match {
+			// A mismatch FAILS the unit (no swap): drop the staging so a
+			// resume re-copies the table from scratch (FR-07), and report
+			// the mismatch as the destination's own diagnostic.
+			if drerr := da.DropStaging(sctx, spec.Schema, spec.Staging); drerr != nil {
+				return out, fmt.Errorf("persistent serve: verify mismatch (src=%s dst=%s); drop staging: %w", srcDigest, out.Digest, drerr)
+			}
+			return out, fmt.Errorf("persistent serve: verify: digest mismatch (src=%s dst=%s)", srcDigest, out.Digest)
+		}
+	}
+
 	// Cross-check the source's trailer row count against the COPY row count.
-	if tr := data.Trailer(); tr.Rows != 0 && tr.Rows != rows {
+	if tr.Rows != 0 && tr.Rows != rows {
 		return out, fmt.Errorf("persistent serve: trailer row count %d != copy row count %d", tr.Rows, rows)
 	}
 
-	// The swap is a controller decision (per unit).
+	// The swap is the destination's decision (2B-1): when the controller
+	// delegated it (o.Swap / the spec's final name) the destination performs
+	// the atomic rename after its own verify passed.
 	if swap {
 		if werr := da.Swap(sctx, spec.Schema, spec.Table, spec.Staging, spec.Overwrite); werr != nil {
 			return out, fmt.Errorf("persistent serve: swap %s.%s: %w", spec.Schema, spec.Table, werr)

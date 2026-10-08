@@ -1621,8 +1621,14 @@ func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *uni
 		return done
 	}
 	defer release()
-	res, err := ServeUnitData(ctx, q, dest.New(q), spec, data, false, s.opts.StreamTimeout)
+	// 2B-1 (architecture 08.10): the destination agent performs the verify
+	// decision (it compares the source digest that rode the unit's Trailer
+	// against its own on-the-data-path digest) AND the atomic swap itself —
+	// the controller no longer re-reads the tables and no longer swaps the
+	// coordinator units (the coordinator analogue of the mesh mini path, 1C).
+	res, err := ServeUnitData(ctx, q, dest.New(q), spec, data, true, s.opts.StreamTimeout)
 	done.Rows, done.Logical, done.Swapped, done.Digest = res.Rows, res.Logical, res.Swapped, res.Digest
+	done.Verified = res.Verified
 	done.Ok = err == nil
 	done.Error = errString(err)
 	return done

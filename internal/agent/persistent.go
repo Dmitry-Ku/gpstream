@@ -123,7 +123,18 @@ func (s *PersistentSender) pingLoop() {
 // digest accumulator + row count). The connection is NOT closed. It returns
 // the wire (framed, compressed) and logical (uncompressed) byte volumes for
 // FR-04.
-func (s *PersistentSender) SendUnit(ctx context.Context, spec UnitSpec, data io.Reader, comp *compress.Compressor, acc [32]byte, rows int64) (wire, logical uint64, err error) {
+// SendDigest is the source-side provider of the unit's raw digest
+// accumulator + row count for the Trailer frame. It is invoked AFTER the
+// data has been fully drained (the digest tee has seen the whole payload,
+// including the COPY end marker) and BEFORE the Trailer frame is written —
+// the acc is only defined at that point. 2B-1: the source's content digest
+// rides the trailer to the destination, which compares it against its own
+// on-the-data-path digest and performs the verify+swap decision itself
+// (the controller no longer re-reads either table, and no longer performs
+// the swap for the coordinator path — architecture 08.10).
+type SendDigest func() (acc [32]byte, rows int64, err error)
+
+func (s *PersistentSender) SendUnit(ctx context.Context, spec UnitSpec, data io.Reader, comp *compress.Compressor, digest SendDigest) (wire, logical uint64, err error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -159,9 +170,18 @@ func (s *PersistentSender) SendUnit(ctx context.Context, spec UnitSpec, data io.
 	logical = uint64(counted.n)
 	wire = fw.Wire()
 
-	// 3. Trailer frame: the end-of-unit marker (the source's raw digest acc +
-	// rows, P0's 72-byte form).
-	tr := transfer.Trailer{Digest: acc, Rows: rows}
+	// 3. Trailer frame: the end-of-unit marker (the source's content digest
+	// acc + rows). The acc is provided AFTER the data drained (the digest tee
+	// has the full payload) — a nil provider sends an empty acc (the legacy
+	// one-shot / test callers that precompute the acc pass a closure over it).
+	var tr transfer.Trailer
+	if digest != nil {
+		acc, rows, derr := digest()
+		if derr != nil {
+			return wire, logical, fmt.Errorf("persistent sender: unit %d digest: %w", spec.UnitID, derr)
+		}
+		tr = transfer.Trailer{Digest: acc, Rows: rows}
+	}
 	s.mu.Lock()
 	if twerr := transfer.WriteFrame(s.conn, transfer.NewTrailerFrame(s.jobID, spec.UnitID, s.seq, transfer.ContentCoordinator, tr)); twerr != nil {
 		s.mu.Unlock()

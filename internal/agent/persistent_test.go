@@ -58,7 +58,7 @@ func TestPersistentChannelMultiUnit(t *testing.T) {
 				Schema: "public", Table: "t" + string(rune('0'+u)), Staging: "_gs_" + string(rune('0'+u)),
 				Compress: "zstd:3", VerifyDigest: true,
 			}
-			if _, _, err := snd.SendUnit(context.Background(), spec, bytes.NewReader(wantData[u]), comp, wantAcc[u], wantRows[u]); err != nil {
+			if _, _, err := snd.SendUnit(context.Background(), spec, bytes.NewReader(wantData[u]), comp, func() ([32]byte, int64, error) { return wantAcc[u], wantRows[u], nil }); err != nil {
 				sndDone <- err
 				return
 			}
@@ -111,7 +111,7 @@ func TestPersistentChannelPingTolerance(t *testing.T) {
 	go func() {
 		defer snd.Close()
 		spec := UnitSpec{JobID: 1, UnitID: 9, Schema: "public", Table: "t", Staging: "_s", Compress: "none"}
-		if _, _, err := snd.SendUnit(context.Background(), spec, bytes.NewReader([]byte("hello")), compress.New(compress.ModeNone, 0), [32]byte{}, 1); err != nil {
+		if _, _, err := snd.SendUnit(context.Background(), spec, bytes.NewReader([]byte("hello")), compress.New(compress.ModeNone, 0), func() ([32]byte, int64, error) { return [32]byte{}, 1, nil }); err != nil {
 			done <- err
 			return
 		}
