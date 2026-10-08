@@ -140,7 +140,7 @@ type Config struct {
 	// finish, and hands the failed units to `gpstream resume`; "abort" stops
 	// the run at the first failure (in-flight units finish, none new starts).
 	OnUnitFailure string     // continue (default) | abort
-	Verify        VerifyMode // default off
+	Verify        VerifyMode // default on (08.10: content verification is on by default; --verify off disables the swap gate)
 
 	// Indexes (FR-17).
 	IndexWorkers  int
@@ -279,7 +279,7 @@ func Default() Config {
 		SmallTableThreshold: 1 << 20, // 1 MiB (F-12 auto-disable default)
 		ZstdLevel:           3,
 		AutoResume:          0,
-		Verify:              VerifyOff,
+		Verify:              VerifyOn,          // 08.10: on by default (digests are always computed; this gates the swap)
 		Timeout:             120 * time.Second, // F-10 §6: default 120 s
 		IndexPriority:       "size",
 		SSLMinTLS:           "1.2",

@@ -1644,7 +1644,7 @@ Transport / resilience:
   --retransmit-buffer-max size     in-flight window per stream (default 64MiB)
 
 Integrity / consistency:
-  --verify on|off                  post-copy content verification (default off)
+  --verify on|off                  post-copy content verification by digests (default on)
   --auto-resume N                  auto-resume attempts after the run (default 0)
   --on-unit-failure continue|abort on a failed unit (default continue)
 

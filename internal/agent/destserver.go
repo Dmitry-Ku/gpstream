@@ -39,6 +39,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/journaldb"
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
@@ -126,6 +127,19 @@ type MiniLaunch struct {
 	// the default). When false the digests are STILL computed + logged but
 	// the swap is not gated (a digest mismatch does not fail the unit).
 	Verify bool `json:"verify,omitempty"`
+	// JournalRef carries the controller's journal key so the destination
+	// agent can write the gpstream_units rows for the MESH unit it copies,
+	// verifies and swaps (architecture 08.10: the destination owns the
+	// mesh-unit journal; the controller no longer writes the DB journal for
+	// mesh units — only the file mirror). JournalJobID/JournalUnitID are the
+	// journal primary key (the controller's string job id + int64 unit id).
+	JournalJobID  string `json:"journal_job_id,omitempty"`
+	JournalUnitID int64  `json:"journal_unit_id,omitempty"`
+	JournalDB     string `json:"journal_db,omitempty"`
+	JournalSchema string `json:"journal_schema,omitempty"`
+	JournalTable  string `json:"journal_table,omitempty"`
+	JournalKind   string `json:"journal_kind,omitempty"`
+	Epoch         int64  `json:"epoch,omitempty"`
 }
 
 type DestServeReq struct {
@@ -178,10 +192,17 @@ type DestUnitDone struct {
 	// decision is the destination's; the controller no longer re-reads the
 	// tables to verify).
 	Verified bool `json:"verified,omitempty"`
+	// Events (1E) are the destination agent's diagnostic lines for the unit
+	// (verify_mismatch, swap_done, mini errors, orphan). The controller
+	// forwards them to its own events.jsonl (source=dest-agent) — the
+	// architecture 08.10 rule: the controller's diagnostics come ONLY from
+	// the two agents.
+	Events []string `json:"events,omitempty"`
 	// Digest is the row-order-independent content digest the destination
-	// computed on the data path (FR-02, P9-E) when the spec carried
-	// VerifyDigest; empty otherwise. The controller compares it against the
-	// source's inline digest (StreamResp.Digest) to verify without a re-read.
+	// computed on the data path (FR-02, P9-E); ALWAYS present now (the
+	// digest is unconditional). The controller compares it against the
+	// source's inline digest (or reads the destination's verdict, which is
+	// authoritative for the mesh path).
 	Digest string `json:"digest,omitempty"`
 	// SrcDigest (P3 mesh) is the combined SOURCE digest (XOR_D of the D
 	// mini-agents' per-slice src-contribs) for a kind="mini" serve with
@@ -737,6 +758,43 @@ func (s *DestServer) ensureMiniStaging(ctx context.Context, ml *MiniLaunch) erro
 	return nil
 }
 
+// journalMiniUnit writes the gpstream_units row for a MESH unit the
+// destination agent owns (architecture 08.10): the agent copies, verifies and
+// swaps the unit, so it is the writer of record for its journal row (state +
+// checksum + row count). It runs on a LOCAL coordinator connection (the
+// fallback coordinator path's DSN) and is best-effort: a journal write error
+// does not sink the unit (the controller's file mirror remains the durable
+// resume source), but it is surfaced in the unit's diagnostic events. An empty
+// JournalJobID = the launch carried no journal reference (a test path); the
+// write is skipped.
+func (s *DestServer) journalMiniUnit(ctx context.Context, ml *MiniLaunch, state, checksum string, rows int64) error {
+	if ml.JournalJobID == "" {
+		return nil // no journal reference (a test path)
+	}
+	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("kind=mini: connect coordinator (journal): %w", err)
+	}
+	defer q.Close()
+	jctx, jcancel := context.WithTimeout(ctx, 1*time.Minute)
+	defer jcancel()
+	if err := journaldb.Init(jctx, q); err != nil {
+		return fmt.Errorf("kind=mini: init gpstream_units: %w", err)
+	}
+	return journaldb.SetState(jctx, q, &journaldb.Unit{
+		JobID:    ml.JournalJobID,
+		UnitID:   ml.JournalUnitID,
+		DB:       ml.JournalDB,
+		Schema:   ml.JournalSchema,
+		Table:    ml.JournalTable,
+		Kind:     ml.JournalKind,
+		State:    state,
+		Checksum: checksum,
+		RowCount: rows,
+		Epoch:    ml.Epoch,
+	})
+}
+
 // swapMiniFinal performs the destination's own atomic swap (staging -> final)
 // on a LOCAL coordinator connection (the fallback coordinator path's DSN).
 // This is runUnit step 9 moved to the destination agent: the destination
@@ -1082,6 +1140,13 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			done.Error = derr.Error()
 			return done
 		}
+		// 1D: the destination agent is the writer of record for this MESH
+		// unit's gpstream_units row — record the copy start (state=copying).
+		// Best-effort: a journal error does not sink the unit (the controller
+		// file mirror is the durable resume source), but it is reported.
+		if jerr := s.journalMiniUnit(ctx, req.Mini, "copying", "", 0); jerr != nil {
+			done.Events = append(done.Events, "journal: "+jerr.Error())
+		}
 		res, err := s.supervisor.ServeUnit(ctx, UnitReportReq{
 			UnitID:         req.UnitID,
 			JobID:          req.Mini.JobID,
@@ -1102,8 +1167,16 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		if err != nil {
 			// The unit failed on the data path: NO swap (the staging holds a
 			// partial/unverified load; a resume re-copies it). The digests
-			// are still reported above for diagnosis.
+			// are still reported above for diagnosis. 1E: report every
+			// per-segment failure + the unit error to the controller. 1D:
+			// record the failed state in the destination's own journal.
+			for _, e := range res.Errors {
+				done.Events = append(done.Events, "mini: "+e)
+			}
 			done.Error = errString(err)
+			if jerr := s.journalMiniUnit(ctx, req.Mini, "failed", "", res.Rows); jerr != nil {
+				done.Events = append(done.Events, "journal: "+jerr.Error())
+			}
 			return done
 		}
 		// Verify the content (FR-02): the destination compares the SOURCE vs
@@ -1113,7 +1186,15 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		match := res.SrcDigest == res.DstDigest
 		done.Verified = match
 		if req.Mini.Verify && !match {
+			// 1E: the mismatch is the destination's own diagnostic (the
+			// controller's events.jsonl gets it via done.Events). 1D: record
+			// the failed state (no swap; a resume re-copies the unit).
+			done.Events = append(done.Events,
+				fmt.Sprintf("verify_mismatch: src=%s dst=%s", res.SrcDigest, res.DstDigest))
 			done.Error = fmt.Sprintf("verify: digest mismatch (src=%s dst=%s)", res.SrcDigest, res.DstDigest)
+			if jerr := s.journalMiniUnit(ctx, req.Mini, "failed", "", res.Rows); jerr != nil {
+				done.Events = append(done.Events, "journal: "+jerr.Error())
+			}
 			return done
 		}
 		// The destination's own swap/commit decision (runUnit step 9, moved to
@@ -1122,10 +1203,26 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		// the swap (a non-mesh degradation path).
 		if req.Mini.Final != "" {
 			if serr := s.swapMiniFinal(ctx, req.Mini.Schema, req.Mini.Staging, req.Mini.Final, req.Mini.Overwrite); serr != nil {
+				// 1D: a swap failure after a verified copy is still safe (the
+				// staging holds the verified data); record it and let a resume
+				// retry the swap. 1E: the swap error is the destination's
+				// diagnostic.
+				done.Events = append(done.Events, "swap: "+serr.Error())
 				done.Error = serr.Error()
+				if jerr := s.journalMiniUnit(ctx, req.Mini, "failed", res.DstDigest, res.Rows); jerr != nil {
+					done.Events = append(done.Events, "journal: "+jerr.Error())
+				}
 				return done
 			}
 			done.Swapped = true
+			// 1D: the unit is committed — record the terminal state with its
+			// content checksum (the destination's on-the-data-path digest).
+			// 1E: the swap_done event carries the verdict for the controller.
+			done.Events = append(done.Events,
+				fmt.Sprintf("swap_done: table=%s.%s rows=%d verified=%v", req.Mini.Schema, req.Mini.Final, res.Rows, match))
+			if jerr := s.journalMiniUnit(ctx, req.Mini, "swapped", res.DstDigest, res.Rows); jerr != nil {
+				done.Events = append(done.Events, "journal: "+jerr.Error())
+			}
 		}
 		done.Ok = true
 	default:

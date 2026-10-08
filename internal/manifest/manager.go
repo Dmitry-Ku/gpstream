@@ -1204,6 +1204,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// DEST digests matched. A coordinator-downgraded mesh unit returns
 		// both false (the controller then verifies + swaps it as usual).
 		meshSwapped, meshVerified bool
+		meshEvents                []string
 	)
 	// F-12: a small table (below --small-table-threshold) rides the transport
 	// with compression OFF; record the decision in events.jsonl (F-04) so the
@@ -1259,7 +1260,17 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// (one COPY through the destination coordinator, executed by the
 		// supervisor's fallback path) — the rest of the job keeps the mini
 		// path.
-		rows, wire, logical, srcDigest, dstDigest, meshSwapped, meshVerified, err = m.streamTwoAgentMini(ctx, t, u, target, ds, dn, cols, dist, u.Partition, verify)
+		rows, wire, logical, srcDigest, dstDigest, meshSwapped, meshVerified, meshEvents, err = m.streamTwoAgentMini(ctx, t, u, target, ds, dn, cols, dist, u.Partition, verify)
+		// 1E: the destination agent's diagnostics for the unit (swap_done /
+		// verify_mismatch / mini errors / journal errors) go to the
+		// controller's events.jsonl (source=dest-agent) — the architecture
+		// 08.10 rule: the controller's diagnostics come ONLY from the two
+		// agents.
+		for _, ev := range meshEvents {
+			m.events.Log("dest_agent",
+				"table", t.Schema+"."+t.Name,
+				"event", ev)
+		}
 	case m.twoAgent != nil:
 		// Two-agent (ADR-002, P3): the data COPY runs ONLY in the agents over
 		// a real, compressed socket (source agent -> destination agent). The
@@ -1268,6 +1279,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// and keeps the DDL/journal/verify/swap decision. The FR-02 snapshot
 		// is held by the long-lived source agent, not the controller.
 		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
+	}
+	// A MESH unit the destination handled (meshSwapped = the agent performed
+	// the swap; meshVerified = the SOURCE vs DEST digests matched) marks the
+	// unit as mesh: the destination agent is the writer of record for its
+	// gpstream_units row (architecture 08.10), so the controller's own DB
+	// journal writes for the terminal states are skipped (the controller
+	// records only the durable file mirror). A coordinator-downgraded mesh
+	// unit (both false) is journaled by the controller as usual.
+	if meshSwapped || meshVerified {
+		u.Mesh = true
 	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
@@ -1631,7 +1652,7 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 // when they match (or --verify off), performs the atomic swap itself. The
 // manager returns the destination's verdict (swapped, verified) so runUnit
 // skips its own verify/swap for the mesh unit.
-func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, verifyDigest bool) (int64, uint64, uint64, string, string, bool, bool, error) {
+func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, verifyDigest bool) (int64, uint64, uint64, string, string, bool, bool, []string, error) {
 	uc, _ := m.unitCompressors(t)
 	jobID := jobIDFromHash(u.JobID)
 	compStr := m.twoAgentCompressString(uc)
@@ -1654,7 +1675,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			"table", t.Schema+"."+t.Name,
 			"reason", reason)
 		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
-		return rows, wire, logical, srcD, dstD, false, false, err
+		return rows, wire, logical, srcD, dstD, false, false, nil, err
 	}
 
 	// 2. Route decision (the plan's per-table mode, re-checked against the
@@ -1674,7 +1695,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			"table", t.Schema+"."+t.Name,
 			"reason", reason+" — cannot be placed segment-to-segment")
 		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
-		return rows, wire, logical, srcD, dstD, false, false, err
+		return rows, wire, logical, srcD, dstD, false, false, nil, err
 	}
 	// A live destination segment count that no longer matches the plan (a
 	// primary down since planning) breaks slice coverage: degrade this
@@ -1684,7 +1705,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			"table", t.Schema+"."+t.Name,
 			"reason", fmt.Sprintf("live destination segment count %d != planned %d (a primary down?) — slice coverage would break", D, S))
 		rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
-		return rows, wire, logical, srcD, dstD, false, false, err
+		return rows, wire, logical, srcD, dstD, false, false, nil, err
 	}
 
 	// 3. The MiniLaunch: the staging layout (the supervisor builds the
@@ -1735,6 +1756,17 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			Final:     dn,
 			Overwrite: m.cfg.ConflictAction == config.Overwrite || u.Conflict,
 			Verify:    verifyDigest,
+			// The destination agent writes the gpstream_units rows for this
+			// MESH unit (architecture 08.10): it carries the journal key
+			// (the controller's string job id + int64 unit id) + the source
+			// names + the run's snapshot epoch.
+			JournalJobID:  u.JobID,
+			JournalUnitID: u.UnitID,
+			JournalDB:     t.DB,
+			JournalSchema: t.Schema,
+			JournalTable:  t.Name,
+			JournalKind:   "table",
+			Epoch:         m.epoch,
 		},
 		D: D,
 	}
@@ -1751,7 +1783,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 				"table", t.Schema+"."+t.Name,
 				"reason", fmt.Sprintf("distribution policy %q (no hash key) cannot be routed", dist.Kind))
 			rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
-			return rows, wire, logical, srcD, dstD, false, false, err
+			return rows, wire, logical, srcD, dstD, false, false, nil, err
 		}
 		colBy := map[string]int{}
 		for i, c := range cols {
@@ -1765,7 +1797,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 					"table", t.Schema+"."+t.Name,
 					"reason", fmt.Sprintf("dist-key column %q is not in the source table", k))
 				rows, wire, logical, srcD, dstD, err := m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
-				return rows, wire, logical, srcD, dstD, false, false, err
+				return rows, wire, logical, srcD, dstD, false, false, nil, err
 			}
 			pair := fmt.Sprintf("%d:%d", cols[idx].Oid, idx)
 			if i == 0 {

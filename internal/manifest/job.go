@@ -63,7 +63,14 @@ type Unit struct {
 	RowCount  int64  `json:"row_count"`
 	Bytes     int64  `json:"bytes"`
 	Conflict  bool   `json:"conflict,omitempty"` // planner-flagged conflict (FR-10/FR-11)
-	Attempts  int    `json:"attempts"`
+	// Mesh marks a unit that rode the MESH (segment-to-segment) data path.
+	// For a mesh unit the DESTINATION agent is the writer of record for the
+	// gpstream_units DB row (architecture 08.10): it copies, verifies and
+	// swaps the unit, so it records the journal itself. The controller then
+	// writes ONLY the file mirror for it (the durable resume source) and
+	// skips the DB journal (which it no longer owns for mesh units).
+	Mesh     bool `json:"mesh,omitempty"`
+	Attempts int  `json:"attempts"`
 	// Epoch is the snapshot generation (T5, DESIGN §2.2) under which the
 	// unit's data was verified: the run's epoch is stamped when the unit
 	// reaches StateCompleted. A resume re-reads a table whose completed
@@ -353,7 +360,9 @@ func (j *Journal) SetState(u *Unit) error {
 	// `_, _ =`, leaving gpstream_units empty (07.10 e2e). A write error still
 	// does not sink the job, but it is no longer silent: j.note carries it to
 	// the F-04/F-14 event log.
-	if j.q != nil {
+	if j.q != nil && !c.Mesh {
+		// A mesh unit's DB row is the destination agent's (the writer of
+		// record); the controller records only the file mirror for it.
 		// UPDATE args: (job_id, unit_id, state, checksum, row_count,
 		// byte_count, attempts, epoch, index_done, updated).
 		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, u.Updated}
@@ -372,7 +381,11 @@ func (j *Journal) SetState(u *Unit) error {
 			j.noteLine("journal: gpstream_units write failed (mirror remains the resume source): " + err.Error())
 		}
 	}
-	// File mirror (durable): append the single changed record.
+	// File mirror (durable): append the single changed record. A MESH unit's
+	// DB journal row is written by the DESTINATION agent (the writer of
+	// record, architecture 08.10) — the controller records only the mirror
+	// (the durable resume source) and does not touch the destination DB
+	// journal for it.
 	return j.mirrorAppend(&c)
 }
 

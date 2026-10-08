@@ -112,6 +112,9 @@ type CombinedUnitResult struct {
 	// PerSeg is the per-segment row count (content 0..D-1) — the F-15 balance
 	// cross-check.
 	PerSeg []int64
+	// Errors carries EVERY per-segment failure (not just the first) for
+	// diagnostics (1E): a unit with several dead minis reports all of them.
+	Errors []string
 }
 
 // Supervisor is the coordinator-side controller of the D destination-segment
@@ -369,12 +372,14 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 			if first == nil {
 				first = r.err
 			}
+			out.Errors = append(out.Errors, r.err.Error())
 			continue
 		}
 		if !r.resp.Ok {
 			if first == nil {
 				first = fmt.Errorf("mini seg %d failed: %s", r.seg, r.resp.Error)
 			}
+			out.Errors = append(out.Errors, fmt.Sprintf("mini seg %d failed: %s", r.seg, r.resp.Error))
 			continue
 		}
 		rows += r.resp.Rows

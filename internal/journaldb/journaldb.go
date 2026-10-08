@@ -1,0 +1,112 @@
+// Package journaldb is the shared gpstream_units (FR-02 journal) schema and
+// upsert helpers, usable by BOTH the controller (the file-mirror + legacy
+// path) and the destination agent (architecture 08.10: the destination agent
+// writes the journal of the MESH units it copies, verifies and swaps).
+//
+// It imports only transfer/pg (no manifest, no agent) so neither side
+// creates an import cycle. The DDL + upsert are extracted verbatim from
+// manifest.Journal (Init / SetState): GP6 = PostgreSQL 9.4 has no ON
+// CONFLICT, so the upsert is a SELECT-by-PK followed by UPDATE or INSERT.
+package journaldb
+
+import (
+	"context"
+	"time"
+
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+)
+
+// Unit is the journal row the destination agent writes for a unit it owns
+// (the mesh mini path). It mirrors the manifest.Unit fields the
+// gpstream_units schema stores (the controller's Unit carries more: the
+// plan/layout fields are not journaled).
+type Unit struct {
+	JobID    string
+	UnitID   int64
+	DB       string // source DB (the journal keys by source names)
+	Schema   string // source schema
+	Table    string // source table
+	Part     string // partition leaf ("" for a plain table)
+	Kind     string // "table"
+	State    string // "pending"|"copying"|"swapped"|"failed"
+	Checksum string // "<rows>:<hex>" content digest (the destination's, on the data path)
+	RowCount int64
+	Bytes    int64
+	Attempts int
+	Epoch    int64
+}
+
+// Init ensures the gpstream_units table exists (idempotent: CREATE TABLE IF
+// NOT EXISTS + the FR-17 index_done backfill, PG 9.4-safe). Called by the
+// destination agent at start (it owns the mesh-unit journal rows) and by the
+// controller (the legacy path, until Phase 2 removes m.dst).
+func Init(ctx context.Context, q pg.Querier) error {
+	_, err := q.Exec(ctx,
+		`CREATE TABLE IF NOT EXISTS gpstream_units (
+		    job_id      text NOT NULL,
+		    unit_id     bigint NOT NULL,
+		    "db"        text,
+		    "schema"    text,
+		    "table"     text,
+		    "part"      text,
+		    kind        text,
+		    state       text,
+		    checksum    text,
+		    row_count   bigint,
+		    byte_count  bigint,
+		    attempts    int,
+		    epoch       bigint,
+		    index_done  boolean,
+		    updated     timestamptz,
+		    PRIMARY KEY (job_id, unit_id)
+		)`)
+	if err != nil {
+		return err
+	}
+	// FR-17: a pre-existing table (created before the column existed) keeps a
+	// journal without index_done; CREATE TABLE IF NOT EXISTS never alters.
+	// PG 9.4 has no ADD COLUMN IF NOT EXISTS, so the backfill is a guarded DO
+	// block. Non-fatal (a failure surfaces on the next state write).
+	_, _ = q.Exec(ctx,
+		`DO $$ BEGIN
+			ALTER TABLE gpstream_units ADD COLUMN index_done boolean;
+		EXCEPTION WHEN duplicate_column THEN
+			PERFORM 1;
+			END $$`)
+	return nil
+}
+
+// SetState upserts one unit row (the SELECT-by-PK + UPDATE/INSERT pattern;
+// PG 9.4 has no ON CONFLICT). The updated timestamp is set here so the
+// caller does not manage clocks.
+func SetState(ctx context.Context, q pg.Querier, u *Unit) error {
+	now := time.Now()
+	// UPDATE args: (job_id, unit_id, state, checksum, row_count, byte_count,
+	// attempts, epoch, index_done, updated).
+	updArgs := []any{u.JobID, u.UnitID, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, false, now}
+	// INSERT args: 15 columns.
+	insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, false, now}
+	return pgUpsert(ctx, q,
+		`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
+		[]any{u.JobID, u.UnitID},
+		updArgs,
+		insArgs,
+		`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, index_done = $9, updated = $10 WHERE job_id = $1 AND unit_id = $2`,
+		`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, index_done, updated)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`)
+}
+
+// pgUpsert inserts the row or, if a row with the same primary key exists,
+// updates it (PG 9.4 has no ON CONFLICT). The SELECT->write gap is benign:
+// each unit is owned by a single writer (the destination agent serves one
+// mesh unit at a time on the sequential control loop).
+func pgUpsert(ctx context.Context, q pg.Querier, selSQL string, selArgs, updArgs, insArgs []any, updSQL, insSQL string) error {
+	if v, err := pg.Row(ctx, q, selSQL, selArgs...); err != nil {
+		return err
+	} else if v != nil {
+		_, err := q.Exec(ctx, updSQL, updArgs...)
+		return err
+	}
+	_, err := q.Exec(ctx, insSQL, insArgs...)
+	return err
+}
