@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -391,7 +392,8 @@ type MiniMapResp struct {
 type DDReq struct {
 	Op    string `json:"op"` // "ddl"
 	ReqID uint64 `json:"req_id"`
-	// Action: exists | create-table | drop-staging | swap | truncate.
+	// Action: exists | create-table | drop-staging | swap | truncate |
+	// create-sequence | set-sequence-value | add-constraints | balance.
 	Action string `json:"action"`
 	// Schema is the destination schema (the object's schema).
 	Schema string `json:"schema,omitempty"`
@@ -408,6 +410,20 @@ type DDReq struct {
 	Cols []pg.Column      `json:"cols,omitempty"`
 	Dist pg.Distribution  `json:"dist,omitempty"`
 	Part pg.PartitionSpec `json:"part,omitempty"`
+	// 2B-3 (sequences / constraints / balance):
+	// Sequence is the schema-qualified sequence name (create-sequence) or
+	// the schema for set-sequence-value (with Seq).
+	Sequence string `json:"sequence,omitempty"`
+	// Seq is the sequence base name (set-sequence-value; Sequence carries
+	// its schema).
+	Seq string `json:"seq,omitempty"`
+	// LastValue is the set-sequence-value target (setval).
+	LastValue int64 `json:"last_value,omitempty"`
+	// Threshold is the balance action's warning gate (F-15).
+	Threshold float64 `json:"threshold,omitempty"`
+	// Constraints are the add-constraints action's definitions (already
+	// rewritten to the destination names by the controller).
+	Constraints []pg.ConstraintDef `json:"constraints,omitempty"`
 }
 
 // DDResp is the destination agent's report for a DDReq.
@@ -416,8 +432,11 @@ type DDResp struct {
 	ReqID uint64 `json:"req_id"`
 	Ok    bool   `json:"ok"`
 	// Exists is the exists action's answer (does the final table exist).
-	Exists bool   `json:"exists,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Exists bool `json:"exists,omitempty"`
+	// Balance is the balance action's answer (the destination table's
+	// per-segment fill; Segments=0 when not measurable).
+	Balance dest.Balance `json:"balance,omitempty"`
+	Error   string       `json:"error,omitempty"`
 }
 
 // DDL delegates one destination-DDL operation to the destination agent (2B-2).

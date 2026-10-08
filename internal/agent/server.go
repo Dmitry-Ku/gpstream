@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -337,6 +338,13 @@ func (s *SourceServer) serveControl(l net.Listener) {
 					return
 				}
 				_ = s.sendResp(conn, s.handlePlan(req))
+			case "catalog":
+				var req CatalogReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = s.sendResp(conn, CatalogResp{ReqID: probe.ReqID, Error: uerr.Error()})
+					return
+				}
+				_ = s.sendResp(conn, s.handleCatalog(req))
 			default:
 				_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 			}
@@ -600,6 +608,51 @@ func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, 
 // handleChecksum re-derives the content checksum of a table on the pinned
 // snapshot connection (the same FR-02 snapshot the data COPY used) — the
 // controller's --verify path compares it against the destination.
+// handleCatalog (2B-3, architecture 08.10) runs one delegated source-catalog
+// read on the source agent's LOCAL pool. The controller holds no direct
+// source connection for the per-unit catalog ops (sequence discovery,
+// sequence last_value, constraint definitions); the read runs on the catalog
+// querier (the pool, not the pinned FR-02 snapshot, so a catalog fault cannot
+// abort the snapshot transaction — the same convention as the Columns /
+// Distribution reads).
+func (s *SourceServer) handleCatalog(req CatalogReq) CatalogResp {
+	resp := CatalogResp{ReqID: req.ReqID, Ok: true}
+	a := source.New(s.catalogQuerier())
+	ctx := context.Background()
+	switch req.Action {
+	case "sequences":
+		seqs, err := a.Sequences(ctx, req.Schema, req.Table)
+		if err != nil {
+			resp = CatalogResp{ReqID: req.ReqID, Error: err.Error()}
+			break
+		}
+		resp.Sequences = seqs
+	case "sequence-last-value":
+		schema, base := req.Schema, req.Seq
+		if i := strings.LastIndex(req.Seq, "."); i >= 0 {
+			schema, base = req.Seq[:i], req.Seq[i+1:]
+		} else if req.Schema != "" {
+			schema = req.Schema
+		}
+		last, err := a.SequenceLastValue(ctx, schema, base)
+		if err != nil {
+			resp = CatalogResp{ReqID: req.ReqID, Error: err.Error()}
+			break
+		}
+		resp.LastValue = last
+	case "constraints":
+		defs, err := a.Constraints(ctx, req.Schema, req.Table)
+		if err != nil {
+			resp = CatalogResp{ReqID: req.ReqID, Error: err.Error()}
+			break
+		}
+		resp.Constraints = defs
+	default:
+		resp = CatalogResp{ReqID: req.ReqID, Error: "catalog: unknown action " + req.Action}
+	}
+	return resp
+}
+
 func (s *SourceServer) handleChecksum(req ChecksumReq) ChecksumResp {
 	ctx := context.Background()
 	sum, err := source.New(s.copyQuerier()).Checksum(ctx, req.Schema, req.Table)

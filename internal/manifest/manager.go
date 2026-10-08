@@ -290,6 +290,95 @@ func (m *Manager) dstSwap(ctx context.Context, schema, table, staging string, ov
 	return m.dst.Swap(ctx, schema, table, staging, overwrite)
 }
 
+// --- 2B-3 (architecture 08.10): per-unit catalog ops delegated to the agents. ---
+// The source catalog reads (sequence discovery, sequence last_value,
+// constraint definitions) run on the SOURCE agent (its local source pool —
+// the catalog-querier convention, not the pinned snapshot); the destination
+// writes/reads (create/setval sequence, add constraints, segment balance)
+// run on the DESTINATION agent. The controller keeps only the pure
+// rename-rewrite logic (PK names, FK refs) — no DB. Single-process fallback
+// (dead in production) uses the controller's own pools; 2B-7 removes it.
+
+// srcSequences lists the table's serial sequences (F-11 metadata phase).
+func (m *Manager) srcSequences(ctx context.Context, schema, table string) ([]source.SequenceDef, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequences", Schema: schema, Table: table})
+		if err != nil {
+			return nil, err
+		}
+		return resp.Sequences, nil
+	}
+	return source.New(m.srcQ).Sequences(ctx, schema, table)
+}
+
+// srcSequenceLastValue reads a sequence's last_value (F-11 post-load sync).
+func (m *Manager) srcSequenceLastValue(ctx context.Context, seq string) (int64, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequence-last-value", Seq: seq})
+		if err != nil {
+			return 0, err
+		}
+		return resp.LastValue, nil
+	}
+	schema, base := seq, seq
+	if i := strings.LastIndex(seq, "."); i >= 0 {
+		schema, base = seq[:i], seq[i+1:]
+	}
+	return source.New(m.srcQ).SequenceLastValue(ctx, schema, base)
+}
+
+// srcConstraints reads the table's constraint definitions (F-11).
+func (m *Manager) srcConstraints(ctx context.Context, schema, table string) ([]pg.ConstraintDef, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "constraints", Schema: schema, Table: table})
+		if err != nil {
+			return nil, err
+		}
+		return resp.Constraints, nil
+	}
+	return source.New(m.srcQ).Constraints(ctx, schema, table)
+}
+
+// dstCreateSequence recreates a source sequence on the destination (F-11).
+func (m *Manager) dstCreateSequence(ctx context.Context, name string) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-sequence", Sequence: name})
+		return err
+	}
+	return m.dst.CreateSequence(ctx, name)
+}
+
+// dstSetSequenceValue resynchronises a destination sequence (F-11).
+func (m *Manager) dstSetSequenceValue(ctx context.Context, schema, seq string, last int64) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "set-sequence-value", Sequence: schema, Seq: seq, LastValue: last})
+		return err
+	}
+	return m.dst.SetSequenceValue(ctx, schema, seq, last)
+}
+
+// dstAddConstraints applies the (already destination-rewritten) constraint
+// definitions on the destination (F-11).
+func (m *Manager) dstAddConstraints(ctx context.Context, schema, table string, defs []pg.ConstraintDef) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "add-constraints", Schema: schema, Table: table, Constraints: defs})
+		return err
+	}
+	return m.dst.Constraints(ctx, schema, table, defs)
+}
+
+// dstBalance measures the destination table's per-segment fill (F-15).
+func (m *Manager) dstBalance(ctx context.Context, schema, table string) (dest.Balance, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "balance", Schema: schema, Table: table, Threshold: dest.DefaultBalanceThreshold})
+		if err != nil {
+			return dest.Balance{}, err
+		}
+		return resp.Balance, nil
+	}
+	return m.dst.BalanceTable(ctx, schema, table, dest.DefaultBalanceThreshold), nil
+}
+
 // Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
 // the two agents (Start), asks the source agent to run plan.Build (its LOCAL
 // source pool + a destination querier proxied over the source->dest peer
@@ -637,8 +726,6 @@ func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
 	for _, u := range units {
 		rm[u.Schema+"."+u.Table] = u.DstSchema + "." + u.DstName
 	}
-	srcAgent := source.New(m.srcQ)
-
 	// Read every swapped unit's constraints up front (one catalog pass per
 	// unit), so the apply phase below can run in two ordered passes.
 	type unitDefs struct {
@@ -650,7 +737,7 @@ func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
 		if u.State != StateSwapped {
 			continue // in-place paths kept the existing table (constraints intact)
 		}
-		defs, err := srcAgent.Constraints(ctx, u.Schema, u.Table)
+		defs, err := m.srcConstraints(ctx, u.Schema, u.Table)
 		if err != nil {
 			// A catalog fault must not sink the run: the data is in place and
 			// verified; log and continue (F-04), a resume retries.
@@ -709,7 +796,7 @@ func (m *Manager) restoreConstraints(ctx context.Context, units []*Unit) error {
 			if len(sel) == 0 {
 				continue
 			}
-			if err := m.dst.Constraints(ctx, u.DstSchema, u.DstName, sel); err != nil {
+			if err := m.dstAddConstraints(ctx, u.DstSchema, u.DstName, sel); err != nil {
 				// Non-fatal: the data is in place; log the cause (F-04) and keep
 				// going with the other tables. A resume retries the whole pass;
 				// the idempotency guard skips what already applied.
@@ -2142,7 +2229,14 @@ func (m *Manager) measureBalance(ctx context.Context, u *Unit) {
 	if dn == "" {
 		dn = u.Table
 	}
-	b := m.dst.BalanceTable(ctx, ds, dn, dest.DefaultBalanceThreshold)
+	b, berr := m.dstBalance(ctx, ds, dn)
+	if berr != nil {
+		// Non-fatal (F-15 is diagnostic): a balance read fault is logged
+		// and the unit is not affected (the data is in place).
+		m.events.Log("segment_balance_failed",
+			"table", ds+"."+dn, "error", berr.Error())
+		return
+	}
 	if b.Segments == 0 {
 		return // not Greenplum, or the table is empty / unmeasurable
 	}
@@ -2177,8 +2271,7 @@ func (m *Manager) createSequences(ctx context.Context, u *Unit) {
 	if dn == "" {
 		dn = name
 	}
-	src := source.New(m.srcQ)
-	seqs, err := src.Sequences(ctx, schema, name)
+	seqs, err := m.srcSequences(ctx, schema, name)
 	if err != nil {
 		m.events.Log("sequence_sync_failed",
 			"table", ds+"."+dn,
@@ -2187,7 +2280,7 @@ func (m *Manager) createSequences(ctx context.Context, u *Unit) {
 		return
 	}
 	for _, s := range seqs {
-		if err := m.dst.CreateSequence(ctx, s.Name); err != nil {
+		if err := m.dstCreateSequence(ctx, s.Name); err != nil {
 			m.events.Log("sequence_sync_failed",
 				"table", ds+"."+dn,
 				"sequence", s.Name,
@@ -2218,8 +2311,7 @@ func (m *Manager) syncSequenceValues(ctx context.Context, u *Unit) {
 	if dn == "" {
 		dn = name
 	}
-	src := source.New(m.srcQ)
-	seqs, err := src.Sequences(ctx, schema, name)
+	seqs, err := m.srcSequences(ctx, schema, name)
 	if err != nil {
 		// createSequences already logged the identical catalog-read fault
 		// (step 3a); the values cannot be resynced, but the data is in
@@ -2233,7 +2325,7 @@ func (m *Manager) syncSequenceValues(ctx context.Context, u *Unit) {
 			srcSeq = base[:i]
 			base = base[i+1:]
 		}
-		last, err := src.SequenceLastValue(ctx, srcSeq, base)
+		last, err := m.srcSequenceLastValue(ctx, s.Name)
 		if err != nil {
 			m.events.Log("sequence_sync_failed",
 				"table", ds+"."+dn,
@@ -2243,7 +2335,7 @@ func (m *Manager) syncSequenceValues(ctx context.Context, u *Unit) {
 			continue
 		}
 		if last > 0 {
-			if err := m.dst.SetSequenceValue(ctx, srcSeq, base, last); err != nil {
+			if err := m.dstSetSequenceValue(ctx, srcSeq, base, last); err != nil {
 				m.events.Log("sequence_sync_failed",
 					"table", ds+"."+dn,
 					"sequence", s.Name,

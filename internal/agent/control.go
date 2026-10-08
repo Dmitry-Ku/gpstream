@@ -14,6 +14,8 @@ import (
 
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"github.com/gpstream/gpstream/internal/transfer/source"
 )
 
 // This file is the controller<->agent CONTROL protocol (ADR-002 plan, P3).
@@ -297,6 +299,44 @@ type ChecksumResp struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// CatalogReq (2B-3, architecture 08.10) is the controller's delegated
+// SOURCE-catalog read: the controller holds no direct source connection for
+// the per-unit catalog ops, so the sequence discovery, the sequence
+// last_value, and the constraint definitions are read by the source agent
+// (its local source pool — the same convention as the Columns/Distribution
+// reads, on the pool, not the pinned snapshot). Action selects the read.
+type CatalogReq struct {
+	Op string `json:"op"` // "catalog"
+	// ReqID (P1d) is the controller's per-request correlation id, echoed in
+	// CatalogResp (concurrent ops on one control connection).
+	ReqID uint64 `json:"req_id,omitempty"`
+	// Action: sequences | sequence-last-value | constraints.
+	Action string `json:"action"`
+	Schema string `json:"schema"`
+	Table  string `json:"table"`
+	// Seq is the sequence name (sequence-last-value action), as
+	// schema.seq or a bare name (bare = public.seq).
+	Seq string `json:"seq,omitempty"`
+}
+
+// CatalogResp is the source agent's report for a CatalogReq. The fields are
+// the subset each action fills.
+type CatalogResp struct {
+	Ok bool `json:"ok"`
+	// ReqID (P1d) echoes CatalogReq.ReqID (concurrent-op correlation).
+	ReqID uint64 `json:"req_id,omitempty"`
+	// Sequences is the sequences action's answer (the table's serial
+	// sequences, schema-qualified).
+	Sequences []source.SequenceDef `json:"sequences,omitempty"`
+	// LastValue is the sequence-last-value action's answer (0 when the
+	// sequence has no last_value yet).
+	LastValue int64 `json:"last_value,omitempty"`
+	// Constraints is the constraints action's answer (the table's PK/FK /
+	// user CHECK definitions).
+	Constraints []pg.ConstraintDef `json:"constraints,omitempty"`
+	Error       string             `json:"error,omitempty"`
+}
+
 // SendLine writes one control message (JSON + newline) to w.
 func SendLine(w io.Writer, msg any) error {
 	b, err := json.Marshal(msg)
@@ -450,6 +490,8 @@ func (c *ControlClient) call(req, resp any) error {
 		r.ReqID = id
 	case *PlanReq:
 		r.ReqID = id
+	case *CatalogReq:
+		r.ReqID = id
 	}
 	ch := make(chan []byte, 1)
 	c.pendingMu.Lock()
@@ -578,6 +620,18 @@ func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
 // destination connection for planning.
 func (c *ControlClient) Plan(req PlanReq) (PlanResp, error) {
 	var resp PlanResp
+	if err := c.call(&req, &resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+// Catalog (2B-3, architecture 08.10) reads one source-catalog object on the
+// source agent (the controller holds no direct source connection for the
+// per-unit catalog ops). It blocks until the agent answers.
+func (c *ControlClient) Catalog(req CatalogReq) (CatalogResp, error) {
+	req.Op = "catalog"
+	var resp CatalogResp
 	if err := c.call(&req, &resp); err != nil {
 		return resp, err
 	}

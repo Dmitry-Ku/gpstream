@@ -1285,6 +1285,31 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}
+	case "create-sequence":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).CreateSequence(context.Background(), dd.Sequence)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "set-sequence-value":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).SetSequenceValue(context.Background(), dd.Sequence, dd.Seq, dd.LastValue)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "add-constraints":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).Constraints(context.Background(), dd.Schema, dd.Table, dd.Constraints)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "balance":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			resp.Balance = dest.New(q).BalanceTable(context.Background(), dd.Schema, dd.Table, dd.Threshold)
+			return nil
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
 	default:
 		resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: "ddl: unknown action " + dd.Action}
 	}

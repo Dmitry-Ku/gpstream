@@ -117,6 +117,13 @@ type TwoAgentRunner interface {
 	// reports back. req carries the action + the object layout; the response
 	// carries the exists-answer (exists action) or an error.
 	DDL(ctx context.Context, req agent.DDReq) (agent.DDResp, error)
+	// Catalog (2B-3, architecture 08.10) reads one source-catalog object on
+	// the SOURCE agent (sequence discovery, sequence last_value, constraint
+	// definitions) — the controller holds no direct source connection for
+	// the per-unit catalog ops. The runner issues the "catalog" control op
+	// to the long-lived source agent, which reads it on its LOCAL source
+	// pool (the pool, not the pinned snapshot) and reports back.
+	Catalog(ctx context.Context, req agent.CatalogReq) (agent.CatalogResp, error)
 	// PeerInfo (1F) is the mesh version-exchange wiring: the destination
 	// agent's peer listener address (the source agent dials it once before
 	// the first mesh unit) + the "user@" prefix the source SSHes to its
@@ -1147,6 +1154,20 @@ func (r *processTwoAgentRunner) DDL(ctx context.Context, req agent.DDReq) (agent
 	return resp, nil
 }
 
+// Catalog (2B-3, architecture 08.10) reads one source-catalog object on the
+// long-lived source agent over its control socket (the controller never
+// opens a direct source connection for the per-unit catalog ops).
+func (r *processTwoAgentRunner) Catalog(ctx context.Context, req agent.CatalogReq) (agent.CatalogResp, error) {
+	resp, err := r.ctrl.Catalog(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %w", req.Action, req.Schema, req.Table, err)
+	}
+	if !resp.Ok && resp.Error != "" {
+		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
+	}
+	return resp, nil
+}
+
 // Release ends the run (commits the source snapshot) and stops the agents.
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
@@ -1785,6 +1806,23 @@ func (r *InProcTwoAgentRunner) DDL(ctx context.Context, req agent.DDReq) (agent.
 	}
 	if !resp.Ok && resp.Error != "" {
 		return resp, fmt.Errorf("two-agent: dest ddl %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
+	}
+	return resp, nil
+}
+
+// Catalog (2B-3, architecture 08.10) reads one source-catalog object on the
+// in-process source agent (mirrors the process runner; the in-proc
+// SourceServer reads it on its LOCAL source pool).
+func (r *InProcTwoAgentRunner) Catalog(ctx context.Context, req agent.CatalogReq) (agent.CatalogResp, error) {
+	if r.srv == nil {
+		return agent.CatalogResp{}, fmt.Errorf("two-agent: source agent not started (catalog %s)", req.Action)
+	}
+	resp, err := r.ctrl.Catalog(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %w", req.Action, req.Schema, req.Table, err)
+	}
+	if !resp.Ok && resp.Error != "" {
+		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
 	}
 	return resp, nil
 }

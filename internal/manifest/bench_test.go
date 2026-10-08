@@ -58,6 +58,9 @@ func (f *fakeBenchRunner) PeerInfo() (string, string) { return "", "" }
 func (f *fakeBenchRunner) DDL(context.Context, agent.DDReq) (agent.DDResp, error) {
 	return agent.DDResp{}, fmt.Errorf("fakeBenchRunner: ddl not supported")
 }
+func (f *fakeBenchRunner) Catalog(context.Context, agent.CatalogReq) (agent.CatalogResp, error) {
+	return agent.CatalogResp{}, fmt.Errorf("fakeBenchRunner: catalog not supported")
+}
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")
 }
