@@ -795,6 +795,24 @@ func (s *DestServer) serveControl(l net.Listener) {
 				s.failUnitServe(us, req.UnitID, fmt.Errorf("unit cancelled by the controller (source stream failed)"))
 			}
 			_ = s.sendLine(conn, DestAck{Op: "ack", Ok: true, ReqID: req.ReqID})
+		case "mini-map":
+			// P3 production-dispatch: the controller fetches the supervisor's
+			// D-entry address book (the mini-agent data endpoints, seg order)
+			// to fold into the segreceivers' ON SEGMENT ProgramCommand.
+			if s.supervisor == nil {
+				_ = s.sendLine(conn, MiniMapResp{Op: "mini-map-resp", ReqID: req.ReqID, Ok: false, Error: "not in supervisor mode"})
+				continue
+			}
+			ready, aerr := s.MiniMapReady()
+			if !ready {
+				ee := "minis not ready (MiniMap incomplete)"
+				if aerr != nil {
+					ee = "minis not ready (accept: " + aerr.Error() + ")"
+				}
+				_ = s.sendLine(conn, MiniMapResp{Op: "mini-map-resp", ReqID: req.ReqID, Ok: false, Error: ee})
+				continue
+			}
+			_ = s.sendLine(conn, MiniMapResp{Op: "mini-map-resp", ReqID: req.ReqID, Ok: true, Addrs: s.MiniDataAddrs()})
 		case "release":
 			s.serveWG.Wait() // in-flight ops must finish before the agent exits
 			// P3 production-dispatch: stop the supervisor (mini-done to each

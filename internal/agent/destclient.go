@@ -45,6 +45,9 @@ type DestControlClient struct {
 	ackCh     map[uint64]chan DestAck
 	doneCh    map[uint64]chan DestUnitDone
 	releaseCh map[uint64]chan DestReleased
+	// miniMapCh (P3 production-dispatch): the mini-map op's waiters (the
+	// supervisor's D-entry address book, fetched after the MiniMap is ready).
+	miniMapCh map[uint64]chan MiniMapResp
 	// lateDone: a unit-done can arrive BEFORE its waiter registers (a fast
 	// serveOne — e.g. an unknown kind — finishes before the caller gets to
 	// WaitUnitDone). The reader buffers the raw line; WaitUnitDone picks it
@@ -79,6 +82,7 @@ func DialDestControlTLS(ctx context.Context, addr string, t ControlTLS) (*DestCo
 		ackCh:     make(map[uint64]chan DestAck),
 		doneCh:    make(map[uint64]chan DestUnitDone),
 		releaseCh: make(map[uint64]chan DestReleased),
+		miniMapCh: make(map[uint64]chan MiniMapResp),
 		lateDone:  make(map[uint64][]byte),
 		dead:      make(chan struct{}),
 	}
@@ -123,6 +127,13 @@ func (c *DestControlClient) markDead() {
 		default:
 		}
 		delete(c.releaseCh, id)
+	}
+	for id, ch := range c.miniMapCh {
+		select {
+		case ch <- MiniMapResp{Op: "mini-map-resp", Ok: false, Error: "dest control connection closed"}:
+		default:
+		}
+		delete(c.miniMapCh, id)
 	}
 }
 
@@ -174,6 +185,15 @@ func (c *DestControlClient) readLoop() {
 						delete(c.releaseCh, env.ReqID)
 						c.pendMu.Unlock()
 						ch <- rl
+						continue
+					}
+				case "mini-map-resp":
+					if ch, ok := c.miniMapCh[env.ReqID]; ok {
+						var mm MiniMapResp
+						_ = json.Unmarshal(line, &mm)
+						delete(c.miniMapCh, env.ReqID)
+						c.pendMu.Unlock()
+						ch <- mm
 						continue
 					}
 				}
@@ -324,6 +344,59 @@ func (c *DestControlClient) Release() (DestReleased, error) {
 	case <-c.dead:
 		// Best effort: the agent may have closed the control conn on exit.
 		return DestReleased{Op: "released"}, nil
+	}
+}
+
+// MiniMapReq is the controller's request for the supervisor's D-entry
+// address book (P3 production-dispatch).
+type MiniMapReq struct {
+	Op    string `json:"op"` // "mini-map"
+	ReqID uint64 `json:"req_id"`
+}
+
+// MiniMapResp is the supervisor's D-entry address book (the mini-agent
+// data endpoints, seg order, comma-joined) — the value the controller folds
+// into the segreceivers' ON SEGMENT ProgramCommand (P3 production-dispatch).
+type MiniMapResp struct {
+	Op    string `json:"op"` // "mini-map-resp"
+	ReqID uint64 `json:"req_id"`
+	Ok    bool   `json:"ok"`
+	// Addrs is the comma-joined D-entry address book (seg order).
+	Addrs string `json:"addrs,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// MiniMap fetches the supervisor's D-entry address book (the mini-agent
+// data endpoints, seg order, comma-joined). It blocks until the supervisor
+// answers; ok is false (with Error) when the agent is not in supervisor mode
+// or the MiniMap is not ready (the minis have not all connected yet).
+func (c *DestControlClient) MiniMap() (MiniMapResp, error) {
+	id := c.nextID.Add(1)
+	ch := make(chan MiniMapResp, 1)
+	c.pendMu.Lock()
+	c.miniMapCh[id] = ch
+	c.pendMu.Unlock()
+	defer func() {
+		c.pendMu.Lock()
+		if c.miniMapCh[id] == ch {
+			delete(c.miniMapCh, id)
+		}
+		c.pendMu.Unlock()
+	}()
+	c.writeMu.Lock()
+	werr := SendLine(c.w, MiniMapReq{Op: "mini-map", ReqID: id})
+	if werr == nil {
+		werr = c.w.Flush()
+	}
+	c.writeMu.Unlock()
+	if werr != nil {
+		return MiniMapResp{}, werr
+	}
+	select {
+	case mm := <-ch:
+		return mm, nil
+	case <-c.dead:
+		return MiniMapResp{}, errControlDead
 	}
 }
 

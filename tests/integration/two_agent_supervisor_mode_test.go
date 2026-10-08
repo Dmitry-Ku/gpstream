@@ -194,6 +194,21 @@ func TestDestServerSupervisorMode(t *testing.T) {
 	}
 	t.Logf("address book (D-entry): %s", addrs)
 
+	// The address book is ALSO fetchable over the real control protocol
+	// (the mini-map op) — this is what the controller uses to fold it into
+	// the segreceivers' ON SEGMENT ProgramCommand.
+	mm, err := client.MiniMap()
+	if err != nil {
+		t.Fatalf("mini-map op: %v", err)
+	}
+	if !mm.Ok {
+		t.Fatalf("mini-map op not ok: %s", mm.Error)
+	}
+	if mm.Addrs != addrs {
+		t.Fatalf("mini-map op addrs %q != MiniDataAddrs %q", mm.Addrs, addrs)
+	}
+	t.Logf("mini-map op: %d entries (%s)", len(strings.Split(mm.Addrs, ",")), mm.Addrs)
+
 	// 3. kind="mini" serve over the REAL control protocol: BeginServe ->
 	// (fake segreceivers stream the slices) -> WaitUnitDone.
 	ack, err := client.BeginServe(agent.DestServeReq{
