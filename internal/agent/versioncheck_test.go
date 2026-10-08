@@ -133,11 +133,13 @@ func TestPeerExchangeMismatch(t *testing.T) {
 	}
 }
 
-// TestHandlePeerVersion drives the DESTINATION side of the exchange (the real
-// process path): the supervisor's mini-map is ready with a matching mini
-// version -> PeerAck{Ok}; a source or mini version mismatch -> a hard
-// PeerAck with the discrepancy list (no data flows).
-func TestHandlePeerVersion(t *testing.T) {
+// TestPeerVersionVerdict drives the DESTINATION side of the version exchange
+// (the real process path): the supervisor's mini-map is ready with a matching
+// mini version -> PeerAck{Ok}; a source or mini version mismatch -> a hard
+// PeerAck with the discrepancy list (no data flows). It drives the persistent
+// peer session (servePeerSession): the first message is the SourceVersion, the
+// ack is the verdict; a mismatch returns before the dst-query loop.
+func TestPeerVersionVerdict(t *testing.T) {
 	const mismatch = "9.9 (old)"
 	cases := []struct {
 		name    string
@@ -177,7 +179,7 @@ func TestHandlePeerVersion(t *testing.T) {
 					return
 				}
 				defer conn.Close()
-				s.handlePeerVersion(conn)
+				s.servePeerSession(conn)
 			}()
 			client, derr := net.Dial("tcp", l.Addr().String())
 			if derr != nil {

@@ -31,6 +31,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -585,50 +586,175 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 // ready before the cross-check (the mini versions are only known once all D
 // hellos have arrived) so a source that arrives early is not judged against
 // an empty mini set.
+// acceptPeer (Phase 2) serves the source agent's PERSISTENT source->dest
+// channel: the source dials it ONCE at Start (after the controller hands it
+// the peer address), sends its SourceVersion (the 1F cross-check) as the first
+// message, and then multiplexes read-only destination-catalog queries
+// (dst-query) over the same connection for the run's lifetime (2A plan, 2E
+// resume, 2C dry-run). The controller opens no direct destination connection.
 func (s *DestServer) acceptPeer(l net.Listener) {
-	conn, err := l.Accept()
-	if err != nil {
-		return // listener closed (run end / stop)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return // listener closed (run end / stop)
+		}
+		go s.servePeerSession(conn)
 	}
-	defer conn.Close()
-	s.handlePeerVersion(conn)
 }
 
-// handlePeerVersion is the actual cross-check (run on the single peer
-// connection). It is separate from acceptPeer so a test can drive it.
-func (s *DestServer) handlePeerVersion(conn net.Conn) {
-	// Wait for the MiniMap (the mini versions) before cross-checking.
-	deadline := time.Now().Add(s.opts.AcceptTimeout)
-	for {
-		s.miniMapMu.Lock()
-		ready, aerr := s.miniMapReady, s.miniAcceptErr
-		s.miniMapMu.Unlock()
-		if ready || aerr != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: false, Error: "version check: mini-map not ready in time"})
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+// servePeerSession is one source->dest peer channel. First message: the
+// source's SourceVersion (the 1F cross-check); then a multiplexed dst-query
+// loop (P1d-style ReqID correlation: one read loop, one goroutine per query,
+// responses serialized on the connection).
+func (s *DestServer) servePeerSession(conn net.Conn) {
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	w := bufio.NewWriter(conn)
+	var writeMu sync.Mutex
+	// First message: the source's version report (1F).
 	var sv SourceVersion
-	if rerr := recvLine(bufio.NewReader(conn), &sv); rerr != nil {
+	if rerr := recvLine(r, &sv); rerr != nil {
 		return
+	}
+	ack := s.peerVersionVerdict(sv)
+	if werr := sendPeerAckLocked(w, &writeMu, ack); werr != nil {
+		return
+	}
+	if !ack.Ok {
+		return // a mixed-version deployment: the source aborts (no data flows)
+	}
+	// The multiplexed read-only query loop (2A/2E/2C).
+	for {
+		var req QueryReq
+		if rerr := recvLine(r, &req); rerr != nil {
+			return // source closed the channel (run end)
+		}
+		if req.Op != "dst-query" {
+			continue
+		}
+		go s.handlePeerQuery(w, &writeMu, req)
+	}
+}
+
+// peerVersionVerdict runs the 1F cross-check: wait for the MiniMap (the mini
+// versions are only known once all D hellos arrive, supervisor mode) then
+// CheckVersions (own + minis + source + segreceivers must be equal).
+func (s *DestServer) peerVersionVerdict(sv SourceVersion) PeerAck {
+	if s.supervisor != nil {
+		deadline := time.Now().Add(s.opts.AcceptTimeout)
+		for {
+			s.miniMapMu.Lock()
+			ready, aerr := s.miniMapReady, s.miniAcceptErr
+			s.miniMapMu.Unlock()
+			if ready || aerr != nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				return PeerAck{Op: "peer-ack", Ok: false, Error: "version check: mini-map not ready in time"}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	minis := map[int]string{}
 	if s.supervisor != nil {
 		minis = s.supervisor.MiniVersions()
 	}
 	if cerr := CheckVersions(version.String(), sv, minis); cerr != nil {
-		_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: false, Error: cerr.Error()})
-		return
+		return PeerAck{Op: "peer-ack", Ok: false, Error: cerr.Error()}
 	}
-	_ = sendPeerAck(conn, PeerAck{Op: "peer-ack", Ok: true})
+	return PeerAck{Op: "peer-ack", Ok: true}
 }
 
-func sendPeerAck(conn net.Conn, ack PeerAck) error {
-	return SendLine(conn, ack)
+// handlePeerQuery runs ONE proxied destination query on the agent's LOCAL
+// coordinator pool (the architecture 08.10 rule: the destination DB is only
+// touched by the destination agent, and only locally). Only read-only
+// statements are accepted (the source proxies destination-CATALOG reads for
+// plan/resume/dry-run — never a write).
+func (s *DestServer) handlePeerQuery(w *bufio.Writer, writeMu *sync.Mutex, req QueryReq) {
+	resp := QueryResp{Op: "dst-query-resp", ReqID: req.ReqID}
+	send := func() { _ = sendQueryRespLocked(w, writeMu, resp) }
+	if s.dq == nil {
+		resp.Error = "dst-query: no destination pool (the peer channel needs a serve-mode pool)"
+		send()
+		return
+	}
+	if !isReadOnlySQL(req.SQL) {
+		resp.Error = "dst-query: only read-only (SELECT) statements are proxied"
+		send()
+		return
+	}
+	args := make([]any, 0, len(req.Args))
+	for _, a := range req.Args {
+		var v any
+		if uerr := json.Unmarshal(a, &v); uerr != nil {
+			resp.Error = "dst-query: bad arg: " + uerr.Error()
+			send()
+			return
+		}
+		args = append(args, v)
+	}
+	qctx, qcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer qcancel()
+	rows, qerr := s.dq.Query(qctx, req.SQL, args...)
+	if qerr != nil {
+		resp.Error = qerr.Error()
+		send()
+		return
+	}
+	out := make([][]queryCell, 0, len(rows))
+	for _, row := range rows {
+		cells := make([]queryCell, 0, len(row))
+		for _, c := range row {
+			cells = append(cells, encodeQueryCell(c))
+		}
+		out = append(out, cells)
+	}
+	resp.OK = true
+	resp.Rows = out
+	send()
+}
+
+// isReadOnlySQL accepts only read-only statements (the proxy must never run a
+// write on the destination). The destination-catalog reads are all SELECTs
+// (some WITH-prefixed); anything else is refused.
+func isReadOnlySQL(sql string) bool {
+	t := strings.TrimSpace(sql)
+	u := strings.ToUpper(t)
+	for u != "" {
+		if strings.HasPrefix(u, "SELECT") || strings.HasPrefix(u, "WITH") {
+			return true
+		}
+		// A leading comment block (/* ... */) is skipped.
+		if strings.HasPrefix(u, "/*") {
+			if i := strings.Index(u, "*/"); i >= 0 {
+				u = strings.TrimLeft(strings.ToUpper(t[i+2:]), " \t\n")
+				continue
+			}
+			return false
+		}
+		return false
+	}
+	return false
+}
+
+// sendPeerAckLocked / sendQueryRespLocked serialize response lines on the
+// peer connection (a response line must never interleave with another).
+func sendPeerAckLocked(w *bufio.Writer, mu *sync.Mutex, ack PeerAck) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if err := SendLine(w, ack); err != nil {
+		return err
+	}
+	return w.Flush()
+}
+
+func sendQueryRespLocked(w *bufio.Writer, mu *sync.Mutex, resp QueryResp) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if err := SendLine(w, resp); err != nil {
+		return err
+	}
+	return w.Flush()
 }
 
 // bindListener binds addr, honoring the --port-range (o.PortAlloc) when
