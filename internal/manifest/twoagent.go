@@ -67,6 +67,22 @@ type TwoAgentRunner interface {
 	// segment and performs D utility-mode per-segment COPYs. It returns the
 	// authoritative (destination) row count + the wire + logical volume.
 	StreamRouted(ctx context.Context, req unitRoutedRequest) (rows int64, wire, logical uint64, err error)
+	// StreamMini (P3 production-dispatch, mesh) drives one unit through the
+	// MESH mini path: the source agent triggers the ON SEGMENT dispatch with
+	// the D-entry address book (the destination-segment mini-agent data
+	// endpoints, seg order); each source segreceiver dials its destination
+	// segment's mini-agent (direct_1to1: entry s; routed S!=D: it routes by
+	// cdbhash/JCH and fans (s,d) over W sub-streams to entry d). The D
+	// mini-agents (launched at Start) each perform a local utility COPY on
+	// their segment; the supervisor (the dest-agent in supervisor mode)
+	// broadcasts the unit, collects the D reports, and combines them (XOR_D).
+	// NEITHER cluster coordinator is in the data path (design 04.10). It
+	// returns the authoritative (combined) row count + the on-network wire
+	// volume + the logical volume + (FR-02, P9-E) the inline content digests
+	// when verify is on (srcDigest from the segreceivers' per-slice trailers
+	// combined by the supervisor, dstDigest from the minis' data-path
+	// digests). The swap is NOT performed (the Manager decides it).
+	StreamMini(ctx context.Context, req unitMiniRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, err error)
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
@@ -225,6 +241,25 @@ type unitRoutedRequest struct {
 	DstCert, DstKey, DstCA string
 	// DataTLS is the agent<->agent data-plane TLS (segreceivers = clients).
 	DataTLSCert, DataTLSKey, DataTLSCA string
+}
+
+// unitMiniRequest is the Manager's per-unit instruction for the P3 mesh mini
+// data path (direct_1to1 or routed S!=D): the source agent triggers the ON
+// SEGMENT dispatch with the D-entry address book (the mini-agent data
+// endpoints); the destination supervisor (the dest-agent in supervisor mode)
+// serves the unit via the D mini-agents (each a local utility COPY on its
+// segment) and combines their reports (XOR_D). The MiniLaunch carries the
+// staging layout (the supervisor builds the distributed staging table on the
+// destination coordinator) + the unit's shape (S/W for the mini's accept
+// grid).
+type unitMiniRequest struct {
+	agent.OnSegmentReq // Mesh=true (Routed for S!=D); DestAddr = the D-entry address book
+	// Launch is the destination supervisor's mini launch payload (staging
+	// layout + S + W).
+	Launch agent.MiniLaunch
+	// D is the number of destination primary segments (== the address-book
+	// entry count).
+	D int
 }
 
 // processTwoAgentRunner drives the real gpstream-source-agent /
@@ -1095,6 +1130,63 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 }
 
 // Checksum asks the source agent (FR-02 snapshot) for the table's checksum.
+// StreamMini (P3 production-dispatch, mesh) drives one unit through the MESH
+// mini path: the destination supervisor serves it (kind="mini" — it builds
+// the distributed staging table, broadcasts the unit to the D mini-agents,
+// each does a local utility COPY on its segment, and the supervisor combines
+// the D reports with XOR_D); the source agent triggers the ON SEGMENT
+// dispatch with the D-entry address book (the segreceivers dial the
+// mini-agents' data endpoints — neither cluster coordinator is in the data
+// path). It returns the combined row count + wire + logical + (FR-02) the
+// inline digests when verify is on.
+func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, error) {
+	if r.destCtrl == nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: destination agent not started")
+	}
+	if r.miniAddrs == "" {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: no mini address book (the mesh MiniMap is not ready)")
+	}
+	r.streamMu.Lock() // serialize the whole exchange (see streamMu)
+	defer r.streamMu.Unlock()
+	// 1. Tell the supervisor to serve this unit (kind="mini"). It builds the
+	//    distributed staging table, broadcasts the unit to the D minis, and
+	//    returns the combined report (XOR_D) when the unit-done lands.
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "mini", Mini: &req.Launch, UnitID: req.UnitID})
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (mini) unit %d: %w", req.UnitID, err)
+	}
+	if !ack.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: begin serve (mini) unit %d: %s", req.UnitID, ack.Error)
+	}
+	// 2. Instruct the source agent to run the ON SEGMENT dispatch; the
+	//    segreceivers dial the D-entry address book (the mini data
+	//    endpoints). Direct_1to1: each segreceiver s dials entry s. Routed
+	//    (S!=D): it routes by cdbhash/JCH and fans (s,d) over W sub-streams
+	//    to entry d.
+	o := req.OnSegmentReq
+	o.Mesh = true
+	o.DestAddr = r.miniAddrs
+	oresp, err := r.ctrl.OnSegment(o)
+	if err != nil {
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: onsegment (mini) unit %d: %w", o.UnitID, err)
+	}
+	if !oresp.Ok {
+		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: source agent onsegment (mini) unit %d: %s", o.UnitID, oresp.Error)
+	}
+	// 3. Wait for the destination (supervisor) to finish (the unit-done
+	//    report, correlated by the ack's ReqID).
+	done, err := r.destCtrl.WaitUnitDone(ack.ReqID)
+	if err != nil {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest unit-done (mini) unit %d: %w", o.UnitID, err)
+	}
+	if !done.Ok {
+		return 0, 0, 0, "", "", fmt.Errorf("two-agent: dest agent unit %d (mini): %s", o.UnitID, done.Error)
+	}
+	return done.Rows, done.Wire, done.Logical, done.SrcDigest, done.Digest, nil
+}
+
 // MiniMap (P3 production-dispatch, mesh) polls the dest-agent (supervisor
 // mode) until its D-entry address book is complete (all D minis have
 // connected) and returns it comma-joined in seg order (the segreceivers'
@@ -1711,6 +1803,15 @@ func (r *InProcTwoAgentRunner) StreamRouted(ctx context.Context, req unitRoutedR
 	case <-time.After(6*time.Hour + time.Minute):
 		return 0, 0, 0, fmt.Errorf("two-agent: dest agent unit %d (routed): timed out", o.UnitID)
 	}
+}
+
+// StreamMini (P3 mesh) is not implemented in the in-process runner: the
+// mesh mini path needs the long-lived supervisor-mode dest-agent + the D
+// mini-agents (a process layout). The in-process runner drives the
+// coordinator + segment-direct + routed paths; a mesh-mode run uses the
+// process runner (the production / live-e2e path).
+func (r *InProcTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, error) {
+	return 0, 0, 0, "", "", fmt.Errorf("two-agent: StreamMini (mesh mini path) requires the process runner (the in-process runner does not run the supervisor + mini-agents)")
 }
 
 func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {

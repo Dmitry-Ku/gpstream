@@ -92,6 +92,15 @@ type MiniLaunch struct {
 	// Schema / Staging is the destination staging slice the mini loads.
 	Schema  string `json:"schema,omitempty"`
 	Staging string `json:"staging,omitempty"`
+	// Cols / Dist / Part is the source table's layout (the supervisor
+	// builds the DISTRIBUTED staging table from it on the destination
+	// coordinator, mirroring ServeDirect — the DDL replicates to the
+	// segments; the mini-agent only performs the local utility COPY into
+	// its slice). A missing layout is an error (the staging cannot be
+	// created).
+	Cols []pg.Column      `json:"cols,omitempty"`
+	Dist pg.Distribution  `json:"dist,omitempty"`
+	Part pg.PartitionSpec `json:"part,omitempty"`
 	// Compress is the FR-12 mode the source segreceivers used (the mini
 	// decompresses).
 	Compress string `json:"compress,omitempty"`
@@ -155,7 +164,14 @@ type DestUnitDone struct {
 	// VerifyDigest; empty otherwise. The controller compares it against the
 	// source's inline digest (StreamResp.Digest) to verify without a re-read.
 	Digest string `json:"digest,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// SrcDigest (P3 mesh) is the combined SOURCE digest (XOR_D of the D
+	// mini-agents' per-slice src-contribs) for a kind="mini" serve with
+	// VerifyDigest — the mesh analogue of StreamResp.Digest (the mesh
+	// source side is the segreceivers, whose per-slice digest rides the
+	// slice trailer). Empty on the coordinator path (its source digest
+	// rides StreamResp) and when verify is off.
+	SrcDigest string `json:"src_digest,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // DestReleased is the agent's reply to "release".
@@ -667,6 +683,38 @@ func (s *DestServer) MiniDataAddrs() string {
 	return strings.Join(addrs, ",")
 }
 
+// ensureMiniStaging (P3 production-dispatch, mesh): create the unit's
+// distributed staging table on the destination coordinator if absent
+// (or truncate a surviving one, so a resume re-copies from a clean table —
+// F-06/F-07). It mirrors ServeDirect's coordinator-conn staging DDL: the
+// CREATE TABLE replicates to the segments, so the D minis each find their
+// local staging slice. The connection is a fresh LOCAL connection to the
+// coordinator (the fallback coordinator path's DSN, design 04.10), held
+// only for the DDL.
+func (s *DestServer) ensureMiniStaging(ctx context.Context, ml *MiniLaunch) error {
+	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("kind=mini: connect coordinator (staging DDL): %w", err)
+	}
+	defer q.Close()
+	da := dest.New(q)
+	sctx, scancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer scancel()
+	if err := da.EnsureSchema(sctx, ml.Schema); err != nil {
+		return fmt.Errorf("kind=mini: ensure schema %s: %w", ml.Schema, err)
+	}
+	if da.Exists(sctx, ml.Schema, ml.Staging) {
+		if terr := da.Truncate(sctx, ml.Schema, ml.Staging); terr != nil {
+			return fmt.Errorf("kind=mini: truncate surviving staging %s.%s: %w", ml.Schema, ml.Staging, terr)
+		}
+		return nil
+	}
+	if err := da.CreateStaging(sctx, ml.Schema, ml.Cols, ml.Staging, ml.Dist, ml.Part); err != nil {
+		return fmt.Errorf("kind=mini: create staging %s.%s: %w", ml.Schema, ml.Staging, err)
+	}
+	return nil
+}
+
 func (s *DestServer) Close() {
 	s.stopOnce.Do(func() {
 		// P3 production-dispatch: stop the supervisor first (send mini-done
@@ -966,6 +1014,10 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			done.Error = "serve-unit kind=mini: missing mini launch"
 			return done
 		}
+		if len(req.Mini.Cols) == 0 {
+			done.Error = "serve-unit kind=mini: missing staging layout (cols) — the supervisor builds the staging DDL from it"
+			return done
+		}
 		ready, aerr := s.MiniMapReady()
 		if !ready {
 			if aerr != nil {
@@ -973,6 +1025,18 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			} else {
 				done.Error = "serve-unit kind=mini: minis not ready (MiniMap incomplete)"
 			}
+			return done
+		}
+		// Staging DDL on the destination coordinator (mirror ServeDirect):
+		// the distributed staging table is built from the unit's layout
+		// (the DDL replicates to the segments); a surviving staging (a
+		// crashed/failed run) is truncated so a resume re-copies from a
+		// clean table (F-06/F-07). The connection is LOCAL to the
+		// coordinator (the fallback coordinator path's DSN, design 04.10) —
+		// the supervisor holds no DATA connection for the mini path, only
+		// this DDL class on the fallback coordinator connection.
+		if derr := s.ensureMiniStaging(ctx, req.Mini); derr != nil {
+			done.Error = derr.Error()
 			return done
 		}
 		res, err := s.supervisor.ServeUnit(ctx, UnitReportReq{
@@ -992,6 +1056,7 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		// accumulators) — the mesh analogue of the inline content digest.
 		if err == nil && req.Mini.VerifyDigest {
 			done.Digest = res.DstDigest
+			done.SrcDigest = res.SrcDigest
 		}
 	default:
 		done.Error = "unknown serve kind " + req.Kind

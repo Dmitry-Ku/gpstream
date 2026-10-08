@@ -97,6 +97,11 @@ func TestDestServerSupervisorMode(t *testing.T) {
 	}
 
 	const staging = "_gs_supm_42"
+	// The per-segment staging slices: on a real Greenplum destination the
+	// supervisor's coordinator DDL (ensureMiniStaging) replicates the
+	// distributed staging table to the segments; on this plain-PG stand
+	// (one cluster per "segment", no replication) the test creates each
+	// local slice directly — the same shape the replication produces.
 	for i := 0; i < D; i++ {
 		mustExec(t, dstConns[i], "DROP TABLE IF EXISTS public."+staging)
 		mustExec(t, dstConns[i], "CREATE TABLE public."+staging+" (id integer, customer text, amount numeric)")
@@ -215,8 +220,13 @@ func TestDestServerSupervisorMode(t *testing.T) {
 		Kind:   "mini",
 		UnitID: unitID,
 		Mini: &agent.MiniLaunch{
-			Schema:       "public",
-			Staging:      staging,
+			Schema:  "public",
+			Staging: staging,
+			Cols: []pg.Column{
+				{Name: "id", Type: "integer", Oid: 23, Nullable: false},
+				{Name: "customer", Type: "text", Oid: 25},
+				{Name: "amount", Type: "numeric", Oid: 1700},
+			},
 			Compress:     "zstd",
 			VerifyDigest: true,
 			JobID:        jobID,

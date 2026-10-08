@@ -1235,15 +1235,22 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			"reason", "small table: the segment-direct pipeline does not pay back (F-12 threshold)")
 		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgent(ctx, t, u, target, ds, dn, verify)
 	case m.twoAgent != nil && m.cfg.CopyMode == config.CopyMesh:
-		// Two-agent on_segment (ADR-002, P4): the segment-direct data path
-		// moves into the agents. The source agent triggers the ON SEGMENT
-		// dispatch (kernel launches the segreceiver on every primary source
-		// segment, which stream each slice compressed to the destination
-		// agent); the destination agent merges the N slices (SliceMux) and
-		// loads the staging table. The controller holds no data connection:
-		// it reads the segment count + table shape on its source pool, passes
-		// the instruction, reads back the destination's count + wire volume.
-		rows, wire, logical, err = m.streamTwoAgentSegment(ctx, t, u, target, ds, dn, cols, dist, u.Partition)
+		// P3 production-dispatch (mesh, P4 design): the segment-direct data
+		// path moves into the agents — the source agent triggers the ON
+		// SEGMENT dispatch with the D-entry address book (the
+		// destination-segment mini-agent data endpoints); each source
+		// segreceiver streams its slice to its destination segment's
+		// mini-agent, which performs a LOCAL utility COPY on its segment.
+		// The destination agent runs in SUPERVISOR mode: it builds the
+		// distributed staging table, broadcasts the unit to the D minis, and
+		// combines their reports (XOR_D). NEITHER cluster coordinator is in
+		// the data path (design 04.10). DEGRADATION IS PER TABLE (the P4
+		// design): a table that cannot be placed segment-to-segment (merge /
+		// partitioned / a non-Greenplum side) takes the coordinator path
+		// (one COPY through the destination coordinator, executed by the
+		// supervisor's fallback path) — the rest of the job keeps the mini
+		// path.
+		rows, wire, logical, srcDigest, dstDigest, err = m.streamTwoAgentMini(ctx, t, u, target, ds, dn, cols, dist, u.Partition, verify)
 	case m.twoAgent != nil:
 		// Two-agent (ADR-002, P3): the data COPY runs ONLY in the agents over
 		// a real, compressed socket (source agent -> destination agent). The
@@ -1496,20 +1503,20 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 	var req unitSegmentRequest
 	req = unitSegmentRequest{
 		OnSegmentReq: agent.OnSegmentReq{
-			Op:              "onsegment",
-			Schema:          t.Schema,
-			Table:           t.Name,
-			JobID:           jobID,
-			UnitID:          uint32(u.UnitID),
-			SegBinary:       m.cfg.SegBinary,
-			Compress:        compStr,
-			DataTLSCert:     m.cfg.SegTLSCert,
-			DataTLSKey:      m.cfg.SegTLSKey,
-			DataTLSCA:       m.cfg.SegTLSCA,
-			FrameAck:        m.cfg.FrameAckArg(),
-			AckTimeout:      m.cfg.AckTimeout,
-			MaxReconnects:   m.cfg.MaxReconnects,
-			RetransmitMax:   m.cfg.RetransmitBufferMax,
+			Op:            "onsegment",
+			Schema:        t.Schema,
+			Table:         t.Name,
+			JobID:         jobID,
+			UnitID:        uint32(u.UnitID),
+			SegBinary:     m.cfg.SegBinary,
+			Compress:      compStr,
+			DataTLSCert:   m.cfg.SegTLSCert,
+			DataTLSKey:    m.cfg.SegTLSKey,
+			DataTLSCA:     m.cfg.SegTLSCA,
+			FrameAck:      m.cfg.FrameAckArg(),
+			AckTimeout:    m.cfg.AckTimeout,
+			MaxReconnects: m.cfg.MaxReconnects,
+			RetransmitMax: m.cfg.RetransmitBufferMax,
 		},
 		Spec: agent.UnitSpec{
 			JobID:     jobID,
@@ -1592,6 +1599,182 @@ func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Un
 	return m.twoAgent.StreamSegment(ctx, req)
 }
 
+// streamTwoAgentMini runs the P3 MESH mini data path (P4 design, production
+// dispatch): the source agent triggers the ON SEGMENT dispatch with the
+// D-entry address book (the destination-segment mini-agent data endpoints,
+// seg order); each source segreceiver streams its slice to its destination
+// segment's mini-agent (direct_1to1: segreceiver s dials entry s; routed
+// S≠D: it routes every row to its destination segment d by cdbhash/JCH over
+// the distribution key and fans each (s,d) pair over W sub-streams to entry
+// d); each mini-agent performs a LOCAL utility COPY on its segment. The
+// destination agent (supervisor mode) builds the distributed staging table,
+// broadcasts the unit to the D minis, and combines their reports (XOR_D).
+// NEITHER cluster coordinator is in the data path (design 04.10).
+//
+// Per-table degradation (the P4 design): a table that cannot be placed
+// segment-to-segment — a merge route (hash-mismatch / non-hash distribution),
+// a partitioned parent, or a non-Greenplum side (no ON SEGMENT dispatch / no
+// segment catalog) — takes the COORDINATOR path instead (one COPY through
+// the destination coordinator, executed by the supervisor's fallback path),
+// logged so the operator sees why. The rest of the job keeps the mini path
+// (degradation is per table, not per job).
+func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec, verifyDigest bool) (int64, uint64, uint64, string, string, error) {
+	uc, _ := m.unitCompressors(t)
+	jobID := jobIDFromHash(u.JobID)
+	compStr := m.twoAgentCompressString(uc)
+
+	// 1. Topology: S (source primaries) + D (destination primaries). Both
+	//    require a Greenplum side; a plain-PostgreSQL side cannot run the
+	//    mini path (no ON SEGMENT dispatch / no per-segment utility COPY),
+	//    so it degrades to the coordinator path (per table).
+	S, serr := m.primarySegmentCount(ctx)
+	segs, derr := m.destSegments(ctx)
+	D := len(segs)
+	if serr != nil || derr != nil || D == 0 {
+		reason := "non-Greenplum source/destination (no segment catalog)"
+		if derr != nil {
+			reason = derr.Error()
+		} else if serr != nil {
+			reason = serr.Error()
+		}
+		m.events.Log("mesh_coordinator_fallback",
+			"table", t.Schema+"."+t.Name,
+			"reason", reason)
+		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+	}
+
+	// 2. Route decision (the plan's per-table mode, re-checked against the
+	//    live topology): direct_1to1 (S==D, equal hash keys, non-legacy) ->
+	//    the mini direct path (segreceiver s -> mini s, one slice each);
+	//    router_full (S!=D or unequal keys, hash-distributed) -> the mini
+	//    routed path (segreceivers route by cdbhash/JCH, S*D*W
+	//    segment-to-segment streams, no coordinator in the data path);
+	//    anything else (merge / partitioned) -> the coordinator path.
+	routed := m.wantsRoutedWrite(u, part)
+	if u.RouteMode != route.Direct1to1 && !routed {
+		reason := "route mode " + string(u.RouteMode)
+		if u.RouteReason != "" {
+			reason += " (" + u.RouteReason + ")"
+		}
+		m.events.Log("mesh_coordinator_fallback",
+			"table", t.Schema+"."+t.Name,
+			"reason", reason+" — cannot be placed segment-to-segment")
+		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+	}
+	// A live destination segment count that no longer matches the plan (a
+	// primary down since planning) breaks slice coverage: degrade this
+	// table to the coordinator path (correct, just not segment-direct).
+	if u.RouteMode == route.Direct1to1 && D != S {
+		m.events.Log("mesh_coordinator_fallback",
+			"table", t.Schema+"."+t.Name,
+			"reason", fmt.Sprintf("live destination segment count %d != planned %d (a primary down?) — slice coverage would break", D, S))
+		return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+	}
+
+	// 3. The MiniLaunch: the staging layout (the supervisor builds the
+	//    distributed staging table on the destination coordinator — the DDL
+	//    replicates to the segments, so each mini finds its local staging
+	//    slice) + the unit's shape (S source segments; W sub-streams per
+	//    pair for the routed path). The inline digests stay OFF (the mesh
+	//    re-read verify is the same as the segment/routed paths; the
+	//    combined XOR_D digests are a future enhancement).
+	W := m.cfg.WorkersPerPair
+	// SourceSegments is the mini's fan-in: direct_1to1 -> 1 (each mini
+	// accepts its OWN segreceiver's single slice); routed -> S (the S*W
+	// sub-stream fan-in from all source segments).
+	fanIn := int32(1)
+	if routed {
+		fanIn = int32(S)
+	}
+	mreq := unitMiniRequest{
+		OnSegmentReq: agent.OnSegmentReq{
+			Op:            "onsegment",
+			Schema:        t.Schema,
+			Table:         t.Name,
+			JobID:         jobID,
+			UnitID:        uint32(u.UnitID),
+			SegBinary:     m.cfg.SegBinary,
+			Compress:      compStr,
+			DataTLSCert:   m.cfg.SegTLSCert,
+			DataTLSKey:    m.cfg.SegTLSKey,
+			DataTLSCA:     m.cfg.SegTLSCA,
+			FrameAck:      m.cfg.FrameAckArg(),
+			AckTimeout:    m.cfg.AckTimeout,
+			MaxReconnects: m.cfg.MaxReconnects,
+			RetransmitMax: m.cfg.RetransmitBufferMax,
+		},
+		Launch: agent.MiniLaunch{
+			Schema:         ds,
+			Staging:        target,
+			Cols:           cols,
+			Dist:           dist,
+			Part:           part,
+			Compress:       compStr,
+			VerifyDigest:   false, // re-read verify (the segment/routed path's model)
+			JobID:          jobID,
+			SourceSegments: fanIn,
+			Workers:        W,
+		},
+		D: D,
+	}
+	if routed {
+		// The routed (S!=D) mini path: the segreceivers route every row to
+		// its destination segment by cdbhash/JCH over the source's
+		// distribution key (the staging/final table is created with the
+		// source's distribution, so the destination's placement key is the
+		// source's dist key) and fan each (s,d) pair over W sub-streams to
+		// the D-entry address book (entry d = destination segment d's
+		// mini-agent).
+		if dist.Kind != "hash" || len(dist.Keys) == 0 {
+			m.events.Log("mesh_coordinator_fallback",
+				"table", t.Schema+"."+t.Name,
+				"reason", fmt.Sprintf("distribution policy %q (no hash key) cannot be routed", dist.Kind))
+			return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+		}
+		colBy := map[string]int{}
+		for i, c := range cols {
+			colBy[c.Name] = i
+		}
+		routeKey := ""
+		for i, k := range dist.Keys {
+			idx, ok := colBy[k]
+			if !ok {
+				m.events.Log("mesh_coordinator_fallback",
+					"table", t.Schema+"."+t.Name,
+					"reason", fmt.Sprintf("dist-key column %q is not in the source table", k))
+				return m.streamTwoAgent(ctx, t, u, target, ds, dn, verifyDigest)
+			}
+			pair := fmt.Sprintf("%d:%d", cols[idx].Oid, idx)
+			if i == 0 {
+				routeKey = pair
+			} else {
+				routeKey += "," + pair
+			}
+		}
+		mreq.OnSegmentReq.Routed = true
+		mreq.OnSegmentReq.RouteKey = routeKey
+		mreq.OnSegmentReq.RouteD = int32(D) // destination segment count (the address-book size)
+		mreq.OnSegmentReq.RouteWorkers = W
+		m.events.Log("mesh_routed_write",
+			"table", t.Schema+"."+t.Name,
+			"src_segments", S,
+			"dst_segments", D,
+			"workers", W,
+			"connections", S*D*W,
+			"reason", "S!=D (or unequal keys): segreceivers route to destination-segment mini-agents; S*D*W segment-to-segment streams, no coordinator in the data path")
+	} else {
+		// Direct_1to1: each segreceiver s dials the address-book entry s (its
+		// own destination segment's mini-agent). RouteD carries the SOURCE
+		// segment count (S) — ProgramCommandMesh's --dest-count.
+		mreq.OnSegmentReq.RouteD = int32(S)
+		m.events.Log("mesh_direct_write",
+			"table", t.Schema+"."+t.Name,
+			"segments", S,
+			"reason", "S==D + equal hash keys + same major: per-segment utility COPYs on the destination mini-agents, no coordinator in the data path")
+	}
+	return m.twoAgent.StreamMini(ctx, mreq)
+}
+
 // streamTwoAgentRouted runs the P9 routed (S≠D) data path: the source agent
 // triggers the ON SEGMENT dispatch with routing enabled (each segreceiver
 // routes its slice to its destination segment and fans each (s,d) pair over
@@ -1660,24 +1843,24 @@ func (m *Manager) streamTwoAgentRouted(ctx context.Context, t plan.Table, u *Uni
 		"reason", "S!=D (or unequal keys): segreceivers route to destination segments; S*D*W segment-to-segment streams, no coordinator in the data path")
 	return m.twoAgent.StreamRouted(ctx, unitRoutedRequest{
 		OnSegmentReq: agent.OnSegmentReq{
-			Op:              "onsegment",
-			Schema:          t.Schema,
-			Table:           t.Name,
-			JobID:           jobID,
-			UnitID:          uint32(u.UnitID),
-			SegBinary:       m.cfg.SegBinary,
-			Compress:        compStr,
-			DataTLSCert:     m.cfg.SegTLSCert,
-			DataTLSKey:      m.cfg.SegTLSKey,
-			DataTLSCA:       m.cfg.SegTLSCA,
-			Routed:          true,
-			RouteKey:        routeKey,
-			RouteD:          D,
-			RouteWorkers:    W,
-			FrameAck:        m.cfg.FrameAckArg(),
-			AckTimeout:      m.cfg.AckTimeout,
-			MaxReconnects:   m.cfg.MaxReconnects,
-			RetransmitMax:   m.cfg.RetransmitBufferMax,
+			Op:            "onsegment",
+			Schema:        t.Schema,
+			Table:         t.Name,
+			JobID:         jobID,
+			UnitID:        uint32(u.UnitID),
+			SegBinary:     m.cfg.SegBinary,
+			Compress:      compStr,
+			DataTLSCert:   m.cfg.SegTLSCert,
+			DataTLSKey:    m.cfg.SegTLSKey,
+			DataTLSCA:     m.cfg.SegTLSCA,
+			Routed:        true,
+			RouteKey:      routeKey,
+			RouteD:        D,
+			RouteWorkers:  W,
+			FrameAck:      m.cfg.FrameAckArg(),
+			AckTimeout:    m.cfg.AckTimeout,
+			MaxReconnects: m.cfg.MaxReconnects,
+			RetransmitMax: m.cfg.RetransmitBufferMax,
 		},
 		Launch: agent.RoutedLaunch{
 			DirectLaunch: agent.DirectLaunch{

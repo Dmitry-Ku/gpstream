@@ -600,6 +600,72 @@ func ProgramCommandMesh(binPath, destAddr string, jobID, unitID uint32, cert, ke
 	return cmd, nil
 }
 
+// ProgramCommandRoutedMesh is the ROUTED (S!=D) mesh ON SEGMENT program:
+// like ProgramCommandRouted, but --dest-addr is the D-entry ADDRESS BOOK
+// (comma-separated destination-segment mini-agent data endpoints, seg order)
+// instead of one host:port. Each segreceiver (on source segment s) routes
+// every row to its destination segment d (cdbhash/JCH over RouteKey) and
+// fans each (s,d) pair over W sub-streams, dialing entry d — destination
+// segment d's mini-agent. The grid is built with ParseDestAddrs(destAddr, D)
+// (D = RouteD). NEITHER cluster coordinator is in the data path (P4 mesh,
+// S!=D). This is the B->D dev case (S=4 != D=3).
+func ProgramCommandRoutedMesh(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode, routeKey string, routeD, workers int) (string, error) {
+	if binPath == "" || listenBinChars(binPath) {
+		return "", fmt.Errorf("segstream: bad binary path %q", binPath)
+	}
+	if !validDestAddrList(destAddr) {
+		return "", fmt.Errorf("segstream: bad mesh dest address %q (want host:port or a comma-separated D-entry address book)", destAddr)
+	}
+	if routeD < 1 || workers < 1 {
+		return "", fmt.Errorf("segstream: bad routed topology d=%d workers=%d (want >= 1)", routeD, workers)
+	}
+	if routeKey == "" {
+		return "", fmt.Errorf("segstream: routed mode requires a route key")
+	}
+	for i := 0; i < len(routeKey); i++ {
+		c := routeKey[i]
+		if !((c >= '0' && c <= '9') || c == ':' || c == ',') {
+			return "", fmt.Errorf("segstream: bad route key %q (want digits, ':', ',')", routeKey)
+		}
+	}
+	cmd := fmt.Sprintf("%s --dest-addr %s --job %d --unit %d --content <SEGID> --route-key %s --route-d %d --route-workers %d",
+		binPath, destAddr, jobID, unitID, routeKey, routeD, workers)
+	switch {
+	case cert != "" && key != "":
+		if listenBinChars(cert) || listenBinChars(key) || (ca != "" && listenBinChars(ca)) {
+			return "", fmt.Errorf("segstream: unsafe TLS path set (cert=%q key=%q ca=%q)", cert, key, ca)
+		}
+		cmd += fmt.Sprintf(" --ssl-cert %s --ssl-key %s", cert, key)
+		if ca != "" {
+			cmd += fmt.Sprintf(" --ssl-ca %s", ca)
+		}
+	case cert != "" || key != "":
+		return "", fmt.Errorf("segstream: mesh TLS enabled with only one of --ssl-cert/--ssl-key (cert=%q key=%q); provide both or neither", cert, key)
+	}
+	if compressMode != "" {
+		if !validCompressMode(compressMode) {
+			return "", fmt.Errorf("segstream: bad compress mode %q", compressMode)
+		}
+		cmd += fmt.Sprintf(" --compress %s", compressMode)
+	}
+	return cmd, nil
+}
+
+// ProgramCommandRoutedMeshFrameAck is ProgramCommandRoutedMesh with the Inc3
+// frame-ack transport flags (the destination's mini-agents are launched with
+// the matching --frame-ack).
+func ProgramCommandRoutedMeshFrameAck(binPath, destAddr string, jobID, unitID uint32, cert, key, ca, compressMode, routeKey string, routeD, workers int, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64) (string, error) {
+	cmd, err := ProgramCommandRoutedMesh(binPath, destAddr, jobID, unitID, cert, key, ca, compressMode, routeKey, routeD, workers)
+	if err != nil {
+		return "", err
+	}
+	fa, err := frameAckFlags(frameAck, ackTimeout, maxReconnects, retransmitMax)
+	if err != nil {
+		return "", err
+	}
+	return cmd + fa, nil
+}
+
 // ProgramCommandMeshFrameAck is ProgramCommandMesh with the Inc3 frame-ack
 // transport flags (the destination's mini-agents are launched with the
 // matching --frame-ack).

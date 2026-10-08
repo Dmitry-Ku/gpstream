@@ -390,7 +390,25 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	reqID := req.ReqID
 	var prog string
 	var err error
-	if req.Mesh {
+	if req.Mesh && req.Routed {
+		// P3 production-dispatch (mesh routed, S!=D): DestAddr is the D-entry
+		// address book (the mini-agent data endpoints, seg order); each
+		// segreceiver (on source segment s) routes every row to its
+		// destination segment d (cdbhash/JCH over RouteKey) and dials the
+		// entry d (destination segment d's mini-agent) over W sub-streams.
+		// Neither cluster coordinator is in the data path.
+		if req.FrameAck != "off" {
+			prog, err = segstream.ProgramCommandRoutedMeshFrameAck(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, req.RouteKey, int(req.RouteD), req.RouteWorkers,
+				req.FrameAck, req.AckTimeout, req.MaxReconnects, req.RetransmitMax)
+		} else {
+			prog, err = segstream.ProgramCommandRoutedMesh(req.SegBinary, req.DestAddr, req.JobID, req.UnitID,
+				req.DataTLSCert, req.DataTLSKey, req.DataTLSCA, req.Compress, req.RouteKey, int(req.RouteD), req.RouteWorkers)
+		}
+		if err != nil {
+			return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("build program (mesh routed): %v", err)}
+		}
+	} else if req.Mesh {
 		// P3 production-dispatch (mesh direct_1to1): DestAddr is the D-entry
 		// address book (the mini-agent data endpoints, seg order); each
 		// segreceiver (on source segment s) dials the entry s. Neither
