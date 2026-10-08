@@ -117,6 +117,9 @@ type Supervisor struct {
 	minis map[int]*miniConn
 	// stopped is closed by Stop (a clean shutdown signal to the unit loop).
 	stopped chan struct{}
+	// stopOnce makes Stop idempotent (the DestServer's release op and its
+	// Close both call it; a second call must not re-close stopped).
+	stopOnce sync.Once
 }
 
 // miniConn is one mini-agent's persistent report connection.
@@ -407,16 +410,21 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 // Stop signals a clean run end: it sends a mini-done to each mini-agent (its
 // clean-exit path) and closes the report listener. Best-effort — a mini-agent
 // whose report connection is already gone has already orphan-exited.
+// Stop sends a mini-done to each mini-agent (clean exit) and closes the
+// report listener's connections. It is idempotent (the DestServer's release
+// op and its Close both call it).
 func (s *Supervisor) Stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	close(s.stopped)
-	for _, mc := range s.minis {
-		_ = SendLine(mc.w, MiniDoneReq{Op: "mini-done"})
-		_ = mc.w.Flush()
-		_ = mc.conn.Close()
-	}
-	s.minis = make(map[int]*miniConn)
+	s.stopOnce.Do(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		close(s.stopped)
+		for _, mc := range s.minis {
+			_ = SendLine(mc.w, MiniDoneReq{Op: "mini-done"})
+			_ = mc.w.Flush()
+			_ = mc.conn.Close()
+		}
+		s.minis = make(map[int]*miniConn)
+	})
 }
 
 // Stopped is closed when Stop is called (the run ended).

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -109,6 +110,19 @@ func main() {
 	mini := flag.Bool("mini", false, "P2 mini-agent mode: per-segment dest agent (direct_1to1 mesh)")
 	seg := flag.Int("seg", 0, "mini-agent mode: this segment's ordinal (0..D-1)")
 	reportAddr := flag.String("report-addr", "", "mini-agent mode: the supervisor's report listener address (the mini dials it once for the run)")
+	// P3 production-dispatch: SUPERVISOR MODE — the dest-agent on the DEST
+	// coordinator coordinates the D destination-segment mini-agents (mesh).
+	// It is a MODE of the dest-agent (one process on the dest coordinator),
+	// not a separate binary: it keeps the coordinator's data/control/persist
+	// listeners + pg pool (the fallback coordinator path for the non-routable
+	// / small-table units) and ADDS the supervisor's report listener (the D
+	// minis dial it once for the run). kind="mini" serves are broadcast to
+	// the minis (each does a local utility COPY on its segment) and combined
+	// (XOR_D); kind="coordinator" serves take the fallback path.
+	supervisor := flag.Bool("supervisor", false, "P3 production-dispatch: supervisor mode — coordinate the D destination-segment mini-agents (mesh)")
+	miniCount := flag.Int("mini-count", 0, "supervisor mode: D, the number of destination segments / mini-agents (required with --supervisor)")
+	reportListen := flag.String("report-listen", "0.0.0.0:0", "supervisor mode: the report listener address the D minis dial (0 = pick a free port, restricted by --port-range; the real address is in the hello)")
+	miniHosts := flag.String("mini-hosts", "", "supervisor mode: the D segment hosts, comma-separated in seg order (the catalog's DstDSN hosts; the hello carries the data port only). Empty = 127.0.0.1 for all (single-host layout)")
 	flag.Parse()
 
 	fail := func(format string, a ...any) {
@@ -165,6 +179,94 @@ func main() {
 		// mini-done or orphan-exit) it logs its totals for the operator.
 		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: mini seg=%d exited units=%d rows=%d wire=%d logical=%d\n",
 			res.Seg, res.UnitsServed, res.Rows, res.Wire, res.Logical)
+		os.Exit(0)
+	}
+
+	if *supervisor {
+		// P3 production-dispatch: supervisor mode. The dest-agent on the DEST
+		// coordinator coordinates the D destination-segment mini-agents. It
+		// runs the coordinator's listeners + pg pool (the fallback
+		// coordinator path for non-routable / small-table units) plus the
+		// supervisor's report listener (the D minis dial it once for the run).
+		if *dest == "" {
+			fail("--dest is required in --supervisor mode (the fallback coordinator path's pg conn)")
+		}
+		if *miniCount < 1 {
+			fail("--mini-count D (>=1) is required in --supervisor mode")
+		}
+		// P1e: the agent must run on the destination cluster coordinator and
+		// connect to pg LOCALLY (verified before the listeners are bound).
+		if cerr := agent.CheckOnCoordinator(ctx, *dest, *sslCert, *sslKey, *sslCA, *sslMinTLS); cerr != nil {
+			fail("coordinator check: %v", cerr)
+		}
+		portAlloc, perr := portalloc.ParseRange(*portRange)
+		if perr != nil {
+			fail("invalid --port-range %q: %v", *portRange, perr)
+		}
+		// The per-segment hosts from the catalog's DstDSNs (the hello carries
+		// the data port only; the supervisor combines them). Empty = 127.0.0.1.
+		var hosts []string
+		if *miniHosts != "" {
+			parts := strings.Split(*miniHosts, ",")
+			if len(parts) != *miniCount {
+				fail("--mini-hosts has %d entries, want %d (one per segment)", len(parts), *miniCount)
+			}
+			for _, h := range parts {
+				h = strings.TrimSpace(h)
+				if h == "" {
+					h = "127.0.0.1"
+				}
+				hosts = append(hosts, h)
+			}
+		}
+		// The shared mesh data listener is OFF in supervisor mode (the mini
+		// path uses the minis' own listeners; the fallback coordinator path
+		// uses the persistent-coordinator listener). The persist listener is
+		// REQUIRED (the fallback path) — default auto :0 when not passed.
+		persist := *persistListen
+		if persist == "" {
+			persist = "0.0.0.0:0"
+		}
+		srv, err := agent.NewDestServer(agent.DestServerOptions{
+			DataListen:       "", // supervisor mode: the shared data listener is off
+			ControlListen:    *ctrlListen,
+			PersistListen:    persist,
+			PortAlloc:        portAlloc,
+			DestConn:         *dest,
+			SSLCert:          *sslCert,
+			SSLKey:           *sslKey,
+			SSLCA:            *sslCA,
+			SSLMinTLS:        *sslMinTLS,
+			DataTLSCert:      *dataCert,
+			DataTLSKey:       *dataKey,
+			DataTLSCA:        *dataCA,
+			DataTLSMinTLS:    *dataMinTLS,
+			ControlTLSCert:   *ctrlCert,
+			ControlTLSKey:    *ctrlKey,
+			ControlTLSCA:     *ctrlCA,
+			Workers:          *workers,
+			AcceptTimeout:    *acceptTO,
+			StreamTimeout:    *streamTO,
+			FrameAck:         *frameAck != "off",
+			ReliablePipe:     transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
+			SupervisorListen: *reportListen,
+			MiniCount:        *miniCount,
+			MiniHosts:        hosts,
+		})
+		if err != nil {
+			fail("start supervisor dest agent: %v", err)
+		}
+		// Report the real bound addresses (auto :0 mode): the operator /
+		// remote launch reads this to learn the data + persist + report
+		// endpoints (the report address is the mini's --report-addr).
+		fmt.Fprintf(os.Stderr, "gpstream-dest-agent: supervisor control=%s persist=%s report=%s minis=%d ready\n",
+			srv.ControlAddr(), srv.PersistAddr(), srv.Hello().Report, *miniCount)
+		select {
+		case <-ctx.Done():
+		case <-srv.Done():
+		}
+		srv.Close()
+		fmt.Fprintln(os.Stderr, "gpstream-dest-agent: supervisor stopped")
 		os.Exit(0)
 	}
 

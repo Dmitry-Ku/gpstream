@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,16 @@ type DestHello struct {
 	// (legacy builds / the one-shot single-unit modes, which have no
 	// persistent channel).
 	Persist string `json:"persist,omitempty"`
+	// Report (P3 production-dispatch) is the supervisor's REPORT listener
+	// address: the D destination-segment mini-agents dial it ONCE for the run
+	// (a persistent connection, orphan-exit on drop). Empty when the agent is
+	// not in supervisor mode. The controller reads it from the hello and
+	// launches the D minis with --report-addr <Report>.
+	Report string `json:"report,omitempty"`
+	// MiniCount (P3 production-dispatch) is D, the number of destination
+	// segments / mini-agents the supervisor coordinates. 0 = not in
+	// supervisor mode.
+	MiniCount int `json:"mini_count,omitempty"`
 }
 
 // DestServeReq is the controller's per-unit instruction to a long-lived
@@ -70,6 +81,31 @@ type DestHello struct {
 //	(the 1:1 sub-path (a));
 //	"routed"      — S×D×W sub-streams -> D per-segment utility COPYs (the
 //	routed sub-path (b)).
+//
+// MiniLaunch is the per-unit instruction for the mesh mini path (P3
+// production-dispatch, kind="mini"): the supervisor broadcasts a mini-unit
+// request to EVERY mini-agent (each serves its own segment's slice of the
+// unit), collects the D mini-unit-resp reports and combines them (XOR_D).
+// The destination staging slice is created/truncated by the supervisor on
+// the coordinator (replicated to the segments) BEFORE the broadcast.
+type MiniLaunch struct {
+	// Schema / Staging is the destination staging slice the mini loads.
+	Schema  string `json:"schema,omitempty"`
+	Staging string `json:"staging,omitempty"`
+	// Compress is the FR-12 mode the source segreceivers used (the mini
+	// decompresses).
+	Compress string `json:"compress,omitempty"`
+	// VerifyDigest asks each mini to tee the data-path digest (the
+	// supervisor combines the per-segment accumulators).
+	VerifyDigest bool `json:"verify_digest,omitempty"`
+	// JobID / SourceSegments / Workers are the unit's shape (the mini's
+	// data listener accepts S×W sub-streams per unit; 0/1 = direct: one
+	// slice).
+	JobID          uint32 `json:"job_id,omitempty"`
+	SourceSegments int32  `json:"source_segments,omitempty"`
+	Workers        int    `json:"workers,omitempty"`
+}
+
 type DestServeReq struct {
 	Op   string `json:"op"` // "serve-unit"
 	Kind string `json:"kind"`
@@ -86,6 +122,7 @@ type DestServeReq struct {
 	Segments int           `json:"segments,omitempty"` // kind=segments
 	Direct   *DirectLaunch `json:"direct,omitempty"`   // kind=direct
 	Routed   *RoutedLaunch `json:"routed,omitempty"`   // kind=routed
+	Mini     *MiniLaunch   `json:"mini,omitempty"`     // kind=mini (P3 mesh)
 }
 
 // DestAck is the agent's immediate reply to "serve-unit" (the serve is
@@ -178,6 +215,26 @@ type DestServerOptions struct {
 	// agent is a separate process whose serves are bounded by its own signal
 	// ctx, and a crash is a hard kill, not a cancel).
 	RunCtx context.Context
+	// SupervisorListen (P3 production-dispatch) is the supervisor's REPORT
+	// listener address (host:port; :0 = auto-pick, reported in the hello's
+	// Report field). Empty = supervisor mode is OFF (the coordinator
+	// dest-agent, no mini-agents). When set, MiniCount is D and the agent
+	// ALSO coordinates the D destination-segment mini-agents: kind="mini"
+	// serves are broadcast to the minis (each does a local utility COPY on
+	// its segment) and combined (XOR_D), while the fallback coordinator path
+	// (kind="coordinator", the non-routable / small-table units) keeps its
+	// own pg pool + data listener on the same process (design: the
+	// supervisor is a MODE of the dest-agent, one process on the dest
+	// coordinator).
+	SupervisorListen string
+	// MiniCount (P3 production-dispatch) is D when SupervisorListen is set.
+	MiniCount int
+	// MiniHosts (P3 production-dispatch) are the per-segment hosts from the
+	// catalog's DstDSNs (length D, seg order). The supervisor combines them
+	// with each mini's hello data port to form the full data-listener
+	// address the segreceivers dial. Empty value / empty slice = 127.0.0.1
+	// (single-host layout / the local test stand).
+	MiniHosts []string
 }
 
 // DestServer is the long-lived destination agent (one data + one control
@@ -243,6 +300,23 @@ type DestServer struct {
 	connMu   sync.Mutex
 	ctrlDone chan struct{}
 	stopOnce sync.Once
+	// supervisor (P3 production-dispatch): the mini-agent orchestrator for
+	// supervisor mode (SupervisorListen set). nil = coordinator mode.
+	supervisor *Supervisor
+	// miniMapReady (P3 production-dispatch): closed once AcceptMinis has
+	// collected all D mini hellos (the MiniMap is complete). The controller
+	// polls MiniMapReady before the first kind="mini" serve.
+	miniMapMu    sync.Mutex
+	miniMapReady bool
+	// miniAcceptErr (P3 production-dispatch): set when AcceptMinis fails
+	// (a mini failed to connect / the run aborted); the MiniMapReady op
+	// reports it instead of blocking forever.
+	miniAcceptErr error
+	// miniHosts (P3 production-dispatch): the per-segment hosts from the
+	// catalog's DstDSNs, applied to the MiniMap via SetMiniHost (the hello
+	// carries the data port only). Empty value = 127.0.0.1 (single-host
+	// layout / the local test stand).
+	miniHosts []string
 }
 
 // unitServe (P1d) is the in-flight registration of one serve-unit op, keyed
@@ -265,23 +339,46 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 	if o.StreamTimeout <= 0 {
 		o.StreamTimeout = 6 * time.Hour
 	}
-	dataL, err := o.bindListener(o.DataListen)
-	if err != nil {
-		return nil, fmt.Errorf("dest server: data listen %s: %w", o.DataListen, err)
+	// P3 production-dispatch (supervisor mode): the shared mesh data listener
+	// is UNUSED (the mini path uses the minis' own listeners; the fallback
+	// coordinator path uses the persistent-coordinator listener). DataListen
+	// empty = the data listener is off (supervisor mode). Coordinator mode
+	// always binds it.
+	var dataL net.Listener
+	if o.DataListen != "" {
+		var derr error
+		dataL, derr = o.bindListener(o.DataListen)
+		if derr != nil {
+			return nil, fmt.Errorf("dest server: data listen %s: %w", o.DataListen, derr)
+		}
 	}
 	ctrlL, err := o.bindListener(o.ControlListen)
 	if err != nil {
-		_ = dataL.Close()
+		if dataL != nil {
+			_ = dataL.Close()
+		}
 		return nil, fmt.Errorf("dest server: control listen %s: %w", o.ControlListen, err)
 	}
 	var persistL net.Listener
 	if o.PersistListen != "" {
 		persistL, err = o.bindListener(o.PersistListen)
 		if err != nil {
-			_ = dataL.Close()
+			if dataL != nil {
+				_ = dataL.Close()
+			}
 			_ = ctrlL.Close()
 			return nil, fmt.Errorf("dest server: persist listen %s: %w", o.PersistListen, err)
 		}
+	}
+	// P3 production-dispatch: supervisor mode REQUIRES the persistent
+	// coordinator listener — it is the fallback coordinator path (the
+	// non-routable / small-table units) that rides the P1d channel pool.
+	if o.SupervisorListen != "" && o.PersistListen == "" {
+		if dataL != nil {
+			_ = dataL.Close()
+		}
+		_ = ctrlL.Close()
+		return nil, fmt.Errorf("dest server: supervisor mode requires the persistent-coordinator listener (the fallback coordinator path)")
 	}
 	runCtx := context.Background()
 	if o.RunCtx != nil {
@@ -296,7 +393,7 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 		}
 		s.ctrlL = tls.NewListener(s.ctrlL, ccfg)
 	}
-	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
+	if dataL != nil && transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
 		cfg, terr := transfer.ServerTLSConfig(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
 		if terr != nil {
 			s.Close()
@@ -334,6 +431,51 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 		s.unitReg = make(map[uint32]*unitServe)
 		go s.acceptPersistent()
 	}
+	// P3 production-dispatch: the supervisor mode (SupervisorListen set). The
+	// agent coordinates the D destination-segment mini-agents: bind the
+	// report listener (the minis dial it once for the run) and start the
+	// AcceptMinis goroutine (it blocks until all D hellos arrive, then the
+	// MiniMap is complete and the controller may issue kind="mini" serves).
+	// The fallback coordinator path (kind="coordinator") keeps its own data
+	// listener + pg pool on this SAME process (the supervisor is a mode of
+	// the dest-agent, one process on the dest coordinator).
+	if o.SupervisorListen != "" {
+		sup, serr := NewSupervisor(o.SupervisorListen, o.PortAlloc,
+			o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
+		if serr != nil {
+			s.Close()
+			return nil, fmt.Errorf("dest server: supervisor report listen: %w", serr)
+		}
+		s.supervisor = sup
+		// Set the per-segment hosts BEFORE the AcceptMinis goroutine: it
+		// applies them to the MiniMap once all D hellos arrive (the hello
+		// carries the data port only).
+		s.miniHosts = o.MiniHosts
+		go func() {
+			mm, aerr := sup.AcceptMinis(s.runCtx, o.MiniCount)
+			if aerr != nil {
+				// A mini failed to connect (or the run aborted): surface via
+				// MiniMapReady (the controller's start waits on it).
+				s.miniMapMu.Lock()
+				s.miniAcceptErr = aerr
+				s.miniMapMu.Unlock()
+				return
+			}
+			// Apply the per-segment hosts (catalog DstDSNs) to the MiniMap:
+			// the hello carries the data port only.
+			for seg := 0; seg < o.MiniCount; seg++ {
+				host := "127.0.0.1"
+				if s.miniHosts != nil && seg < len(s.miniHosts) && s.miniHosts[seg] != "" {
+					host = s.miniHosts[seg]
+				}
+				sup.SetMiniHost(seg, host)
+			}
+			_ = mm
+			s.miniMapMu.Lock()
+			s.miniMapReady = true
+			s.miniMapMu.Unlock()
+		}()
+	}
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
 	return s, nil
 }
@@ -354,6 +496,10 @@ func (s *DestServer) Hello() DestHello {
 	h := DestHello{Op: "hello", Data: s.DataAddr(), Control: s.ControlAddr()}
 	if s.persistL != nil {
 		h.Persist = s.PersistAddr()
+	}
+	if s.supervisor != nil {
+		h.Report = s.supervisor.Addr()
+		h.MiniCount = s.opts.MiniCount
 	}
 	return h
 }
@@ -396,6 +542,9 @@ func (s *DestServer) PersistAddr() string {
 // dial it across the network (the raw [::]:port bind address is not
 // dialable from another host).
 func (s *DestServer) DataAddr() string {
+	if s.dataL == nil {
+		return "" // P3 supervisor mode: the shared data listener is off
+	}
 	raw := s.dataL.Addr().String()
 	host, port, err := net.SplitHostPort(raw)
 	if err != nil {
@@ -468,10 +617,69 @@ func (s *DestServer) Kill() {
 }
 
 // Close shuts the listeners down (the agent's clean exit).
+// SetMiniHosts (P3 production-dispatch) sets the per-segment hosts from the
+// catalog's DstDSNs (the supervisor combines them with each mini's hello
+// data port to form the full data-listener address the segreceivers dial).
+// The controller passes them at start (after the hello); before the first
+// kind="mini" serve the MiniMap is re-resolved against these hosts.
+func (s *DestServer) SetMiniHosts(hosts []string) {
+	s.miniMapMu.Lock()
+	s.miniHosts = hosts
+	s.miniMapMu.Unlock()
+	if s.supervisor != nil {
+		for seg := 0; seg < len(hosts); seg++ {
+			if hosts[seg] != "" {
+				s.supervisor.SetMiniHost(seg, hosts[seg])
+			}
+		}
+	}
+}
+
+// MiniMapReady (P3 production-dispatch) reports whether the supervisor has
+// collected all D mini hellos (the MiniMap is complete). The controller
+// polls it before the first kind="mini" serve. ok is false on an accept
+// failure (err carries the reason).
+func (s *DestServer) MiniMapReady() (bool, error) {
+	s.miniMapMu.Lock()
+	defer s.miniMapMu.Unlock()
+	return s.miniMapReady, s.miniAcceptErr
+}
+
+// MiniDataAddrs (P3 production-dispatch) returns the D-entry address book
+// (seg ordinal 0..D-1 -> the mini's data-listener address), comma-joined in
+// seg order (the segreceivers' --dest-addr D form, parsed by
+// segstream.ParseDestAddrs). Empty when not in supervisor mode or the
+// MiniMap is not ready.
+func (s *DestServer) MiniDataAddrs() string {
+	if s.supervisor == nil {
+		return ""
+	}
+	s.miniMapMu.Lock()
+	ready := s.miniMapReady
+	s.miniMapMu.Unlock()
+	if !ready {
+		return ""
+	}
+	addrs := make([]string, s.opts.MiniCount)
+	for seg := 0; seg < s.opts.MiniCount; seg++ {
+		addrs[seg] = s.supervisor.MiniDataAddr(seg)
+	}
+	return strings.Join(addrs, ",")
+}
+
 func (s *DestServer) Close() {
 	s.stopOnce.Do(func() {
+		// P3 production-dispatch: stop the supervisor first (send mini-done
+		// to each mini, close the report listener) so the minis exit cleanly
+		// before the agent's own teardown.
+		if s.supervisor != nil {
+			s.supervisor.Stop()
+			s.supervisor.Close()
+		}
 		_ = s.ctrlL.Close()
-		_ = s.dataL.Close()
+		if s.dataL != nil {
+			_ = s.dataL.Close()
+		}
 		if s.persistL != nil {
 			_ = s.persistL.Close()
 			s.persMu.Lock()
@@ -589,6 +797,11 @@ func (s *DestServer) serveControl(l net.Listener) {
 			_ = s.sendLine(conn, DestAck{Op: "ack", Ok: true, ReqID: req.ReqID})
 		case "release":
 			s.serveWG.Wait() // in-flight ops must finish before the agent exits
+			// P3 production-dispatch: stop the supervisor (mini-done to each
+			// mini) so the minis exit cleanly at run end.
+			if s.supervisor != nil {
+				s.supervisor.Stop()
+			}
 			_ = s.sendLine(conn, DestReleased{Op: "released", Ok: true, ReqID: req.ReqID})
 			return
 		default:
@@ -641,6 +854,13 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		done.Ok = err == nil
 		done.Error = errString(err)
 	case "segments":
+		if s.supervisor != nil {
+			// P3 production-dispatch: in supervisor mode the mesh mini path
+			// (kind="mini") replaces the old coordinator-side mesh serves
+			// (the mini-agents load the slices locally on the segments).
+			done.Error = "serve-unit kind=segments: not available in supervisor mode (use kind=mini)"
+			return done
+		}
 		if req.Spec == nil {
 			done.Error = "serve-unit kind=segments: missing spec"
 			return done
@@ -664,6 +884,10 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		done.Ok = err == nil
 		done.Error = errString(err)
 	case "direct":
+		if s.supervisor != nil {
+			done.Error = "serve-unit kind=direct: not available in supervisor mode (use kind=mini)"
+			return done
+		}
 		if req.Direct == nil {
 			done.Error = "serve-unit kind=direct: missing direct launch"
 			return done
@@ -684,6 +908,10 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		done.Ok = err == nil
 		done.Error = errString(err)
 	case "routed":
+		if s.supervisor != nil {
+			done.Error = "serve-unit kind=routed: not available in supervisor mode (use kind=mini)"
+			return done
+		}
 		if req.Routed == nil {
 			done.Error = "serve-unit kind=routed: missing routed launch"
 			return done
@@ -705,6 +933,48 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
 		done.Ok = err == nil
 		done.Error = errString(err)
+	case "mini":
+		// P3 production-dispatch (mesh): the supervisor broadcasts the unit
+		// to the D destination-segment mini-agents (each does a local
+		// utility COPY on its segment) and combines the D reports (XOR_D).
+		// The supervisor holds no data connection for this path (design
+		// 04.10); the fallback coordinator path (kind="coordinator") is the
+		// only one that uses this agent's pg pool.
+		if s.supervisor == nil {
+			done.Error = "serve-unit kind=mini: not in supervisor mode"
+			return done
+		}
+		if req.Mini == nil {
+			done.Error = "serve-unit kind=mini: missing mini launch"
+			return done
+		}
+		ready, aerr := s.MiniMapReady()
+		if !ready {
+			if aerr != nil {
+				done.Error = "serve-unit kind=mini: minis not ready (accept: " + aerr.Error() + ")"
+			} else {
+				done.Error = "serve-unit kind=mini: minis not ready (MiniMap incomplete)"
+			}
+			return done
+		}
+		res, err := s.supervisor.ServeUnit(ctx, UnitReportReq{
+			UnitID:         req.UnitID,
+			JobID:          req.Mini.JobID,
+			Schema:         req.Mini.Schema,
+			Staging:        req.Mini.Staging,
+			Compress:       req.Mini.Compress,
+			VerifyDigest:   req.Mini.VerifyDigest,
+			SourceSegments: req.Mini.SourceSegments,
+			Workers:        req.Mini.Workers,
+		})
+		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
+		done.Ok = err == nil
+		done.Error = errString(err)
+		// P9-E: the combined digests (XOR_D of the D per-segment
+		// accumulators) — the mesh analogue of the inline content digest.
+		if err == nil && req.Mini.VerifyDigest {
+			done.Digest = res.DstDigest
+		}
 	default:
 		done.Error = "unknown serve kind " + req.Kind
 	}
