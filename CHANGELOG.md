@@ -140,6 +140,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dropped — the file mirror remains the resume source (FR-07), so a job
   still completes when the destination DB write fails.
 
+- **FR-17 `index_done` was never recorded in the primary journal** (the 10K
+  stress run read `index_done: 0` after a 54-minute run). The flag lives on
+  the `Unit` struct and is persisted to the file mirror, but the
+  `gpstream_units` primary table had no `index_done` column — the upsert
+  wrote 14 columns, so on any journal table created before the flag existed
+  the value was silently dropped from the DB table. `gpstream_units` now
+  carries `index_done boolean` (added to `CREATE TABLE` and to a guarded
+  migration `ALTER ... ADD COLUMN` — a `DO` block with a
+  `duplicate_column` handler, since PG 9.4 has no `ADD COLUMN IF NOT
+  EXISTS`), and the upsert writes it in both the INSERT (15 columns) and
+  UPDATE branches. The pool-drain pass in `Manager.Run` marks swapped units
+  `index_done=true` and it now lands in both journal planes. Verified by
+  `tests/integration/fr17_index_done_test.go` (a PK + secondary-index table
+  copied through the two-agent path: the pool builds the secondary index on
+  the final table, `index_done` is true in the mirror AND `gpstream_units`,
+  and a second run of the same operation keeps the unit without re-copying
+  or re-REINDEXing — the `IndexDone` guard that makes the resume idempotent).
+  Note: this records the flag; it does not change *when* indexes are built
+  (the FR-17 pool is unchanged). The stress run's `index_done=0` is the
+  column gap, not a missing index build.
+
 ### Added: remote agent launch + coordinator guard (P1e)
 
 - **`--source-agent-ssh user@host[:port]`** and **`--dest-agent-ssh

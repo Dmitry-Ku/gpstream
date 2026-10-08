@@ -306,10 +306,28 @@ func (j *Journal) Init(ctx context.Context) error {
 		    byte_count  bigint,
 		    attempts    int,
 		    epoch       bigint,
+		    index_done  boolean,
 		    updated     timestamptz,
 		    PRIMARY KEY (job_id, unit_id)
 		)`)
-	return err
+	if err != nil {
+		return err
+	}
+	// FR-17: operations that started before the index_done column existed
+	// (CREATE TABLE IF NOT EXISTS never alters an existing table) keep a
+	// journal without it; the index-upsert below would then fail on every
+	// state write (the error is surfaced to events.jsonl, but the column is
+	// never recorded). Add it to the pre-existing table. Guarded by the
+	// exception handler (PG 9.4 has no ADD COLUMN IF NOT EXISTS; GP6 = 9.4).
+	// A failure here is non-fatal: the file mirror remains the resume source
+	// and the upsert's write-error path surfaces a persistent failure.
+	_, _ = j.q.Exec(ctx,
+		`DO $$ BEGIN
+			ALTER TABLE gpstream_units ADD COLUMN index_done boolean;
+		EXCEPTION WHEN duplicate_column THEN
+			PERFORM 1;
+			END $$`)
+	return nil
 }
 
 // SetState records a unit's state, persisting to the primary journal and the
@@ -337,20 +355,20 @@ func (j *Journal) SetState(u *Unit) error {
 	// the F-04/F-14 event log.
 	if j.q != nil {
 		// UPDATE args: (job_id, unit_id, state, checksum, row_count,
-		// byte_count, attempts, epoch, updated).
-		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated}
-		// INSERT args: 14 columns (job_id, unit_id, db, schema, table, part,
+		// byte_count, attempts, epoch, index_done, updated).
+		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, u.Updated}
+		// INSERT args: 15 columns (job_id, unit_id, db, schema, table, part,
 		// kind, state, checksum, row_count, byte_count, attempts, epoch,
-		// updated).
-		insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.Updated}
+		// index_done, updated).
+		insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, u.Updated}
 		if err := pgUpsert(context.Background(), j.q,
 			`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
 			[]any{u.JobID, u.UnitID},
 			updArgs,
 			insArgs,
-			`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, updated = $9 WHERE job_id = $1 AND unit_id = $2`,
-			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, updated)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`); err != nil {
+			`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, index_done = $9, updated = $10 WHERE job_id = $1 AND unit_id = $2`,
+			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, index_done, updated)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`); err != nil {
 			j.noteLine("journal: gpstream_units write failed (mirror remains the resume source): " + err.Error())
 		}
 	}
