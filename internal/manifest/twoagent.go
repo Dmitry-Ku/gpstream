@@ -110,6 +110,13 @@ type TwoAgentRunner interface {
 	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
 	// table's content checksum (the --verify path).
 	Checksum(ctx context.Context, schema, table string) (string, error)
+	// DDL (2B-2, architecture 08.10) delegates ONE destination-DDL operation
+	// to the destination agent (the controller holds no direct destination
+	// connection). The runner issues the "ddl" control op to the long-lived
+	// dest agent, which runs it on a fresh LOCAL coordinator connection and
+	// reports back. req carries the action + the object layout; the response
+	// carries the exists-answer (exists action) or an error.
+	DDL(ctx context.Context, req agent.DDReq) (agent.DDResp, error)
 	// PeerInfo (1F) is the mesh version-exchange wiring: the destination
 	// agent's peer listener address (the source agent dials it once before
 	// the first mesh unit) + the "user@" prefix the source SSHes to its
@@ -1125,6 +1132,21 @@ func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table stri
 	return resp.Checksum, nil
 }
 
+// DDL (2B-2, architecture 08.10) delegates one destination-DDL operation to
+// the long-lived destination agent over its control socket. The agent runs it
+// on a fresh LOCAL coordinator connection and reports the result; the
+// controller never opens a direct destination connection.
+func (r *processTwoAgentRunner) DDL(ctx context.Context, req agent.DDReq) (agent.DDResp, error) {
+	resp, err := r.destCtrl.DDL(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: dest ddl %s %s.%s: %w", req.Action, req.Schema, req.Table, err)
+	}
+	if !resp.Ok && resp.Error != "" {
+		return resp, fmt.Errorf("two-agent: dest ddl %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
+	}
+	return resp, nil
+}
+
 // Release ends the run (commits the source snapshot) and stops the agents.
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
@@ -1747,6 +1769,24 @@ func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table strin
 		return "", fmt.Errorf("two-agent: source agent not started")
 	}
 	return r.srv.Checksum(ctx, schema, table)
+}
+
+// DDL (2B-2, architecture 08.10) delegates one destination-DDL operation to
+// the in-process destination agent over its control socket (mirrors the
+// process runner; the in-proc DestServer runs it on a LOCAL coordinator
+// connection).
+func (r *InProcTwoAgentRunner) DDL(ctx context.Context, req agent.DDReq) (agent.DDResp, error) {
+	if r.destCtrl == nil {
+		return agent.DDResp{}, fmt.Errorf("two-agent: dest agent not started (ddl %s)", req.Action)
+	}
+	resp, err := r.destCtrl.DDL(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: dest ddl %s %s.%s: %w", req.Action, req.Schema, req.Table, err)
+	}
+	if !resp.Ok && resp.Error != "" {
+		return resp, fmt.Errorf("two-agent: dest ddl %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
+	}
+	return resp, nil
 }
 
 // Release ends the run (commits the source snapshot) and stops the agents.

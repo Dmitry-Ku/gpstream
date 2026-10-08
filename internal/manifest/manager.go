@@ -242,6 +242,54 @@ func (m *Manager) SetTwoAgentRunner(r TwoAgentRunner) {
 	m.twoAgent = r
 }
 
+// --- 2B-2 (architecture 08.10): destination DDL delegated to the dest agent. ---
+// The controller holds no direct destination connection in the two-agent
+// topology: the destination DDL it needs (the conflict exists-check, the
+// metadata-only table create, the resume swap, the on-error staging cleanup)
+// runs on the destination agent over the "ddl" control op. In the
+// single-process topology (dead in production — Run is ALWAYS two-agent) the
+// helpers fall back to the controller's own destination pool; 2B-7 removes
+// that fallback together with m.dst/m.dstQ.
+
+// dstExists reports whether the final table exists on the destination.
+func (m *Manager) dstExists(ctx context.Context, schema, table string) (bool, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "exists", Schema: schema, Table: table})
+		if err != nil {
+			return false, err
+		}
+		return resp.Exists, nil
+	}
+	return m.dst.Exists(ctx, schema, table), nil
+}
+
+// dstCreateTable creates the destination table from the source layout.
+func (m *Manager) dstCreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution, part pg.PartitionSpec) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-table", Schema: schema, Table: table, Cols: cols, Dist: dist, Part: part})
+		return err
+	}
+	return m.dst.CreateTable(ctx, schema, cols, table, dist, part)
+}
+
+// dstDropStaging drops the unit's staging table (best-effort on-error cleanup).
+func (m *Manager) dstDropStaging(ctx context.Context, schema, staging string) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "drop-staging", Schema: schema, Staging: staging})
+		return err
+	}
+	return m.dst.DropStaging(ctx, schema, staging)
+}
+
+// dstSwap atomically renames the staging table to its final name.
+func (m *Manager) dstSwap(ctx context.Context, schema, table, staging string, overwrite bool) error {
+	if m.twoAgent != nil {
+		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "swap", Schema: schema, Table: table, Staging: staging, Overwrite: overwrite})
+		return err
+	}
+	return m.dst.Swap(ctx, schema, table, staging, overwrite)
+}
+
 // Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
 // the two agents (Start), asks the source agent to run plan.Build (its LOCAL
 // source pool + a destination querier proxied over the source->dest peer
@@ -743,10 +791,18 @@ func (m *Manager) finishCompleted(ctx context.Context, u *Unit) error {
 	}
 	target := dest.StagingName(u.JobID, u.UnitID)
 
-	if !m.dst.Exists(ctx, ds, target) {
+	stagingExists, err := m.dstExists(ctx, ds, target)
+	if err != nil {
+		return fmt.Errorf("resume: exists staging: %w", err)
+	}
+	if !stagingExists {
 		// The staging table is gone: either the rename already landed (case 2)
 		// or the verified data was dropped without a rename (case 3).
-		if m.dst.Exists(ctx, ds, dn) {
+		finalExists, err := m.dstExists(ctx, ds, dn)
+		if err != nil {
+			return fmt.Errorf("resume: exists final: %w", err)
+		}
+		if finalExists {
 			m.events.Log("resume_swap_recorded",
 				"schema", ds, "table", dn,
 				"reason", "staging absent, final present (rename landed; journal write lost)")
@@ -770,7 +826,7 @@ func (m *Manager) finishCompleted(ctx context.Context, u *Unit) error {
 	// Case 1: the staging table holds the verified data; complete the atomic
 	// rename. Same overwrite decision as runUnit step 9.
 	overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
-	if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
+	if err := m.dstSwap(ctx, ds, dn, target, overwrite); err != nil {
 		// A swap fault on resume: the verified data is still in the staging
 		// table (safe), but mark the unit failed so it is counted and
 		// retried on the next resume (consistent with a mid-copy failure).
@@ -859,7 +915,14 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	//     always rewrite — there is no pre-copy identical-data shortcut. The
 	//     only content check is the post-copy verify (--verify on).
 	if !reReading && u.Table != "" {
-		conflicted := u.Conflict || m.dst.Exists(ctx, u.DstSchema, u.DstName)
+		conflicted := u.Conflict
+		if !conflicted {
+			exists, err := m.dstExists(ctx, u.DstSchema, u.DstName)
+			if err != nil {
+				return fmt.Errorf("conflict check: exists: %w", err)
+			}
+			conflicted = exists
+		}
 		// F-11 object classes: an existing destination table is EXPECTED for
 		// both single-class modes, so it is not a conflict for them. The
 		// planner's u.Conflict and the live m.dst.Exists signal are the SAME
@@ -1104,8 +1167,16 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("partition guard: %s", u.PartitionGuard)
 	}
 
-	if err := m.dst.EnsureSchema(ctx, ds); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	// 2B-2 (architecture 08.10): in the two-agent topology the DESTINATION
+	// AGENT owns the schema DDL — its ServeUnitData runs EnsureSchema before
+	// the staging DDL, and the metadata-only create-table does the same on
+	// the agent. The controller must not create the destination schema
+	// itself (no direct destination connection, and a low-privilege dest
+	// agent must be the one to fail its own DDL, T7).
+	if m.twoAgent == nil {
+		if err := m.dst.EnsureSchema(ctx, ds); err != nil {
+			return fmt.Errorf("ensure schema: %w", err)
+		}
 	}
 
 	// 3a. Recreate the source sequences BEFORE the table DDL (F-11 metadata
@@ -1129,8 +1200,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// a no-op — spec F-11 acceptance "a repeated run is idempotent").
 		// The sequences were already created in step 3a, above, which is the
 		// required order (a serial default references the sequence).
-		if !m.dst.Exists(ctx, ds, dn) {
-			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist, u.Partition); err != nil {
+		exists, err := m.dstExists(ctx, ds, dn)
+		if err != nil {
+			return fmt.Errorf("metadata-only: exists: %w", err)
+		}
+		if !exists {
+			if err := m.dstCreateTable(ctx, ds, cols, dn, dist, u.Partition); err != nil {
 				return fmt.Errorf("create table (metadata-only): %w", err)
 			}
 		}
@@ -1157,7 +1232,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// a missing destination table is a hard error (run --metadata-only or a
 	// full copy first), and no staging+swap is used.
 	if md, data := m.cfg.IncludeClasses(); !md && data {
-		if !m.dst.Exists(ctx, ds, dn) {
+		exists, err := m.dstExists(ctx, ds, dn)
+		if err != nil {
+			m.setUnitState(u, StateFailed)
+			return fmt.Errorf("--data-only: exists check: %w", err)
+		}
+		if !exists {
 			m.setUnitState(u, StateFailed)
 			return fmt.Errorf("--data-only: destination table %s.%s does not exist (create the structure first with --metadata-only or a full copy)", ds, dn)
 		}
@@ -1343,7 +1423,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// failure is recorded as failed and re-tried by a resume (TRUNCATE is
 		// idempotent, so a retry re-copies from a clean table).
 		if !inPlace {
-			_ = m.dst.DropStaging(ctx, ds, target)
+			_ = m.dstDropStaging(ctx, ds, target)
 		}
 		u.State = StateFailed
 		_ = m.journal.SetState(u)
@@ -1398,7 +1478,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// on the M7 pilot (100 TB -> 1 PB) is unacceptable.
 		if srcDigest == "" || dstDigest == "" {
 			if !inPlace {
-				_ = m.dst.DropStaging(ctx, ds, target)
+				_ = m.dstDropStaging(ctx, ds, target)
 			}
 			_ = m.setUnitState(u, StateFailed)
 			return fmt.Errorf("verify: inline digests missing (src=%q dst=%q) — the data path stopped carrying the content digest", srcDigest, dstDigest)
@@ -1406,7 +1486,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		srcSum, dstSum := srcDigest, dstDigest
 		if srcSum != dstSum {
 			if !inPlace {
-				_ = m.dst.DropStaging(ctx, ds, target)
+				_ = m.dstDropStaging(ctx, ds, target)
 			}
 			_ = m.setUnitState(u, StateFailed)
 			// FR-04 "checksum errors": a content mismatch in the verify phase.
@@ -1456,7 +1536,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			// destination agent performed the atomic rename itself,
 			// architecture 08.10; the coordinator path since 2B-1.)
 			overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
-			if err := m.dst.Swap(ctx, ds, dn, target, overwrite); err != nil {
+			if err := m.dstSwap(ctx, ds, dn, target, overwrite); err != nil {
 				// A swap failure after a verified copy is still safe (the staging
 				// table holds the verified data); leave it and report so a resume
 				// can retry the swap.

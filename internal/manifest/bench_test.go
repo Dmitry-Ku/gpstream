@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -54,6 +55,9 @@ func (f *fakeBenchRunner) StreamMini(context.Context, unitMiniRequest) (int64, u
 	return 0, 0, 0, "", "", false, false, nil, fmt.Errorf("fakeBenchRunner: StreamMini unused in bench")
 }
 func (f *fakeBenchRunner) PeerInfo() (string, string) { return "", "" }
+func (f *fakeBenchRunner) DDL(context.Context, agent.DDReq) (agent.DDResp, error) {
+	return agent.DDResp{}, fmt.Errorf("fakeBenchRunner: ddl not supported")
+}
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")
 }

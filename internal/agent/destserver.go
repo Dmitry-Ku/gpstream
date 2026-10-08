@@ -1106,8 +1106,8 @@ func (s *DestServer) serveControl(l net.Listener) {
 	}
 	r := bufio.NewReader(conn)
 	for {
-		var req DestServeReq
-		if rerr := recvLine(r, &req); rerr != nil {
+		line, rerr := r.ReadBytes('\n')
+		if len(line) == 0 && rerr != nil {
 			// Controller closed the control conn (run end / kill -9). WAIT
 			// for the in-flight ops before exiting: the data path is
 			// independent of the control conn (F-02), so a running COPY must
@@ -1116,7 +1116,25 @@ func (s *DestServer) serveControl(l net.Listener) {
 			s.serveWG.Wait()
 			return
 		}
+		var req DestServeReq
+		if uerr := json.Unmarshal(line, &req); uerr != nil {
+			// Malformed line — same as a transport error: drain and exit.
+			s.serveWG.Wait()
+			return
+		}
 		switch req.Op {
+		case "ddl":
+			// 2B-2 (architecture 08.10): the controller's destination DDL,
+			// delegated to this agent (the controller holds no direct
+			// destination connection). Re-parse the raw line as DDReq (its
+			// fields are a superset of the op/req_id envelope).
+			var dd DDReq
+			if uerr := json.Unmarshal(line, &dd); uerr != nil {
+				_ = s.sendLine(conn, DDResp{Op: "ddl-resp", ReqID: req.ReqID, Error: "ddl: unmarshal: " + uerr.Error()})
+				continue
+			}
+			s.handleDDL(conn, &dd)
+			continue
 		case "serve-unit":
 			ack := DestAck{Op: "ack", Ok: true, ReqID: req.ReqID}
 			if req.Kind == "" {
@@ -1215,6 +1233,76 @@ func (s *DestServer) sendLine(conn net.Conn, msg any) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	return SendLine(conn, msg)
+}
+
+// handleDDL (2B-2, architecture 08.10) runs one delegated destination-DDL
+// operation on a fresh LOCAL connection to the destination coordinator, then
+// reports the result. The controller issues these in place of its own m.dst.*
+// calls so it holds no direct destination connection. The actions mirror the
+// data-path DDL the agent already performs in ServeUnitData (drop-staging,
+// swap) plus the metadata-only table create (which ensures the schema on the
+// agent side) and the exists-check the controller needs before deciding a
+// unit's fate.
+func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
+	resp := DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Ok: true}
+	switch dd.Action {
+	case "exists":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			resp.Exists = dest.New(q).Exists(context.Background(), dd.Schema, dd.Table)
+			return nil
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "create-table":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			// The schema DDL belongs to the destination agent too (2B-2):
+			// a metadata-only run may target a schema that does not exist
+			// yet, and the create-table must own it (the controller no
+			// longer ensures the destination schema).
+			da := dest.New(q)
+			if err := da.EnsureSchema(context.Background(), dd.Schema); err != nil {
+				return err
+			}
+			return da.CreateTable(context.Background(), dd.Schema, dd.Cols, dd.Table, dd.Dist, dd.Part)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "drop-staging":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).DropStaging(context.Background(), dd.Schema, dd.Staging)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "swap":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).Swap(context.Background(), dd.Schema, dd.Table, dd.Staging, dd.Overwrite)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "truncate":
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return dest.New(q).Truncate(context.Background(), dd.Schema, dd.Table)
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	default:
+		resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: "ddl: unknown action " + dd.Action}
+	}
+	_ = s.sendLine(conn, resp)
+}
+
+// ddlExec opens a fresh LOCAL connection to the destination coordinator (the
+// same DSN the data path uses), runs op on it, and closes it. The connection
+// is held only for the DDL — the agent's long-lived pool is untouched.
+func (s *DestServer) ddlExec(conn net.Conn, dd *DDReq, op func(pg.StreamingQuerier) error) error {
+	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	q, err := pg.NewConn(dctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("ddl: connect coordinator: %w", err)
+	}
+	defer q.Close()
+	return op(q)
 }
 
 // serveOne runs one unit on the shared data listener and reports it. The

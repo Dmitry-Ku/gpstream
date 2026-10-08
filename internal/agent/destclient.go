@@ -23,6 +23,8 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // DestControlClient is the controller's side of the long-lived dest agent.
@@ -48,6 +50,10 @@ type DestControlClient struct {
 	// miniMapCh (P3 production-dispatch): the mini-map op's waiters (the
 	// supervisor's D-entry address book, fetched after the MiniMap is ready).
 	miniMapCh map[uint64]chan MiniMapResp
+	// ddCh (2B-2): the ddl op's waiters (the controller's destination DDL,
+	// delegated to the agent — the controller holds no direct destination
+	// connection, architecture 08.10).
+	ddCh map[uint64]chan DDResp
 	// lateDone: a unit-done can arrive BEFORE its waiter registers (a fast
 	// serveOne — e.g. an unknown kind — finishes before the caller gets to
 	// WaitUnitDone). The reader buffers the raw line; WaitUnitDone picks it
@@ -83,6 +89,7 @@ func DialDestControlTLS(ctx context.Context, addr string, t ControlTLS) (*DestCo
 		doneCh:    make(map[uint64]chan DestUnitDone),
 		releaseCh: make(map[uint64]chan DestReleased),
 		miniMapCh: make(map[uint64]chan MiniMapResp),
+		ddCh:      make(map[uint64]chan DDResp),
 		lateDone:  make(map[uint64][]byte),
 		dead:      make(chan struct{}),
 	}
@@ -194,6 +201,15 @@ func (c *DestControlClient) readLoop() {
 						delete(c.miniMapCh, env.ReqID)
 						c.pendMu.Unlock()
 						ch <- mm
+						continue
+					}
+				case "ddl-resp":
+					if ch, ok := c.ddCh[env.ReqID]; ok {
+						var d DDResp
+						_ = json.Unmarshal(line, &d)
+						delete(c.ddCh, env.ReqID)
+						c.pendMu.Unlock()
+						ch <- d
 						continue
 					}
 				}
@@ -347,8 +363,8 @@ func (c *DestControlClient) Release() (DestReleased, error) {
 	}
 }
 
-// MiniMapReq is the controller's request for the supervisor's D-entry
-// address book (P3 production-dispatch).
+// MiniMapReq is the controller's request for the supervisor's D-entry address
+// book.
 type MiniMapReq struct {
 	Op    string `json:"op"` // "mini-map"
 	ReqID uint64 `json:"req_id"`
@@ -364,6 +380,79 @@ type MiniMapResp struct {
 	// Addrs is the comma-joined D-entry address book (seg order).
 	Addrs string `json:"addrs,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// DDReq is the controller's delegated destination-DDL instruction (2B-2,
+// architecture 08.10): the controller holds no direct destination connection,
+// so the destination DDL it needs (the metadata-only table create, the
+// resume swap, the on-error staging cleanup, the conflict exists-check) runs
+// on the destination agent. Action selects the operation; the fields are the
+// subset each action needs.
+type DDReq struct {
+	Op    string `json:"op"` // "ddl"
+	ReqID uint64 `json:"req_id"`
+	// Action: exists | create-table | drop-staging | swap | truncate.
+	Action string `json:"action"`
+	// Schema is the destination schema (the object's schema).
+	Schema string `json:"schema,omitempty"`
+	// Staging is the staging table name (drop-staging / swap source).
+	Staging string `json:"staging,omitempty"`
+	// Table is the final table name (exists / create-table / swap target /
+	// truncate).
+	Table string `json:"table,omitempty"`
+	// Overwrite is the swap decision (the controller's
+	// ConflictAction==Overwrite || unit.Conflict).
+	Overwrite bool `json:"overwrite,omitempty"`
+	// Cols/Dist/Part are the source table's layout (create-table reproduces
+	// it on the destination, exactly like the data-path staging DDL).
+	Cols []pg.Column      `json:"cols,omitempty"`
+	Dist pg.Distribution  `json:"dist,omitempty"`
+	Part pg.PartitionSpec `json:"part,omitempty"`
+}
+
+// DDResp is the destination agent's report for a DDReq.
+type DDResp struct {
+	Op    string `json:"op"` // "ddl-resp"
+	ReqID uint64 `json:"req_id"`
+	Ok    bool   `json:"ok"`
+	// Exists is the exists action's answer (does the final table exist).
+	Exists bool   `json:"exists,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// DDL delegates one destination-DDL operation to the destination agent (2B-2).
+// The controller issues it in place of its own m.dst.* call so it holds no
+// direct destination connection. It blocks until the agent answers.
+func (c *DestControlClient) DDL(req DDReq) (DDResp, error) {
+	id := c.nextID.Add(1)
+	req.Op = "ddl"
+	req.ReqID = id
+	ch := make(chan DDResp, 1)
+	c.pendMu.Lock()
+	c.ddCh[id] = ch
+	c.pendMu.Unlock()
+	defer func() {
+		c.pendMu.Lock()
+		if c.ddCh[id] == ch {
+			delete(c.ddCh, id)
+		}
+		c.pendMu.Unlock()
+	}()
+	c.writeMu.Lock()
+	werr := SendLine(c.w, req)
+	if werr == nil {
+		werr = c.w.Flush()
+	}
+	c.writeMu.Unlock()
+	if werr != nil {
+		return DDResp{}, werr
+	}
+	select {
+	case d := <-ch:
+		return d, nil
+	case <-c.dead:
+		return DDResp{}, errControlDead
+	}
 }
 
 // MiniMap fetches the supervisor's D-entry address book (the mini-agent
