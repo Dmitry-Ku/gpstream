@@ -241,14 +241,16 @@ read would stream S identical copies — logged as `replicated_fallback`.
 
 ## Mesh topology (per-segment mini-agents)
 
-The `mesh` mode's destination write side is being extended from the
-dest-agent-merge path to a **per-segment mini-agent** topology (design 04.10):
-one `gpstream-dest-agent --mini` on each destination segment host loads its
-own slice locally with a utility-mode `COPY`, and the coordinator dest-agent's
-**supervisor** combines the D per-segment reports. Neither cluster coordinator
-is in the data path. The components are implemented and e2e-verified (P2/P3/
-P4); the runtime dispatch (SSH-launch the D mini-agents, route their reports
-through the supervisor) is the live increment.
+The `mesh` mode's destination write side is a **per-segment mini-agent**
+topology (design 04.10): one `gpstream-dest-agent --mini` on each destination
+segment host loads its own slice locally with a utility-mode `COPY`, and the
+dest-agent **in supervisor mode** on the destination coordinator combines the
+D per-segment reports. Neither cluster coordinator is in the data path. The
+components AND the runtime dispatch (the `run` SSH-launches the D mini-agents
+and routes their reports through the dest-agent in supervisor mode) are
+implemented and e2e-verified (P2/P3/P4 + the P3 production-dispatch
+increment); the live validation on the multi-segment GP6 stand (the A/D/B dev
+matrix) is gated on the SVG-topology confirmation rule.
 
 ```
 source cluster (S segments)                          destination cluster (D segments)

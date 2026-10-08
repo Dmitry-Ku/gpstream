@@ -296,18 +296,21 @@ no cluster coordinator is in the data path. On the destination, one
 **mini-agent** per destination segment receives the slice(s) and loads them
 with a local utility-mode `COPY` into its own staging slice.
 
-> **Status (read this).** The mini-agent + supervisor components are
-> **implemented and e2e-verified** (P2/P3/P4, `tests/integration/
-> two_agent_mini_test.go`, `two_agent_supervisor_test.go`,
-> `two_agent_mesh_routed_test.go`). The **runtime dispatch** that makes a
-> `run` launch the D mini-agents over SSH and route their reports through the
-> supervisor (instead of the current dest-agent merge) is the **live P3/P4
-> increment**, gated on the multi-segment GP6 stand + the SVG-topology
-> confirmation rule. Until that is live, `--copy-mode mesh` runs the
-> segment-direct **read** (source segments) with the destination served by the
-> dest agent on the coordinator (`ServeSegments` merge, or the `direct_1to1`
-> fast-path write). The mini-agent path is the destination write side that the
-> live increment wires in. See PERFORMANCE.md (mesh topology).
+> **Status (read this).** The mini-agent, the dest-agent **supervisor mode**,
+> and the **runtime dispatch** are all **implemented and e2e-verified**
+> (P2/P3/P4 + the P3 production-dispatch increment,
+> `tests/integration/two_agent_mini_test.go`,
+> `two_agent_supervisor_test.go`, `two_agent_mesh_routed_test.go`,
+> `two_agent_mesh_direct_e2e_test.go`, `two_agent_mesh_coordinator_fallback_
+> test.go`, `two_agent_mesh_flood_test.go` + the P5 crash matrix). A
+> `--copy-mode mesh` `run` now launches the D mini-agents over SSH, builds the
+> D-entry address book through the dest-agent (in supervisor mode), and routes
+> the data segment-to-segment — NEITHER cluster coordinator is in the data
+> path; a table that cannot be placed segment-to-segment degrades to the
+> coordinator path (per table, `mesh_coordinator_fallback` event). The
+> **live validation** on the multi-segment GP6 stand (the A/D/B dev matrix) is
+> gated on the SVG-topology confirmation rule. See PERFORMANCE.md (mesh
+> topology).
 
 **Mini-agent (`gpstream-dest-agent --mini`).** The mini-agent is a mode of the
 `gpstream-dest-agent` binary (there is no separate binary). It runs on a
@@ -322,6 +325,26 @@ coordinator for data. New flags (mini-agent mode):
 | `--report-addr <host:port>` | `""` (required in `--mini` mode) | the supervisor's (coordinator dest-agent's) report listener; the mini dials it **once** for the run |
 | `--dest <connstring>` | `""` (required in `--mini` mode) | the utility-mode DSN to **this segment** (the mini's own local pg) |
 | `--port-range <LO-HI>` | `""` | restricts the mini's auto-picked data port (one of the run's in-range ports) |
+
+**Dest-agent supervisor mode (`gpstream-dest-agent --supervisor`).** The
+dest-agent runs on the destination **coordinator** and coordinates the D
+destination-segment mini-agents (the "supervisor" is a MODE of the dest-agent,
+not a separate component or binary). It binds the control listener, the
+persist listener (the coordinator fallback path) and the report listener; the
+shared data listener stays OFF. Per unit it builds the distributed staging
+table, broadcasts `mini-unit` to the D minis, and combines their reports
+(XOR_D). New flags (supervisor mode):
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--supervisor` | `false` | run as the mesh supervisor (coordinate the D mini-agents) instead of the plain coordinator dest-agent |
+| `--mini-count <D>` | `0` | D, the number of destination segments / mini-agents (required with `--supervisor`) |
+| `--report-listen <addr>` | `"0.0.0.0:0"` | the report listener the D minis dial (0 = pick a free port, restricted by `--port-range`; the real address is in the hello) |
+| `--mini-hosts <h0,h1,...>` | `""` | the D segment hosts in seg order (the catalog's DstDSN hosts; the hello carries the data port only). Empty = `127.0.0.1` for all (single-host layout) |
+
+The controller (the `run` process) launches the D mini-agents itself (SSH, one
+per destination segment host) and reads the D-entry address book through the
+dest-agent's `mini-map` control op before dispatching the ON SEGMENT read.
 
 Per unit the mini accepts one compressed slice on its data listener,
 decompresses it (teeing the content digest when `--verify` is on), loads it

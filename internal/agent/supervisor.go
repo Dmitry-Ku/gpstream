@@ -31,9 +31,11 @@ package agent
 //     guarantee if the supervisor itself dies first).
 //
 // Launching the D mini-agents is OUT-OF-BAND relative to this type: in the
-// production layout the dest-agent supervisor launches them over SSH (one
-// per destination segment host, `gpstream-dest-agent --mini`, reusing the
-// internal/launch pattern, no sudo); in the test they are spawned in-process
+// production layout the CONTROLLER (the run process,
+// processTwoAgentRunner.launchMinis) launches them — one
+// `gpstream-dest-agent --mini` per destination segment host, local
+// subprocess or SSH (the same launch machinery as the source/dest agents),
+// reusing internal/launch, no sudo; in the test they are spawned in-process
 // (ServeMini goroutines). Either way, the mini-agents dial the supervisor's
 // report listener, so this type's contract is: accept the D report
 // connections, collect their reports, combine them.

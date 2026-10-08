@@ -116,6 +116,72 @@ substring tags) was renamed as a matched pair so the mock still binds.
   over SSH (one per destination segment host) is the P3 SSH-launch increment
   (live-validated); this increment is the self-testable supervisor core.
 
+### Added (P3 production-dispatch: the mesh mini-mesh goes live)
+
+The P3 core (supervisor in the dest-agent, INC1) built the self-testable
+supervisor; this increment wires it into a `run` so `--copy-mode mesh`
+launches the D destination-segment mini-agents and routes their reports
+through the dest-agent **in supervisor mode** (the supervisor is a mode of the
+dest-agent, not a separate component). The mesh data path is now fully
+segment-to-segment: NEITHER cluster coordinator is in the data path (design
+04.10), and degradation is **per table** (the P4 design) — a table that cannot
+be placed segment-to-segment takes the coordinator path while the rest of the
+job keeps the mini path.
+
+- **dest-agent in supervisor mode** (`--supervisor --mini-count D
+  --report-listen <addr> --mini-hosts <h0,h1,...>`): the dest-agent on the
+  destination coordinator binds its control + persist (fallback) + report
+  listeners and embeds the Supervisor. New flags: `--supervisor`, `--mini-count
+  D`, `--report-listen`, `--mini-hosts` (the D segment hosts in seg order;
+  empty = single-host layout). The dest-agent also gains a `mini-map` control
+  op so the controller can read the D-entry address book (the segreceivers'
+  `--dest-addr`).
+
+- **D-entry address book (dest → source)**: `segstream.ProgramCommandMesh` /
+  `ProgramCommandRoutedMesh` + `validDestAddrList` — the ON SEGMENT ProgramCommand
+  now carries the destination-segment mini-agent data endpoints as a
+  comma-joined D-entry list (direct_1to1: entry s = destination segment s;
+  routed S≠D: entry d = destination segment d, the segreceivers route to it by
+  cdbhash/JCH). The `gpstream-segreceiver` gains `--dest-count` to resolve
+  `grid[<SEGID>]`.
+
+- **Controller SSH-launches the D mini-agents** (`twoagent.go`): the process
+  runner reads the destination segment catalog (`gp_segment_configuration`,
+  role='p') for D + hosts + utility DSNs, then launches D
+  `gpstream-dest-agent --mini` (the EXISTING P2 mini mode, no new binary) over
+  SSH, each dialing the supervisor's report listener; `Start` blocks on the
+  `mini-map` op until the D-entry address book is complete. A plain-PostgreSQL
+  destination (no catalog) falls back to one local segment (D=1).
+
+- **runUnit mesh dispatch** (`manager.go`, `streamTwoAgentMini`): the
+  `CopyMesh` case now routes per table — direct_1to1 (S==D, equal hash keys) →
+  the mini direct path; routed (S≠D or unequal keys, hash-distributed) → the
+  mini routed path (cdbhash/JCH, S×D×W sub-streams); anything else (merge /
+  partitioned / a non-Greenplum side / a live destination segment count that no
+  longer matches the plan) → the **coordinator** path, logged as
+  `mesh_coordinator_fallback` (per table, not per job). The dest-agent (in
+  supervisor mode) builds the distributed staging table (the DDL replicates to
+  the segments), broadcasts the unit to the D minis, and combines their reports
+  (XOR_D). The snapshot-epoch (FR-02 run-wide snapshot) is inherited unchanged:
+  both mesh branches read through the source agent's `snapshotQuerier()`.
+
+- **Acceptance (self-testable, plain PG; the ON SEGMENT read is GP6-live):**
+  `two_agent_mesh_direct_e2e_test.go` (clean D=1 + D=3 mesh write side, real
+  supervisor + D real minis, XOR_D digest == whole-table reference),
+  `two_agent_mesh_coordinator_fallback_test.go` (a LARGE mesh table on plain PG
+  degrades per table to the coordinator path — one `mesh_coordinator_fallback`
+  event, count+digest correct), `two_agent_mesh_flood_test.go` (a mesh job of
+  many small tables rides ONE long-lived dest agent — no per-table handshake),
+  plus the P5 crash-matrix (kill-mini / kill-supervisor / kill-segreceiver →
+  orphan + re-copy). Full gp6lab suite green.
+
+- **Dev matrix (08.10):** all dev testing runs on the real GP6 clusters
+  A (vm3, 3 segs), D (vm6, 3 segs), B (vm4, 4 segs): rebuild the package from
+  HEAD and install ONLY on A (rpm) + D (dpkg) (+ B when B→D runs); the pairs
+  A→A (self, S=D=3 direct), A→D (cross-cluster, S=D=3 direct), B→D (S=4≠D=3 →
+  routed). Before any live run: the SVG topology + explicit confirmation
+  (the 07.10 rule).
+
 ### Added (P2)
 
 - **Mini-agent (`gpstream-dest-agent --mini`)** — the per-destination-segment
