@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
+	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
@@ -231,6 +233,16 @@ type unitRoutedRequest struct {
 // snapshot); the destination agent is per-unit. The controller pre-binds a
 // loopback port for each socket and hands it to the agent, so it never has to
 // parse the agent's output to learn an address.
+// miniSeg (P3 production-dispatch) is one destination primary segment from
+// the destination cluster's catalog (the mini-launch target: its host + the
+// utility-mode DSN the mini-agent connects to locally).
+type miniSeg struct {
+	Content  int32
+	Hostname string
+	Port     int
+	DSN      string // utility-mode DSN to this segment (the mini's --dest)
+}
+
 type processTwoAgentRunner struct {
 	cfg *config.Config
 	// portAlloc restricts the controller's own pre-bound loopback ports to
@@ -250,6 +262,21 @@ type processTwoAgentRunner struct {
 	// has no persist listener (legacy build / off) -> coordinator units
 	// use the legacy per-unit connection.
 	destPersistAddr string
+	// --- P3 production-dispatch (mesh): the D destination-segment mini-agents ---
+	// supervisorReport is the dest-agent's (supervisor-mode) report listener
+	// address (from its hello): the D minis dial it once for the run. Empty
+	// outside supervisor mode.
+	supervisorReport string
+	// miniAddrs is the D-entry address book (seg order, comma-joined) from
+	// the supervisor's MiniMap: the segreceivers' --dest-addr D form (the
+	// source segreceiver dials mini d's endpoint for destination segment d).
+	miniAddrs string
+	// miniSegs is the destination segment catalog (content, hostname, port)
+	// read from the destination cluster at start (the mini-launch targets).
+	miniSegs []miniSeg
+	// miniHandles owns the D mini-agent processes (the controller is the
+	// orchestrator: it launches the minis on the destination segment hosts).
+	miniHandles []*launch.Handle
 	// streamMu serializes the WHOLE per-unit dest exchange
 	// (BeginServe -> source stream -> WaitUnitDone). The long-lived dest
 	// agent has ONE control socket and a SEQUENTIAL control loop (one
@@ -380,17 +407,31 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 	return nil
 }
 
-// startDest brings up the long-lived dest agent (one data + one control
-// listener) and dials its control socket (reading the hello for the data
-// address).
+// startDest brings up the long-lived dest agent and dials its control
+// socket (reading the hello for the real listener addresses). Coordinator
+// mode: one data + one control + one persist listener. Mesh mode
+// (P3 production-dispatch): the dest-agent runs in SUPERVISOR mode — one
+// control + one persist (the fallback coordinator path) + one report
+// listener (the D minis dial it), the shared data listener is OFF — and the
+// controller then launches the D destination-segment mini-agents (each
+// gpstream-dest-agent --mini on its segment host) and waits for the
+// MiniMap (the D-entry address book) to be ready.
 func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
+	mesh := r.cfg.CopyMode == config.CopyMesh
 	destCtrlListen, destCtrlDial, err := r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
 	if err != nil {
 		return err
 	}
-	dataAddr, err := r.dataListen(r.agentHost(r.cfg.DestAgentSSH))
-	if err != nil {
-		return err
+	// Coordinator mode: the shared data listener (the source agent / the
+	// segreceivers dial it). Mesh mode: OFF (the mini path uses the minis'
+	// own data listeners; the fallback coordinator path uses the persist
+	// listener) — 4+D port formula.
+	var dataAddr string
+	if !mesh {
+		dataAddr, err = r.dataListen(r.agentHost(r.cfg.DestAgentSSH))
+		if err != nil {
+			return err
+		}
 	}
 	// P1c: the dedicated persistent-coordinator listener (a third listener;
 	// the source agent dials it ONCE per run and every coordinator unit
@@ -401,16 +442,51 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	if perr != nil {
 		return fmt.Errorf("two-agent: persist listen: %w", perr)
 	}
+	// Mesh mode: the supervisor's REPORT listener (the D minis dial it once
+	// for the run; orphan-exit on drop) + the destination segment catalog
+	// (the mini-launch targets: host + utility-mode DSN per segment).
+	var reportListen string
+	if mesh {
+		var reportDial string
+		reportListen, reportDial, err = r.controlListen(r.agentHost(r.cfg.DestAgentSSH))
+		_ = reportDial
+		if err != nil {
+			return err
+		}
+		if r.miniSegs, err = r.destMiniSegs(ctx); err != nil {
+			return fmt.Errorf("two-agent: dest segment catalog: %w", err)
+		}
+	}
 	// --dest comes FIRST so the agent stays identifiable by its conn string
 	// (the crash-recovery test finds it via pgrep "<bin> --dest ").
-	dargs := []string{
-		"--dest", r.cfg.Dest,
-		"--serve",
-		"--data-listen", dataAddr,
+	dargs := []string{"--dest", r.cfg.Dest}
+	if mesh {
+		// Supervisor mode: NO --serve / NO --data-listen (the shared data
+		// listener is off; kind="mini" serves go to the minis, the fallback
+		// coordinator path rides the persist listener).
+		miniHosts := make([]string, len(r.miniSegs))
+		for i, seg := range r.miniSegs {
+			miniHosts[i] = seg.Hostname
+		}
+		dargs = append(dargs,
+			"--supervisor",
+			"--mini-count", strconv.Itoa(len(r.miniSegs)),
+			"--mini-hosts", strings.Join(miniHosts, ","),
+			"--report-listen", reportListen,
+		)
+	} else {
+		dargs = append(dargs,
+			"--serve",
+			"--data-listen", dataAddr,
+		)
+	}
+	dargs = append(dargs,
 		"--control-listen", destCtrlListen,
 		"--persist-listen", persistListen,
 		// P1d: size the destination pg pool for the concurrent persistent
-		// serves (the run's data-worker count).
+		// serves (the run's data-worker count). In supervisor mode it is
+		// the fallback coordinator path's pool (the user-confirmed
+		// "уже реализовано для режима coordinator" mechanism).
 		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",
@@ -418,7 +494,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--ack-timeout", r.cfg.AckTimeout,
 		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
 		"--retransmit-buffer-max", strconv.FormatInt(r.cfg.RetransmitBufferMax, 10),
-	}
+	)
 	// --port-range matters only when a listener address is auto (":0"): the
 	// remote/dial-first layout, where the agent binds its own data port and
 	// the controller cannot pre-bind it. Local (same-host) agents get
@@ -460,7 +536,191 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// P1c: the persistent-coordinator address (empty = the agent has no
 	// persist listener: coordinator units fall back to the per-unit conn).
 	r.destPersistAddr = client.Hello.Persist
+	// Mesh mode (P3 production-dispatch): launch the D destination-segment
+	// mini-agents (each dials the supervisor's report listener) and wait for
+	// the MiniMap (the D-entry address book, segreceivers' --dest-addr).
+	if mesh {
+		if err := r.launchMinis(ctx, client.Hello.Report); err != nil {
+			r.Release(ctx)
+			return fmt.Errorf("two-agent: launch minis: %w", err)
+		}
+		addrs, err := r.MiniMap(ctx, 120*time.Second)
+		if err != nil {
+			r.Release(ctx)
+			return fmt.Errorf("two-agent: mini-map: %w", err)
+		}
+		r.miniAddrs = addrs
+	}
 	return nil
+}
+
+// destMiniSegs (P3 production-dispatch) reads the destination cluster's
+// segment catalog (gp_segment_configuration, the up primaries, content
+// order) and derives, per segment, the mini-launch target: its host + the
+// utility-mode DSN the mini-agent connects to LOCALLY on its segment host.
+// It requires a Greenplum destination (a plain-PostgreSQL destination
+// errors: the mesh mode needs the catalog for the mini layout). The catalog
+// read is a control-plane (catalog) connection — the same class as the
+// controller's existing dstQ DDL/journal/verify queries, not a data
+// connection (design 04.10).
+func (r *processTwoAgentRunner) destMiniSegs(ctx context.Context) ([]miniSeg, error) {
+	conn, err := pg.NewConn(ctx, r.cfg.Dest, r.cfg.SSLCert, r.cfg.SSLKey, r.cfg.SSLCA, r.cfg.SSLMinTLS)
+	if err != nil {
+		return nil, fmt.Errorf("connect destination: %w", err)
+	}
+	defer conn.Close()
+	// A plain-PostgreSQL destination (no gp_segment_configuration — the
+	// self-test stand / a single-node layout) has ONE local segment: the
+	// coordinator's own host + port (the DSN's host:port; an empty host =
+	// this host). The mini-agent connects to it locally (utility mode is a
+	// no-op on plain PG, the COPY is a plain COPY).
+	if pg.RowStr(ctx, conn, `SELECT to_regclass('gp_segment_configuration')::text`) == "" {
+		host, port := dsnHostPort(r.cfg.Dest)
+		if agent.IsLocalHost(host) || host == "" {
+			host = "127.0.0.1"
+		}
+		return []miniSeg{{Content: 0, Hostname: host, Port: port, DSN: r.cfg.Dest}}, nil
+	}
+	rows, err := conn.Query(ctx,
+		`SELECT content, hostname, port FROM gp_segment_configuration
+		  WHERE role = 'p' AND status = 'u' AND content >= 0
+		  ORDER BY content`)
+	if err != nil {
+		return nil, fmt.Errorf("read gp_segment_configuration (mesh needs a Greenplum destination): %w", err)
+	}
+	segs := make([]miniSeg, 0, len(rows))
+	for i, row := range rows {
+		if len(row) < 3 {
+			continue
+		}
+		content, _ := row[0].(int64)
+		hostname, _ := row[1].(string)
+		port, _ := row[2].(int64)
+		if hostname == "" {
+			return nil, fmt.Errorf("dest segment %d has no hostname in the catalog", i)
+		}
+		dsn, derr := segmentDSN(r.cfg.Dest, destSegment{Content: int32(content), Hostname: hostname, Port: int(port)})
+		if derr != nil {
+			return nil, derr
+		}
+		segs = append(segs, miniSeg{Content: int32(content), Hostname: hostname, Port: int(port), DSN: dsn})
+	}
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("no up primary segments on the destination")
+	}
+	// content must be dense 0..D-1 (a missing content breaks slice coverage).
+	for i, seg := range segs {
+		if seg.Content != int32(i) {
+			return nil, fmt.Errorf("dest segment contents are not dense (got %d at position %d) — the mesh needs all primaries up", seg.Content, i)
+		}
+	}
+	return segs, nil
+}
+
+// dsnHostPort extracts (host, port) from a postgres conn string (URL form
+// or keyword form). Empty host (unix socket / default) yields ("", 0); an
+// empty port yields 0 (the caller treats it as the cluster's default).
+func dsnHostPort(dsn string) (string, int) {
+	if i := strings.Index(dsn, "://"); i >= 0 {
+		if u, err := url.Parse(dsn); err == nil && u.Host != "" {
+			if h, ps, err := net.SplitHostPort(u.Host); err == nil {
+				p, _ := strconv.Atoi(ps)
+				return h, p
+			}
+			return u.Host, 0
+		}
+	}
+	host, port := "", 0
+	for _, part := range strings.Fields(dsn) {
+		if h, ok := strings.CutPrefix(part, "host="); ok {
+			host = h
+		}
+		if p, ok := strings.CutPrefix(part, "port="); ok {
+			port, _ = strconv.Atoi(p)
+		}
+	}
+	return host, port
+}
+
+// launchMinis (P3 production-dispatch) launches the D destination-segment
+// mini-agents: one gpstream-dest-agent --mini per segment, on the segment's
+// host (local subprocess when the segment host is this controller's host,
+// SSH otherwise — the SSH user is the --dest-agent-ssh user, a project
+// decision: the operator uses one SSH user across the cluster hosts). Each
+// mini connects to its OWN segment locally (utility-mode DSN) and dials the
+// supervisor's report listener (the hello's report address, host-rewritten
+// for the segment host when the listener bound 0.0.0.0). The minis' data
+// ports are in-range (the --port-range) — the 4+D formula's D ports.
+func (r *processTwoAgentRunner) launchMinis(ctx context.Context, helloReport string) error {
+	// The report address the minis dial: the hello carries the bound
+	// address (0.0.0.0:port for a remote/alloc'd listener); rewrite the
+	// host to the coordinator's host so a segment host can reach it.
+	reportDial := helloReport
+	if h, p, perr := net.SplitHostPort(reportDial); perr == nil && (h == "0.0.0.0" || h == "::" || h == "") {
+		if destHost := r.agentHost(r.cfg.DestAgentSSH); destHost != "" {
+			reportDial = net.JoinHostPort(destHost, p)
+		}
+	}
+	sshUser := ""
+	if i := strings.LastIndex(r.cfg.DestAgentSSH, "@"); i >= 0 {
+		sshUser = r.cfg.DestAgentSSH[:i+1]
+	}
+	for _, seg := range r.miniSegs {
+		sshHost := ""
+		if sshUser != "" && !agent.IsLocalHost(seg.Hostname) {
+			sshHost = sshUser + seg.Hostname
+		}
+		margs := []string{
+			"--dest", seg.DSN,
+			"--mini",
+			"--seg", strconv.Itoa(int(seg.Content)),
+			"--report-addr", reportDial,
+			"--data-listen", "0.0.0.0:0",
+			"--accept-timeout", "5m",
+			"--stream-timeout", "6h",
+		}
+		if r.cfg.PortRange != "" {
+			margs = append(margs, "--port-range", r.cfg.PortRange)
+		}
+		if r.cfg.SSLCert != "" {
+			margs = append(margs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
+		}
+		if r.cfg.SSLCA != "" {
+			margs = append(margs, "--ssl-ca", r.cfg.SSLCA)
+		}
+		if r.cfg.SegTLSCert != "" {
+			margs = append(margs, "--data-tls-cert", r.cfg.SegTLSCert, "--data-tls-key", r.cfg.SegTLSKey)
+		}
+		if r.cfg.SegTLSCA != "" {
+			margs = append(margs, "--data-tls-ca", r.cfg.SegTLSCA)
+		}
+		base := "gpstream-dest-agent-mini-seg" + strconv.Itoa(int(seg.Content))
+		h, lerr := launch.Ensure(ctx, launch.Target{
+			Binary:      r.cfg.DestAgentBinary,
+			Args:        margs,
+			ControlAddr: "", // the mini has no control socket: it dials the supervisor's report listener
+			SSHHost:     sshHost,
+			LogPath:     agentLogPath(base),
+			WaitTimeout: 30 * time.Second,
+		})
+		if lerr != nil {
+			// Stop the minis already launched (they orphan-exit on the
+			// supervisor's release anyway; this is the timely path).
+			r.stopMinis()
+			return fmt.Errorf("seg %d (%s): %w", seg.Content, seg.Hostname, lerr)
+		}
+		r.miniHandles = append(r.miniHandles, h)
+	}
+	return nil
+}
+
+// stopMinis stops the D mini-agents (the supervisor's release op sends each
+// a mini-done for the clean exit; this is the last-resort kill).
+func (r *processTwoAgentRunner) stopMinis() {
+	for _, h := range r.miniHandles {
+		h.Stop()
+	}
+	r.miniHandles = nil
 }
 
 // target builds a launch.Target for one agent. The binary is the packaged
@@ -835,6 +1095,33 @@ func (r *processTwoAgentRunner) StreamRouted(ctx context.Context, req unitRouted
 }
 
 // Checksum asks the source agent (FR-02 snapshot) for the table's checksum.
+// MiniMap (P3 production-dispatch, mesh) polls the dest-agent (supervisor
+// mode) until its D-entry address book is complete (all D minis have
+// connected) and returns it comma-joined in seg order (the segreceivers'
+// --dest-addr D form). It fails when the supervisor reports an accept error
+// (a mini never connected) or the deadline elapses.
+func (r *processTwoAgentRunner) MiniMap(ctx context.Context, deadline time.Duration) (string, error) {
+	deadlineCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	for {
+		mm, err := r.destCtrl.MiniMap()
+		if err != nil {
+			return "", fmt.Errorf("two-agent: mini-map: %w", err)
+		}
+		if mm.Ok {
+			return mm.Addrs, nil
+		}
+		if mm.Error != "" && strings.Contains(mm.Error, "accept") {
+			return "", fmt.Errorf("two-agent: mini-map: %s", mm.Error)
+		}
+		select {
+		case <-deadlineCtx.Done():
+			return "", fmt.Errorf("two-agent: mini-map not ready after %s (%s)", deadline, mm.Error)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
 func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {
 	resp, err := r.ctrl.Checksum(schema, table)
 	if err != nil {
@@ -865,6 +1152,9 @@ func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 		r.destHandle.Stop()
 		r.destHandle = nil
 	}
+	// Mesh mode: the minis (the supervisor's release op already sent each a
+	// mini-done for the clean exit; the handles' Stop is the last resort).
+	r.stopMinis()
 	if r.ctrl != nil {
 		if _, err := r.ctrl.Release(); err != nil {
 			if cerr == nil {
