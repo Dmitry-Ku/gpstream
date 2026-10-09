@@ -70,9 +70,14 @@ func readDestCatalog(ctx context.Context, dsn, sslCert, sslKey, sslCA, sslMinTLS
 		if len(row) < 3 {
 			continue
 		}
-		content, _ := row[0].(int64)
+		// gp_segment_configuration: content is int2 (int16) and port is int4
+		// (int32) — pgx v5 scans int2 into int16 and int4 into int32, NOT
+		// int64, so a raw row[n].(int64) silently zeroes every value. catInt64
+		// handles the actual scan types (the same convention as the other
+		// segment-catalog readers' toInt64).
+		content := catInt64(row[0])
 		hostname, _ := row[1].(string)
-		port, _ := row[2].(int64)
+		port := catInt64(row[2])
 		if hostname == "" {
 			return nil, fmt.Errorf("dest catalog: segment %d has no hostname", i)
 		}
@@ -107,6 +112,36 @@ func segmentUtilityDSN(destDSN, hostname string, port int) string {
 		return u.String()
 	}
 	return destDSN + " gp_session_role=utility"
+}
+
+// catInt64 converts a catalog column value to int64. gp_segment_configuration
+// columns scan as int16 (content, int2) / int32 (port, int4) / int64 / string
+// depending on the driver and the column type; the raw .(int64) assertion
+// silently zeroes int16/int32 values (pgx v5 scans int2->int16, int4->int32),
+// which is exactly what made readDestCatalog see content=0 for every segment.
+func catInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case int16:
+		return int64(n)
+	case int:
+		return int64(n)
+	case uint32:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case string:
+		var out int64
+		_, _ = fmt.Sscanf(n, "%d", &out)
+		return out
+	default:
+		return 0
+	}
 }
 
 // dsnHostPort extracts (host, port) from a postgres conn string (URL form or
