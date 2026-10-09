@@ -419,6 +419,76 @@ func (m *Manager) dstCreateIndexes(ctx context.Context, schema, table, srcSchema
 	return m.dst.CreateIndexes(ctx, schema, table, srcSchema, srcTable, defs)
 }
 
+// --- 2B-5 (architecture 08.10): the last per-unit DB reads delegated. ---
+// The per-unit schema reads (the table's columns + distribution policy, the
+// zero-columns existence guard, the source segment count) run on the SOURCE
+// agent (its local source pool — the catalog-querier convention, not the
+// pinned FR-02 snapshot); the destination segment enumeration (the
+// mesh/coordinator topology probe) runs on the DESTINATION agent. The
+// controller keeps no DB of its own on the two-agent topology — only pure
+// logic (the partition-guard decision, the DSN rewrite, the route decision).
+// Single-process fallback (dead in production) uses the controller's own
+// pools; 2B-7 removes it.
+
+// srcColumns reads the table's column definitions (FR-02/FR-03: the
+// destination DDL is built from the source's own column layout) via the
+// source agent's table-layout catalog op.
+func (m *Manager) srcColumns(ctx context.Context, schema, table string) ([]pg.Column, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
+		if err != nil {
+			return nil, err
+		}
+		return resp.Columns, nil
+	}
+	return source.New(m.srcQ).Columns(ctx, schema, table)
+}
+
+// srcTableExists is the zero-columns guard's probe (a vanished source table
+// yields ZERO columns — the guard must distinguish that from a catalog
+// fault and fail the unit early, before any DDL or data, so the error stays
+// contained on a pool connection and cannot abort the FR-02 snapshot).
+func (m *Manager) srcTableExists(ctx context.Context, schema, table string) bool {
+	if m.twoAgent != nil {
+		return m.twoAgent.TableExists(ctx, schema, table)
+	}
+	return source.New(m.srcQ).TableExists(ctx, schema, table)
+}
+
+// srcDistribution reads the table's distribution policy (F-11) via the
+// source agent's table-layout catalog op. A catalog fault there degrades to
+// the empty policy (the destination uses its own default) — the same
+// non-fatal convention the in-process Distribution read had.
+func (m *Manager) srcDistribution(ctx context.Context, schema, table string) pg.Distribution {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
+		if err != nil {
+			return pg.Distribution{}
+		}
+		return resp.Dist
+	}
+	return source.New(m.srcQ).Distribution(ctx, schema, table)
+}
+
+// srcPrimarySegmentCount returns the number of up primary CONTENTS on the
+// source (the segreceiver count for the ON SEGMENT dispatch) via the source
+// agent's segment-count catalog op. It requires a Greenplum source
+// (gp_segment_configuration); on plain PostgreSQL it errors, which the
+// caller surfaces as a clear "segment-direct requires Greenplum" failure.
+func (m *Manager) srcPrimarySegmentCount(ctx context.Context) (int, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "segment-count"})
+		if err != nil {
+			return 0, err
+		}
+		if resp.SegmentCount <= 0 {
+			return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
+		}
+		return int(resp.SegmentCount), nil
+	}
+	return m.primarySegmentCount(ctx)
+}
+
 // Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
 // the two agents (Start), asks the source agent to run plan.Build (its LOCAL
 // source pool + a destination querier proxied over the source->dest peer
@@ -459,6 +529,11 @@ func (m *Manager) ReleaseAgents() {
 		_ = m.twoAgent.Release(context.Background())
 	}
 }
+
+// Journal exposes the run's journal (the in-memory unit states + the file
+// mirror). Tests use it to assert the per-unit states after a run; the
+// production paths use the journal directly.
+func (m *Manager) Journal() *Journal { return m.journal }
 
 func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// Ensure the primary journal table exists (ADR-001 §4.3); the file
@@ -1242,16 +1317,17 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	t := m.tableFor(u)
 	schema, name := u.Schema, u.Table
 	// The column list is stable catalog data (not snapshot state), so it is
-	// read on the base source querier, NOT the pinned FR-02 snapshot
-	// connection: a query fault there (e.g. the table was dropped, or the
-	// source is unreachable) must not abort the REPEATABLE READ snapshot that
-	// every data COPY shares. On a pool source m.srcQ hands out a pool
-	// connection per query, so a bad statement is contained. (M2 20+ table
-	// scale test, 28.09: reading Columns on the pinned conn aborted the whole
-	// snapshot transaction on one failed unit, cascading 25P02 to every
-	// sibling unit. Same failure class the Distribution read below already
-	// avoids.)
-	cols, err := source.New(m.srcQ).Columns(ctx, schema, name)
+	// read on the SOURCE AGENT's pool (2B-5: the controller holds no direct
+	// source connection on the two-agent topology; single-process: its own
+	// srcQ), NOT the pinned FR-02 snapshot connection: a query fault there
+	// (e.g. the table was dropped, or the source is unreachable) must not
+	// abort the REPEATABLE READ snapshot that every data COPY shares. On a
+	// pool source the pool hands out a connection per query, so a bad
+	// statement is contained. (M2 20+ table scale test, 28.09: reading
+	// Columns on the pinned conn aborted the whole snapshot transaction on
+	// one failed unit, cascading 25P02 to every sibling unit. Same failure
+	// class the Distribution read below already avoids.)
+	cols, err := m.srcColumns(ctx, schema, name)
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
 	}
@@ -1262,23 +1338,21 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// pinned FR-02 snapshot connection, and any SQL error aborts the
 		// whole REPEATABLE READ transaction — cascading 25P02 to every
 		// remaining unit (F-06: one failed unit must not take down the
-		// operation). The existence check runs on a pool connection, so the
-		// error is contained and the snapshot survives.
-		if rows, qerr := m.srcQ.Query(ctx,
-			`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		    WHERE c.relname = $1 AND n.nspname = $2`, name, schema); qerr == nil && len(rows) == 0 {
+		// operation). The existence check runs on a pool connection (the
+		// source agent's, two-agent), so the error is contained and the
+		// snapshot survives.
+		if !m.srcTableExists(ctx, schema, name) {
 			m.setUnitState(u, StateFailed) // mark failed so a resume retries it (FR-06/FR-07)
 			return fmt.Errorf("source table %s.%s does not exist (dropped during the run?)", schema, name)
 		}
 	}
-	// The distribution policy is stable catalog data (not snapshot state), so
-	// it is read on the base source querier, NOT the pinned FR-02 snapshot
-	// connection: a query fault there must not abort the REPEATABLE READ
-	// snapshot that every data COPY shares. On a pool source m.srcQ hands out
-	// a pool connection per query, so a bad statement is contained. (GP6
-	// live e2e, 27.09: the first version read it on the pinned conn and the
-	// resulting error aborted the whole snapshot transaction.)
-	dist := source.New(m.srcQ).Distribution(ctx, schema, name)
+	// The distribution policy is stable catalog data (not snapshot state),
+	// so it is read on the source agent's pool (2B-5), NOT the pinned FR-02
+	// snapshot connection: a query fault there must not abort the
+	// REPEATABLE READ snapshot that every data COPY shares. (GP6 live e2e,
+	// 27.09: the first version read it on the pinned conn and the resulting
+	// error aborted the whole snapshot transaction.)
+	dist := m.srcDistribution(ctx, schema, name)
 
 	// 2b. Fix-1 partition guard: a string-keyed partitioned parent WITHOUT a
 	//     DEFAULT partition, on a collation-different destination, would have
@@ -1767,7 +1841,7 @@ func (m *Manager) wantsRoutedWrite(u *Unit, part pg.PartitionSpec) bool {
 // connection: it reads back the destination's authoritative row count + the
 // on-network wire volume. The swap is the controller's decision (runUnit step 9).
 func (m *Manager) streamTwoAgentSegment(ctx context.Context, t plan.Table, u *Unit, target, ds, dn string, cols []pg.Column, dist pg.Distribution, part pg.PartitionSpec) (int64, uint64, uint64, error) {
-	n, err := m.primarySegmentCount(ctx)
+	n, err := m.srcPrimarySegmentCount(ctx)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("on_segment two-agent: %w", err)
 	}
@@ -1934,7 +2008,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 	//    require a Greenplum side; a plain-PostgreSQL side cannot run the
 	//    mini path (no ON SEGMENT dispatch / no per-segment utility COPY),
 	//    so it degrades to the coordinator path (per table).
-	S, serr := m.primarySegmentCount(ctx)
+	S, serr := m.srcPrimarySegmentCount(ctx)
 	segs, derr := m.destSegments(ctx)
 	D := len(segs)
 	if serr != nil || derr != nil || D == 0 {
@@ -2539,10 +2613,23 @@ type destSegment struct {
 }
 
 // destSegments lists the destination's up primary segments in content order
-// (R5). It requires a Greenplum destination (gp_segment_configuration); on a
-// plain-PostgreSQL destination it errors, which the caller degrades to the
-// coordinator path.
+// (R5). Two-agent (2B-5): the DESTINATION agent enumerates + dense-validates
+// them on a fresh LOCAL coordinator connection (the segments ddl op); the
+// controller holds no direct destination connection. It requires a Greenplum
+// destination (gp_segment_configuration); on a plain-PostgreSQL destination
+// it errors, which the caller degrades to the coordinator path.
 func (m *Manager) destSegments(ctx context.Context) ([]destSegment, error) {
+	if m.twoAgent != nil {
+		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "segments"})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]destSegment, 0, len(resp.Segments))
+		for _, s := range resp.Segments {
+			out = append(out, destSegment{Content: s.Content, Hostname: s.Hostname, Port: s.Port})
+		}
+		return out, nil
+	}
 	segRows, err := m.dstQ.Query(ctx,
 		`SELECT content, hostname, port FROM gp_segment_configuration
 		  WHERE role = 'p' AND status = 'u' AND content >= 0

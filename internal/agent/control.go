@@ -338,7 +338,23 @@ type CatalogResp struct {
 	// index definitions, JSON-safe (Name/Unique/PK/Def — no function
 	// fields), so the wire round-trip is value-identical.
 	Indexes []pg.IndexDef `json:"indexes,omitempty"`
-	Error   string        `json:"error,omitempty"`
+	// 2B-5 (architecture 08.10): the table-layout action's answer — the
+	// table's column definitions (format_type-faithful, JSON-safe: no
+	// function fields) + its distribution policy. Both round-trip
+	// value-identical over the wire (the same convention as the data path,
+	// which the controller no longer reads itself on the two-agent
+	// topology).
+	Columns []pg.Column     `json:"columns,omitempty"`
+	Dist    pg.Distribution `json:"dist,omitempty"`
+	// Exists is the table-exists action's answer (2B-5: the per-unit
+	// zero-columns guard — a vanished source table fails the unit early).
+	Exists bool `json:"exists,omitempty"`
+	// SegmentCount is the segment-count action's answer (2B-5): the number
+	// of up primary CONTENTS on the source (the segreceiver count for the
+	// ON SEGMENT dispatch). 0 = not a Greenplum source / not enumerable
+	// (the manager surfaces the clear "requires Greenplum" error).
+	SegmentCount int64  `json:"segment_count,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // SendLine writes one control message (JSON + newline) to w.

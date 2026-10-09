@@ -394,7 +394,7 @@ type DDReq struct {
 	ReqID uint64 `json:"req_id"`
 	// Action: exists | create-table | drop-staging | swap | truncate |
 	// create-sequence | set-sequence-value | add-constraints | balance |
-	// create-indexes.
+	// create-indexes | segments.
 	Action string `json:"action"`
 	// Schema is the destination schema (the object's schema).
 	Schema string `json:"schema,omitempty"`
@@ -445,7 +445,11 @@ type DDResp struct {
 	// Balance is the balance action's answer (the destination table's
 	// per-segment fill; Segments=0 when not measurable).
 	Balance dest.Balance `json:"balance,omitempty"`
-	Error   string       `json:"error,omitempty"`
+	// Segments is the segments action's answer (2B-5): the destination's
+	// up primary segments in content order (already dense-validated by
+	// the agent), or nil on error.
+	Segments []dest.Segment `json:"segments,omitempty"`
+	Error    string         `json:"error,omitempty"`
 }
 
 // DDL delegates one destination-DDL operation to the destination agent (2B-2).

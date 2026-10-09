@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -608,13 +609,14 @@ func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, 
 // handleChecksum re-derives the content checksum of a table on the pinned
 // snapshot connection (the same FR-02 snapshot the data COPY used) — the
 // controller's --verify path compares it against the destination.
-// handleCatalog (2B-3, architecture 08.10) runs one delegated source-catalog
-// read on the source agent's LOCAL pool. The controller holds no direct
-// source connection for the per-unit catalog ops (sequence discovery,
-// sequence last_value, constraint definitions); the read runs on the catalog
-// querier (the pool, not the pinned FR-02 snapshot, so a catalog fault cannot
-// abort the snapshot transaction — the same convention as the Columns /
-// Distribution reads).
+// handleCatalog (2B-3/2B-4/2B-5, architecture 08.10) runs one delegated
+// source-catalog read on the source agent's LOCAL pool. The controller holds
+// no direct source connection for the per-unit catalog ops (sequence
+// discovery, sequence last_value, constraint definitions, the FR-17 index
+// definitions, the per-unit table layout, the zero-columns probe, the
+// source segment count); the read runs on the catalog querier (the pool, not
+// the pinned FR-02 snapshot, so a catalog fault cannot abort the snapshot
+// transaction — the same convention as the Columns / Distribution reads).
 func (s *SourceServer) handleCatalog(req CatalogReq) CatalogResp {
 	resp := CatalogResp{ReqID: req.ReqID, Ok: true}
 	a := source.New(s.catalogQuerier())
@@ -658,6 +660,41 @@ func (s *SourceServer) handleCatalog(req CatalogReq) CatalogResp {
 			break
 		}
 		resp.Indexes = defs
+	case "table-layout":
+		// 2B-5 (architecture 08.10): the per-unit schema read the manager
+		// used to run on its own m.srcQ — the table's column definitions
+		// (format_type-faithful) + its distribution policy. Both are
+		// stable catalog data read on the pool (the catalog-querier
+		// convention, NOT the pinned FR-02 snapshot): a catalog fault
+		// there must not abort the snapshot that every data COPY shares.
+		cols, err := a.Columns(ctx, req.Schema, req.Table)
+		if err != nil {
+			resp = CatalogResp{ReqID: req.ReqID, Error: err.Error()}
+			break
+		}
+		resp.Columns = cols
+		resp.Dist = a.Distribution(ctx, req.Schema, req.Table)
+	case "table-exists":
+		// 2B-5 (architecture 08.10): the zero-columns guard's probe (a
+		// vanished source table fails the unit early, on the pool, so the
+		// fault cannot abort the FR-02 snapshot).
+		resp.Exists = a.TableExists(ctx, req.Schema, req.Table)
+	case "segment-count":
+		// 2B-5 (architecture 08.10): the number of up primary CONTENTS on
+		// the source (the segreceiver count for the ON SEGMENT dispatch).
+		// Requires Greenplum (gp_segment_configuration); on plain
+		// PostgreSQL the catalog is absent -> 0 (the manager surfaces the
+		// clear "segment-direct requires Greenplum" error, as before).
+		// count(*) would include the master row (content=-1) and overcount
+		// by one — the DISTINCT content filter is the fix (E2 e2e, 27.09).
+		v := pg.RowStr(ctx, s.catalogQuerier(),
+			`SELECT count(DISTINCT content) FROM gp_segment_configuration
+			 WHERE role = 'p' AND status = 'u' AND content >= 0`)
+		if v != "" {
+			if n, aerr := strconv.Atoi(v); aerr == nil {
+				resp.SegmentCount = int64(n)
+			}
+		}
 	default:
 		resp = CatalogResp{ReqID: req.ReqID, Error: "catalog: unknown action " + req.Action}
 	}
@@ -743,6 +780,16 @@ func (s *SourceServer) BuildPlan(ctx context.Context, timeout time.Duration, cfg
 // path (handleChecksum) wraps it for the binary agent.
 func (s *SourceServer) Checksum(ctx context.Context, schema, table string) (string, error) {
 	return source.New(s.copyQuerier()).Checksum(ctx, schema, table)
+}
+
+// TableExists (2B-5, architecture 08.10) reports whether schema.table exists
+// on the source (the zero-columns guard probe). It runs on the CATALOG
+// querier (the pool, not the pinned FR-02 snapshot) — a probe fault is
+// contained, exactly as the Columns / Distribution reads. The control-socket
+// path (the "table-exists" catalog action) is the same probe for the
+// production process runner.
+func (s *SourceServer) TableExists(ctx context.Context, schema, table string) bool {
+	return source.New(s.catalogQuerier()).TableExists(ctx, schema, table)
 }
 
 // catalogQuerier returns the querier for catalog reads: the pool (separate

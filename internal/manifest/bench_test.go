@@ -61,6 +61,7 @@ func (f *fakeBenchRunner) DDL(context.Context, agent.DDReq) (agent.DDResp, error
 func (f *fakeBenchRunner) Catalog(context.Context, agent.CatalogReq) (agent.CatalogResp, error) {
 	return agent.CatalogResp{}, fmt.Errorf("fakeBenchRunner: catalog not supported")
 }
+func (f *fakeBenchRunner) TableExists(context.Context, string, string) bool { return false }
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")
 }

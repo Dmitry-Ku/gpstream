@@ -323,6 +323,53 @@ func (a *Agent) Swap(ctx context.Context, schema, table, stagingName string, ove
 	return nil
 }
 
+// Segment is one up primary of the destination cluster (content 0..D-1).
+// JSON-safe (no function fields): it rides the "segments" ddl op's
+// response over the control socket (2B-5, architecture 08.10).
+type Segment struct {
+	Content  int32
+	Hostname string
+	Port     int
+}
+
+// Segments lists the destination's up primary segments in content order
+// (R5). It requires a Greenplum destination (gp_segment_configuration);
+// on a plain-PostgreSQL destination it errors, which the caller degrades
+// to the coordinator path. The content check (dense 0..D-1) is part of
+// the answer: a missing content breaks per-segment slice coverage, so the
+// enumeration is the only way to know the destination can serve a direct
+// path at all.
+func (a *Agent) Segments(ctx context.Context) ([]Segment, error) {
+	segRows, err := a.q.Query(ctx,
+		`SELECT content, hostname, port FROM gp_segment_configuration
+		  WHERE role = 'p' AND status = 'u' AND content >= 0
+		  ORDER BY content`)
+	if err != nil {
+		return nil, fmt.Errorf("cannot enumerate dest segments (direct mode requires a Greenplum destination): %w", err)
+	}
+	seg := make([]Segment, 0, len(segRows))
+	for _, r := range segRows {
+		if len(r) < 3 {
+			continue
+		}
+		seg = append(seg, Segment{
+			Content:  int32(toInt64(r[0])),
+			Hostname: toStr(r[1]),
+			Port:     int(toInt64(r[2])),
+		})
+	}
+	if len(seg) == 0 {
+		return nil, fmt.Errorf("no up primary segments on the destination")
+	}
+	// content must be a dense 0..D-1 (a missing content breaks slice coverage).
+	for i, s := range seg {
+		if s.Content != int32(i) {
+			return nil, fmt.Errorf("dest segment contents are not dense (got %d at position %d) — direct mode requires all primaries up", s.Content, i)
+		}
+	}
+	return seg, nil
+}
+
 // Exists reports whether schema.table exists in the destination.
 func (a *Agent) Exists(ctx context.Context, schema, table string) bool {
 	return a.exists(ctx, schema, table)

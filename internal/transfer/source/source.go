@@ -96,6 +96,22 @@ func (a *Agent) Columns(ctx context.Context, schema, table string) ([]pg.Column,
 // unnest(... WITH ORDINALITY) preserves column order (array_position does
 // not exist for int2vector on this fork). The keys are aggregated as text
 // in SQL so the result stays driver-type-agnostic.
+// TableExists reports whether schema.table exists on the source (the
+// pg_class existence probe). The manager's per-unit zero-columns guard
+// (2B-5: a vanished source table must fail the unit EARLY, before any DDL
+// or data, without aborting the FR-02 snapshot) runs this on the source
+// agent's pool connection — a fault there is contained, exactly as the
+// Columns / Distribution reads are.
+func (a *Agent) TableExists(ctx context.Context, schema, table string) bool {
+	rows, err := a.q.Query(ctx,
+		`SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE c.relname = $1 AND n.nspname = $2`, table, schema)
+	if err != nil {
+		return false
+	}
+	return len(rows) > 0
+}
+
 func (a *Agent) Distribution(ctx context.Context, schema, table string) pg.Distribution {
 	oid, err := pg.Row(ctx, a.q,
 		`SELECT COALESCE(to_regclass('gp_toolkit.gp_distribution_policy'), to_regclass('gp_distribution_policy')) /* gs-gp-probe */`)

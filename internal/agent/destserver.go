@@ -1323,6 +1323,24 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}
+	case "segments":
+		// 2B-5 (architecture 08.10): the destination's up primary segments
+		// in content order (the mesh/coordinator topology probe the manager
+		// used to run on its own m.dstQ). The agent enumerates them on a
+		// fresh LOCAL coordinator connection and validates the content
+		// density there (a missing content breaks slice coverage) — the
+		// response is the validated list, or an error the manager degrades
+		// to the coordinator path on.
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			segs, err := dest.New(q).Segments(context.Background())
+			if err != nil {
+				return err
+			}
+			resp.Segments = segs
+			return nil
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
 	default:
 		resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: "ddl: unknown action " + dd.Action}
 	}

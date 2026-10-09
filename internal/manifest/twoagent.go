@@ -119,11 +119,20 @@ type TwoAgentRunner interface {
 	DDL(ctx context.Context, req agent.DDReq) (agent.DDResp, error)
 	// Catalog (2B-3, architecture 08.10) reads one source-catalog object on
 	// the SOURCE agent (sequence discovery, sequence last_value, constraint
-	// definitions) — the controller holds no direct source connection for
-	// the per-unit catalog ops. The runner issues the "catalog" control op
-	// to the long-lived source agent, which reads it on its LOCAL source
-	// pool (the pool, not the pinned snapshot) and reports back.
+	// definitions, the FR-17 index definitions, the per-unit table layout,
+	// the zero-columns probe, the source segment count) — the controller
+	// holds no direct source connection for the per-unit catalog ops. The
+	// runner issues the "catalog" control op to the long-lived source
+	// agent, which reads it on its LOCAL source pool (the pool, not the
+	// pinned snapshot) and reports back.
 	Catalog(ctx context.Context, req agent.CatalogReq) (agent.CatalogResp, error)
+	// TableExists (2B-5, architecture 08.10) reports whether schema.table
+	// exists on the source — the per-unit zero-columns guard's probe (a
+	// vanished source table must fail the unit early, before any DDL or
+	// data, on a POOL connection so the fault cannot abort the FR-02
+	// snapshot). The runner issues it on the source agent (its local pool);
+	// the controller holds no direct source connection.
+	TableExists(ctx context.Context, schema, table string) bool
 	// PeerInfo (1F) is the mesh version-exchange wiring: the destination
 	// agent's peer listener address (the source agent dials it once before
 	// the first mesh unit) + the "user@" prefix the source SSHes to its
@@ -1168,6 +1177,13 @@ func (r *processTwoAgentRunner) Catalog(ctx context.Context, req agent.CatalogRe
 	return resp, nil
 }
 
+// TableExists (2B-5, architecture 08.10) asks the source agent whether the
+// table exists (the zero-columns guard probe, on the agent's local pool).
+func (r *processTwoAgentRunner) TableExists(ctx context.Context, schema, table string) bool {
+	resp, err := r.ctrl.Catalog(agent.CatalogReq{Action: "table-exists", Schema: schema, Table: table})
+	return err == nil && resp.Ok && resp.Exists
+}
+
 // Release ends the run (commits the source snapshot) and stops the agents.
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
@@ -1825,6 +1841,15 @@ func (r *InProcTwoAgentRunner) Catalog(ctx context.Context, req agent.CatalogReq
 		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
 	}
 	return resp, nil
+}
+
+// TableExists (2B-5, architecture 08.10) mirrors the process runner on the
+// in-process source agent.
+func (r *InProcTwoAgentRunner) TableExists(ctx context.Context, schema, table string) bool {
+	if r.srv == nil {
+		return false
+	}
+	return r.srv.TableExists(ctx, schema, table)
 }
 
 // Release ends the run (commits the source snapshot) and stops the agents.
