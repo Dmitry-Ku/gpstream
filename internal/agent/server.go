@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -332,6 +333,7 @@ func (s *SourceServer) serveControl(l net.Listener) {
 			defer func() {
 				if p := recover(); p != nil {
 					fmt.Fprintf(os.Stderr, "gpstream-source-agent: unit panic: %v\n", p)
+					fmt.Fprintf(os.Stderr, "%s\n", debug.Stack())
 					_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unit panic: %v", p)})
 				}
 			}()
