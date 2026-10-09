@@ -395,6 +395,57 @@ type DryRunChecksResp struct {
 	Error string             `json:"error,omitempty"`
 }
 
+// JournalReq (2D-A, architecture 08.10, full zero-DB) delegates ONE
+// destination-journal write to the destination agent. The journal
+// (gpstream_units / gpstream_jobs) lives in the destination service DB
+// (ADR-001 §4.3) and the destination agent is the writer of record
+// (architecture 08.10: "the destination agent ... logs to the
+// gpstream_units journal"), so the controller routes every journal DB
+// write here instead of holding a direct destination connection. The
+// agent runs the statement on a fresh LOCAL coordinator connection (the
+// same pattern as the ddl op) and reports ok/error.
+//
+// Action is the journal operation (init / save-meta / set-state /
+// set-index-done); the fields are a flat superset the agent reads per
+// action (the init action needs none, set-state needs the unit row,
+// save-meta needs the job metadata). This mirrors the DDReq flat-superset
+// shape (one type per op, fields read per action) rather than nesting the
+// manifest types (which would create a manifest->agent import cycle).
+type JournalReq struct {
+	Op     string `json:"op"` // "journal"
+	ReqID  uint64 `json:"req_id,omitempty"`
+	Action string `json:"action"`
+	// set-state: the unit row to upsert into gpstream_units.
+	JobID     string `json:"job_id,omitempty"`
+	UnitID    int64  `json:"unit_id,omitempty"`
+	DB        string `json:"db,omitempty"`
+	Schema    string `json:"schema,omitempty"`
+	Table     string `json:"table,omitempty"`
+	Part      string `json:"part,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	State     string `json:"state,omitempty"`
+	Checksum  string `json:"checksum,omitempty"`
+	RowCount  int64  `json:"row_count,omitempty"`
+	Bytes     int64  `json:"byte_count,omitempty"`
+	Attempts  int    `json:"attempts,omitempty"`
+	Epoch     int64  `json:"epoch,omitempty"`
+	IndexDone bool   `json:"index_done,omitempty"`
+	// save-meta: the job metadata to upsert into gpstream_jobs.
+	SnapEpoch int64  `json:"snap_epoch,omitempty"`
+	SnapID    string `json:"snap_id,omitempty"`
+	CopyMode  string `json:"copy_mode,omitempty"`
+}
+
+// JournalResp is the agent's reply to a journal write (the controller's
+// file mirror remains the durable resume source, so a failure here is
+// best-effort: it is surfaced to the F-04/F-14 event log, not a job error).
+type JournalResp struct {
+	Op    string `json:"op"` // "journal-resp"
+	Ok    bool   `json:"ok"`
+	ReqID uint64 `json:"req_id,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 // SendLine writes one control message (JSON + newline) to w.
 func SendLine(w io.Writer, msg any) error {
 	b, err := json.Marshal(msg)

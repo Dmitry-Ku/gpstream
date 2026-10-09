@@ -133,6 +133,13 @@ type TwoAgentRunner interface {
 	// connection; it collects both sides and diffs them in memory
 	// (dryrun.FromSides).
 	DryRunChecks(ctx context.Context, req agent.DryRunChecksReq) (agent.DryRunChecksResp, error)
+	// Journal (2D-A, architecture 08.10, full zero-DB) delegates ONE
+	// destination-journal write to the destination agent (the controller
+	// holds no direct destination connection; the journal lives in the
+	// destination service DB, ADR-001 §4.3). The process runner issues the
+	// "journal" control op; the in-process runner runs it locally (test
+	// double).
+	Journal(ctx context.Context, req agent.JournalReq) (agent.JournalResp, error)
 	// TableExists (2B-5, architecture 08.10) reports whether schema.table
 	// exists on the source — the per-unit zero-columns guard's probe (a
 	// vanished source table must fail the unit early, before any DDL or
@@ -1210,6 +1217,17 @@ func (r *processTwoAgentRunner) TableExists(ctx context.Context, schema, table s
 // the source agent (the source pool, the on_segment probe when segBinary is
 // set); side "dest" routes to the destination agent (a fresh LOCAL coordinator
 // connection). The controller holds no direct database connection.
+// Journal (2D-A, architecture 08.10, full zero-DB) delegates one
+// destination-journal write to the long-lived dest agent: the agent runs the
+// statement on a fresh LOCAL coordinator connection and reports back (the
+// controller opens NO direct destination connection for the journal).
+func (r *processTwoAgentRunner) Journal(ctx context.Context, req agent.JournalReq) (agent.JournalResp, error) {
+	if r.destCtrl == nil {
+		return agent.JournalResp{}, fmt.Errorf("two-agent: destination agent not started (call Start first)")
+	}
+	return r.destCtrl.Journal(req)
+}
+
 func (r *processTwoAgentRunner) DryRunChecks(ctx context.Context, req agent.DryRunChecksReq) (agent.DryRunChecksResp, error) {
 	if req.Side == "dest" {
 		if r.destCtrl == nil {
@@ -1892,6 +1910,22 @@ func (r *InProcTwoAgentRunner) Catalog(ctx context.Context, req agent.CatalogReq
 	}
 	if !resp.Ok && resp.Error != "" {
 		return resp, fmt.Errorf("two-agent: source catalog %s %s.%s: %s", req.Action, req.Schema, req.Table, resp.Error)
+	}
+	return resp, nil
+}
+
+// Journal (2D-A, architecture 08.10) mirrors the process runner: it routes
+// the destination-journal write to the in-process destination agent over its
+// (real, in-process) control socket — the same code path as production, so
+// the in-proc integration tests exercise the delegated journal (the
+// controller still holds no direct destination connection).
+func (r *InProcTwoAgentRunner) Journal(ctx context.Context, req agent.JournalReq) (agent.JournalResp, error) {
+	if r.destCtrl == nil {
+		return agent.JournalResp{}, fmt.Errorf("two-agent: in-proc dest agent not started (journal)")
+	}
+	resp, err := r.destCtrl.Journal(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: in-proc journal %s: %w", req.Action, err)
 	}
 	return resp, nil
 }

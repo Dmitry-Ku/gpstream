@@ -20,11 +20,14 @@ import (
 	"github.com/gpstream/gpstream/internal/monitor"
 )
 
-// TestCleanupModeDropConnectFail runs `cleanup --mode drop --dest <unreachable>
-// --yes` and verifies the connect-fail path: the flags are parsed (dest +
-// TLS flags), the pool cannot reach the destination, and the error is
-// surfaced as "connect dest".
-func TestCleanupModeDropConnectFail(t *testing.T) {
+// TestCleanupModeDropAgentFail runs `cleanup --mode drop --yes` and verifies
+// the drop-fail path (2D-B, full zero-DB): the controller no longer connects
+// to the destination itself — it launches the destination AGENT to perform
+// the drop, so a missing/unreachable agent is the failure (not a "connect
+// dest" pool error). The flags are parsed (dest + TLS + the agent launch
+// host/binary), the agent launch fails, and the error is surfaced; the state
+// dir survives (nothing is removed before the drop fails).
+func TestCleanupModeDropAgentFail(t *testing.T) {
 	dir := t.TempDir()
 	writeJournal(t, dir, "op-x", []*manifest.Unit{unit(1, manifest.StatePending, false)})
 	err := run([]string{
@@ -37,18 +40,24 @@ func TestCleanupModeDropConnectFail(t *testing.T) {
 		"--ssl-key", "/nonexistent/key.pem",
 		"--ssl-ca", "/nonexistent/ca.pem",
 		"--ssl-min-tls", "1.3",
+		"--dest-agent-binary", "/nonexistent/gpstream-dest-agent",
 		"--yes",
 	})
 	if err == nil {
-		t.Fatal("cleanup --mode drop with unreachable dest: want error")
+		t.Fatal("cleanup --mode drop with an unreachable agent: want error")
 	}
-	if !strings.Contains(err.Error(), "connect dest") {
-		t.Errorf("want 'connect dest' in error, got: %v", err)
+	// The failure is the agent launch (the controller holds no direct
+	// destination connection), not a pool "connect dest" error.
+	if !strings.Contains(err.Error(), "drop dest objects (agent)") && !strings.Contains(err.Error(), "agent") {
+		t.Errorf("want an agent-launch error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "connect dest") {
+		t.Errorf("the controller must not open a direct dest pool anymore: %v", err)
 	}
 	// The state dir must still exist (nothing was removed before the
-	// connect failed).
+	// drop failed).
 	if _, err := os.Stat(filepath.Join(dir, "op-x", "journal.jsonl")); err != nil {
-		t.Errorf("journal must survive a failed drop connect: %v", err)
+		t.Errorf("journal must survive a failed drop: %v", err)
 	}
 }
 

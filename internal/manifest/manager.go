@@ -485,12 +485,75 @@ func (m *Manager) ReleaseAgents() {
 // production paths use the journal directly.
 func (m *Manager) Journal() *Journal { return m.journal }
 
-func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
-	// Ensure the primary journal table exists (ADR-001 §4.3); the file
-	// mirror is the durable fallback if this fails (FR-07).
-	if err := m.journal.Init(ctx); err != nil {
-		// Non-fatal: the file mirror still makes the job resumable.
+// agentJournalSink (2D-A, architecture 08.10, full zero-DB) adapts the
+// two-agent runner's Journal method to the Journal's JournalSink: the
+// journal's destination-DB writes (gpstream_units / gpstream_jobs) are
+// delegated to the destination agent, which runs them on a LOCAL coordinator
+// connection — the controller holds NO direct destination connection. The
+// runner is non-nil only in the two-agent topology (the production data path
+// and the in-proc integration tests); in both the agent owns the journal.
+type agentJournalSink struct {
+	runner TwoAgentRunner
+}
+
+func (a *agentJournalSink) Init(ctx context.Context) error {
+	resp, err := a.runner.Journal(ctx, agent.JournalReq{Action: "init"})
+	if err != nil {
+		return err
 	}
+	if !resp.Ok {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+func (a *agentJournalSink) SaveMeta(ctx context.Context, jobID string, m *JobMeta) error {
+	resp, err := a.runner.Journal(ctx, agent.JournalReq{
+		Action: "save-meta", JobID: jobID,
+		SnapEpoch: m.SnapEpoch, SnapID: m.SnapID, CopyMode: m.CopyMode,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.Ok {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+func (a *agentJournalSink) SetState(ctx context.Context, u *Unit) error {
+	resp, err := a.runner.Journal(ctx, agent.JournalReq{
+		Action:    "set-state",
+		JobID:     u.JobID,
+		UnitID:    u.UnitID,
+		DB:        u.DB,
+		Schema:    u.Schema,
+		Table:     u.Table,
+		Part:      u.Part,
+		Kind:      u.Kind,
+		State:     string(u.State),
+		Checksum:  u.Checksum,
+		RowCount:  u.RowCount,
+		Bytes:     u.Bytes,
+		Attempts:  u.Attempts,
+		Epoch:     u.Epoch,
+		IndexDone: u.IndexDone,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.Ok {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
+	// 2D-A (full zero-DB): the primary journal table (gpstream_units) is
+	// created AFTER the agents are up (below) — the write is delegated to
+	// the destination agent, which the controller reaches over the control
+	// socket (no direct destination connection). The file mirror is the
+	// durable fallback if this fails (FR-07).
 
 	// T5 (DESIGN §2.2): a run may CONTINUE an earlier run of the same
 	// operation — the operator re-invokes `gpstream run` with the same
@@ -537,6 +600,37 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			"reason", "source column types depend on extensions not installed in the destination (F-11 metadata phase); CREATE EXTENSION in the receiver before the DDL of those columns")
 	}
 
+	// FR-02 consistency: establish the source read snapshot BEFORE any unit is
+	// copied so every COPY of the database reads from the same point-in-time
+	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
+	// proceeds) but is logged so the operator can see the consistency mode.
+	//
+	// P7: the data path is ALWAYS two-agent. Launch the long-lived source
+	// agent (owns the source pg pool + the run-wide FR-02 snapshot) and
+	// connect the control client. The data COPY runs only in the agents; the
+	// controller holds only control connections (DDL, journal, verify, swap).
+	// A test may pre-inject an in-process runner (m.twoAgent != nil) to drive
+	// the agent package without subprocesses.
+	if m.twoAgent == nil {
+		m.twoAgent = newProcessTwoAgentRunner(m.cfg)
+	}
+	if err := m.twoAgent.Start(ctx); err != nil {
+		return fmt.Errorf("two-agent: %w", err)
+	}
+	defer func() { _ = m.twoAgent.Release(context.Background()) }()
+
+	// 2D-A (architecture 08.10, full zero-DB): route the journal's
+	// destination-DB writes through the destination agent (the agents are
+	// up now — the journal op needs the dest agent's control socket). The
+	// controller opens NO direct destination connection for the journal
+	// (gpstream_units / gpstream_jobs live in the destination service DB,
+	// ADR-001 §4.3, and the agent is the writer of record). The file mirror
+	// remains the durable resume source regardless.
+	m.journal.SetSink(&agentJournalSink{runner: m.twoAgent})
+	if err := m.journal.Init(ctx); err != nil {
+		// Non-fatal: the file mirror still makes the job resumable (FR-07).
+		m.events.Log("journal_init_failed", "error", err.Error())
+	}
 	// T5 (DESIGN §2.2): determine this run's snapshot epoch. A fresh
 	// operation starts at epoch 1; a resume (journal records or metadata
 	// already exist) continues at lastEpoch+1 — the snapshot cannot survive
@@ -559,25 +653,6 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	if isResume {
 		m.reRead = reReadTables(m.journal.Units())
 	}
-
-	// FR-02 consistency: establish the source read snapshot BEFORE any unit is
-	// copied so every COPY of the database reads from the same point-in-time
-	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
-	// proceeds) but is logged so the operator can see the consistency mode.
-	//
-	// P7: the data path is ALWAYS two-agent. Launch the long-lived source
-	// agent (owns the source pg pool + the run-wide FR-02 snapshot) and
-	// connect the control client. The data COPY runs only in the agents; the
-	// controller holds only control connections (DDL, journal, verify, swap).
-	// A test may pre-inject an in-process runner (m.twoAgent != nil) to drive
-	// the agent package without subprocesses.
-	if m.twoAgent == nil {
-		m.twoAgent = newProcessTwoAgentRunner(m.cfg)
-	}
-	if err := m.twoAgent.Start(ctx); err != nil {
-		return fmt.Errorf("two-agent: %w", err)
-	}
-	defer func() { _ = m.twoAgent.Release(context.Background()) }()
 
 	// FR-14: sample controller-host load periodically so the limiter publishes
 	// rate-shift diagnostics. No-op when no rate-limit is set; the limiter is

@@ -2,25 +2,21 @@ package main
 
 // F-09 coverage (item 11): unit tests for the cmd/gpstream functions that are
 // pure (no live cluster required): printPlanSummary (all report branches),
-// dropDestObjects (the cleanup --mode drop core), the remaining parseConfig
+// the remaining parseConfig
 // flag branches, cmdCleanup --all-incomplete, cmdStatus's live runstats
 // table, listIncompleteOperations, and cmdDryRun's --plan-file write.
 
 import (
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
-
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/monitor"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/route"
-	"github.com/gpstream/gpstream/internal/transfer/dest"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 var errBoom = errors.New("boom: drop failed")
@@ -220,135 +216,6 @@ func TestParseConfigFromFile(t *testing.T) {
 	// A missing config file is an error (not a silent default).
 	if _, err := parseConfig([]string{"--config", filepath.Join(dir, "nope.toml")}); err == nil {
 		t.Error("missing config file: want error")
-	}
-}
-
-// TestDropDestObjectsFull covers dropDestObjects end to end: staging + created
-// tables dropped, renamed-in schema dropped last, conflicted tables NEVER
-// reported, and every drop recorded in the audit log.
-func TestDropDestObjectsFull(t *testing.T) {
-	dir := t.TempDir()
-	j := manifest.NewJournal(nil, filepath.Join(dir, "journal.jsonl"))
-	// unit 1: verifying, same-name, no conflict -> staging + table.
-	// unit 2: swapped, renamed-in -> staging + table + schema s_new.
-	// unit 3: failed, conflicted -> staging only (the pre-existing table is
-	// operator data and must never be dropped).
-	// unit 4: pending -> nothing (a pending unit created no objects).
-	units := []*manifest.Unit{
-		{JobID: "op", UnitID: 1, DB: "db", Schema: "public", Table: "t1",
-			DstSchema: "public", DstName: "t1", Kind: "table", State: manifest.StateVerifying},
-		{JobID: "op", UnitID: 2, DB: "db", Schema: "public", Table: "t2",
-			DstSchema: "s_new", DstName: "t2_v2", Kind: "table", State: manifest.StateSwapped},
-		{JobID: "op", UnitID: 3, DB: "db", Schema: "public", Table: "t3",
-			DstSchema: "public", DstName: "t3", Kind: "table", State: manifest.StateFailed, Conflict: true},
-		{JobID: "op", UnitID: 4, DB: "db", Schema: "public", Table: "t4",
-			DstSchema: "public", DstName: "t4", Kind: "table", State: manifest.StatePending},
-	}
-	for _, u := range units {
-		if err := j.SetState(u); err != nil {
-			t.Fatalf("setstate %d: %v", u.UnitID, err)
-		}
-	}
-
-	// A destination fake: schema s_new is empty (count 0 -> droppable),
-	// public is never queried (never dropped).
-	dq := pg.NewFakeConn()
-	dq.On("pg_class", [][]any{{int64(0)}})
-	a := dest.New(dq)
-	audit := manifest.NewAuditLog(filepath.Join(dir, "audit.log"))
-
-	dropped, err := dropDestObjects(t.Context(), a, "op", j, audit)
-	if err != nil {
-		t.Fatalf("dropDestObjects: %v", err)
-	}
-	// 3 staging (units 1,2,3) + 2 tables (t1, t2_v2) + 1 schema (s_new) = 6.
-	if dropped != 6 {
-		t.Fatalf("dropped = %d, want 6", dropped)
-	}
-
-	drops := map[string]bool{}
-	for _, sql := range dq.Queried() {
-		if strings.Contains(sql, "DROP TABLE IF EXISTS") || strings.Contains(sql, "DROP SCHEMA IF EXISTS") {
-			drops[sql] = true
-		}
-	}
-	mustHave := []string{
-		`DROP TABLE IF EXISTS "public"."_gs_op_1"`,
-		`DROP TABLE IF EXISTS "s_new"."_gs_op_2"`,
-		`DROP TABLE IF EXISTS "public"."_gs_op_3"`,
-		`DROP TABLE IF EXISTS "public"."t1"`,
-		`DROP TABLE IF EXISTS "s_new"."t2_v2"`,
-		`DROP SCHEMA IF EXISTS "s_new"`,
-	}
-	for _, m := range mustHave {
-		found := false
-		for sql := range drops {
-			if strings.Contains(sql, m) {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("missing drop %q in %v", m, drops)
-		}
-	}
-	// The conflicted table t3 must NOT be dropped.
-	for sql := range drops {
-		if strings.Contains(sql, `"t3"`) {
-			t.Errorf("conflicted table t3 was dropped: %q", sql)
-		}
-	}
-
-	// The audit log records every drop (F-13).
-	b, err := os.ReadFile(filepath.Join(dir, "audit.log"))
-	if err != nil {
-		t.Fatalf("read audit: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("audit lines = %d, want 6: %s", len(lines), b)
-	}
-	for _, l := range lines {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(l), &rec); err != nil {
-			t.Fatalf("audit line not JSON: %v (%s)", err, l)
-		}
-		if rec["action"] != "cleanup_drop" {
-			t.Errorf("audit action = %v, want cleanup_drop", rec["action"])
-		}
-	}
-}
-
-// TestDropDestObjectsFailure covers the error path: every DROP fails, the
-// failures are collected into the returned error AND recorded as
-// cleanup_drop_failed in the audit log.
-func TestDropDestObjectsFailure(t *testing.T) {
-	dir := t.TempDir()
-	j := manifest.NewJournal(nil, filepath.Join(dir, "journal.jsonl"))
-	if err := j.SetState(&manifest.Unit{
-		JobID: "op", UnitID: 1, DB: "db", Schema: "public", Table: "t1",
-		DstSchema: "public", DstName: "t1", Kind: "table", State: manifest.StateCopying,
-	}); err != nil {
-		t.Fatalf("setstate: %v", err)
-	}
-	dq := pg.NewFakeConn()
-	dq.On("pg_class", [][]any{{int64(0)}})
-	dq.SetExecError(errBoom)
-	a := dest.New(dq)
-	audit := manifest.NewAuditLog(filepath.Join(dir, "audit.log"))
-
-	dropped, err := dropDestObjects(t.Context(), a, "op", j, audit)
-	if err == nil {
-		t.Fatal("want error when drops fail")
-	}
-	if dropped != 0 {
-		t.Errorf("dropped = %d, want 0", dropped)
-	}
-	if !strings.Contains(err.Error(), "object(s) not dropped") {
-		t.Errorf("error = %q, want aggregated drop failures", err)
-	}
-	b, _ := os.ReadFile(filepath.Join(dir, "audit.log"))
-	if !strings.Contains(string(b), "cleanup_drop_failed") {
-		t.Error("audit log missing cleanup_drop_failed")
 	}
 }
 

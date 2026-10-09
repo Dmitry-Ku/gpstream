@@ -127,6 +127,23 @@ type Unit struct {
 	Updated     time.Time `json:"updated"`
 }
 
+// JournalSink (2D-A, architecture 08.10, full zero-DB) is how the journal
+// reaches the destination service DB WITHOUT the controller holding a direct
+// connection: the Manager wires it to the two-agent runner, which delegates
+// each write to the destination agent (the writer of record — the journal
+// lives in the destination service DB, ADR-001 §4.3). When the sink is nil
+// (tests / the in-process path that keeps a local pool), the journal uses its
+// pg.Querier directly (the legacy path). The file mirror is ALWAYS written
+// locally regardless of sink — it is the durable resume source (FR-07).
+type JournalSink interface {
+	// Init creates the gpstream_units table (idempotent).
+	Init(ctx context.Context) error
+	// SaveMeta upserts the gpstream_jobs row (the job's snapshot metadata).
+	SaveMeta(ctx context.Context, jobID string, m *JobMeta) error
+	// SetState upserts one gpstream_units row (the unit's current state).
+	SetState(ctx context.Context, u *Unit) error
+}
+
 // Journal is the operation log (ADR-001 §4.3). It writes to a pg.Querier
 // (the destination service DB) and a local file mirror so a job survives the
 // destination DB going down.
@@ -135,6 +152,10 @@ type Journal struct {
 	q      pg.Querier // primary (dest DB); may be nil in tests
 	mirror string     // local file mirror path
 	units  map[int64]*Unit
+	// sink (2D-A, full zero-DB), when set, routes the DB writes to the
+	// destination agent (the controller holds no direct dest connection).
+	// nil = the legacy direct-pool path (q).
+	sink JournalSink
 	// note, when set, receives a human-readable line for every primary-journal
 	// write error (the Manager wires it to the F-04/F-14 event log, 07.10:
 	// a silent `_, _ =` let a GP6/PG9.4 journal write die unnoticed).
@@ -148,6 +169,16 @@ func NewJournal(q pg.Querier, mirrorPath string) *Journal {
 		mirror: mirrorPath,
 		units:  map[int64]*Unit{},
 	}
+}
+
+// SetSink (2D-A, architecture 08.10, full zero-DB) routes the journal's
+// destination-DB writes through the destination agent instead of a direct
+// controller connection (the journal lives in the destination service DB,
+// ADR-001 §4.3). The Manager wires it to the two-agent runner at Run start
+// (after the agents are up). A nil sink leaves the legacy direct-pool path
+// (q) in place (tests / in-proc runners that keep a local pool).
+func (j *Journal) SetSink(sink JournalSink) {
+	j.sink = sink
 }
 
 // Note sets the sink for primary-journal error lines (F-04/F-14 event log).
@@ -309,6 +340,12 @@ func (j *Journal) WriteConflicts(cs []plan.Conflict) error {
 // words schema/table are quoted so the DDL parses. The file mirror is the
 // durable fallback (FR-07) when this cannot be created.
 func (j *Journal) Init(ctx context.Context) error {
+	// 2D-A (full zero-DB): the gpstream_units table is created by the
+	// destination agent (the sink) — the controller holds no direct
+	// destination connection. The legacy path (no sink) uses the pool.
+	if j.sink != nil {
+		return j.sink.Init(ctx)
+	}
 	if j.q == nil {
 		return nil
 	}
@@ -374,6 +411,18 @@ func (j *Journal) SetState(u *Unit) error {
 	// `_, _ =`, leaving gpstream_units empty (07.10 e2e). A write error still
 	// does not sink the job, but it is no longer silent: j.note carries it to
 	// the F-04/F-14 event log.
+	// 2D-A (full zero-DB): when the sink (the destination agent) is wired, the
+	// controller's DB writes for the units it OWNS (pending/skipped +
+	// coordinator non-terminal states) go to the agent instead of a direct
+	// pool. The !Mesh && !DestJournal guard is PRESERVED: a dest-agent-owned
+	// unit's terminal row is the agent's (2B-6/1D) — the controller must not
+	// race it with its own (async) write.
+	if j.sink != nil && !c.Mesh && !c.DestJournal {
+		if err := j.sink.SetState(context.Background(), &c); err != nil {
+			j.noteLine("journal: gpstream_units write failed (mirror remains the resume source): " + err.Error())
+		}
+		return j.mirrorAppend(&c)
+	}
 	if j.q != nil && !c.Mesh && !c.DestJournal {
 		// A dest-agent-owned unit's DB row (the mesh path, or the coordinator
 		// two-agent path since 2B-6) is the destination agent's (the writer of

@@ -123,6 +123,15 @@ func (j *Journal) SaveMeta(jobID string, m *JobMeta) error {
 			return err
 		}
 	}
+	// 2D-A (full zero-DB): the gpstream_jobs row is written by the destination
+	// agent (the sink) — the controller holds no direct destination
+	// connection. The file mirror (written above) remains the durable source.
+	if j.sink != nil {
+		if err := j.sink.SaveMeta(context.Background(), jobID, m); err != nil {
+			j.noteLine("journal: gpstream_jobs write failed (mirror remains the resume source): " + err.Error())
+		}
+		return nil
+	}
 	if j.q != nil {
 		if _, err := j.q.Exec(context.Background(),
 			`CREATE TABLE IF NOT EXISTS gpstream_jobs (

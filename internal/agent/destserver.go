@@ -1232,6 +1232,28 @@ func (s *DestServer) serveControl(l net.Listener) {
 			}
 			s.handleDryRunChecks(conn, &dreq)
 			continue
+		case "journal":
+			// 2D-A (architecture 08.10, full zero-DB): the controller's
+			// destination-journal write, delegated to this agent (the
+			// controller holds no direct destination connection). The agent
+			// runs the statement on a fresh LOCAL coordinator connection
+			// (same pattern as the ddl op) and reports ok/error.
+			var jreq JournalReq
+			if uerr := json.Unmarshal(line, &jreq); uerr != nil {
+				_ = s.sendLine(conn, JournalResp{Op: "journal-resp", ReqID: req.ReqID, Error: "journal: unmarshal: " + uerr.Error()})
+				continue
+			}
+			// Run the journal write in a goroutine (like serve-unit): it is a
+			// short best-effort DB op, but must NOT block the control readLoop
+			// (a slow/down destination DB would otherwise stall every serve
+			// ack). The response is sent via sendLine (connMu-serialized).
+			jr := jreq
+			s.serveWG.Add(1)
+			go func() {
+				defer s.serveWG.Done()
+				s.handleJournal(conn, &jr)
+			}()
+			continue
 		case "serve-unit":
 			ack := DestAck{Op: "ack", Ok: true, ReqID: req.ReqID}
 			if req.Kind == "" {
@@ -1330,6 +1352,60 @@ func (s *DestServer) sendLine(conn net.Conn, msg any) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	return SendLine(conn, msg)
+}
+
+// handleJournal (2D-A, architecture 08.10, full zero-DB) runs one
+// delegated destination-journal write: the controller routes the journal's
+// gpstream_units / gpstream_jobs DB writes here (it holds no direct
+// destination connection — the journal lives in the destination service DB,
+// ADR-001 §4.3, and this agent is the writer of record). The statement runs
+// on a fresh LOCAL coordinator connection (the same pattern as handleDDL);
+// a failure is reported in the response (the controller's file mirror
+// remains the durable resume source, so it is surfaced to the event log,
+// not a job error).
+func (s *DestServer) handleJournal(conn net.Conn, jreq *JournalReq) {
+	resp := JournalResp{Op: "journal-resp", ReqID: jreq.ReqID, Ok: true}
+	err := s.journalExec(func(q pg.StreamingQuerier) error {
+		switch jreq.Action {
+		case "init":
+			return journaldb.Init(context.Background(), q)
+		case "save-meta":
+			return journaldb.SaveMeta(context.Background(), q, &journaldb.JobMeta{
+				JobID: jreq.JobID, SnapEpoch: jreq.SnapEpoch,
+				SnapID: jreq.SnapID, CopyMode: jreq.CopyMode,
+			})
+		case "set-state":
+			return journaldb.SetState(context.Background(), q, &journaldb.Unit{
+				JobID: jreq.JobID, UnitID: jreq.UnitID, DB: jreq.DB,
+				Schema: jreq.Schema, Table: jreq.Table, Part: jreq.Part,
+				Kind: jreq.Kind, State: jreq.State, Checksum: jreq.Checksum,
+				RowCount: jreq.RowCount, Bytes: jreq.Bytes, Attempts: jreq.Attempts,
+				Epoch: jreq.Epoch, IndexDone: jreq.IndexDone,
+			})
+		case "set-index-done":
+			return journaldb.SetIndexDone(context.Background(), q, jreq.JobID, jreq.UnitID)
+		default:
+			return fmt.Errorf("journal: unknown action %q", jreq.Action)
+		}
+	})
+	if err != nil {
+		resp = JournalResp{Op: "journal-resp", ReqID: jreq.ReqID, Ok: false, Error: err.Error()}
+	}
+	_ = s.sendLine(conn, resp)
+}
+
+// journalExec runs fn on a fresh LOCAL coordinator connection (the journal
+// is a short best-effort write — the file mirror is the durable resume
+// source — so it uses its own connection, not the run's data pool).
+func (s *DestServer) journalExec(fn func(pg.StreamingQuerier) error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("journal: connect coordinator: %w", err)
+	}
+	defer q.Close()
+	return fn(q)
 }
 
 // handleDDL (2B-2, architecture 08.10) runs one delegated destination-DDL

@@ -116,6 +116,41 @@ func SetIndexDone(ctx context.Context, q pg.Querier, jobID string, unitID int64)
 	return err
 }
 
+// JobMeta is the gpstream_jobs row (the job's snapshot metadata: which
+// generation of the source snapshot the job copied under + the transport).
+// It mirrors the manifest.JobMeta fields the gpstream_jobs schema stores.
+type JobMeta struct {
+	JobID     string
+	SnapEpoch int64
+	SnapID    string
+	CopyMode  string
+}
+
+// SaveMeta upserts the gpstream_jobs row (the SELECT-by-PK + UPDATE/INSERT
+// pattern; PG 9.4 has no ON CONFLICT). The destination agent owns the
+// journal (architecture 08.10, full zero-DB), so it writes the job metadata
+// on its LOCAL coordinator connection instead of the controller. Idempotent
+// (the epoch is written once per run, before any unit is processed).
+func SaveMeta(ctx context.Context, q pg.Querier, m *JobMeta) error {
+	if _, err := q.Exec(ctx,
+		`CREATE TABLE IF NOT EXISTS gpstream_jobs (
+		    job_id      text PRIMARY KEY,
+		    snap_epoch  bigint NOT NULL,
+		    snap_id     text,
+		    copy_mode   text
+		)`); err != nil {
+		return err
+	}
+	return pgUpsert(ctx, q,
+		`SELECT 1 FROM gpstream_jobs WHERE job_id = $1`,
+		[]any{m.JobID},
+		[]any{m.JobID, m.SnapEpoch, m.SnapID, m.CopyMode},
+		[]any{m.JobID, m.SnapEpoch, m.SnapID, m.CopyMode},
+		`UPDATE gpstream_jobs SET snap_epoch = $2, snap_id = $3, copy_mode = $4 WHERE job_id = $1`,
+		`INSERT INTO gpstream_jobs (job_id, snap_epoch, snap_id, copy_mode)
+		 VALUES ($1, $2, $3, $4)`)
+}
+
 // pgUpsert inserts the row or, if a row with the same primary key exists,
 // updates it (PG 9.4 has no ON CONFLICT). The SELECT->write gap is benign:
 // each unit is owned by a single writer (the destination agent serves one

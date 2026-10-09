@@ -60,6 +60,10 @@ type DestControlClient struct {
 	// — the controller holds no direct destination connection, architecture
 	// 08.10).
 	dryRunCh map[uint64]chan DryRunChecksResp
+	// journalCh (2D-A): the journal op's waiters (the controller's
+	// destination-journal writes, delegated to the agent — the controller
+	// holds no direct destination connection, architecture 08.10).
+	journalCh map[uint64]chan JournalResp
 	// lateDone: a unit-done can arrive BEFORE its waiter registers (a fast
 	// serveOne — e.g. an unknown kind — finishes before the caller gets to
 	// WaitUnitDone). The reader buffers the raw line; WaitUnitDone picks it
@@ -97,6 +101,7 @@ func DialDestControlTLS(ctx context.Context, addr string, t ControlTLS) (*DestCo
 		miniMapCh: make(map[uint64]chan MiniMapResp),
 		ddCh:      make(map[uint64]chan DDResp),
 		dryRunCh:  make(map[uint64]chan DryRunChecksResp),
+		journalCh: make(map[uint64]chan JournalResp),
 		lateDone:  make(map[uint64][]byte),
 		dead:      make(chan struct{}),
 	}
@@ -228,7 +233,19 @@ func (c *DestControlClient) readLoop() {
 						ch <- d
 						continue
 					}
+				case "journal-resp":
+					// 2D-A (full zero-DB): the journal op's reply (the controller's
+					// destination-journal write, delegated to the agent).
+					if ch, ok := c.journalCh[env.ReqID]; ok {
+						var d JournalResp
+						_ = json.Unmarshal(line, &d)
+						delete(c.journalCh, env.ReqID)
+						c.pendMu.Unlock()
+						ch <- d
+						continue
+					}
 				}
+
 				c.pendMu.Unlock()
 			}
 		}
@@ -511,6 +528,42 @@ func (c *DestControlClient) DDL(req DDReq) (DDResp, error) {
 // its OWN side's dry-run values on its LOCAL destination connection and report
 // them back (the controller holds no direct destination connection). It blocks
 // until the agent answers.
+// Journal (2D-A, architecture 08.10) delegates ONE destination-journal
+// write to the long-lived dest agent: the agent runs the statement on a
+// fresh LOCAL coordinator connection and reports back. The controller
+// holds no direct destination connection for the journal (full zero-DB).
+func (c *DestControlClient) Journal(req JournalReq) (JournalResp, error) {
+	id := c.nextID.Add(1)
+	req.Op = "journal"
+	req.ReqID = id
+	ch := make(chan JournalResp, 1)
+	c.pendMu.Lock()
+	c.journalCh[id] = ch
+	c.pendMu.Unlock()
+	defer func() {
+		c.pendMu.Lock()
+		if c.journalCh[id] == ch {
+			delete(c.journalCh, id)
+		}
+		c.pendMu.Unlock()
+	}()
+	c.writeMu.Lock()
+	werr := SendLine(c.w, req)
+	if werr == nil {
+		werr = c.w.Flush()
+	}
+	c.writeMu.Unlock()
+	if werr != nil {
+		return JournalResp{}, werr
+	}
+	select {
+	case d := <-ch:
+		return d, nil
+	case <-c.dead:
+		return JournalResp{}, errControlDead
+	}
+}
+
 func (c *DestControlClient) DryRunChecks(req DryRunChecksReq) (DryRunChecksResp, error) {
 	id := c.nextID.Add(1)
 	req.Op = "dry-run-checks"

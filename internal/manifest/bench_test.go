@@ -64,6 +64,9 @@ func (f *fakeBenchRunner) Catalog(context.Context, agent.CatalogReq) (agent.Cata
 func (f *fakeBenchRunner) DryRunChecks(context.Context, agent.DryRunChecksReq) (agent.DryRunChecksResp, error) {
 	return agent.DryRunChecksResp{}, fmt.Errorf("fakeBenchRunner: dry-run-checks not supported")
 }
+func (f *fakeBenchRunner) Journal(context.Context, agent.JournalReq) (agent.JournalResp, error) {
+	return agent.JournalResp{}, fmt.Errorf("fakeBenchRunner: journal unused in bench")
+}
 func (f *fakeBenchRunner) TableExists(context.Context, string, string) bool { return false }
 func (f *fakeBenchRunner) Checksum(context.Context, string, string) (string, error) {
 	return "", fmt.Errorf("fakeBenchRunner: Checksum unused in bench")

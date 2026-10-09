@@ -137,6 +137,16 @@ func main() {
 	// wait for the (never-arriving) mini-map. The mini versions are verified
 	// by the 2C-3b SSH mini-readiness check instead. A real run omits it.
 	dryRun := flag.Bool("dry-run", false, "dry-run mode: do NOT launch the D mini-agents and do NOT wait for the mini-map in the version exchange (the controller runs the 2C-3b SSH mini-readiness check instead)")
+
+	// 2D-B (architecture 08.10, full zero-DB): one-shot drop mode. The
+	// controller's `cleanup --mode drop` launches this agent on the
+	// destination coordinator host with the drop targets (computed from the
+	// journal mirror, never from a direct DB connection). The agent
+	// connects to its OWN coordinator locally, drops the gpstream-owned
+	// objects, and prints a JSON result (always exit 0 — see
+	// cleanupdrop.go).
+	cleanupDrop := flag.Bool("cleanup-drop", false, "one-shot mode: drop the --targets objects (JSON array) on this agent's destination coordinator and print a JSON result (the controller's `cleanup --mode drop` driver)")
+	cleanupTargets := flag.String("targets", "[]", "one-shot drop mode: the JSON array of drop targets (schema/name/kind)")
 	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -151,6 +161,13 @@ func main() {
 	if *check {
 		fmt.Fprintln(os.Stderr, "gpstream-dest-agent: ok (check)")
 		os.Exit(0)
+	}
+
+	if *cleanupDrop {
+		// One-shot drop (2D-B): connect to the local coordinator, drop the
+		// targets, print the JSON result, exit 0. No listeners, no signal
+		// handling, no mini launch — a single short-lived DB op.
+		os.Exit(runCleanupDrop(*dest, *sslCert, *sslKey, *sslCA, *sslMinTLS, *cleanupTargets))
 	}
 
 	// SIGINT/SIGTERM cancels the serve so a controller-side stop unwinds the

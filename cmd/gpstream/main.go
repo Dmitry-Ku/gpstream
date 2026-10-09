@@ -1028,7 +1028,12 @@ func cmdStatus(args []string) error {
 // the journal is deleted, restoring the destination to its pre-operation
 // state (FR-02 acceptance: kill -9 ⇒ cleanup leaves the receiver as it was).
 // --mode drop requires --dest (the destination connstring; --ssl-cert/key/ca
-// are honoured). Destructive: requires --yes.
+// are honoured). The drop is performed by the destination AGENT (2D-B, full
+// zero-DB): the controller launches the dest-agent in one-shot drop mode on
+// the destination coordinator host (--dest-agent-ssh "user@host[:port]", or
+// local when omitted; --dest-agent-binary overrides the agent path) and the
+// agent connects to its OWN coordinator locally — the controller opens NO
+// direct destination connection. Destructive: requires --yes.
 func cmdCleanup(args []string) error {
 	opID, stateDir, err := parseOperationArgs(args)
 	if err != nil {
@@ -1038,6 +1043,7 @@ func cmdCleanup(args []string) error {
 		allIncomplete, drop, yes        bool
 		destStr, sslCert, sslKey, sslCA string
 		minTLS                          = "1.2"
+		agentSSH, destBinary            string
 	)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1063,6 +1069,18 @@ func cmdCleanup(args []string) error {
 		case "--ssl-min-tls":
 			i++
 			minTLS = args[i]
+		case "--dest-agent-ssh":
+			// 2D-B: where the dest-agent runs (the destination coordinator
+			// host: "user@host[:port]", or "" = local). The drop is performed
+			// by the agent, so the controller needs its launch host, not a
+			// DB connection.
+			i++
+			agentSSH = args[i]
+		case "--dest-agent-binary":
+			// 2D-B: the agent binary to launch (a local path, or the
+			// convention name for an SSH launch). Empty = convention.
+			i++
+			destBinary = args[i]
 		}
 	}
 	if !yes {
@@ -1089,17 +1107,23 @@ func cmdCleanup(args []string) error {
 		targets = append(targets, target{opID, resolveJournalPath(stateDir, opID)})
 	}
 
-	var dropAgent *dest.Agent
-	var closeDest func()
+	// 2D-B (full zero-DB): the drop is performed by the destination agent
+	// (launched on the destination coordinator host), not by a direct
+	// controller connection. Resolve the agent binary once for all targets.
+	var resolvedBinary string
 	if drop {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		q, err := pg.NewPool(ctx, destStr, sslCert, sslKey, sslCA, minTLS, 1)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("cleanup --mode drop: connect dest: %w", err)
+		resolvedBinary = destBinary
+		if resolvedBinary == "" {
+			if agentSSH != "" {
+				resolvedBinary = "gpstream-dest-agent" // convention name on the remote host
+			} else {
+				cfg := config.Default()
+				if err := cfg.ResolveAgentBinaries(); err != nil {
+					return fmt.Errorf("cleanup --mode drop: %w", err)
+				}
+				resolvedBinary = cfg.DestAgentBinary
+			}
 		}
-		dropAgent = dest.New(q)
-		closeDest = q.Close
 	}
 
 	for _, t := range targets {
@@ -1118,13 +1142,27 @@ func cmdCleanup(args []string) error {
 		if drop {
 			mode = "drop"
 		}
-		dropped, err := dropDestObjects(context.Background(), dropAgent, t.id, j, audit)
-		if err != nil {
-			audit.Close()
-			if closeDest != nil {
-				closeDest()
+		var dropped int
+		if drop {
+			// 2D-B: compute the targets from the journal mirror and delegate
+			// the drops to the destination agent (no direct DB connection).
+			targetsJSON, terr := json.Marshal(manifest.CleanupDestObjects(j))
+			if terr != nil {
+				audit.Close()
+				return fmt.Errorf("cleanup %s: marshal drop targets: %w", t.id, terr)
 			}
-			return fmt.Errorf("cleanup %s: drop dest objects: %w", t.id, err)
+			dctx, dcancel := context.WithTimeout(context.Background(), 6*time.Minute)
+			res, derr := runRemoteCleanupDrop(dctx, agentSSH, resolvedBinary, destStr, sslCert, sslKey, sslCA, minTLS, string(targetsJSON))
+			dcancel()
+			if derr != nil {
+				audit.Close()
+				return fmt.Errorf("cleanup %s: drop dest objects (agent): %w", t.id, derr)
+			}
+			dropped = res.Dropped
+			if !res.OK {
+				audit.Close()
+				return fmt.Errorf("cleanup %s: drop dest objects: %s", t.id, strings.Join(res.Errors, "; "))
+			}
 		}
 		audit.Log("cleanup", "operation-id", t.id, "mode", mode,
 			"units", len(j.Units()), "dropped", dropped)
@@ -1137,9 +1175,6 @@ func cmdCleanup(args []string) error {
 		}
 		fmt.Printf("cleanup: removed operation state %s\n", t.id)
 	}
-	if closeDest != nil {
-		closeDest()
-	}
 	if len(targets) == 0 {
 		fmt.Println("cleanup: no incomplete operations found")
 	}
@@ -1150,52 +1185,75 @@ func cmdCleanup(args []string) error {
 // operation (FR-02) and records each removal in the audit log. Tables and
 // staging are dropped first, schemas last (DropSchemaIfEmpty is a no-op while
 // any object remains, so a failed table drop protects the schema).
-func dropDestObjects(ctx context.Context, a *dest.Agent, opID string, j *manifest.Journal, audit *manifest.AuditLog) (int, error) {
-	if a == nil {
-		return 0, nil
+// 2D-B (architecture 08.10, full zero-DB): the cleanup drop is DELEGATED to
+// the destination agent (the controller opens NO direct destination
+// connection). The drop targets are computed from the operation journal
+// mirror (the journal IS the ownership registration — no DB needed); the
+// dest-agent binary is launched in one-shot mode on the destination
+// coordinator host (local exec, or over SSH when --dest-agent-ssh is set)
+// with the targets, and it connects to its OWN coordinator locally to
+// perform the drops. The agent prints a JSON result (always exit 0 — the
+// one-shot mode encodes failures in the JSON, so a partial failure is not
+// misreported as a transport failure over SSH) and this function parses it.
+//
+// destBinary is the agent binary: a local path for a local launch, or the
+// CONVENTION NAME ("gpstream-dest-agent") for an SSH launch (the remote
+// host resolves it by PATH — the packaged install).
+type cleanupDropResult struct {
+	OK      bool         `json:"ok"`
+	Dropped int          `json:"dropped"`
+	Errors  []string     `json:"errors,omitempty"`
+	Details []dropDetail `json:"details,omitempty"`
+}
+
+type dropDetail struct {
+	Kind   string `json:"kind"`
+	Schema string `json:"schema"`
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+}
+
+// shellQuote single-quotes a value for the /bin/sh (local) or remote ssh
+// shell — the one-shot drop command embeds the conn string + targets JSON.
+func shellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", `'\\''`) + "'"
+}
+
+func runRemoteCleanupDrop(ctx context.Context, sshHost, destBinary, destStr, sslCert, sslKey, sslCA, minTLS, targetsJSON string) (*cleanupDropResult, error) {
+	remote := fmt.Sprintf("%s --dest %s --cleanup-drop --targets %s",
+		shellQuote(destBinary), shellQuote(destStr), shellQuote(targetsJSON))
+	if sslCert != "" {
+		remote += " --ssl-cert " + shellQuote(sslCert)
 	}
-	targets := manifest.CleanupDestObjects(j)
-	dropped := 0
-	var errs []string
-	for _, t := range targets {
-		if t.Kind == "schema" {
-			continue // schemas go last
-		}
-		var err error
-		if t.Kind == "staging" {
-			err = a.DropStaging(ctx, t.Schema, t.Name)
-		} else {
-			err = a.DropTable(ctx, t.Schema, t.Name)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s %s.%s: %v", t.Kind, t.Schema, t.Name, err))
-			audit.Log("cleanup_drop_failed", "operation-id", opID, "kind", t.Kind,
-				"schema", t.Schema, "object", t.Name, "error", err.Error())
-			continue
-		}
-		audit.Log("cleanup_drop", "operation-id", opID, "kind", t.Kind,
-			"schema", t.Schema, "object", t.Name, "reason", t.Reason)
-		fmt.Printf("cleanup: dropped %s %s.%s\n", t.Kind, t.Schema, t.Name)
-		dropped++
+	if sslKey != "" {
+		remote += " --ssl-key " + shellQuote(sslKey)
 	}
-	for _, t := range targets {
-		if t.Kind != "schema" {
-			continue
-		}
-		if err := a.DropSchemaIfEmpty(ctx, t.Schema); err != nil {
-			errs = append(errs, fmt.Sprintf("schema %s: %v", t.Schema, err))
-			audit.Log("cleanup_drop_failed", "operation-id", opID, "kind", "schema",
-				"schema", t.Schema, "error", err.Error())
-			continue
-		}
-		audit.Log("cleanup_drop", "operation-id", opID, "kind", "schema",
-			"schema", t.Schema, "reason", t.Reason)
-		dropped++
+	if sslCA != "" {
+		remote += " --ssl-ca " + shellQuote(sslCA)
 	}
-	if len(errs) > 0 {
-		return dropped, fmt.Errorf("%d object(s) not dropped: %s", len(errs), strings.Join(errs, "; "))
+	remote += " --ssl-min-tls " + shellQuote(minTLS)
+	out, err := agent.RunRemoteOutput(ctx, sshHost, remote)
+	if err != nil {
+		return nil, err
 	}
-	return dropped, nil
+	// The agent prints the JSON result as its last stdout line (its stderr
+	// is separate; over SSH stdout is what RunRemoteOutput returns).
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("cleanup drop agent printed no result")
+	}
+	var res cleanupDropResult
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &res); err != nil {
+		return nil, fmt.Errorf("parse cleanup drop result %q: %w", lines[len(lines)-1], err)
+	}
+	return &res, nil
 }
 
 // parseOperationArgs extracts --operation-id and --state-dir.
@@ -1323,28 +1381,23 @@ func cmdRun(args []string) error {
 	}
 
 	ctx := context.Background()
-	// The data path is ALWAYS two-agent (P7, 2B-7): the controller launches
-	// the source/dest agents itself, and the agents hold the data + catalog
-	// connections. The controller keeps ONE destination pool — the primary
-	// journal's (gpstream_units/gpstream_jobs live in the destination
-	// service DB, ADR-001 §4.3; the journal also owns the job metadata the
-	// epoch decision reads/writes). It opens NO source connection.
-	// Size the pool for the journal's concurrent unit-state writes plus the
-	// metadata ops (WorkersPerPair is the run's parallel unit count).
-	maxConns := cfg.WorkersPerPair + 4
-	dstQ, err := pg.NewPool(ctx, cfg.Dest, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
-	if err != nil {
-		return fmt.Errorf("run: connect dest %q: %w", cfg.Dest, err)
-	}
-	defer dstQ.Close()
+	// 2D-A (architecture 08.10, full zero-DB): the controller opens NO direct
+	// destination connection at all. The data + catalog connections live in
+	// the source/dest agents (P7, 2B-7), and the primary journal's DB writes
+	// (gpstream_units / gpstream_jobs, the destination service DB, ADR-001
+	// §4.3) are DELEGATED to the destination agent (2D-A: the Manager wires
+	// the journal to the two-agent runner, which runs them on a LOCAL
+	// coordinator connection). The journal here is therefore pool-less
+	// (NewJournal(nil, ...)); its file mirror is the durable resume source
+	// and its DB writes ride the agent. It opens NO source connection either.
 
 	// 2A (architecture 08.10): the PLAN IS BUILT ON THE SOURCE AGENT. The
 	// operation identity + journal + manager must exist FIRST (the manager
 	// owns the two agents, and mgr.Plan asks the source agent to run
 	// plan.Build — its LOCAL source pool + a destination querier proxied over
 	// the source->dest peer channel). The controller therefore opens NO
-	// direct source connection, and NO destination connection beyond the
-	// primary journal (2B: the per-unit catalog ops + DDL all run in the
+	// direct source connection, and NO destination connection (2D-A: the
+	// journal pool is gone; the per-unit catalog ops + DDL all run in the
 	// agents; 2B-7 removed the controller's own srcQ/dstQ pools).
 	//
 	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
@@ -1369,7 +1422,11 @@ func cmdRun(args []string) error {
 	}
 	fmt.Printf("state:          %s\n", journalPath)
 
-	j := manifest.NewJournal(dstQ, journalPath)
+	// 2D-A (full zero-DB): a pool-less journal (nil pool) — its DB writes are
+	// delegated to the destination agent by the Manager (SetSink), its file
+	// mirror is the durable resume source. The controller holds no direct
+	// destination connection.
+	j := manifest.NewJournal(nil, journalPath)
 	mgr := manifest.NewManager(&cfg, j)
 
 	// 2A: the source agent builds the plan (its local source pool + the
