@@ -1234,6 +1234,12 @@ func sum(v []int64) int64 {
 // a broken query cannot silently pass — the test asserts the query is present
 // (the same guard that caught the pg_encoding_to_char bug).
 func distKey(ctx context.Context, q pg.Querier) string {
+	if q == nil {
+		// No destination catalog (no peer channel): cannot report the
+		// layout — "" (the conservative "cannot confirm" path in
+		// detectRedistribution), matching the non-Greenplum case.
+		return ""
+	}
 	// Preflight: resolve the Greenplum distribution catalog by name. This is
 	// safe on a plain-PostgreSQL cluster (to_regclass returns NULL without an
 	// error), whereas the main query references the catalog by name and would

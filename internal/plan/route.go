@@ -153,6 +153,11 @@ func mergeReason(srcC, dstC clusterRoute, sum RouteSummary, srcL, dstL routeLayo
 // clusterRouteOf — segments + major version + hashops generation of one
 // side; zero values when unavailable.
 func clusterRouteOf(ctx context.Context, q pg.Querier) clusterRoute {
+	if q == nil {
+		// No catalog (no peer channel): unresolved route (segments=0 ->
+		// resolveRoutes reports "not resolvable", conservative).
+		return clusterRoute{}
+	}
 	return clusterRoute{
 		segments: segmentCount(ctx, q),
 		major:    routeMajor(ctx, q),

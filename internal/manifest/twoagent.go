@@ -640,7 +640,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// host, so for a cross-cluster dest the host must be rewritten to the
 	// destination coordinator host (the same host-rewrite as controlListen's
 	// dial address). Same-host (bound loopback) is left untouched.
-	r.destPeerAddr = rewritePeerAddr(r.destPeerAddr, r.cfg.DestAgentSSH)
+	r.destPeerAddr = rewritePeerAddr(client.Hello.Peer, r.cfg.DestAgentSSH)
 	// Mesh mode (P3 production-dispatch, architecture 08.10): the DEST-AGENT
 	// already launched the D mini-agents itself (in its constructor: it read
 	// its own catalog and started the minis, which dial the supervisor's
