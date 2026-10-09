@@ -328,6 +328,12 @@ type DestServerOptions struct {
 	// (single-host layout / the local test stand).
 
 	MiniHosts []string
+	// MiniSSHUser (2C-3b) is the "user@" prefix the dest agent SSHes to a D
+	// segment host that is NOT this host (the same --mini-ssh-user value the
+	// mini launch uses). Empty = no SSH (single-host layout: the mini runs
+	// locally). Used by the dry-run mini-readiness check (checkMiniReady) so
+	// the SSH key/auth is validated BEFORE the real launch.
+	MiniSSHUser string
 }
 
 // DestServer is the long-lived destination agent (one data + one control
@@ -1462,11 +1468,20 @@ func (s *DestServer) handleDryRunChecks(conn net.Conn, req *DryRunChecksReq) {
 	err := s.ddlExec(conn, &DDReq{ReqID: req.ReqID}, func(q pg.StreamingQuerier) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		resp.Side = dryrun.GatherSide(ctx, q, "dest", req.Workers, "")
+		resp.Side = dryrun.GatherSide(ctx, q, "dest", req.Workers)
 		return nil
 	})
 	if err != nil {
 		resp = DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Error: err.Error()}
+		return
+	}
+	// 2C-3b: the mini-agent readiness (supervisor mode) — the agent SSHes to
+	// each D segment host and verifies the mini binary (presence +
+	// executability + version) WITHOUT launching the minis.
+	if s.opts.SupervisorListen != "" && resp.Side != nil {
+		mctx, mcancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer mcancel()
+		resp.Side.MiniReady = s.checkMiniReady(mctx)
 	}
 	_ = s.sendLine(conn, resp)
 }

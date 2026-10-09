@@ -373,6 +373,15 @@ type DryRunChecksReq struct {
 	Side      string `json:"side"`
 	Workers   int    `json:"workers,omitempty"`
 	SegBinary string `json:"seg_binary,omitempty"`
+	// SegSSH (2C-3b, A+) is the "user@" prefix the SOURCE agent SSHes to its
+	// S segment hosts for the segreceiver binary presence/executability check
+	// (gpadmin has passwordless SSH to its own segments — standard GP layout).
+	// Empty = no SSH (single-host / plain-PostgreSQL source).
+	SegSSH string `json:"seg_ssh,omitempty"`
+	// SegListen (2C-3b) is the run's --seg-listen base (host:port); the source
+	// agent checks the base port is FREE on each S segment host (the segriver
+	// grid is base+unitID at run time). Empty = the port check is not run.
+	SegListen string `json:"seg_listen,omitempty"`
 }
 
 // DryRunChecksResp is the agent's dry-run pre-flight report: its side's raw

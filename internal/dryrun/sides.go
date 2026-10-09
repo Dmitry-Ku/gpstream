@@ -21,7 +21,6 @@ import (
 	"github.com/gpstream/gpstream/internal/route"
 	"github.com/gpstream/gpstream/internal/topology"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
-	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
 
 // SideValues is ONE side's (source or destination) raw dry-run values,
@@ -86,10 +85,15 @@ type SideValues struct {
 // GatherSide reads ONE side's raw dry-run values on q (the side's LOCAL
 // database connection, owned by the side's agent). side is "source" or
 // "dest". workers is the run's --workers (the max_connections sizing check).
-// segBinary (source side only, the gpstream-segreceiver path) enables the
-// on_segment kernel probe; empty disables it. It never panics on an
-// unreachable cluster; a failed ping is itself captured (ReachErr).
-func GatherSide(ctx context.Context, q pg.Querier, side string, workers int, segBinary string) *SideValues {
+// It never panics on an unreachable cluster; a failed ping is itself
+// captured (ReachErr).
+//
+// 2C-3b: the on_segment / mini-readiness checks are NO LONGER gathered here —
+// they require SSH to the segment hosts, which only the side's AGENT can do
+// (the controller holds no data/SSH connection). The agent calls
+// checkOnSegmentAPlus / checkMiniReady and sets OnSegmentOK/Summary and
+// MiniReady on the returned SideValues. This function does DB queries only.
+func GatherSide(ctx context.Context, q pg.Querier, side string, workers int) *SideValues {
 	sv := &SideValues{Side: side}
 	if err := q.Ping(ctx); err != nil {
 		sv.ReachErr = err.Error()
@@ -151,18 +155,8 @@ func GatherSide(ctx context.Context, q pg.Querier, side string, workers int, seg
 	// Side-specific collation sets (the column-collation diff, F-16).
 	if side == "source" {
 		sv.SourceCollationsUsed = sourceCollationsUsed(ctx, q)
-		if segBinary != "" {
-			// on_segment: the kernel's ON SEGMENT probe (GUC + dispatch + the
-			// segreceiver binary on every segment host). Only meaningful on
-			// Greenplum; on a plain-PG source it is a coordinator-only note.
-			if sv.Greenplum {
-				p := segstream.CheckOnSegment(ctx, q, segBinary)
-				sv.OnSegmentOK = p.OK()
-				sv.OnSegmentSummary = p.Summary()
-			} else {
-				sv.OnSegmentSummary = []string{"segment-direct capability: not a Greenplum cluster (coordinator path only)"}
-			}
-		}
+		// on_segment (A+) + mini-ready (dest) are set by the AGENT after this
+		// gather (they need SSH to the segment hosts — see dryrun_checks.go).
 	} else {
 		sv.DestCollationsInstalled = destCollationsInstalled(ctx, q)
 	}

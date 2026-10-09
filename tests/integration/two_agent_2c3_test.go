@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,7 +57,17 @@ func TestDryRunChecksWireRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { sclient.Close() })
 
-	srcResp, err := sclient.DryRunChecks(agent.DryRunChecksReq{Side: "source", Workers: 1})
+	// 2C-3b: pass the on_segment A+ inputs (SegBinary/SegSSH/SegListen) over
+	// the wire. The pgtest source is plain PostgreSQL, so the A+ check takes
+	// its plain-PG branch (a note, NO kernel dispatch, NO SSH) — proving the
+	// new wire fields round-trip and the plain-PG A+ path is crash-free.
+	srcResp, err := sclient.DryRunChecks(agent.DryRunChecksReq{
+		Side:      "source",
+		Workers:   1,
+		SegBinary: "/usr/local/bin/gpstream-segreceiver",
+		SegSSH:    "", // no SSH (plain PG / single-host)
+		SegListen: "127.0.0.1:30000",
+	})
 	if err != nil {
 		t.Fatalf("source dry-run-checks: %v", err)
 	}
@@ -75,6 +86,22 @@ func TestDryRunChecksWireRoundTrip(t *testing.T) {
 	}
 	if !srcSV.DiskOK {
 		t.Fatalf("source side disk probe failed: %s", srcSV.DiskErr)
+	}
+	// 2C-3b A+ (plain-PG branch): a note is emitted, the kernel is NOT
+	// probed, and no dispatch ran. The note must carry the "kernel ON SEGMENT
+	// not checked" marker (the design decision).
+	if len(srcSV.OnSegmentSummary) == 0 {
+		t.Fatalf("2C-3b: source A+ (SegBinary set) must emit an on_segment note, got none")
+	}
+	if srcSV.OnSegmentOK {
+		t.Fatalf("2C-3b: plain-PG source must not report on_segment OK")
+	}
+	joined := ""
+	for _, l := range srcSV.OnSegmentSummary {
+		joined += l + " "
+	}
+	if !strings.Contains(joined, "kernel ON SEGMENT") {
+		t.Fatalf("2C-3b: plain-PG A+ note must say the kernel is not checked, got: %q", joined)
 	}
 
 	// DESTINATION agent over a real control socket (coordinator mode).

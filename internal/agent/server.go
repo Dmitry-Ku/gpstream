@@ -724,7 +724,14 @@ func (s *SourceServer) handleDryRunChecks(req DryRunChecksReq) DryRunChecksResp 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	sv := dryrun.GatherSide(ctx, q, "source", req.Workers, req.SegBinary)
+	sv := dryrun.GatherSide(ctx, q, "source", req.Workers)
+	// 2C-3b (A+): the on_segment capability WITHOUT a kernel dispatch — the
+	// agent SSHes to each S segment host (the segreceiver binary presence +
+	// executability + version, the listen-grid base port). The kernel's ON
+	// SEGMENT support is NOT probed (the first real run verifies it).
+	if req.SegBinary != "" {
+		sv.OnSegmentOK, sv.OnSegmentSummary = s.checkOnSegmentAPlus(ctx, q, req.SegBinary, req.SegSSH, req.SegListen, sv.Greenplum)
+	}
 	return DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Ok: true, Side: sv}
 }
 

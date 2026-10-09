@@ -289,6 +289,7 @@ func main() {
 			PeerListen:       *peerListen,
 			MiniCount:        *miniCount,
 			MiniHosts:        hosts,
+			MiniSSHUser:      *miniSSHUser,
 		})
 		if err != nil {
 			fail("start supervisor dest agent: %v", err)
