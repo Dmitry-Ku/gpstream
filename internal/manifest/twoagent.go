@@ -87,9 +87,6 @@ type TwoAgentRunner interface {
 	// (1E: swap_done / verify_mismatch / mini errors / journal errors) — the
 	// manager forwards them to its own events.jsonl (source=dest-agent).
 	StreamMini(ctx context.Context, req unitMiniRequest) (rows int64, wire, logical uint64, srcDigest, dstDigest string, swapped, verified bool, events []string, err error)
-	// Checksum asks the source agent (which holds the FR-02 snapshot) for the
-	// table's content checksum (the --verify path).
-	Checksum(ctx context.Context, schema, table string) (string, error)
 	// DDL (2B-2, architecture 08.10) delegates ONE destination-DDL operation
 	// to the destination agent (the controller holds no direct destination
 	// connection). The runner issues the "ddl" control op to the long-lived
@@ -1050,17 +1047,6 @@ func (r *processTwoAgentRunner) MiniMap(ctx context.Context, deadline time.Durat
 	}
 }
 
-func (r *processTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {
-	resp, err := r.ctrl.Checksum(schema, table)
-	if err != nil {
-		return "", fmt.Errorf("two-agent: checksum %s.%s: %w", schema, table, err)
-	}
-	if !resp.Ok {
-		return "", fmt.Errorf("two-agent: source agent checksum %s.%s: %s", schema, table, resp.Error)
-	}
-	return resp.Checksum, nil
-}
-
 // DDL (2B-2, architecture 08.10) delegates one destination-DDL operation to
 // the long-lived destination agent over its control socket. The agent runs it
 // on a fresh LOCAL coordinator connection and reports the result; the
@@ -1559,13 +1545,6 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 // process runner (the production / live-e2e path).
 func (r *InProcTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequest) (int64, uint64, uint64, string, string, bool, bool, []string, error) {
 	return 0, 0, 0, "", "", false, false, nil, fmt.Errorf("two-agent: StreamMini (mesh mini path) requires the process runner (the in-process runner does not run the supervisor + mini-agents)")
-}
-
-func (r *InProcTwoAgentRunner) Checksum(ctx context.Context, schema, table string) (string, error) {
-	if r.srv == nil {
-		return "", fmt.Errorf("two-agent: source agent not started")
-	}
-	return r.srv.Checksum(ctx, schema, table)
 }
 
 // DDL (2B-2, architecture 08.10) delegates one destination-DDL operation to

@@ -283,28 +283,6 @@ type ReleaseResp struct {
 	Error string `json:"error,omitempty"`
 }
 
-// ChecksumReq asks the source agent (which holds the FR-02 snapshot) for the
-// content checksum of a table — the controller's --verify path compares it
-// against the destination table's checksum. The source agent re-derives it on
-// its pinned snapshot connection (the same snapshot the data COPY used).
-type ChecksumReq struct {
-	Op string `json:"op"` // "checksum"
-	// ReqID (P1d) is the controller's per-request correlation id, echoed in
-	// ChecksumResp (concurrent ops on one control connection).
-	ReqID  uint64 `json:"req_id,omitempty"`
-	Schema string `json:"schema"`
-	Table  string `json:"table"`
-}
-
-// ChecksumResp is the source agent's checksum report.
-type ChecksumResp struct {
-	Ok bool `json:"ok"`
-	// ReqID (P1d) echoes ChecksumReq.ReqID (concurrent-op correlation).
-	ReqID    uint64 `json:"req_id,omitempty"`
-	Checksum string `json:"checksum,omitempty"`
-	Error    string `json:"error,omitempty"`
-}
-
 // CatalogReq (2B-3, architecture 08.10) is the controller's delegated
 // SOURCE-catalog read: the controller holds no direct source connection for
 // the per-unit catalog ops, so the sequence discovery, the sequence
@@ -599,8 +577,6 @@ func (c *ControlClient) call(req, resp any) error {
 		r.ReqID = id
 	case *OnSegmentReq:
 		r.ReqID = id
-	case *ChecksumReq:
-		r.ReqID = id
 	case *ReleaseReq:
 		r.ReqID = id
 	case *PlanReq:
@@ -721,14 +697,6 @@ func (c *ControlClient) OnSegment(req OnSegmentReq) (OnSegmentResp, error) {
 
 // Checksum asks the source agent (which holds the FR-02 snapshot) for the
 // table's content checksum.
-func (c *ControlClient) Checksum(schema, table string) (ChecksumResp, error) {
-	var resp ChecksumResp
-	req := ChecksumReq{Op: "checksum", Schema: schema, Table: table}
-	if err := c.call(&req, &resp); err != nil {
-		return resp, err
-	}
-	return resp, nil
-}
 
 // Plan (Phase 2, 2A) asks the SOURCE agent to build the copy plan: it
 // establishes the persistent source->dest peer channel, runs plan.Build with

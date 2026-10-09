@@ -15,7 +15,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -489,28 +488,6 @@ func fkAction(c string) string {
 	default:
 		return ""
 	}
-}
-
-// Checksum returns a row-order-independent content digest of the binary COPY
-// payload of schema.table (FR-02). Comparing the source and destination
-// checksums verifies that the data arrived intact without re-copying the table
-// (FR-01/§4.2). The digest is order-independent because the source (a
-// distributed table, gathered in segment order) and the destination staging
-// (a plain heap, insertion order) lay the same rows down in different orders —
-// a raw-payload md5 would mismatch on identical data (E1 e2e, 27.09).
-func (a *Agent) Checksum(ctx context.Context, schema, table string) (string, error) {
-	// Stream the digest (O(1) memory) instead of buffering the whole payload:
-	// a 2.6 GB table OOM-killed the buffer-all variant (runtime: out of memory
-	// in growslice, 29.09 disk-full test).
-	d := transfer.NewContentDigest()
-	rows, err := a.q.ReadCopy(ctx, d, copySQL(schema, table))
-	if err != nil {
-		return "", err
-	}
-	if rows == 0 {
-		return "0", nil
-	}
-	return d.Sum()
 }
 
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes.

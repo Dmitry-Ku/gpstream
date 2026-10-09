@@ -102,45 +102,6 @@ func TestCopyToStream(t *testing.T) {
 	}
 }
 
-// TestChecksum computes an md5 over the binary COPY payload (FR-02) and
-// compares it against an independently computed digest.
-func TestChecksum(t *testing.T) {
-	f := pg.NewFakeConn()
-	payload := []byte("hello-binary-copy")
-	f.OnReadCopy("TO STDOUT", payload)
-	a := New(f)
-	got, err := a.Checksum(context.Background(), "public", "orders")
-	if err != nil {
-		t.Fatalf("checksum: %v", err)
-	}
-	if got == "" || got == "0" {
-		t.Fatalf("expected a non-empty digest, got %q", got)
-	}
-	// The fake returns the same payload for a second call, so the digest must
-	// match the one computed from the raw payload.
-	f2 := pg.NewFakeConn()
-	f2.OnReadCopy("TO STDOUT", payload)
-	a2 := New(f2)
-	got2, _ := a2.Checksum(context.Background(), "public", "orders")
-	if got != got2 {
-		t.Fatalf("checksum not deterministic: %s vs %s", got, got2)
-	}
-}
-
-// TestChecksumEmpty returns "0" for an empty payload (no rows).
-func TestChecksumEmpty(t *testing.T) {
-	f := pg.NewFakeConn()
-	f.OnReadCopy("TO STDOUT", []byte{})
-	a := New(f)
-	got, err := a.Checksum(context.Background(), "public", "orders")
-	if err != nil {
-		t.Fatalf("checksum: %v", err)
-	}
-	if got != "0" {
-		t.Fatalf("empty payload should be \"0\", got %q", got)
-	}
-}
-
 // TestQuoteIdent checks the identifier quoting (escaping embedded quotes).
 func TestQuoteIdent(t *testing.T) {
 	cases := map[string]string{

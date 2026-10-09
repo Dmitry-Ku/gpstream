@@ -350,13 +350,6 @@ func (s *SourceServer) serveControl(l net.Listener) {
 					return
 				}
 				_ = s.sendResp(conn, s.handleOnSegment(req))
-			case "checksum":
-				var req ChecksumReq
-				if uerr := json.Unmarshal(line, &req); uerr != nil {
-					_ = s.sendResp(conn, ChecksumResp{ReqID: probe.ReqID, Error: uerr.Error()})
-					return
-				}
-				_ = s.sendResp(conn, s.handleChecksum(req))
 			case "build-plan":
 				var req PlanReq
 				if uerr := json.Unmarshal(line, &req); uerr != nil {
@@ -647,10 +640,6 @@ func (s *SourceServer) dialDestTLS(ctx context.Context, addr string) (net.Conn, 
 	}
 }
 
-// handleChecksum re-derives the content checksum of a table on the pinned
-// snapshot connection (the same FR-02 snapshot the data COPY used) — the
-// controller's --verify path compares it against the destination.
-// handleCatalog (2B-3/2B-4/2B-5, architecture 08.10) runs one delegated
 // source-catalog read on the source agent's LOCAL pool. The controller holds
 // no direct source connection for the per-unit catalog ops (sequence
 // discovery, sequence last_value, constraint definitions, the FR-17 index
@@ -763,15 +752,6 @@ func (s *SourceServer) handleDryRunChecks(req DryRunChecksReq) DryRunChecksResp 
 		sv.OnSegmentOK, sv.OnSegmentSummary = s.checkOnSegmentAPlus(ctx, q, req.SegBinary, req.SegSSH, req.SegListen, sv.Greenplum)
 	}
 	return DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Ok: true, Side: sv}
-}
-
-func (s *SourceServer) handleChecksum(req ChecksumReq) ChecksumResp {
-	ctx := context.Background()
-	sum, err := source.New(s.copyQuerier()).Checksum(ctx, req.Schema, req.Table)
-	if err != nil {
-		return ChecksumResp{ReqID: req.ReqID, Ok: false, Error: err.Error()}
-	}
-	return ChecksumResp{ReqID: req.ReqID, Ok: true, Checksum: sum}
 }
 
 // handlePlan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it
@@ -920,9 +900,6 @@ func stampCopiedStates(ctx context.Context, dst pg.Querier, p *plan.Plan, operat
 // (the same connection every data COPY used). It is the direct API for an
 // in-process controller (the integration-test runner); the control-socket
 // path (handleChecksum) wraps it for the binary agent.
-func (s *SourceServer) Checksum(ctx context.Context, schema, table string) (string, error) {
-	return source.New(s.copyQuerier()).Checksum(ctx, schema, table)
-}
 
 // TableExists (2B-5, architecture 08.10) reports whether schema.table exists
 // on the source (the zero-columns guard probe). It runs on the CATALOG
