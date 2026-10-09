@@ -130,6 +130,9 @@ type Supervisor struct {
 	// stopOnce makes Stop idempotent (the DestServer's release op and its
 	// Close both call it; a second call must not re-close stopped).
 	stopOnce sync.Once
+	// helloTimeout bounds the mini-hello read in AcceptMinis (it is CLEARED
+	// once the hello arrives; the connection is long-lived after).
+	helloTimeout time.Duration
 }
 
 // miniConn is one mini-agent's persistent report connection.
@@ -163,9 +166,10 @@ func NewSupervisor(listen string, portAlloc *portalloc.Allocator, dataTLSCert, d
 		return nil, fmt.Errorf("supervisor: listen %s: %w", listen, err)
 	}
 	s := &Supervisor{
-		reportL: l,
-		minis:   make(map[int]*miniConn),
-		stopped: make(chan struct{}),
+		reportL:      l,
+		minis:        make(map[int]*miniConn),
+		stopped:      make(chan struct{}),
+		helloTimeout: 30 * time.Second,
 	}
 	if transfer.TLSEnabled(dataTLSCert, dataTLSKey, dataTLSCA) {
 		scfg, terr := transfer.ServerTLSConfig(dataTLSCert, dataTLSKey, dataTLSCA, dataTLSMinTLS)
@@ -176,6 +180,14 @@ func NewSupervisor(listen string, portAlloc *portalloc.Allocator, dataTLSCert, d
 		s.tlsCfg = scfg
 	}
 	return s, nil
+}
+
+// WithHelloTimeout overrides the mini-hello read bound in AcceptMinis (test
+// hook: production keeps the 30s default). It must be called before
+// AcceptMinis.
+func (s *Supervisor) WithHelloTimeout(d time.Duration) *Supervisor {
+	s.helloTimeout = d
+	return s
 }
 
 // Addr is the report listener's bound address (the mini-agents dial it).
@@ -216,13 +228,21 @@ func (s *Supervisor) AcceptMinis(ctx context.Context, D int) (MiniMap, error) {
 				c = tc
 			}
 			// Bound the hello read so a stuck mini does not wedge the accept.
-			_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+			// The deadline is cleared after the hello (see below) — it must not
+			// survive onto the long-lived report connection.
+			_ = c.SetReadDeadline(time.Now().Add(s.helloTimeout))
 			var h MiniHello
 			if rerr := recvLine(bufio.NewReader(c), &h); rerr != nil {
 				_ = c.Close()
 				hellos <- helloOut{err: fmt.Errorf("read mini hello: %w", rerr)}
 				return
 			}
+			// The hello is in; the connection is now long-lived (the per-unit
+			// mini-unit-resp arrives only after the FULL slice is received,
+			// which can be well over 30s on a large table). Clear the hello
+			// deadline so a slow-but-healthy slice does not read-timeout;
+			// a dead mini still surfaces as a connection drop (orphan-exit).
+			_ = c.SetReadDeadline(time.Time{}) // clear the hello deadline (long-lived)
 			hellos <- helloOut{seg: h.Seg, conn: c, data: net.JoinHostPort("", fmt.Sprint(h.DataPort)), version: h.Version}
 		}()
 	}
