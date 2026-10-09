@@ -81,11 +81,15 @@ func readDestCatalog(ctx context.Context, dsn, sslCert, sslKey, sslCA, sslMinTLS
 		if hostname == "" {
 			return nil, fmt.Errorf("dest catalog: segment %d has no hostname", i)
 		}
+		uds, err := segmentUtilityDSN(dsn, hostname, int(port))
+		if err != nil {
+			return nil, fmt.Errorf("dest catalog: segment %d: %w", content, err)
+		}
 		segs = append(segs, miniSegTarget{
 			Content:  int32(content),
 			Hostname: hostname,
 			Port:     int(port),
-			DSN:      segmentUtilityDSN(dsn, hostname, int(port)),
+			DSN:      uds,
 		})
 	}
 	if len(segs) == 0 {
@@ -103,15 +107,50 @@ func readDestCatalog(ctx context.Context, dsn, sslCert, sslKey, sslCA, sslMinTLS
 // segmentUtilityDSN rewrites the coordinator DSN (URL form) to a segment's
 // host:port + gp_session_role=utility (the mini connects to its OWN segment
 // locally). A non-URL DSN is passed through verbatim (single-host layouts).
-func segmentUtilityDSN(destDSN, hostname string, port int) string {
+// segmentUtilityDSN rewrites the destination DSN so the mini connects to ITS
+// OWN segment (hostname:port, utility mode) instead of the coordinator. The
+// mini's segment-direct COPY must be a LOCAL connection to that segment
+// (architecture 08.10: agent and mini DB connections are local only).
+//
+// Both DSN forms are handled. The keyword/value form (host=... port=...) is
+// the one operators actually pass on the command line: rewriting only the URL
+// form silently left keyword DSNs on the coordinator's host:port, so all D
+// minis utility-connected to the coordinator and the whole unit's rows landed
+// in the master slice while the segments stayed empty (first live A->A run).
+func segmentUtilityDSN(destDSN, hostname string, port int) (string, error) {
 	if u, err := url.Parse(destDSN); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
 		u.Host = net.JoinHostPort(hostname, strconv.Itoa(port))
 		q := u.Query()
 		q.Set("gp_session_role", "utility")
 		u.RawQuery = q.Encode()
-		return u.String()
+		return u.String(), nil
 	}
-	return destDSN + " gp_session_role=utility"
+	// Keyword/value form: rewrite host= and port= in place, keep every other
+	// field (dbname/user/sslmode/...) untouched.
+	out := make([]string, 0, 12)
+	hostSeen, portSeen := false, false
+	for _, f := range strings.Fields(destDSN) {
+		if k, _, ok := strings.Cut(f, "="); ok {
+			switch k {
+			case "host":
+				hostSeen = true
+				out = append(out, "host="+hostname)
+				continue
+			case "port":
+				portSeen = true
+				out = append(out, "port="+strconv.Itoa(port))
+				continue
+			}
+		}
+		out = append(out, f)
+	}
+	if !hostSeen {
+		return "", fmt.Errorf("segment DSN %q has no host= field: cannot rewrite it to segment %s:%d", destDSN, hostname, port)
+	}
+	if !portSeen {
+		out = append(out, "port="+strconv.Itoa(port))
+	}
+	return strings.Join(out, " ") + " gp_session_role=utility", nil
 }
 
 // catInt64 converts a catalog column value to int64. gp_segment_configuration

@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -210,6 +211,16 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	// 2c. Rename (FR-11): map source names to destination names. Conflicts are
 	// detected against the destination name, so a rename avoids an overwrite.
 	applyRename(cfg, tabs)
+
+	// 2c1. Self-copy guard: a unit whose destination is the SAME table on the
+	// SAME cluster (source and destination DSN identical, same schema+name)
+	// is always a mistake. With --overwrite the swap does
+	// DROP TABLE <src>; RENAME staging -> <src>, destroying the source. A
+	// different destination NAME on the same cluster (orders -> orders_copy)
+	// is a normal in-cluster copy and stays allowed.
+	if err := checkSelfCopy(cfg, tabs); err != nil {
+		return nil, err
+	}
 
 	// 2c2. F-11 metadata phase: detect non-table objects (views, matviews,
 	// functions) within the selected schemas. Reported in dry-run — the data
@@ -641,7 +652,16 @@ func applyRename(cfg *config.Config, tabs []Table) {
 		if ns, ok := cfg.RenameSchema[t.Schema]; ok {
 			t.DstSchema = ns
 		}
-		if dn, ok := cfg.RenameTable[t.Schema+"."+t.Name]; ok {
+		// The table-rename key is "schema.table" (spec example), but the CLI
+		// documents --map-table src=dst (bare table name). Accept both; the
+		// qualified key wins when both are present. Before the fix the bare
+		// key was silently ignored -> the unit self-copied table -> table and
+		// --overwrite dropped the source (first live A->A mesh run).
+		dn, ok := cfg.RenameTable[t.Schema+"."+t.Name]
+		if !ok {
+			dn, ok = cfg.RenameTable[t.Name]
+		}
+		if ok {
 			s, n := splitTableRename(dn)
 			if n != "" {
 				t.DstName = n
@@ -651,6 +671,53 @@ func applyRename(cfg *config.Config, tabs []Table) {
 			}
 		}
 	}
+}
+
+// dsnIdentity returns "host:port|dbname" for a cluster DSN (URL or
+// keyword/value form), or "" when either part cannot be determined. It is
+// used ONLY to decide whether two DSNs point at the same cluster (the
+// self-copy guard); it never returns credentials.
+func dsnIdentity(dsn string) string {
+	hp := pg.DSNHostPort(dsn)
+	if hp == "" {
+		return ""
+	}
+	name := ""
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" && u.Host != "" {
+		name = strings.TrimPrefix(u.Path, "/")
+	} else {
+		for _, kv := range strings.Fields(dsn) {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == "dbname" {
+				name = v
+				break
+			}
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	return hp + "|" + name
+}
+
+// checkSelfCopy rejects a plan in which any unit copies a table onto itself:
+// same cluster (source and destination DSN resolve to the same host:port and
+// database) and the same destination schema+table as the source. Such a unit
+// cannot be safe under --overwrite (the swap drops the source) and is a
+// silent no-op otherwise.
+func checkSelfCopy(cfg *config.Config, tabs []Table) error {
+	srcID := dsnIdentity(cfg.Source)
+	dstID := dsnIdentity(cfg.Dest)
+	if srcID == "" || dstID == "" || srcID != dstID {
+		return nil // different clusters (or undeterminable) — a normal copy
+	}
+	for i := range tabs {
+		t := &tabs[i]
+		if t.DstSchema == t.Schema && t.DstName == t.Name {
+			return fmt.Errorf("self-copy: %s.%s would be copied onto itself (source and destination are the same cluster and table); with --overwrite the swap would DROP the source table. Rename the destination (--map-table %s=<new-name>) or copy from a different source",
+				t.Schema, t.Name, t.Name)
+		}
+	}
+	return nil
 }
 
 // splitTableRename splits a destination table rename value into its schema and
