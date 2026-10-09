@@ -40,6 +40,14 @@ type Table struct {
 	Bytes     int64    // estimated size
 	RowEst    int64    // estimated rows
 	Indexes   int      // number of indexes
+	// CopiedState (2E-2, architecture 08.10) is the terminal state the
+	// DESTINATION journal (gpstream_units, the writer of record) reports for
+	// this table, fetched by the source agent directly over the source->dest
+	// peer channel during plan building (no controller). Empty = the
+	// destination has no terminal record for the table (a fresh copy). The
+	// controller adopts it as an additive authoritative keep signal: a
+	// "swapped"/"completed" table is kept (not re-copied) on resume.
+	CopiedState string
 	// Partitioned reports whether the table is a partitioned parent (GP6
 	// inheritance partitioning: relkind 'r' with children in pg_inherits). A
 	// partitioned parent is planned as ONE unit: its leaves are excluded from

@@ -835,7 +835,67 @@ func (s *SourceServer) handlePlan(req PlanReq) PlanResp {
 func (s *SourceServer) BuildPlan(ctx context.Context, timeout time.Duration, cfg *config.Config, dst pg.Querier) (*plan.Plan, error) {
 	pctx, pcancel := context.WithTimeout(ctx, timeout)
 	defer pcancel()
-	return plan.Build(pctx, cfg, s.pool, dst)
+	p, err := plan.Build(pctx, cfg, s.pool, dst)
+	if err != nil {
+		// A partial (timed-out) or failed plan: no already-copied stamp (the
+		// controller treats it as a forecast, not a resume).
+		return p, err
+	}
+	// 2E-2 (architecture 08.10): stamp the destination's terminal (already-
+	// copied) states, fetched DIRECTLY from the destination journal over the
+	// source->dest peer channel (no controller). The destination is the
+	// writer of record for gpstream_units, so its terminal rows are the
+	// authoritative "already copied" set for the resume keep decision.
+	stampCopiedStates(ctx, dst, p)
+	return p, nil
+}
+
+// cellString renders one destination query cell as a string (text columns
+// decode to string; bytea to its bytes; nil to ""). 2E-2 helper.
+func cellString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+// stampCopiedStates (2E-2, architecture 08.10) queries the destination's
+// journal (gpstream_units, the writer of record) for the terminal (swapped /
+// completed) units of this plan's job, directly over the source->dest channel
+// (no controller), and stamps each matching plan table's CopiedState so the
+// controller keeps (does not re-copy) already-verified tables on resume. A
+// missing gpstream_units table (a fresh destination) or a job_id with no
+// terminal rows (a fresh operation) is a no-op (every table is a to-copy).
+func stampCopiedStates(ctx context.Context, dst pg.Querier, p *plan.Plan) {
+	if dst == nil || p == nil || p.Hash == "" || len(p.Units) == 0 {
+		return
+	}
+	rows, err := dst.Query(ctx,
+		`SELECT "db", "schema", "table", state FROM gpstream_units WHERE job_id = $1 AND state IN ('swapped', 'completed')`,
+		p.Hash)
+	if err != nil {
+		return // gpstream_units absent (fresh destination) / query failed: nothing copied yet
+	}
+	byKey := make(map[string]*plan.Table, len(p.Units))
+	for i := range p.Units {
+		t := &p.Units[i]
+		byKey[t.DB+"|"+t.Schema+"|"+t.Name] = t
+	}
+	for _, r := range rows {
+		if len(r) < 4 {
+			continue
+		}
+		key := cellString(r[0]) + "|" + cellString(r[1]) + "|" + cellString(r[2])
+		if t, ok := byKey[key]; ok {
+			t.CopiedState = cellString(r[3])
+		}
+	}
 }
 
 // Checksum re-derives a table's content checksum on the run's FR-02 snapshot

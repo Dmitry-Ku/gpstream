@@ -706,6 +706,25 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			unit.RowCount = prev.RowCount
 			unit.Attempts = prev.Attempts
 		}
+		// 2E-2 (architecture 08.10): the DESTINATION journal (gpstream_units,
+		// the writer of record) is the authoritative "already copied" set —
+		// the source agent fetched it directly over the source->dest channel
+		// (plan.Table.CopiedState, source->dest, no controller). A terminal
+		// destination state wins over the local file mirror (the durable
+		// fallback): the destination actually holds the table. "swapped" =
+		// the final table is on the destination (keep, unless a re-read is
+		// required); "completed" = the verified data is in the staging table
+		// (the existing finishCompleted path completes the atomic swap).
+		// (No mirror write here: the destination row already carries the
+		// authoritative checksum/row count — a controller upsert would
+		// blank them. The adoption is re-derived from the destination on
+		// every run; the mirror stays the fallback for a fresh controller.)
+		switch t.CopiedState {
+		case "swapped":
+			unit.State = StateSwapped
+		case "completed":
+			unit.State = StateCompleted
+		}
 		units = append(units, unit)
 	}
 
