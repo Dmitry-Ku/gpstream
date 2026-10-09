@@ -77,14 +77,15 @@ func TestConfigFromFile(t *testing.T) {
 }
 
 // TestConfigSafetyDefaults locks the operator-safe defaults: strict conflict
-// (stop), verify off, zstd compression.
+// (stop), verify ON (08.10: content verification is on by default — digests are
+// always computed and gate the swap; --verify off disables it), zstd compression.
 func TestConfigSafetyDefaults(t *testing.T) {
 	cfg := config.Default()
 	if cfg.ConflictAction != config.Stop {
 		t.Errorf("default conflict = %q, want %q", cfg.ConflictAction, config.Stop)
 	}
-	if cfg.Verify != config.VerifyOff {
-		t.Errorf("default verify = %q, want off", cfg.Verify)
+	if cfg.Verify != config.VerifyOn {
+		t.Errorf("default verify = %q, want on", cfg.Verify)
 	}
 	if cfg.Compression != config.CompZstd {
 		t.Errorf("default compression = %q, want zstd", cfg.Compression)
