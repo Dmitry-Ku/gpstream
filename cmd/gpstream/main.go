@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/manifest"
@@ -397,25 +398,65 @@ func cmdDryRun(args []string) error {
 		}
 		return err
 	}
+	// 2C-1/2/4/5 (architecture 08.10): the dry-run is a RUN without copying,
+	// and the controller holds NO direct database connection. It launches
+	// the two agents, gathers BOTH sides' dry-run values over the control
+	// plane (each agent reads its OWN local database — the `dry-run-checks`
+	// op), diffs them in memory (dryrun.FromSides), builds the plan ON THE
+	// SOURCE AGENT (2A: its local source pool + the destination catalog
+	// proxied over the source->dest peer channel), prints it, and releases
+	// the agents. The destination database is never modified (read-only).
+	// cfg.DryRun marks the run so the runner hands the dest agent --dry-run
+	// (it does not launch the D mini-agents and its version exchange does not
+	// wait for the (never-arriving) mini-map — the 2C-3b SSH mini-readiness
+	// check covers the minis instead).
+	cfg.DryRun = true
+
+	// The data path is always two-agent (P7): resolve the agent binaries
+	// (sibling of the gpstream binary, then PATH) and fail loud if missing.
+	if err := cfg.ResolveAgentBinaries(); err != nil {
+		return fmt.Errorf("dry-run: %w", err)
+	}
+
 	// FR-10 --timeout bounds the plan-formation phase (incl. metric collection):
 	// a hung segment must not stall the plan. On timeout the plan returns an
-	// error (the CLI reports the partial result below as a warning where set).
+	// error (the CLI reports the partial result below as a forecast).
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
-	srcQ := openOrFake(ctx, cfg, "source")
-	dstQ := openOrFake(ctx, cfg, "dest")
 
-	// P1e: the self-diagnostic runs BEFORE the
-	// plan: reachability, version, segments, disk, permissions, collation,
-	// encoding, TLS, extensions, max_connections vs --workers, on_segment,
-	// route. diagnoseConn (not openOrFake): a missing/unreachable cluster is
-	// a FAIL finding, never a masked healthy fake. Any FAIL aborts the
-	// dry-run with the report; WARNs are printed and the plan proceeds.
+	r := manifest.NewProcessTwoAgentRunner(&cfg)
+	if err := r.Start(ctx); err != nil {
+		return fmt.Errorf("dry-run: launch agents: %w", err)
+	}
+	// Release on every exit path (commits the source snapshot, stops the
+	// agents). The agents hold the data + catalog connections; the controller
+	// holds none.
+	defer func() { _ = r.Release(context.Background()) }()
+
+	// 2C-3: gather both sides' dry-run values via the agents (read-only). The
+	// source side carries the on_segment A+ inputs (the segreceiver path +
+	// the SSH user prefix + the listen-grid base, when set); the dest side
+	// runs its own mini-readiness SSH check (supervisor mode).
 	segBin := cfg.SegBinary
 	if segBin == "" {
 		segBin, _ = config.ResolveSegBinaryOrEmpty()
 	}
-	rep := dryrun.Run(ctx, diagnoseConn(ctx, cfg, "source"), diagnoseConn(ctx, cfg, "dest"),
+	srcResp, err := r.DryRunChecks(ctx, agent.DryRunChecksReq{
+		Side:      "source",
+		Workers:   cfg.WorkersPerPair,
+		SegBinary: segBin,
+		SegSSH:    sshUserPrefix(cfg.SourceAgentSSH),
+		SegListen: cfg.SegListen,
+	})
+	if err != nil {
+		return fmt.Errorf("dry-run: source checks: %w", err)
+	}
+	dstResp, err := r.DryRunChecks(ctx, agent.DryRunChecksReq{Side: "dest", Workers: cfg.WorkersPerPair})
+	if err != nil {
+		return fmt.Errorf("dry-run: dest checks: %w", err)
+	}
+	// The controller diffs the two sides IN MEMORY (no DB access).
+	rep := dryrun.FromSides(srcResp.Side, dstResp.Side,
 		dryrun.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
 	if cfg.CopyMode == config.CopyMesh && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
 		rep.Add(dryrun.Check{
@@ -431,7 +472,10 @@ func cmdDryRun(args []string) error {
 		return fmt.Errorf("dry-run: %d FAIL finding(s) — fix and re-run", rep.Failures())
 	}
 
-	p, err := plan.Build(ctx, &cfg, srcQ, dstQ)
+	// 2A: the plan is built ON THE SOURCE AGENT (its local source pool + the
+	// destination catalog proxied over the source->dest peer channel). The
+	// controller opens no direct source/destination connection.
+	p, err := r.Plan(ctx)
 	if err != nil {
 		// FR-10 §6.6: on a --timeout the plan is not complete; print the
 		// collected fragment with a "prediction/forecast" marker instead of a
@@ -460,6 +504,17 @@ func cmdDryRun(args []string) error {
 	return nil
 }
 
+// sshUserPrefix returns the "user@" prefix of an agent SSH target
+// ("user@host[:port]" -> "user@"; "" when there is no user). The same
+// convention the two-agent runner uses to feed the source agent's segment
+// SSH (the 1F version exchange + the 2C-3b A+ check).
+func sshUserPrefix(sshTarget string) string {
+	if i := strings.LastIndex(sshTarget, "@"); i >= 0 {
+		return sshTarget[:i+1]
+	}
+	return ""
+}
+
 // urlFormDSN reports whether conn is a URL-form postgres DSN
 // (postgres:// or postgresql:// with a host). The keyword/value form
 // (host=... port=...) is not URL-form; the segment-to-segment DSN builder
@@ -467,71 +522,6 @@ func cmdDryRun(args []string) error {
 func urlFormDSN(conn string) bool {
 	u, err := url.Parse(conn)
 	return err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") && u.Host != ""
-}
-
-// diagnoseConn opens a live connection for the diagnostic, or — on failure — a
-// fake whose Ping reports the error so the diagnostic can still emit a
-// FAIL/WARN (CR-7). Unlike openOrFake it NEVER returns a healthy fake for a
-// missing connstring: an unconfigured cluster is a reachability FAIL, not a
-// silent PASS (CR-7: the diagnostic must not mask seeded faults). Used by
-// cmdDryRun (P1e: the standalone self-diagnostic was folded into dry-run).
-func diagnoseConn(ctx context.Context, cfg config.Config, side string) pg.Querier {
-	conn := cfg.Source
-	if side == "dest" {
-		conn = cfg.Dest
-	}
-	if conn == "" {
-		// No connstring: the cluster cannot be reached. Report it as a
-		// reachability failure rather than fabricating a healthy fake.
-		f := pg.NewFakeConn()
-		f.SetPingError(fmt.Errorf("no %s connstring configured", side))
-		return f
-	}
-	c, err := pg.NewConn(ctx, conn, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS)
-	if err != nil {
-		f := pg.NewFakeConn()
-		f.SetPingError(fmt.Errorf("%w", err))
-		return f
-	}
-	return c
-}
-
-// openOrFake tries a live connection; on failure it returns a fake whose Ping
-// reports the error so the diagnostic can still emit a FAIL/WARN (CR-7). When no
-// connstring is given (CI/exercise mode) a healthy fake is returned so the
-// dry-run can be demonstrated.
-func openOrFake(ctx context.Context, cfg config.Config, side string) pg.Querier {
-	conn := cfg.Source
-	if side == "dest" {
-		conn = cfg.Dest
-	}
-	if conn == "" {
-		return healthyFake()
-	}
-	c, err := pg.NewConn(ctx, conn, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS)
-	if err != nil {
-		f := pg.NewFakeConn()
-		f.SetPingError(fmt.Errorf("%w", err))
-		return f
-	}
-	return c
-}
-
-// healthyFake returns a fake with a clean baseline (availability + a small
-// object graph for the dry-run planner). Fault injection for CR-7 is done in
-// tests, not here.
-func healthyFake() pg.Querier {
-	f := pg.NewFakeConn()
-	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
-	f.On("gp_segment_configuration", [][]any{{int64(4)}})
-	f.On("has_privilege", [][]any{{int64(1)}})
-	f.On("pg_database", [][]any{{"C", "C"}})
-	f.On("pg_class", [][]any{
-		{"public", "demo_orders", "r", int64(500 << 30), int64(0), int64(1)},
-		{"public", "demo_audit", "r", int64(100 << 30), int64(0), int64(0)},
-	})
-	f.On("SELECT 1", [][]any{{int64(1)}})
-	return f
 }
 
 func printReport(rep *dryrun.Report) {

@@ -629,6 +629,13 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 			"--data-listen", dataAddr,
 		)
 	}
+	// 2C-1/2/4/5: a dry-run (cfg.DryRun, set by the `dry-run` subcommand)
+	// must not start the D mini-agents and must not deadlock on the
+	// mini-map — the agent gets --dry-run (readiness = the 2C-3b SSH check).
+	// Harmless in coordinator mode (both effects are supervisor-only).
+	if r.cfg.DryRun {
+		dargs = append(dargs, "--dry-run")
+	}
 	// --peer-listen in BOTH modes (the source agent's persistent channel).
 	dargs = append(dargs, "--peer-listen", peerListen)
 	dargs = append(dargs,

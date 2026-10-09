@@ -179,12 +179,11 @@ func TestCopyConnectError(t *testing.T) {
 	}
 }
 
-// TestCopyNoClusterDryRun: a --dry-run with no cluster runs against the healthy
-// fake and succeeds (covers cmdDryRun's fake path, already exercised, but
-// ensures the two-way openOrFake path is covered from the copy entry).
+// TestDryRunConnectError: 2C-1/2/4/5 — a dry-run with an unparseable source
+// DSN must fail (the source agent cannot connect). The controller opens no
+// direct connection; the source agent's dry-run-checks report the reachability
+// failure.
 func TestDryRunConnectError(t *testing.T) {
-	// A malformed source DSN drives diagnoseConn's error branch (the live
-	// NewConn error path, not the missing-connstring fake path).
 	if err := run([]string{"dry-run", "--source", "not-a-valid-dsn://x"}); err == nil {
 		t.Fatal("expected dry-run to fail on an unparseable source DSN")
 	}

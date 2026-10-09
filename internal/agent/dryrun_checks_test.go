@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/portalloc"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 // TestQuoteRemote (2C-3b) proves the remote-shell quoting is single-quoted with
@@ -144,5 +146,44 @@ func TestCheckMiniReadyNoHosts(t *testing.T) {
 	got := s.checkMiniReady(context.Background())
 	if !strings.HasPrefix(got, "FAIL") {
 		t.Fatalf("no-hosts mini-ready must FAIL, got: %s", got)
+	}
+}
+
+// TestPeerVersionVerdictDryRunSkipsMiniMap (2C-1/2/4/5) proves the mesh
+// dry-run does not deadlock on the mini-map: in dry-run mode the dest agent
+// does NOT launch the D mini-agents (so the mini-map never completes), and
+// its 1F version exchange must therefore skip the mini-map wait and check
+// the source + segreceivers only. A real run keeps the wait.
+func TestPeerVersionVerdictDryRunSkipsMiniMap(t *testing.T) {
+	// A supervisor with a real (closed-on-cleanup) report listener but NO
+	// minis: miniMapReady stays false, so a real run would block until the
+	// AcceptTimeout deadline (the deadlock the dry-run must avoid).
+	sup, err := NewSupervisor("127.0.0.1:0", nil, "", "", "", "")
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	t.Cleanup(sup.Close)
+
+	sv := SourceVersion{Op: "source-version", Version: version.String()}
+
+	// Dry-run: no mini-map wait -> OK immediately (the mini versions are
+	// covered by the 2C-3b SSH mini-readiness check instead).
+	sDry := &DestServer{opts: DestServerOptions{DryRun: true, AcceptTimeout: time.Second}}
+	sDry.supervisor = sup
+	if ack := sDry.peerVersionVerdict(sv); !ack.Ok {
+		t.Fatalf("dry-run version exchange must skip the mini-map wait and be OK, got: %s", ack.Error)
+	}
+
+	// Real run (DryRun=false): the mini-map is not ready and the accept
+	// timeout is short -> the wait times out (the pre-2C-1 behavior, kept for
+	// real runs). This is the deadlock the dry-run flag removes.
+	sReal := &DestServer{opts: DestServerOptions{AcceptTimeout: 200 * time.Millisecond}}
+	sReal.supervisor = sup
+	ack := sReal.peerVersionVerdict(sv)
+	if ack.Ok {
+		t.Fatal("real run with an unready mini-map must NOT be OK")
+	}
+	if !strings.Contains(ack.Error, "mini-map not ready") {
+		t.Fatalf("real run should report the mini-map timeout, got: %s", ack.Error)
 	}
 }

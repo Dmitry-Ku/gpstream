@@ -131,6 +131,12 @@ func main() {
 	// a segment host that is not this host (the operator's --dest-agent-ssh
 	// user; the agent runs on the destination coordinator, same key).
 	miniSSHUser := flag.String("mini-ssh-user", "", "supervisor mode: SSH user@ to launch the D mini-agents on the segment hosts (empty = no SSH / single-host layout; the agent launches the minis itself)")
+	// 2C-1/2/4/5: the controller launches this agent for a DRY-RUN (the
+	// run-without-copy). The agent must NOT start the D mini-agents (a
+	// dry-run starts no real processes) and its 1F version exchange must not
+	// wait for the (never-arriving) mini-map. The mini versions are verified
+	// by the 2C-3b SSH mini-readiness check instead. A real run omits it.
+	dryRun := flag.Bool("dry-run", false, "dry-run mode: do NOT launch the D mini-agents and do NOT wait for the mini-map in the version exchange (the controller runs the 2C-3b SSH mini-readiness check instead)")
 	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -290,6 +296,7 @@ func main() {
 			MiniCount:        *miniCount,
 			MiniHosts:        hosts,
 			MiniSSHUser:      *miniSSHUser,
+			DryRun:           *dryRun,
 		})
 		if err != nil {
 			fail("start supervisor dest agent: %v", err)
@@ -299,7 +306,12 @@ func main() {
 		// bound (the minis dial srv.Hello().Report). The controller does not
 		// launch them and does not read the destination catalog.
 		var miniHandles []*launch.Handle
-		if *miniCount > 0 {
+		if *dryRun {
+			// 2C-1/2/4/5: a dry-run does not start the D mini-agents (no real
+			// processes); their readiness is the 2C-3b SSH check. The
+			// version exchange skips the mini-map wait (s.opts.DryRun).
+			fmt.Fprintln(os.Stderr, "gpstream-dest-agent: dry-run mode — the D mini-agents are NOT launched (readiness = the 2C-3b SSH mini check)")
+		} else if *miniCount > 0 {
 			segs := autoSegs
 			if segs == nil {
 				// --mini-count was passed explicitly (no auto-D read): read

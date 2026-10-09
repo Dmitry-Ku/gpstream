@@ -334,6 +334,13 @@ type DestServerOptions struct {
 	// locally). Used by the dry-run mini-readiness check (checkMiniReady) so
 	// the SSH key/auth is validated BEFORE the real launch.
 	MiniSSHUser string
+	// DryRun (2C-1/2/4/5) marks this dest agent as a dry-run participant: it
+	// does NOT launch the D mini-agents (a dry-run must not start real
+	// processes) and its 1F version exchange does NOT wait for the mini-map
+	// (the minis never connect, so the wait would deadlock). The mini
+	// versions are instead verified by the 2C-3b SSH mini-readiness check.
+	// A real run leaves this false (the normal mini-map wait applies).
+	DryRun bool
 }
 
 // DestServer is the long-lived destination agent (one data + one control
@@ -680,7 +687,12 @@ func (s *DestServer) servePeerSession(conn net.Conn) {
 // versions are only known once all D hellos arrive, supervisor mode) then
 // CheckVersions (own + minis + source + segreceivers must be equal).
 func (s *DestServer) peerVersionVerdict(sv SourceVersion) PeerAck {
-	if s.supervisor != nil {
+	// Dry-run (2C-1/2/4/5): the D minis are NOT launched (a dry-run must not
+	// start real processes), so the mini-map never completes — waiting for it
+	// would deadlock the version exchange. In dry-run the mini versions are
+	// verified by the 2C-3b SSH mini-readiness check instead, so the exchange
+	// checks the source + segreceivers only (minis empty).
+	if s.supervisor != nil && !s.opts.DryRun {
 		deadline := time.Now().Add(s.opts.AcceptTimeout)
 		for {
 			s.miniMapMu.Lock()
@@ -696,7 +708,7 @@ func (s *DestServer) peerVersionVerdict(sv SourceVersion) PeerAck {
 		}
 	}
 	minis := map[int]string{}
-	if s.supervisor != nil {
+	if s.supervisor != nil && !s.opts.DryRun {
 		minis = s.supervisor.MiniVersions()
 	}
 	if cerr := CheckVersions(version.String(), sv, minis); cerr != nil {

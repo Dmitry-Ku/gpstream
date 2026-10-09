@@ -225,11 +225,10 @@ func TestCmdVersionMan(t *testing.T) {
 	}
 }
 
-// TestCmdDryRunFake: P1e — dry-run runs the self-diagnostic
-// before planning. With no source/dest connstrings the reachability check is a
-// FAIL (diagnoseConn: "no source connstring configured"), so the command must
-// error with the report. (The --map-db / --map-schema flag parsing is covered
-// in main_coverage_test.go.)
+// TestCmdDryRunNoCluster: 2C-1/2/4/5 — the dry-run launches the two agents
+// (no controller DB connection). With no agent binaries resolvable in the test
+// env / no cluster, the command must error (no silent PASS). (The --map-db /
+// --map-schema flag parsing is covered in main_coverage_test.go.)
 func TestCmdDryRunFake(t *testing.T) {
 	if err := run([]string{"dry-run"}); err == nil {
 		t.Fatal("dry-run (no connstrings): want error (reachability FAIL), got nil")
@@ -239,9 +238,10 @@ func TestCmdDryRunFake(t *testing.T) {
 	}
 }
 
-// TestCmdDryRunUnreachable: dry-run against an unconfigured/unreachable
-// cluster must emit FAIL findings (CR-7) and return an error (the diagnostic
-// command was folded into dry-run, P1e).
+// TestCmdDryRunUnreachable: 2C-1/2/4/5 — dry-run against an unconfigured /
+// unreachable cluster must return an error (CR-7: no silent PASS). The
+// agents (not the controller) open the cluster connections; an unreachable
+// source surfaces as a reachability FAIL on the source side's dry-run-checks.
 func TestCmdDryRunUnreachable(t *testing.T) {
 	if err := run([]string{"dry-run"}); err == nil {
 		t.Error("dry-run unconfigured: want error (CR-7: no silent PASS)")
