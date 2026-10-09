@@ -234,7 +234,7 @@ func TestDryRunStrictConflictStops(t *testing.T) {
 	}
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	err = runWithTimeout(t, mgr, p, 60*time.Second)
 	if err == nil {
 		t.Fatal("run should stop on the 'keep' conflict (strict default)")

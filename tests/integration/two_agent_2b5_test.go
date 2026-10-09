@@ -104,7 +104,7 @@ func TestTwoAgent2B5VanishedTable(t *testing.T) {
 	// The SOURCE-AGENT plan (the production path) is built while BOTH tables
 	// still exist — it must include both units.
 	journalPath := filepath.Join(t.TempDir(), "journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, manifest.NewJournal(dst, journalPath))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(dst, journalPath))
 	planCtx, planCancel := context.WithTimeout(ctx, 120*time.Second)
 	defer planCancel()
 	p, err := mgr.Plan(planCtx)

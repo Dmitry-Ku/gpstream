@@ -81,8 +81,7 @@ func TestFR17IndexDoneJournal(t *testing.T) {
 	jdir := t.TempDir()
 	mirrorPath := jdir + "/journal.jsonl"
 	j := manifest.NewJournal(dst, mirrorPath)
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 
 	p := buildPlan(t, cfg, src, dst)
 	if len(p.Units) == 0 {
@@ -128,7 +127,7 @@ func TestFR17IndexDoneJournal(t *testing.T) {
 	// 4. Idempotent resume: a second run of the same operation keeps the unit
 	//    (no re-copy) and does not re-enqueue the index build (IndexDone
 	//    guard in requeueIndexes) — the data and index counts are unchanged.
-	mgr2 := newTwoAgentManager(t, &cfg, src, dst, j, srcCl.URL(), dstCl.URL())
+	mgr2 := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	p2 := buildPlan(t, cfg, src, dst)
 	if err := runWithTimeout(t, mgr2, p2, 120*time.Second); err != nil {
 		t.Fatalf("manager.Run (FR-17 resume): %v", err)

@@ -59,8 +59,7 @@ func TestIndexRenameCollisionOnLivePG(t *testing.T) {
 	}
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

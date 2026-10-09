@@ -107,7 +107,7 @@ func TestScale24TablesConsistentSnapshot(t *testing.T) {
 		t.Fatalf("plan has %d units, want %d", len(p.Units), nScaleTables)
 	}
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- mgr.Run(context.Background(), p) }()
@@ -220,7 +220,7 @@ func TestScale24TablesCrashResume(t *testing.T) {
 		t.Fatalf("plan has %d units, want %d", len(p1.Units), nScaleTables+1)
 	}
 	j1 := manifest.NewJournal(dstP, stateDir+"/journal.jsonl")
-	m1 := newTwoAgentManager(t, &cfg1, srcP, dstP, j1, srcP.DSN(), dstP.DSN())
+	m1 := newTwoAgentManager(t, &cfg1, j1, srcP.DSN(), dstP.DSN())
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	defer cancel1() // release the snapshot context even if the test path doesn't call it
 	run1Done := make(chan error, 1)
@@ -253,7 +253,7 @@ func TestScale24TablesCrashResume(t *testing.T) {
 	cfg2 := base
 	p2 := buildPlan(t, cfg2, srcP2, dstP2)
 	j2 := manifest.NewJournal(dstP2, stateDir+"/journal.jsonl")
-	m2 := newTwoAgentManager(t, &cfg2, srcP2, dstP2, j2, srcP2.DSN(), dstP2.DSN())
+	m2 := newTwoAgentManager(t, &cfg2, j2, srcP2.DSN(), dstP2.DSN())
 	if err := runWithTimeout(t, m2, p2, 600*time.Second); err != nil {
 		t.Fatalf("run 2 (relaxed resume): %v", err)
 	}
@@ -297,7 +297,7 @@ func TestScale24TablesUnitFailureContinue(t *testing.T) {
 	mustExec(t, src, `DROP TABLE public.`+scaleTableName(broken))
 
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	runErr := runWithTimeout(t, mgr, p, 300*time.Second)
 	if runErr == nil {
 		t.Fatalf("run returned nil, want the failed unit's error (F-06: failure is surfaced)")

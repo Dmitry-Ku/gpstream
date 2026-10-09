@@ -107,7 +107,7 @@ func TestColumnCollationLive(t *testing.T) {
 	// the source DDL, which now carries the COLLATE clause).
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

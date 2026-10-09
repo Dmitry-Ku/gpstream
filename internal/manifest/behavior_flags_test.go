@@ -24,12 +24,12 @@ import (
 // Every other combination degrades to the merge path.
 func TestWantsRoutedWrite(t *testing.T) {
 	cases := []struct {
-		name   string
-		mode   route.Mode
-		part   pg.PartitionSpec
-		segOK  bool // SegBinary + SegListen set
-		noRW   bool // NoRoutedWrite
-		want   bool
+		name  string
+		mode  route.Mode
+		part  pg.PartitionSpec
+		segOK bool // SegBinary + SegListen set
+		noRW  bool // NoRoutedWrite
+		want  bool
 	}{
 		{"routed by default (router_full, seg deployed)", route.RouterFull, pg.PartitionSpec{}, true, false, true},
 		{"--no-routed-write forces the merge path", route.RouterFull, pg.PartitionSpec{}, true, true, false},
@@ -56,24 +56,25 @@ func TestWantsRoutedWrite(t *testing.T) {
 	}
 }
 
-// TestResolveConflictAction: the conflict policy maps to the copy target.
-// Only --truncate copies in-place into the final table (clearing it first);
-// stop/skip/overwrite use the staging+swap path; --verify is orthogonal.
-func TestResolveConflictAction(t *testing.T) {
+// TestResolveVerify: resolve() reports the post-copy content-verify decision
+// (FR-02, --verify on). The two-agent data path fixes the copy target
+// (staging + atomic swap) — there is no in-place / truncate split to decide,
+// so resolve is a pure function of the operator's --verify flag, independent
+// of the conflict action (2B-7).
+func TestResolveVerify(t *testing.T) {
 	cases := []struct {
 		name    string
 		action  config.ConflictAction
 		verify  config.VerifyMode
-		inPlace bool
-		trunc   bool
 		wantVer bool
 	}{
-		{"stop (default): staging+swap, no verify", config.Stop, config.VerifyOff, false, false, false},
-		{"skip: staging+swap", config.Skip, config.VerifyOff, false, false, false},
-		{"overwrite: staging+swap (in-place copy target rejected)", config.Overwrite, config.VerifyOff, false, false, false},
-		{"truncate: in-place + clear the final table", config.Truncate, config.VerifyOff, true, true, false},
-		{"truncate + verify on: verify is orthogonal", config.Truncate, config.VerifyOn, true, true, true},
-		{"stop + verify on: verify still orthogonal", config.Stop, config.VerifyOn, false, false, true},
+		{"stop (default), verify off", config.Stop, config.VerifyOff, false},
+		{"skip, verify off", config.Skip, config.VerifyOff, false},
+		{"overwrite, verify off", config.Overwrite, config.VerifyOff, false},
+		{"truncate, verify off", config.Truncate, config.VerifyOff, false},
+		{"stop, verify on", config.Stop, config.VerifyOn, true},
+		{"overwrite, verify on", config.Overwrite, config.VerifyOn, true},
+		{"truncate, verify on", config.Truncate, config.VerifyOn, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,10 +82,9 @@ func TestResolveConflictAction(t *testing.T) {
 				c.ConflictAction = tc.action
 				c.Verify = tc.verify
 			})
-			inPlace, trunc, ver := m.resolve(&Unit{})
-			if inPlace != tc.inPlace || trunc != tc.trunc || ver != tc.wantVer {
-				t.Errorf("resolve = (inPlace=%v, truncate=%v, verify=%v), want (%v, %v, %v)",
-					inPlace, trunc, ver, tc.inPlace, tc.trunc, tc.wantVer)
+			ver := m.resolve(&Unit{})
+			if ver != tc.wantVer {
+				t.Errorf("resolve = %v, want %v", ver, tc.wantVer)
 			}
 		})
 	}

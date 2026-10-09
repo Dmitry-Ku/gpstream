@@ -43,10 +43,6 @@ import (
 // Manager orchestrates a copy across the planned units.
 type Manager struct {
 	cfg     *config.Config
-	srcQ    pg.StreamingQuerier
-	dstQ    pg.StreamingQuerier
-	src     *source.Agent
-	dst     *dest.Agent
 	journal *Journal
 	index   *index.Builder
 	idxPool *index.Pool // background index pool (FR-17); started before the
@@ -114,17 +110,13 @@ type Stats struct {
 func (m *Manager) Metrics() *monitor.Metrics { return m.monitor }
 
 // NewManager creates a Manager for a copy between two streaming connections.
-func NewManager(cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *Journal) *Manager {
+func NewManager(cfg *config.Config, j *Journal) *Manager {
 	mode, level, err := compress.Parse(string(cfg.Compression))
 	if err != nil {
 		mode, level = compress.ModeZstd, 3
 	}
 	m := &Manager{
 		cfg:      cfg,
-		srcQ:     srcQ,
-		dstQ:     dstQ,
-		src:      source.New(srcQ),
-		dst:      dest.New(dstQ),
 		journal:  j,
 		index:    index.New(cfg),
 		idxPool:  index.NewPool(cfg.IndexWorkers, cfg.NoIndexes, cfg.IndexPriority == "size"),
@@ -246,48 +238,41 @@ func (m *Manager) SetTwoAgentRunner(r TwoAgentRunner) {
 // The controller holds no direct destination connection in the two-agent
 // topology: the destination DDL it needs (the conflict exists-check, the
 // metadata-only table create, the resume swap, the on-error staging cleanup)
-// runs on the destination agent over the "ddl" control op. In the
-// single-process topology (dead in production — Run is ALWAYS two-agent) the
-// helpers fall back to the controller's own destination pool; 2B-7 removes
-// that fallback together with m.dst/m.dstQ.
+// runs on the destination agent over the "ddl" control op. The
+// single-process fallback (dead in production — Run is ALWAYS two-agent) was
+// removed in 2B-7 together with m.dst/m.dstQ: these helpers are the dest
+// agent's ddl ops, unconditional.
 
-// dstExists reports whether the final table exists on the destination.
+// dstExists reports whether the final table exists on the destination (the
+// dest agent's exists ddl op — the controller holds no direct destination
+// connection; 2B-7).
 func (m *Manager) dstExists(ctx context.Context, schema, table string) (bool, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "exists", Schema: schema, Table: table})
-		if err != nil {
-			return false, err
-		}
-		return resp.Exists, nil
+	resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "exists", Schema: schema, Table: table})
+	if err != nil {
+		return false, err
 	}
-	return m.dst.Exists(ctx, schema, table), nil
+	return resp.Exists, nil
 }
 
-// dstCreateTable creates the destination table from the source layout.
+// dstCreateTable creates the destination table from the source layout (the
+// dest agent's create-table ddl op; 2B-7).
 func (m *Manager) dstCreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution, part pg.PartitionSpec) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-table", Schema: schema, Table: table, Cols: cols, Dist: dist, Part: part})
-		return err
-	}
-	return m.dst.CreateTable(ctx, schema, cols, table, dist, part)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-table", Schema: schema, Table: table, Cols: cols, Dist: dist, Part: part})
+	return err
 }
 
-// dstDropStaging drops the unit's staging table (best-effort on-error cleanup).
+// dstDropStaging drops the unit's staging table (best-effort on-error
+// cleanup; the dest agent's drop-staging ddl op; 2B-7).
 func (m *Manager) dstDropStaging(ctx context.Context, schema, staging string) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "drop-staging", Schema: schema, Staging: staging})
-		return err
-	}
-	return m.dst.DropStaging(ctx, schema, staging)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "drop-staging", Schema: schema, Staging: staging})
+	return err
 }
 
-// dstSwap atomically renames the staging table to its final name.
+// dstSwap atomically renames the staging table to its final name (the dest
+// agent's swap ddl op; 2B-7).
 func (m *Manager) dstSwap(ctx context.Context, schema, table, staging string, overwrite bool) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "swap", Schema: schema, Table: table, Staging: staging, Overwrite: overwrite})
-		return err
-	}
-	return m.dst.Swap(ctx, schema, table, staging, overwrite)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "swap", Schema: schema, Table: table, Staging: staging, Overwrite: overwrite})
+	return err
 }
 
 // --- 2B-3 (architecture 08.10): per-unit catalog ops delegated to the agents. ---
@@ -296,108 +281,88 @@ func (m *Manager) dstSwap(ctx context.Context, schema, table, staging string, ov
 // the catalog-querier convention, not the pinned snapshot); the destination
 // writes/reads (create/setval sequence, add constraints, segment balance)
 // run on the DESTINATION agent. The controller keeps only the pure
-// rename-rewrite logic (PK names, FK refs) — no DB. Single-process fallback
-// (dead in production) uses the controller's own pools; 2B-7 removes it.
+// rename-rewrite logic (PK names, FK refs) — no DB. The single-process
+// fallback was removed in 2B-7: these helpers are the agents' catalog/ddl
+// ops, unconditional.
 
-// srcSequences lists the table's serial sequences (F-11 metadata phase).
+// srcSequences lists the table's serial sequences (F-11 metadata phase) via
+// the source agent's sequences catalog op (2B-7).
 func (m *Manager) srcSequences(ctx context.Context, schema, table string) ([]source.SequenceDef, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequences", Schema: schema, Table: table})
-		if err != nil {
-			return nil, err
-		}
-		return resp.Sequences, nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequences", Schema: schema, Table: table})
+	if err != nil {
+		return nil, err
 	}
-	return source.New(m.srcQ).Sequences(ctx, schema, table)
+	return resp.Sequences, nil
 }
 
-// srcSequenceLastValue reads a sequence's last_value (F-11 post-load sync).
+// srcSequenceLastValue reads a sequence's last_value (F-11 post-load sync)
+// via the source agent's sequence-last-value catalog op (2B-7).
 func (m *Manager) srcSequenceLastValue(ctx context.Context, seq string) (int64, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequence-last-value", Seq: seq})
-		if err != nil {
-			return 0, err
-		}
-		return resp.LastValue, nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "sequence-last-value", Seq: seq})
+	if err != nil {
+		return 0, err
 	}
-	schema, base := seq, seq
-	if i := strings.LastIndex(seq, "."); i >= 0 {
-		schema, base = seq[:i], seq[i+1:]
-	}
-	return source.New(m.srcQ).SequenceLastValue(ctx, schema, base)
+	return resp.LastValue, nil
 }
 
-// srcConstraints reads the table's constraint definitions (F-11).
+// srcConstraints reads the table's constraint definitions (F-11) via the
+// source agent's constraints catalog op (2B-7).
 func (m *Manager) srcConstraints(ctx context.Context, schema, table string) ([]pg.ConstraintDef, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "constraints", Schema: schema, Table: table})
-		if err != nil {
-			return nil, err
-		}
-		return resp.Constraints, nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "constraints", Schema: schema, Table: table})
+	if err != nil {
+		return nil, err
 	}
-	return source.New(m.srcQ).Constraints(ctx, schema, table)
+	return resp.Constraints, nil
 }
 
-// dstCreateSequence recreates a source sequence on the destination (F-11).
+// dstCreateSequence recreates a source sequence on the destination (F-11)
+// via the dest agent's create-sequence ddl op (2B-7).
 func (m *Manager) dstCreateSequence(ctx context.Context, name string) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-sequence", Sequence: name})
-		return err
-	}
-	return m.dst.CreateSequence(ctx, name)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "create-sequence", Sequence: name})
+	return err
 }
 
-// dstSetSequenceValue resynchronises a destination sequence (F-11).
+// dstSetSequenceValue resynchronises a destination sequence (F-11) via the
+// dest agent's set-sequence-value ddl op (2B-7).
 func (m *Manager) dstSetSequenceValue(ctx context.Context, schema, seq string, last int64) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "set-sequence-value", Sequence: schema, Seq: seq, LastValue: last})
-		return err
-	}
-	return m.dst.SetSequenceValue(ctx, schema, seq, last)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "set-sequence-value", Sequence: schema, Seq: seq, LastValue: last})
+	return err
 }
 
 // dstAddConstraints applies the (already destination-rewritten) constraint
-// definitions on the destination (F-11).
+// definitions on the destination (F-11) via the dest agent's add-constraints
+// ddl op (2B-7).
 func (m *Manager) dstAddConstraints(ctx context.Context, schema, table string, defs []pg.ConstraintDef) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "add-constraints", Schema: schema, Table: table, Constraints: defs})
-		return err
-	}
-	return m.dst.Constraints(ctx, schema, table, defs)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "add-constraints", Schema: schema, Table: table, Constraints: defs})
+	return err
 }
 
-// dstBalance measures the destination table's per-segment fill (F-15).
+// dstBalance measures the destination table's per-segment fill (F-15) via
+// the dest agent's balance ddl op (2B-7).
 func (m *Manager) dstBalance(ctx context.Context, schema, table string) (dest.Balance, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "balance", Schema: schema, Table: table, Threshold: dest.DefaultBalanceThreshold})
-		if err != nil {
-			return dest.Balance{}, err
-		}
-		return resp.Balance, nil
+	resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "balance", Schema: schema, Table: table, Threshold: dest.DefaultBalanceThreshold})
+	if err != nil {
+		return dest.Balance{}, err
 	}
-	return m.dst.BalanceTable(ctx, schema, table, dest.DefaultBalanceThreshold), nil
+	return resp.Balance, nil
 }
 
 // --- 2B-4 (architecture 08.10): FR-17 index ops delegated to the agents. ---
 // The source-catalog read (the table's index definitions) runs on the SOURCE
 // agent; the build runs on the DESTINATION agent. The controller keeps only
 // the pure poolIndexDefs filter (PK exclusion — the post-swap constraint pass
-// builds the PK index atomically) — no DB. Single-process fallback (dead in
-// production) uses the controller's own pools; 2B-7 removes it.
+// builds the PK index atomically) — no DB. The single-process fallback was
+// removed in 2B-7: these helpers are the agents' catalog/ddl ops,
+// unconditional.
 
 // srcIndexes reads the table's index definitions (FR-17) via the source
-// agent's catalog op (its local source pool — the catalog-querier
-// convention, not the pinned snapshot).
+// agent's indexes catalog op (2B-7).
 func (m *Manager) srcIndexes(ctx context.Context, schema, table string) ([]pg.IndexDef, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "indexes", Schema: schema, Table: table})
-		if err != nil {
-			return nil, err
-		}
-		return resp.Indexes, nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "indexes", Schema: schema, Table: table})
+	if err != nil {
+		return nil, err
 	}
-	return source.New(m.srcQ).Indexes(ctx, schema, table)
+	return resp.Indexes, nil
 }
 
 // dstCreateIndexes builds the (already destination-rewritten) index
@@ -405,18 +370,15 @@ func (m *Manager) srcIndexes(ctx context.Context, schema, table string) ([]pg.In
 // create-indexes ddl op (fresh LOCAL coordinator connection, idempotent
 // per index: existing -> REINDEX, so a resume re-run never duplicates).
 func (m *Manager) dstCreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
-	if m.twoAgent != nil {
-		_, err := m.twoAgent.DDL(ctx, agent.DDReq{
-			Action:    "create-indexes",
-			Schema:    schema,
-			Table:     table,
-			SrcSchema: srcSchema,
-			SrcTable:  srcTable,
-			Indexes:   defs,
-		})
-		return err
-	}
-	return m.dst.CreateIndexes(ctx, schema, table, srcSchema, srcTable, defs)
+	_, err := m.twoAgent.DDL(ctx, agent.DDReq{
+		Action:    "create-indexes",
+		Schema:    schema,
+		Table:     table,
+		SrcSchema: srcSchema,
+		SrcTable:  srcTable,
+		Indexes:   defs,
+	})
+	return err
 }
 
 // --- 2B-5 (architecture 08.10): the last per-unit DB reads delegated. ---
@@ -427,21 +389,18 @@ func (m *Manager) dstCreateIndexes(ctx context.Context, schema, table, srcSchema
 // mesh/coordinator topology probe) runs on the DESTINATION agent. The
 // controller keeps no DB of its own on the two-agent topology — only pure
 // logic (the partition-guard decision, the DSN rewrite, the route decision).
-// Single-process fallback (dead in production) uses the controller's own
-// pools; 2B-7 removes it.
+// The single-process fallback was removed in 2B-7: these helpers are the
+// agents' catalog/ddl ops, unconditional.
 
 // srcColumns reads the table's column definitions (FR-02/FR-03: the
 // destination DDL is built from the source's own column layout) via the
-// source agent's table-layout catalog op.
+// source agent's table-layout catalog op (2B-7).
 func (m *Manager) srcColumns(ctx context.Context, schema, table string) ([]pg.Column, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
-		if err != nil {
-			return nil, err
-		}
-		return resp.Columns, nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
+	if err != nil {
+		return nil, err
 	}
-	return source.New(m.srcQ).Columns(ctx, schema, table)
+	return resp.Columns, nil
 }
 
 // srcTableExists is the zero-columns guard's probe (a vanished source table
@@ -449,10 +408,7 @@ func (m *Manager) srcColumns(ctx context.Context, schema, table string) ([]pg.Co
 // fault and fail the unit early, before any DDL or data, so the error stays
 // contained on a pool connection and cannot abort the FR-02 snapshot).
 func (m *Manager) srcTableExists(ctx context.Context, schema, table string) bool {
-	if m.twoAgent != nil {
-		return m.twoAgent.TableExists(ctx, schema, table)
-	}
-	return source.New(m.srcQ).TableExists(ctx, schema, table)
+	return m.twoAgent.TableExists(ctx, schema, table)
 }
 
 // srcDistribution reads the table's distribution policy (F-11) via the
@@ -460,14 +416,11 @@ func (m *Manager) srcTableExists(ctx context.Context, schema, table string) bool
 // the empty policy (the destination uses its own default) — the same
 // non-fatal convention the in-process Distribution read had.
 func (m *Manager) srcDistribution(ctx context.Context, schema, table string) pg.Distribution {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
-		if err != nil {
-			return pg.Distribution{}
-		}
-		return resp.Dist
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "table-layout", Schema: schema, Table: table})
+	if err != nil {
+		return pg.Distribution{}
 	}
-	return source.New(m.srcQ).Distribution(ctx, schema, table)
+	return resp.Dist
 }
 
 // srcPrimarySegmentCount returns the number of up primary CONTENTS on the
@@ -476,17 +429,14 @@ func (m *Manager) srcDistribution(ctx context.Context, schema, table string) pg.
 // (gp_segment_configuration); on plain PostgreSQL it errors, which the
 // caller surfaces as a clear "segment-direct requires Greenplum" failure.
 func (m *Manager) srcPrimarySegmentCount(ctx context.Context) (int, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "segment-count"})
-		if err != nil {
-			return 0, err
-		}
-		if resp.SegmentCount <= 0 {
-			return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
-		}
-		return int(resp.SegmentCount), nil
+	resp, err := m.twoAgent.Catalog(ctx, agent.CatalogReq{Action: "segment-count"})
+	if err != nil {
+		return 0, err
 	}
-	return m.primarySegmentCount(ctx)
+	if resp.SegmentCount <= 0 {
+		return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
+	}
+	return int(resp.SegmentCount), nil
 }
 
 // Plan (Phase 2, 2A) builds the copy plan ON THE SOURCE AGENT: it brings up
@@ -1261,39 +1211,23 @@ func (m *Manager) tableFor(u *Unit) plan.Table {
 	}
 }
 
-// resolve returns how a conflicting unit must be handled (FR-11). It reads the
-// operator's --resolve-conflicts value and decides the copy target and
-// verification:
-//
-//	stop         -> the caller (processUnit) stops the run (never reaches here)
-//	skip         -> the caller (processUnit) skips the unit (never reaches here)
-//	overwrite    -> copy to a staging table and swap over the final (default)
-//	truncate     -> copy in-place into the final table after TRUNCATE, verify
-//
-// inPlace  : copy into the final table directly (only truncate)
-// truncate : clear the final table before copying (only --truncate)
-// verify   : compare the content checksum after copying (always)
-func (m *Manager) resolve(u *Unit) (inPlace, truncate, verify bool) {
-	// Content verification runs after the copy, only when the operator asks
-	// for it (--verify on). The default (off) makes a run one source read per
-	// unit: the data COPY itself.
-	verify = m.cfg.Verify == config.VerifyOn
-	switch m.cfg.ConflictAction {
-	case config.Truncate:
-		return true, true, verify
-	default:
-		// Stop/Skip are handled in processUnit; Overwrite and any unlisted
-		// action fall back to the staging+swap path.
-		return false, false, verify
-	}
+// resolve reports whether the run verifies the content checksum after the
+// copy (FR-02, --verify on). The default (off) makes a run one source read
+// per unit: the data COPY itself. The copy target is fixed by the two-agent
+// data path (staging + atomic swap; --truncate has no two-agent equivalent
+// and is rejected in runUnit, 2B-7).
+func (m *Manager) resolve(u *Unit) (verifyDigest bool) {
+	return m.cfg.Verify == config.VerifyOn
 }
 
 // runUnit copies, verifies, rebuilds indexes and swaps a single unit
 // (FR-01/FR-02/FR-11/FR-17), recording each transition in the journal. It takes
 // the pre-built unit (see Run) so the pool can share unit construction. The
-// conflict policy (FR-11) selects the copy target: the default and --overwrite
-// copy into a staging table and atomically swap it over the final name;
-// --truncate/--append copy in-place into the final table (FR-11).
+// copy target is the unit's staging table (the two-agent data path is
+// staging+swap only, 2B-7): the default and --overwrite copy into the staging
+// table and atomically swap it over the final name; --truncate has no
+// two-agent equivalent and is rejected (in-place copy targets were the
+// single-process path, removed in 2B-7).
 func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// Source and destination names may differ (FR-11/§4.10 rename): the copy
 	// READS from the source (u.Schema/u.Table) and WRITES to the destination
@@ -1367,17 +1301,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("partition guard: %s", u.PartitionGuard)
 	}
 
-	// 2B-2 (architecture 08.10): in the two-agent topology the DESTINATION
-	// AGENT owns the schema DDL — its ServeUnitData runs EnsureSchema before
-	// the staging DDL, and the metadata-only create-table does the same on
-	// the agent. The controller must not create the destination schema
-	// itself (no direct destination connection, and a low-privilege dest
-	// agent must be the one to fail its own DDL, T7).
-	if m.twoAgent == nil {
-		if err := m.dst.EnsureSchema(ctx, ds); err != nil {
-			return fmt.Errorf("ensure schema: %w", err)
-		}
-	}
+	// 2B-2 (architecture 08.10): the DESTINATION AGENT owns the schema DDL —
+	// its ServeUnitData runs EnsureSchema before the staging DDL, and the
+	// metadata-only create-table does the same on the agent. The controller
+	// never creates the destination schema itself (no direct destination
+	// connection, and a low-privilege dest agent must be the one to fail its
+	// own DDL, T7).
 
 	// 3a. Recreate the source sequences BEFORE the table DDL (F-11 metadata
 	//     phase). A serial column's default (nextval('<schema>.<seq>'::regclass))
@@ -1419,18 +1348,12 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return nil
 	}
 
-	// 3. Resolve the conflict policy (FR-11): the copy target is either a
-	//    staging table (default / --overwrite) or the final table in-place
-	//    (--truncate / --append). All destinations below use ds/dn.
-	inPlace, truncate, verify := m.resolve(u)
-	// F-11 --data-only: the destination structure ALREADY EXISTS and the data
-	// is loaded INTO it, replacing its rows (the unit's job is to make the
-	// destination's data equal the source's — an append would double rows on
-	// a resume/re-run). So regardless of the --resolve-conflicts policy the
-	// copy is in-place into the final table with a TRUNCATE first, then the
-	// checksum is verified against the source. The structure is NOT created:
-	// a missing destination table is a hard error (run --metadata-only or a
-	// full copy first), and no staging+swap is used.
+	// 3. F-11 --data-only: the destination structure ALREADY EXISTS and the
+	//    data is loaded INTO it, replacing its rows. The data-only copy target
+	//    (in-place into the final table, TRUNCATE first) has no two-agent
+	//    equivalent (the data path is staging+swap only, 2B-7) — a missing
+	//    destination table is a hard error (run --metadata-only or a full
+	//    copy first).
 	if md, data := m.cfg.IncludeClasses(); !md && data {
 		exists, err := m.dstExists(ctx, ds, dn)
 		if err != nil {
@@ -1441,55 +1364,28 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 			m.setUnitState(u, StateFailed)
 			return fmt.Errorf("--data-only: destination table %s.%s does not exist (create the structure first with --metadata-only or a full copy)", ds, dn)
 		}
-		inPlace, truncate = true, true
-	}
-	// Two-agent (P3) data path is staging+swap only: the destination agent
-	// creates a staging table and (after the controller's verify) swaps it.
-	// The in-place targets (--truncate, --data-only) have no two-agent
-	// equivalent yet — fail the unit with a clear config error instead of
-	// silently degrading the topology.
-	if m.twoAgent != nil && inPlace {
 		m.setUnitState(u, StateFailed)
-		return fmt.Errorf("two-agent topology does not support the in-place copy target (conflict action %q / --data-only); use the default staging+swap path", m.cfg.ConflictAction)
+		return fmt.Errorf("--data-only requires the in-place copy target, which the two-agent data path does not support; use the default staging+swap path")
 	}
-	var target string
-	switch {
-	case m.twoAgent != nil && !inPlace:
-		// Two-agent (ADR-002): the destination AGENT owns the staging DDL
-		// (it creates it from the UnitSpec the source agent sends — cols /
-		// dist / part captured on the source side). The controller must not
-		// create it here: the staging name is the contract between the two
-		// agents.
-		target = dest.StagingName(u.JobID, u.UnitID)
-	case inPlace:
-		// Copy into the final table directly. Create it from the source layout
-		// if it does not exist yet, then (optionally) truncate it.
-		target = dn
-		if !m.dst.Exists(ctx, ds, dn) {
-			if err := m.dst.CreateTable(ctx, ds, cols, dn, dist, u.Partition); err != nil {
-				return fmt.Errorf("create table: %w", err)
-			}
-		}
-		if truncate {
-			if err := m.dst.Truncate(ctx, ds, dn); err != nil {
-				return fmt.Errorf("truncate: %w", err)
-			}
-		}
-	default:
-		target = dest.StagingName(u.JobID, u.UnitID)
-		// The staging table is scratch for this unit's in-flight copy. A
-		// surviving one (a crashed/failed run that copied but never swapped)
-		// holds unswapped partial data; it MUST be empty before the copy,
-		// otherwise a resume appends to the partial data and doubles the rows
-		// (F-06/F-07: "resume completes to the end without duplicates"). A fresh run has
-		// no staging table, so it is created from the source layout.
-		if m.dst.Exists(ctx, ds, target) {
-			if err := m.dst.Truncate(ctx, ds, target); err != nil {
-				return fmt.Errorf("truncate staging: %w", err)
-			}
-		} else if err := m.dst.CreateStaging(ctx, ds, cols, target, dist, u.Partition); err != nil {
-			return fmt.Errorf("create staging: %w", err)
-		}
+	// 3b. The copy target is the unit's staging table (the default /
+	//     --overwrite path; --truncate/--append have no two-agent equivalent —
+	//     the data path is staging+swap only, 2B-7). The destination AGENT
+	//     owns the staging DDL (it creates it from the UnitSpec the source
+	//     agent sends — cols / dist / part captured on the source side); the
+	//     controller must not create it here: the staging name is the
+	//     contract between the two agents.
+	target := dest.StagingName(u.JobID, u.UnitID)
+	// 3c. Content verification runs after the copy, only when the operator
+	//     asks for it (--verify on). The default (off) makes a run one source
+	//     read per unit: the data COPY itself.
+	verify := m.resolve(u)
+	// The --truncate copy target (in-place into the final table, cleared
+	// first) has no two-agent equivalent (the data path is staging+swap
+	// only) — reject it explicitly instead of silently degrading to a
+	// rename (2B-7 kept the two-agent hard-fail the P3 path had).
+	if m.cfg.ConflictAction == config.Truncate {
+		m.setUnitState(u, StateFailed)
+		return fmt.Errorf("two-agent topology does not support the in-place copy target (--truncate); use the default staging+swap path")
 	}
 
 	// 4. Mark copying (FR-06/FR-07 journal).
@@ -1631,12 +1527,10 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		u.DestJournal = true
 	}
 	if err != nil {
-		// Roll the copy target back on a staging failure (FR-07); an in-place
-		// failure is recorded as failed and re-tried by a resume (TRUNCATE is
-		// idempotent, so a retry re-copies from a clean table).
-		if !inPlace {
-			_ = m.dstDropStaging(ctx, ds, target)
-		}
+		// Roll the copy target back on a staging failure (FR-07): the staging
+		// table holds the partial data; a resume truncates + re-copies it
+		// (idempotent, so a retry re-copies from a clean table).
+		_ = m.dstDropStaging(ctx, ds, target)
 		u.State = StateFailed
 		_ = m.journal.SetState(u)
 		m.monitor.SetUnitState(unitTableKey(u), string(StateFailed))
@@ -1689,17 +1583,13 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		// was removed (08.10): it meant a full re-scan of both tables, which
 		// on the M7 pilot (100 TB -> 1 PB) is unacceptable.
 		if srcDigest == "" || dstDigest == "" {
-			if !inPlace {
-				_ = m.dstDropStaging(ctx, ds, target)
-			}
+			_ = m.dstDropStaging(ctx, ds, target)
 			_ = m.setUnitState(u, StateFailed)
 			return fmt.Errorf("verify: inline digests missing (src=%q dst=%q) — the data path stopped carrying the content digest", srcDigest, dstDigest)
 		}
 		srcSum, dstSum := srcDigest, dstDigest
 		if srcSum != dstSum {
-			if !inPlace {
-				_ = m.dstDropStaging(ctx, ds, target)
-			}
+			_ = m.dstDropStaging(ctx, ds, target)
 			_ = m.setUnitState(u, StateFailed)
 			// FR-04 "checksum errors": a content mismatch in the verify phase.
 			m.monitor.RecordChecksumError()
@@ -1737,23 +1627,22 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	m.Units++
 	m.statMu.Unlock()
 
-	// 9. Atomically swap the staging table to its final name (FR-02). Only the
-	//    staging path swaps; the in-place path already wrote the final table.
-	if !inPlace {
-		if !meshSwapped && !coordSwapped {
-			// A re-read unit (u.Conflict, T5) replaces the previous result: the
-			// final name already exists on the destination and the verified
-			// staging must be swapped over it. (A unit the destination already
-			// swapped — meshSwapped / coordSwapped — skips this: the
-			// destination agent performed the atomic rename itself,
-			// architecture 08.10; the coordinator path since 2B-1.)
-			overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
-			if err := m.dstSwap(ctx, ds, dn, target, overwrite); err != nil {
-				// A swap failure after a verified copy is still safe (the staging
-				// table holds the verified data); leave it and report so a resume
-				// can retry the swap.
-				return fmt.Errorf("swap: %w", err)
-			}
+	// 9. Atomically swap the staging table to its final name (FR-02). The
+	//    two-agent data path is staging+swap only (2B-7), so every copied unit
+	//    swaps — unless the destination agent already did.
+	if !meshSwapped && !coordSwapped {
+		// A re-read unit (u.Conflict, T5) replaces the previous result: the
+		// final name already exists on the destination and the verified
+		// staging must be swapped over it. (A unit the destination already
+		// swapped — meshSwapped / coordSwapped — skips this: the
+		// destination agent performed the atomic rename itself,
+		// architecture 08.10; the coordinator path since 2B-1.)
+		overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict
+		if err := m.dstSwap(ctx, ds, dn, target, overwrite); err != nil {
+			// A swap failure after a verified copy is still safe (the staging
+			// table holds the verified data); leave it and report so a resume
+			// can retry the swap.
+			return fmt.Errorf("swap: %w", err)
 		}
 	}
 	if err := m.setUnitState(u, StateSwapped); err != nil {
@@ -2097,9 +1986,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 	// listener once before the first mesh unit; it SSH-gathers the segreceiver
 	// versions from the source segments as the "user@" prefix).
 	peerAddr, segSSH := "", ""
-	if m.twoAgent != nil {
-		peerAddr, segSSH = m.twoAgent.PeerInfo()
-	}
+	peerAddr, segSSH = m.twoAgent.PeerInfo()
 	mreq := unitMiniRequest{
 		OnSegmentReq: agent.OnSegmentReq{
 			Op:            "onsegment",
@@ -2395,10 +2282,11 @@ func (m *Manager) measureBalance(ctx context.Context, u *Unit) {
 // EXISTS is idempotent, and a failure is recorded in events.jsonl (F-04)
 // with the root cause.
 //
-// The catalog reads (sequence discovery, definition) run on the base source
-// querier m.srcQ, NOT the pinned FR-02 snapshot connection: a fault there
-// must not abort the REPEATABLE READ transaction that every data COPY
-// shares (the F-06 fix 866318b, Columns/Distribution reads).
+// The catalog reads (sequence discovery, definition) run on the SOURCE
+// AGENT's pool (the catalog-querier convention), NOT the pinned FR-02
+// snapshot connection: a fault there must not abort the REPEATABLE READ
+// transaction that every data COPY shares (the F-06 fix 866318b,
+// Columns/Distribution reads).
 func (m *Manager) createSequences(ctx context.Context, u *Unit) {
 	schema, name := u.Schema, u.Table
 	ds, dn := u.DstSchema, u.DstName
@@ -2524,14 +2412,10 @@ func (m *Manager) enqueueIndexes(ctx context.Context, u *Unit) {
 }
 
 // indexDst is the pool worker's destination-side build capability (2B-4):
-// the destination AGENT in the two-agent topology (the controller holds no
-// direct destination connection); the controller's own m.dst pool in the
-// single-process fallback (dead in production, removed in 2B-7).
+// the destination AGENT (the controller holds no direct destination
+// connection; 2B-7 removed the single-process fallback).
 func (m *Manager) indexDst() index.DST {
-	if m.twoAgent != nil {
-		return m
-	}
-	return m.dst
+	return m
 }
 
 // poolIndexDefs filters the source index definitions to the ones the FR-17
@@ -2617,36 +2501,12 @@ func (m *Manager) CreateIndexes(ctx context.Context, schema, table, srcSchema, s
 func (m *Manager) markIndexDone(ctx context.Context, u *Unit) {
 	u.IndexDone = true
 	_ = m.journal.SetState(u) // file mirror + in-memory; DB skipped when agent-owned
-	if m.twoAgent != nil && (u.Mesh || u.DestJournal) {
+	if u.Mesh || u.DestJournal {
 		_, _ = m.twoAgent.DDL(ctx, agent.DDReq{
 			Action:  "set-index-done",
 			Journal: agent.JournalRef{JobID: u.JobID, UnitID: u.UnitID},
 		})
 	}
-}
-
-// primarySegmentCount returns the number of up primary CONTENTS on the
-// source — i.e. the number of segreceivers the kernel launches with
-// ON SEGMENT (GANGTYPE_PRIMARY_WRITER, one per content; the master's
-// content=-1 row is not a segment). It requires a Greenplum source
-// (gp_segment_configuration); on plain PostgreSQL it errors, which the
-// caller surfaces as a clear "segment-direct requires Greenplum" failure.
-//
-// count(*) would include the master row (content=-1) and overcount by one
-// (E2 e2e, 27.09: n=3 on a 2-segment cluster — the receiver waited for a
-// third slice that never came).
-func (m *Manager) primarySegmentCount(ctx context.Context) (int, error) {
-	v := pg.RowStr(ctx, m.srcQ,
-		`SELECT count(DISTINCT content) FROM gp_segment_configuration
-		 WHERE role = 'p' AND status = 'u' AND content >= 0`)
-	if v == "" {
-		return 0, fmt.Errorf("cannot enumerate segments (segment-direct requires a Greenplum source)")
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return 0, fmt.Errorf("bad segment count %q: %w", v, err)
-	}
-	return n, nil
 }
 
 // destSegment is one up primary of the destination cluster (content 0..D-1).
@@ -2657,70 +2517,21 @@ type destSegment struct {
 }
 
 // destSegments lists the destination's up primary segments in content order
-// (R5). Two-agent (2B-5): the DESTINATION agent enumerates + dense-validates
-// them on a fresh LOCAL coordinator connection (the segments ddl op); the
-// controller holds no direct destination connection. It requires a Greenplum
+// (R5): the DESTINATION agent enumerates + dense-validates them on a fresh
+// LOCAL coordinator connection (the segments ddl op; 2B-5) — the controller
+// holds no direct destination connection (2B-7). It requires a Greenplum
 // destination (gp_segment_configuration); on a plain-PostgreSQL destination
 // it errors, which the caller degrades to the coordinator path.
 func (m *Manager) destSegments(ctx context.Context) ([]destSegment, error) {
-	if m.twoAgent != nil {
-		resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "segments"})
-		if err != nil {
-			return nil, err
-		}
-		out := make([]destSegment, 0, len(resp.Segments))
-		for _, s := range resp.Segments {
-			out = append(out, destSegment{Content: s.Content, Hostname: s.Hostname, Port: s.Port})
-		}
-		return out, nil
-	}
-	segRows, err := m.dstQ.Query(ctx,
-		`SELECT content, hostname, port FROM gp_segment_configuration
-		  WHERE role = 'p' AND status = 'u' AND content >= 0
-		  ORDER BY content`)
+	resp, err := m.twoAgent.DDL(ctx, agent.DDReq{Action: "segments"})
 	if err != nil {
-		return nil, fmt.Errorf("cannot enumerate dest segments (direct mode requires a Greenplum destination): %w", err)
+		return nil, err
 	}
-	seg := make([]destSegment, 0, len(segRows))
-	for _, r := range segRows {
-		if len(r) < 3 {
-			continue
-		}
-		seg = append(seg, destSegment{
-			Content:  int32(toInt(r[0])),
-			Hostname: fmt.Sprint(r[1]),
-			Port:     int(toInt(r[2])),
-		})
+	out := make([]destSegment, 0, len(resp.Segments))
+	for _, s := range resp.Segments {
+		out = append(out, destSegment{Content: s.Content, Hostname: s.Hostname, Port: s.Port})
 	}
-	if len(seg) == 0 {
-		return nil, fmt.Errorf("no up primary segments on the destination")
-	}
-	// content must be a dense 0..D-1 (a missing content breaks slice coverage).
-	for i, s := range seg {
-		if s.Content != int32(i) {
-			return nil, fmt.Errorf("dest segment contents are not dense (got %d at position %d) — direct mode requires all primaries up", s.Content, i)
-		}
-	}
-	return seg, nil
-}
-
-// toInt renders a numeric catalog value as an int (driver-agnostic).
-func toInt(v any) int64 {
-	switch n := v.(type) {
-	case int64:
-		return n
-	case int32:
-		return int64(n)
-	case uint32:
-		return int64(n)
-	case uint64:
-		return int64(n)
-	default:
-		s := fmt.Sprint(n)
-		var out int64
-		_, _ = fmt.Sscanf(s, "%d", &out)
-		return out
-	}
+	return out, nil
 }
 
 // segmentDSN derives a utility-mode connection string for one destination

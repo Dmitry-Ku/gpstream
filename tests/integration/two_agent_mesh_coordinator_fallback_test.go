@@ -68,7 +68,7 @@ func TestTwoAgentMeshCoordinatorFallbackPlainPG(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 
 	start := time.Now()
 	if err := runWithTimeout(t, mgr, p, 180*time.Second); err != nil {

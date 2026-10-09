@@ -90,7 +90,7 @@ func cmdBench(args []string) error {
 	// streams each unit to a drain sink - no destination connection, no DDL,
 	// no journal writes). The runner is nil, so BenchAll starts + releases a
 	// process runner (the real source agent binary).
-	mgr := manifest.NewManager(&cfg, srcQ, nil, manifest.NewJournal(nil, ""))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(nil, ""))
 
 	benchCtx := ctx
 	var cancelBench context.CancelFunc

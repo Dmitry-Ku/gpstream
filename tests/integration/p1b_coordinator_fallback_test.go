@@ -56,7 +56,7 @@ func TestOnSegmentSmallTableCoordinatorFallback(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 120*time.Second); err != nil {
 		t.Fatalf("manager.Run (on_segment, small): %v", err)
 	}
@@ -132,7 +132,7 @@ func TestOnSegmentCoordinatorFallbackLive(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, liveDeadline(300*time.Second)); err != nil {
 		t.Fatalf("manager.Run (on_segment, small+large): %v", err)
 	}

@@ -128,8 +128,7 @@ func TestConsistentSnapshotWriterLoop(t *testing.T) {
 	cfg.RateLimit = 0.1
 	p := buildPlan(t, cfg, src, dst)
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- mgr.Run(context.Background(), p) }()
@@ -265,8 +264,7 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 	// gpadmin into readonlyadmin).
 	readonlyDSN := dsnReplaceUser(dstCl.URL(), "readonly")
 	// Run 1: the unit must FAIL (dest rejects the staging DDL) and must NOT hang.
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		labDSN(t, "GP6_LAB_SRC", srcCl.URL()), labDSN(t, "GP6_LAB_DST", readonlyDSN))
+	mgr := newTwoAgentManager(t, &cfg, j, labDSN(t, "GP6_LAB_SRC", srcCl.URL()), labDSN(t, "GP6_LAB_DST", readonlyDSN))
 	runDone := make(chan error, 1)
 	go func() { runDone <- mgr.Run(context.Background(), p) }()
 	var runErr error
@@ -295,8 +293,7 @@ func TestUnitFailureNoDeadlockThenResume(t *testing.T) {
 		t.Fatalf("reconnect src: %v", err)
 	}
 	t.Cleanup(func() { src2.Close() })
-	mgr2 := newTwoAgentManager(t, &cfg, src2, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr2 := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	if err := runWithTimeout(t, mgr2, p, 30*time.Second); err != nil {
 		t.Fatalf("resume run: %v", err)
 	}

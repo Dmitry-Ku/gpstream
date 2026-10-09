@@ -291,7 +291,7 @@ func TestF02TwoDBConcurrentSnapshot(t *testing.T) {
 			t.Fatalf("leg %d: plan has %d units, want 2", i, len(p.Units))
 		}
 		j := manifest.NewJournal(l.dst, l.journal)
-		mgr := newTwoAgentManager(t, &cfg, l.src, l.dst, j, l.src.DSN(), l.dst.DSN())
+		mgr := newTwoAgentManager(t, &cfg, j, l.src.DSN(), l.dst.DSN())
 		go func(i int, mgr *manifest.Manager, p *plan.Plan) {
 			results <- result{i, mgr.Run(ctx, p)}
 		}(i, mgr, p)

@@ -52,11 +52,11 @@ func labDSN(t *testing.T, env string, localURL string) string {
 // source/dest agents (normally the local pgtest cluster URLs, or the lab
 // DSNs via GP6_LAB_SRC/GP6_LAB_DST). The controller keeps srcQ/dstQ for DDL,
 // journal, verify and swap (control plane only).
-func newTwoAgentManager(t *testing.T, cfg *config.Config, srcQ, dstQ pg.StreamingQuerier, j *manifest.Journal, srcDSN, dstDSN string) *manifest.Manager {
+func newTwoAgentManager(t *testing.T, cfg *config.Config, j *manifest.Journal, srcDSN, dstDSN string) *manifest.Manager {
 	t.Helper()
 	cfg.Source = srcDSN
 	cfg.Dest = dstDSN
-	m := manifest.NewManager(cfg, srcQ, dstQ, j)
+	m := manifest.NewManager(cfg, j)
 	// Live mode: the PROCESS runner (deployed agents on the cluster hosts via
 	// SSH) + the SSH agent config. Local mode: the in-process runner.
 	setTwoAgentRunner(t, m, cfg, srcDSN, dstDSN)
@@ -101,8 +101,7 @@ func TestCopyEndToEnd(t *testing.T) {
 	// keep rule loads the mirror at Run start, so a stale mirror from a
 	// previous run would keep the unit and skip the copy).
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}
@@ -166,8 +165,7 @@ func TestCopyChecksumMismatch(t *testing.T) {
 	// assert the normal path still swaps a matching unit.
 	// Fresh operation (T5 keep rule loads the mirror at Run start).
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

@@ -112,7 +112,7 @@ func TestTwoAgentManagerRun(t *testing.T) {
 
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := manifest.NewManager(&cfg, src, dst, j)
+	mgr := manifest.NewManager(&cfg, j)
 	// Inject the two-agent runner: in-process locally, the PROCESS runner
 	// (deployed agents on the cluster hosts) in live mode.
 	setTwoAgentRunner(t, mgr, &cfg, srcCl.URL(), dstCl.URL())

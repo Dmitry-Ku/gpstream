@@ -1333,18 +1333,15 @@ func cmdRun(args []string) error {
 	}
 
 	ctx := context.Background()
-	// The data path runs WorkersPerPair parallel stream workers (FR-03); a
-	// single pgx.Conn is not safe for concurrent statements (a second
-	// in-flight COPY → "conn busy"). Use a pgxpool-backed Pool for both
-	// clusters so each worker/journal operation takes its own connection.
-	// Size the pool for the worker pool plus the journal and the (optional)
-	// FR-02 snapshot pin.
+	// The data path is ALWAYS two-agent (P7, 2B-7): the controller launches
+	// the source/dest agents itself, and the agents hold the data + catalog
+	// connections. The controller keeps ONE destination pool — the primary
+	// journal's (gpstream_units/gpstream_jobs live in the destination
+	// service DB, ADR-001 §4.3; the journal also owns the job metadata the
+	// epoch decision reads/writes). It opens NO source connection.
+	// Size the pool for the journal's concurrent unit-state writes plus the
+	// metadata ops (WorkersPerPair is the run's parallel unit count).
 	maxConns := cfg.WorkersPerPair + 4
-	srcQ, err := pg.NewPool(ctx, cfg.Source, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
-	if err != nil {
-		return fmt.Errorf("run: connect source %q: %w", cfg.Source, err)
-	}
-	defer srcQ.Close()
 	dstQ, err := pg.NewPool(ctx, cfg.Dest, cfg.SSLCert, cfg.SSLKey, cfg.SSLCA, cfg.SSLMinTLS, maxConns)
 	if err != nil {
 		return fmt.Errorf("run: connect dest %q: %w", cfg.Dest, err)
@@ -1355,10 +1352,10 @@ func cmdRun(args []string) error {
 	// operation identity + journal + manager must exist FIRST (the manager
 	// owns the two agents, and mgr.Plan asks the source agent to run
 	// plan.Build — its LOCAL source pool + a destination querier proxied over
-	// the source->dest peer channel). The controller therefore opens NO direct
-	// destination connection for planning. (The srcQ/dstQ pools above are
-	// still used by the Manager's PER-UNIT catalog ops + the journal — those
-	// move to the agents in 2B.)
+	// the source->dest peer channel). The controller therefore opens NO
+	// direct source connection, and NO destination connection beyond the
+	// primary journal (2B: the per-unit catalog ops + DDL all run in the
+	// agents; 2B-7 removed the controller's own srcQ/dstQ pools).
 	//
 	// Operation identity (v4 §8 "State"): the journal ALWAYS lives at
 	// <state-dir>/<operation-id>/journal.jsonl so status/resume/cleanup
@@ -1383,7 +1380,7 @@ func cmdRun(args []string) error {
 	fmt.Printf("state:          %s\n", journalPath)
 
 	j := manifest.NewJournal(dstQ, journalPath)
-	mgr := manifest.NewManager(&cfg, srcQ, dstQ, j)
+	mgr := manifest.NewManager(&cfg, j)
 
 	// 2A: the source agent builds the plan (its local source pool + the
 	// destination catalog proxied over the source->dest peer channel). On a

@@ -43,7 +43,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
 		mirror = filepath.Join(t.TempDir(), "journal.jsonl")
-		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
+		mgr := newTwoAgentManager(t, &cfg, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("initial run: %v", err)
 		}
@@ -77,7 +77,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
+		mgr := newTwoAgentManager(t, &cfg, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("re-run: %v", err)
 		}
@@ -116,7 +116,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
+		mgr := newTwoAgentManager(t, &cfg, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err != nil {
 			t.Fatalf("re-run: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestResumeCompletesUnswappedUnit(t *testing.T) {
 
 		cfg := config.Default()
 		p := buildPlan(t, cfg, src, dstQ)
-		mgr := newTwoAgentManager(t, &cfg, src, dstQ, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
+		mgr := newTwoAgentManager(t, &cfg, manifest.NewJournal(nil, mirror), src.DSN(), dstQ.DSN())
 		if err := mgr.Run(context.Background(), p); err == nil {
 			t.Fatal("re-run with lost staging data returned nil, want an error (data must not be claimed copied)")
 		}

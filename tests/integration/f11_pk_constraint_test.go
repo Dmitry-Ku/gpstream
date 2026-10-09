@@ -36,7 +36,7 @@ func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 			t.Fatalf("plan has %d units, want 1", len(p.Units))
 		}
 		j := manifest.NewJournal(dst, filepath.Join(t.TempDir(), "journal.jsonl"))
-		mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+		mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 		if err := mgr.Run(t.Context(), p); err != nil {
 			t.Fatalf("manager.Run: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestPKConstraintRestoredOnLivePG(t *testing.T) {
 			t.Fatalf("plan has %d units, want 1", len(p.Units))
 		}
 		j := manifest.NewJournal(dst, filepath.Join(t.TempDir(), "journal.jsonl"))
-		mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+		mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 		if err := mgr.Run(t.Context(), p); err != nil {
 			t.Fatalf("manager.Run: %v", err)
 		}

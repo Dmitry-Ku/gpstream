@@ -138,7 +138,7 @@ func TestSoakThroughputLive(t *testing.T) {
 	}
 	p := buildPlan(t, cfg, src, dst)
 	j := manifest.NewJournal(dst, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 
 	start := time.Now()
 	if err := runWithTimeout(t, mgr, p, maxTime); err != nil {

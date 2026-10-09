@@ -65,18 +65,17 @@ func newMgr(t *testing.T, srcQ, dstQ pg.StreamingQuerier, mutate func(*config.Co
 	if mutate != nil {
 		mutate(c)
 	}
-	return NewManager(c, srcQ, dstQ, NewJournal(pg.NewFakeConn(), t.TempDir()+"/j.jsonl"))
+	return NewManager(c, NewJournal(pg.NewFakeConn(), t.TempDir()+"/j.jsonl"))
 }
 
 // newManagerAt builds a Manager whose journal mirror (and thus its
 // events.jsonl) lives under a fresh temp dir, and returns that dir so a test
 // can read the events the run emitted. Pure construction (no Run).
-func newManagerAt(t *testing.T, cfg *config.Config, srcPayload, dstPayload []byte) (*Manager, string) {
+func newManagerAt(t *testing.T, cfg *config.Config) (*Manager, string) {
 	t.Helper()
-	src, dst := newPair(t, srcPayload, dstPayload)
 	dir := t.TempDir()
 	j := NewJournal(pg.NewFakeConn(), filepath.Join(dir, "journal.jsonl"))
-	return NewManager(cfg, src, dst, j), dir
+	return NewManager(cfg, j), dir
 }
 
 // eventsOf reads the events.jsonl under dir into a slice of records.
@@ -188,7 +187,7 @@ func TestCompressionOffForDecision(t *testing.T) {
 			cfg := config.Default()
 			cfg.Compression = tc.comp
 			cfg.SmallTableThreshold = tc.threshold
-			m, _ := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+			m, _ := newManagerAt(t, &cfg)
 			got := m.compressionOffFor(plan.Table{Bytes: tc.bytes})
 			if got != tc.want {
 				t.Fatalf("compressionOffFor(%s, thr=%d, bytes=%d) = %v, want %v",
@@ -204,7 +203,7 @@ func TestUnitCompressorsSwap(t *testing.T) {
 	cfg := config.Default()
 	cfg.Compression = config.CompZstd
 	cfg.SmallTableThreshold = 1 << 20
-	m, _ := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+	m, _ := newManagerAt(t, &cfg)
 
 	comp, dec := m.unitCompressors(plan.Table{Bytes: 1 << 19})
 	if comp.Mode() != compress.ModeNone || dec.Mode() != compress.ModeNone {
@@ -245,7 +244,7 @@ func TestCoordinatorFallbackForDecision(t *testing.T) {
 			cfg := config.Default()
 			cfg.CopyMode = tc.mode
 			cfg.SmallTableThreshold = tc.thresh
-			m, _ := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+			m, _ := newManagerAt(t, &cfg)
 			got := m.coordinatorFallbackFor(plan.Table{Bytes: tc.bytes, SrcReplicated: tc.repl})
 			if got != tc.want {
 				t.Fatalf("coordinatorFallbackFor(mode=%s thr=%d bytes=%d repl=%v) = %v, want %v",
@@ -259,7 +258,7 @@ func TestCoordinatorFallbackForDecision(t *testing.T) {
 // (rate_limit_shift) and reflected in the rate-limit metric (FR-04/F-14).
 func TestManagerOnRateChangeEmitsEvent(t *testing.T) {
 	cfg := config.Default()
-	m, dir := newManagerAt(t, &cfg, []byte("data"), []byte("data"))
+	m, dir := newManagerAt(t, &cfg)
 	m.onRateChange(5.0, 2.5, "cpu 90%")
 	m.events.Close()
 
@@ -361,7 +360,7 @@ func TestEstablishEpochFreshThenResume(t *testing.T) {
 	cfg := config.Default()
 	mirror := t.TempDir() + "/journal.jsonl"
 
-	m1 := NewManager(&cfg, pg.NewFakeConn(), pg.NewFakeConn(), NewJournal(pg.NewFakeConn(), mirror))
+	m1 := NewManager(&cfg, NewJournal(pg.NewFakeConn(), mirror))
 	m1.jobID = "op"
 	e1, resume1, err := m1.establishEpoch()
 	if err != nil {
@@ -371,7 +370,7 @@ func TestEstablishEpochFreshThenResume(t *testing.T) {
 		t.Fatalf("fresh run: epoch=%d resume=%v, want 1/false", e1, resume1)
 	}
 
-	m2 := NewManager(&cfg, pg.NewFakeConn(), pg.NewFakeConn(), NewJournal(pg.NewFakeConn(), mirror))
+	m2 := NewManager(&cfg, NewJournal(pg.NewFakeConn(), mirror))
 	m2.jobID = "op"
 	if err := m2.journal.LoadFromMirror(); err != nil {
 		t.Fatalf("load mirror: %v", err)
@@ -390,7 +389,7 @@ func TestEstablishEpochFreshThenResume(t *testing.T) {
 func TestEstablishEpochErrors(t *testing.T) {
 	bad := badParentFile(t)
 	j := NewJournal(pg.NewFakeConn(), filepath.Join(bad, "journal.jsonl"))
-	m := NewManager(configDefault(), pg.NewFakeConn(), pg.NewFakeConn(), j)
+	m := NewManager(configDefault(), j)
 	m.jobID = "x"
 	if _, _, err := m.establishEpoch(); err == nil {
 		t.Error("establishEpoch under a file-parent: want error")

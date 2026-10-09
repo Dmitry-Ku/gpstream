@@ -103,7 +103,7 @@ func TestSourceAgentBuildsPlan(t *testing.T) {
 	// 2. The SOURCE-AGENT plan (2A): mgr.Plan launches the agents and asks the
 	//    source agent to build the plan over the peer channel.
 	journalPath := filepath.Join(t.TempDir(), "journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, manifest.NewJournal(dst, journalPath))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(dst, journalPath))
 	planCtx, planCancel := context.WithTimeout(ctx, 120*time.Second)
 	defer planCancel()
 	p, err := mgr.Plan(planCtx)
@@ -208,7 +208,7 @@ func TestSourceAgentPlanDestUnreachable(t *testing.T) {
 	cfg.RetransmitBufferMax = 64 << 20
 
 	journalPath := filepath.Join(t.TempDir(), "journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, nil, manifest.NewJournal(nil, journalPath))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(nil, journalPath))
 	planCtx, planCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer planCancel()
 	if _, err := mgr.Plan(planCtx); err == nil {

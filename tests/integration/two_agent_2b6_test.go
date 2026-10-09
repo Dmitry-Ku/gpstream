@@ -90,7 +90,7 @@ func TestTwoAgent2B6DestOwnsJournal(t *testing.T) {
 	jdir := t.TempDir()
 	mirrorPath := filepath.Join(jdir, "journal.jsonl")
 	j := manifest.NewJournal(dst, mirrorPath)
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 
 	p := buildPlan(t, cfg, src, dst)
 	if len(p.Units) == 0 {

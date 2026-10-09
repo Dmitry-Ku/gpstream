@@ -57,7 +57,7 @@ func TestConstraintRestoreFKCheckRename(t *testing.T) {
 	}
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestConstraintRestoreExternalRef(t *testing.T) {
 	}
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	// The run must SUCCEED even though the FK's referenced table is absent on
 	// the destination (non-fatal constraint restore).
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
@@ -177,7 +177,7 @@ func TestDestinationPKIndexRestored(t *testing.T) {
 	p := buildPlan(t, cfg, src, dst)
 	jdir := t.TempDir()
 	j := manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl"))
-	mgr := newTwoAgentManager(t, &cfg, src, dst, j, src.DSN(), dst.DSN())
+	mgr := newTwoAgentManager(t, &cfg, j, src.DSN(), dst.DSN())
 	if err := runWithTimeout(t, mgr, p, 60*time.Second); err != nil {
 		t.Fatalf("manager.Run: %v", err)
 	}

@@ -176,7 +176,7 @@ func TestPersistentManagerRun(t *testing.T) {
 
 	jdir := t.TempDir()
 	journalPath := filepath.Join(jdir, "journal.jsonl")
-	mgr := manifest.NewManager(&cfg, src, dst, manifest.NewJournal(dst, journalPath))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(dst, journalPath))
 	runner := manifest.NewInProcTwoAgentRunner(&cfg)
 	mgr.SetTwoAgentRunner(runner)
 
@@ -237,7 +237,7 @@ func TestPersistentManagerRun(t *testing.T) {
 	// journal. The swapped units are kept (T5 keep rule); the failed units
 	// are re-copied over a FRESH persistent channel (the surviving partial
 	// staging is truncated + re-COPYd, FR-07).
-	mgr2 := manifest.NewManager(&cfg, src, dst, manifest.NewJournal(dst, journalPath))
+	mgr2 := manifest.NewManager(&cfg, manifest.NewJournal(dst, journalPath))
 	runner2 := manifest.NewInProcTwoAgentRunner(&cfg)
 	mgr2.SetTwoAgentRunner(runner2)
 	if err := runWithTimeout(t, mgr2, p, 240*time.Second); err != nil {
@@ -329,7 +329,7 @@ func TestPersistentChannelMultiTableNoKill(t *testing.T) {
 	}
 
 	jdir := t.TempDir()
-	mgr := manifest.NewManager(&cfg, src, dst, manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl")))
+	mgr := manifest.NewManager(&cfg, manifest.NewJournal(dst, filepath.Join(jdir, "journal.jsonl")))
 	runner := manifest.NewInProcTwoAgentRunner(&cfg)
 	mgr.SetTwoAgentRunner(runner)
 

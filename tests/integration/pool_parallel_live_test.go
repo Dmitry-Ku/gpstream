@@ -77,8 +77,7 @@ func TestPoolParallelWorkersLive(t *testing.T) {
 	defer dstPool.Close()
 
 	j := manifest.NewJournal(dstPool, t.TempDir()+"/journal.jsonl")
-	mgr := newTwoAgentManager(t, &cfg, srcPool, dstPool, j,
-		srcCl.URL(), dstCl.URL())
+	mgr := newTwoAgentManager(t, &cfg, j, srcCl.URL(), dstCl.URL())
 	start := time.Now()
 	if err := mgr.Run(ctx, p); err != nil {
 		t.Fatalf("manager.Run (pool, 4 workers): %v", err)
