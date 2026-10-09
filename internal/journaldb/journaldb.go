@@ -1,7 +1,8 @@
 // Package journaldb is the shared gpstream_units (FR-02 journal) schema and
 // upsert helpers, usable by BOTH the controller (the file-mirror + legacy
 // path) and the destination agent (architecture 08.10: the destination agent
-// writes the journal of the MESH units it copies, verifies and swaps).
+// writes the journal of the units it copies, verifies and swaps — the MESH
+// mini path since 1D, the COORDINATOR two-agent path since 2B-6).
 //
 // It imports only transfer/pg (no manifest, no agent) so neither side
 // creates an import cycle. The DDL + upsert are extracted verbatim from
@@ -17,9 +18,9 @@ import (
 )
 
 // Unit is the journal row the destination agent writes for a unit it owns
-// (the mesh mini path). It mirrors the manifest.Unit fields the
-// gpstream_units schema stores (the controller's Unit carries more: the
-// plan/layout fields are not journaled).
+// (it copies, verifies and swaps the unit, so it is the writer of record).
+// It mirrors the manifest.Unit fields the gpstream_units schema stores (the
+// controller's Unit carries more: the plan/layout fields are not journaled).
 type Unit struct {
 	JobID    string
 	UnitID   int64
@@ -34,12 +35,18 @@ type Unit struct {
 	Bytes    int64
 	Attempts int
 	Epoch    int64
+	// IndexDone (FR-17) marks the unit's background index build as finished.
+	// The destination agent writes it true on the row once the controller's
+	// index pool drains cleanly (the journal action) — the column the 10K
+	// stress journal never had. Defaults false: the serve-time journal writes
+	// do not carry it.
+	IndexDone bool
 }
 
 // Init ensures the gpstream_units table exists (idempotent: CREATE TABLE IF
 // NOT EXISTS + the FR-17 index_done backfill, PG 9.4-safe). Called by the
-// destination agent at start (it owns the mesh-unit journal rows) and by the
-// controller (the legacy path, until Phase 2 removes m.dst).
+// destination agent (it owns the gpstream_units rows it writes) and by the
+// controller's legacy single-process path.
 func Init(ctx context.Context, q pg.Querier) error {
 	_, err := q.Exec(ctx,
 		`CREATE TABLE IF NOT EXISTS gpstream_units (
@@ -83,9 +90,9 @@ func SetState(ctx context.Context, q pg.Querier, u *Unit) error {
 	now := time.Now()
 	// UPDATE args: (job_id, unit_id, state, checksum, row_count, byte_count,
 	// attempts, epoch, index_done, updated).
-	updArgs := []any{u.JobID, u.UnitID, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, false, now}
+	updArgs := []any{u.JobID, u.UnitID, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, now}
 	// INSERT args: 15 columns.
-	insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, false, now}
+	insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, now}
 	return pgUpsert(ctx, q,
 		`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
 		[]any{u.JobID, u.UnitID},
@@ -96,10 +103,24 @@ func SetState(ctx context.Context, q pg.Querier, u *Unit) error {
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`)
 }
 
+// SetIndexDone (FR-17) marks the unit's background index build as finished on the
+// gpstream_units row (the controller's index pool drained cleanly). The destination
+// agent is the writer of record for the row (architecture 08.10), so the
+// controller delegates this single-column update to it. It is a targeted
+// UPDATE (no full upsert): the serve-time states (swapped + checksum + row
+// count) are left untouched. A no-op if the row does not exist yet.
+func SetIndexDone(ctx context.Context, q pg.Querier, jobID string, unitID int64) error {
+	_, err := q.Exec(ctx,
+		`UPDATE gpstream_units SET index_done = true WHERE job_id = $1 AND unit_id = $2`,
+		jobID, unitID)
+	return err
+}
+
 // pgUpsert inserts the row or, if a row with the same primary key exists,
 // updates it (PG 9.4 has no ON CONFLICT). The SELECT->write gap is benign:
 // each unit is owned by a single writer (the destination agent serves one
-// mesh unit at a time on the sequential control loop).
+// unit at a time on the sequential control loop, and same-key writers can
+// only ever be the same units own sequential calls).
 func pgUpsert(ctx context.Context, q pg.Querier, selSQL string, selArgs, updArgs, insArgs []any, updSQL, insSQL string) error {
 	if v, err := pg.Row(ctx, q, selSQL, selArgs...); err != nil {
 		return err

@@ -433,6 +433,11 @@ type DDReq struct {
 	Indexes   []pg.IndexDef `json:"indexes,omitempty"`
 	SrcSchema string        `json:"src_schema,omitempty"`
 	SrcTable  string        `json:"src_table,omitempty"`
+	// 2B-6 (FR-17): the set-index-done action's journal key — the
+	// destination agent marks index_done=true on the gpstream_units row it
+	// owns (the writer of record) once the controller's background index
+	// pool drains cleanly.
+	Journal JournalRef `json:"journal,omitempty"`
 }
 
 // DDResp is the destination agent's report for a DDReq.

@@ -69,8 +69,22 @@ type Unit struct {
 	// swaps the unit, so it records the journal itself. The controller then
 	// writes ONLY the file mirror for it (the durable resume source) and
 	// skips the DB journal (which it no longer owns for mesh units).
-	Mesh     bool `json:"mesh,omitempty"`
-	Attempts int  `json:"attempts"`
+	Mesh bool `json:"mesh,omitempty"`
+	// DestJournal (2B-6, architecture 08.10) marks a unit whose gpstream_units
+	// DB row is owned by the DESTINATION agent: the COORDINATOR two-agent data
+	// path (the coordinator analogue of the mesh MiniLaunch path) — the
+	// destination copies, verifies and swaps the unit, so it records the
+	// journal itself (copying at the serve start, swapped/failed at the serve
+	// end). The controller writes ONLY the file mirror for it (the durable
+	// resume source) and skips the DB journal for the post-stream states
+	// (completed/swapped); the pre-stream states (pending/copying) the
+	// controller writes are superseded in the DB by the destination's own
+	// serve-time write (the destination is the writer of record for the row),
+	// exactly as the mesh path does. Set after the stream in runUnit;
+	// preserved in the file mirror so a resume knows the dest agent owns the
+	// row.
+	DestJournal bool `json:"dest_journal,omitempty"`
+	Attempts    int  `json:"attempts"`
 	// Epoch is the snapshot generation (T5, DESIGN §2.2) under which the
 	// unit's data was verified: the run's epoch is stamped when the unit
 	// reaches StateCompleted. A resume re-reads a table whose completed
@@ -360,8 +374,9 @@ func (j *Journal) SetState(u *Unit) error {
 	// `_, _ =`, leaving gpstream_units empty (07.10 e2e). A write error still
 	// does not sink the job, but it is no longer silent: j.note carries it to
 	// the F-04/F-14 event log.
-	if j.q != nil && !c.Mesh {
-		// A mesh unit's DB row is the destination agent's (the writer of
+	if j.q != nil && !c.Mesh && !c.DestJournal {
+		// A dest-agent-owned unit's DB row (the mesh path, or the coordinator
+		// two-agent path since 2B-6) is the destination agent's (the writer of
 		// record); the controller records only the file mirror for it.
 		// UPDATE args: (job_id, unit_id, state, checksum, row_count,
 		// byte_count, attempts, epoch, index_done, updated).

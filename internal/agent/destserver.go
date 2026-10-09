@@ -166,6 +166,29 @@ type DestServeReq struct {
 	Direct   *DirectLaunch `json:"direct,omitempty"`   // kind=direct
 	Routed   *RoutedLaunch `json:"routed,omitempty"`   // kind=routed
 	Mini     *MiniLaunch   `json:"mini,omitempty"`     // kind=mini (P3 mesh)
+	// Journal (2B-6, architecture 08.10) is the unit's gpstream_units
+	// reference for the COORDINATOR path: the destination agent copies,
+	// verifies and swaps the unit, so it is the writer of record for its DB
+	// row (the control-plane analogue of MiniLaunch's journal fields, which
+	// ride the data-launch). The controller records only the file mirror for
+	// such a unit. Empty JournalJobID = the agent does not journal the unit
+	// (a legacy / pre-2B-6 test path).
+	Journal JournalRef `json:"journal,omitempty"`
+}
+
+// JournalRef is the gpstream_units journal key the destination agent writes
+// for a unit it owns (the mesh MiniLaunch and the coordinator serve both
+// carry it). It is the controller's journal primary key (the string job id +
+// int64 unit id) plus the source names the row keys by and the run's
+// snapshot epoch.
+type JournalRef struct {
+	JobID  string `json:"job_id,omitempty"`
+	UnitID int64  `json:"unit_id,omitempty"`
+	DB     string `json:"db,omitempty"`
+	Schema string `json:"schema,omitempty"`
+	Table  string `json:"table,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Epoch  int64  `json:"epoch,omitempty"`
 }
 
 // DestAck is the agent's immediate reply to "serve-unit" (the serve is
@@ -401,6 +424,12 @@ type DestServer struct {
 type unitServe struct {
 	done     chan DestUnitDone
 	finished atomic.Bool
+	// journal (2B-6) is the unit's gpstream_units reference (the
+	// coordinator path, the control-plane analogue of MiniLaunch's journal
+	// fields): the destination writes the DB row for the unit it serves
+	// (copying at the serve start, swapped/failed at the serve end). Empty
+	// JournalJobID = no journal reference (a legacy test path).
+	journal JournalRef
 }
 
 // NewDestServer binds the data + control listeners and starts the control
@@ -996,6 +1025,44 @@ func (s *DestServer) ensureMiniStaging(ctx context.Context, ml *MiniLaunch) erro
 // resume source), but it is surfaced in the unit's diagnostic events. An empty
 // JournalJobID = the launch carried no journal reference (a test path); the
 // write is skipped.
+// journalUnitRef (2B-6) writes the gpstream_units row for a unit the
+// destination agent owns, from the control-plane JournalRef (the
+// coordinator path). It is the coordinator analogue of journalMiniUnit (the
+// mesh path, which builds the same row from MiniLaunch's journal fields):
+// the agent copies, verifies and swaps the unit, so it is the writer of
+// record for its DB row (state + checksum + row count). It runs on a LOCAL
+// coordinator connection and is best-effort: a journal write error does not
+// sink the unit (the controller's file mirror remains the durable resume
+// source), but it is surfaced in the unit's diagnostic events. An empty
+// JournalJobID = no journal reference (a legacy / pre-2B-6 test path).
+func (s *DestServer) journalUnitRef(ctx context.Context, ref JournalRef, state, checksum string, rows int64) error {
+	if ref.JobID == "" {
+		return nil // no journal reference (a test path)
+	}
+	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
+	if err != nil {
+		return fmt.Errorf("serve: connect coordinator (journal): %w", err)
+	}
+	defer q.Close()
+	jctx, jcancel := context.WithTimeout(ctx, 1*time.Minute)
+	defer jcancel()
+	if err := journaldb.Init(jctx, q); err != nil {
+		return fmt.Errorf("serve: init gpstream_units: %w", err)
+	}
+	return journaldb.SetState(jctx, q, &journaldb.Unit{
+		JobID:    ref.JobID,
+		UnitID:   ref.UnitID,
+		DB:       ref.DB,
+		Schema:   ref.Schema,
+		Table:    ref.Table,
+		Kind:     ref.Kind,
+		State:    state,
+		Checksum: checksum,
+		RowCount: rows,
+		Epoch:    ref.Epoch,
+	})
+}
+
 func (s *DestServer) journalMiniUnit(ctx context.Context, ml *MiniLaunch, state, checksum string, rows int64) error {
 	if ml.JournalJobID == "" {
 		return nil // no journal reference (a test path)
@@ -1149,7 +1216,7 @@ func (s *DestServer) serveControl(l net.Listener) {
 			// already off the wire) and desync the channel. (Non-persistent
 			// serves accept on the data listener and are not racy.)
 			if ack.Ok && req.Kind == "coordinator" && s.persistL != nil {
-				s.registerUnitServe(req.UnitID)
+				s.registerUnitServe(req.UnitID, req.Journal)
 			}
 			if serr := s.sendLine(conn, ack); serr != nil {
 				s.serveWG.Wait()
@@ -1338,6 +1405,18 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 			}
 			resp.Segments = segs
 			return nil
+		}); err != nil {
+			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
+		}
+	case "set-index-done":
+		// 2B-6 (FR-17): the controller's background index pool drained
+		// cleanly, so the destination agent (the writer of record for the
+		// gpstream_units row it owns) marks index_done=true on the row. A
+		// targeted single-column UPDATE (no full upsert): the serve-time
+		// states (swapped + checksum + row count) are left untouched. A
+		// no-op if the row does not exist yet (the serve did not journal it).
+		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
+			return journaldb.SetIndexDone(context.Background(), q, dd.Journal.JobID, dd.Journal.UnitID)
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}
@@ -1719,7 +1798,7 @@ func (s *DestServer) servePersistentChannel(ctx context.Context, w *persConnW) {
 			_, _ = io.Copy(io.Discard, data)
 			continue
 		}
-		res := s.serveUnitData(ctx, spec, data)
+		res := s.serveUnitData(ctx, spec, data, us.journal)
 		// Mark the unit terminal BEFORE delivering: a concurrent channel
 		// break (failUnitServe) must not override a completed report. The
 		// serve op consumes the report (buffered: if the op was already
@@ -1751,7 +1830,7 @@ func (s *DestServer) failAllUnitServes(err error) {
 // persistent channel (P1d): staging DDL + COPY (+ inline digest) on a
 // connection from the destination pg pool. The swap is NOT performed (the
 // Manager decides it, post-unit-done — the coordinator path's invariant).
-func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *unitDataReader) DestUnitDone {
+func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *unitDataReader, journal JournalRef) DestUnitDone {
 	var done DestUnitDone
 	done.Op = "unit-done"
 	done.UnitID = spec.UnitID
@@ -1759,9 +1838,29 @@ func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *uni
 		done.Error = "persistent serve: no destination pg pool"
 		return done
 	}
+	// 2B-6 (architecture 08.10): the destination agent is the writer of
+	// record for this COORDINATOR unit's gpstream_units row (it copies,
+	// verifies and swaps the unit — the coordinator analogue of the mesh mini
+	// path, 1D): copying at the serve start, and the TERMINAL state (swapped
+	// on a commit, failed on a serve error) when the serve ends. The
+	// controller records ONLY the file mirror for such a unit (it skips its
+	// own DB writes — the SetState !c.DestJournal guard), so the DB row's
+	// terminal state is whatever the destination writes here. No overwrite
+	// conflict: the controller never recovers a failed coordinator serve with
+	// its own swap (a serve error marks the unit failed; it does not re-verify
+	// or re-swap), so the destination's terminal write is authoritative.
+	// Best-effort: a journal write error does not sink the unit (the
+	// controller's file mirror remains the durable resume source), but it is
+	// surfaced in the unit's events.
+	if jerr := s.journalUnitRef(ctx, journal, "copying", "", 0); jerr != nil {
+		done.Events = append(done.Events, "journal: "+jerr.Error())
+	}
 	q, release, aerr := s.dq.AcquireSnapshotConn(ctx)
 	if aerr != nil {
 		done.Error = fmt.Sprintf("persistent serve: acquire dest conn: %v", aerr)
+		if jerr := s.journalUnitRef(ctx, journal, "failed", "", 0); jerr != nil {
+			done.Events = append(done.Events, "journal: "+jerr.Error())
+		}
 		return done
 	}
 	defer release()
@@ -1775,6 +1874,18 @@ func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *uni
 	done.Verified = res.Verified
 	done.Ok = err == nil
 	done.Error = errString(err)
+	// 2B-6: record the terminal state in the destination's own journal. A
+	// swapped serve -> swapped with its on-the-data-path digest as the content
+	// checksum; a failed serve (no swap) -> failed.
+	if res.Swapped {
+		if jerr := s.journalUnitRef(ctx, journal, "swapped", res.Digest, res.Rows); jerr != nil {
+			done.Events = append(done.Events, "journal: "+jerr.Error())
+		}
+	} else {
+		if jerr := s.journalUnitRef(ctx, journal, "failed", res.Digest, res.Rows); jerr != nil {
+			done.Events = append(done.Events, "journal: "+jerr.Error())
+		}
+	}
 	return done
 }
 
@@ -1782,8 +1893,8 @@ func (s *DestServer) serveUnitData(ctx context.Context, spec UnitSpec, data *uni
 // unitReg (keyed by the unit's UnitID). Called by the control loop BEFORE
 // the ack is sent, so the channel loop can never see the unit's UnitBegin
 // before its serve is registered (the race guard — see the serve-unit case).
-func (s *DestServer) registerUnitServe(unitID uint32) {
-	us := &unitServe{done: make(chan DestUnitDone, 1)}
+func (s *DestServer) registerUnitServe(unitID uint32, journal JournalRef) {
+	us := &unitServe{done: make(chan DestUnitDone, 1), journal: journal}
 	s.unitMu.Lock()
 	// A retry of the same unit (a resume within the run) replaces the stale
 	// registration: the old one's serve op has already been drained by the

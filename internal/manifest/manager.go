@@ -796,8 +796,7 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	if m.idxPool.Err() == nil {
 		for _, u := range m.journal.Units() {
 			if u.State == StateSwapped && !u.IndexDone {
-				u.IndexDone = true
-				_ = m.journal.SetState(u)
+				m.markIndexDone(ctx, u)
 			}
 		}
 	}
@@ -1619,6 +1618,18 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	if meshSwapped || meshVerified {
 		u.Mesh = true
 	}
+	// 2B-6 (architecture 08.10): a COORDINATOR unit the destination streamed
+	// (streamTwoAgent) is journaled by the DESTINATION agent for its terminal
+	// states (it copies, verifies and swaps it — the coordinator analogue of
+	// the mesh path, 1D). Mark it so the controller's own DB writes for the
+	// post-stream states (completed/swapped) are skipped (the controller
+	// records only the file mirror). The destination journals the row itself
+	// (copying at the serve start, swapped/failed at the serve end). A failed
+	// stream also leaves the terminal state to the destination (it journaled
+	// failed), so the flag is set whenever the coordinator data path ran.
+	if err == nil && (coordSwapped || coordVerified) {
+		u.DestJournal = true
+	}
 	if err != nil {
 		// Roll the copy target back on a staging failure (FR-07); an in-place
 		// failure is recorded as failed and re-tried by a resume (TRUNCATE is
@@ -1812,6 +1823,18 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 		DstCert: m.cfg.SSLCert,
 		DstKey:  m.cfg.SSLKey,
 		DstCA:   m.cfg.SSLCA,
+		// 2B-6 (architecture 08.10): the destination agent is the writer of
+		// record for this COORDINATOR unit's gpstream_units row (it copies,
+		// verifies and swaps it) — the journal key it writes the row under.
+		Journal: agent.JournalRef{
+			JobID:  u.JobID,
+			UnitID: u.UnitID,
+			DB:     t.DB,
+			Schema: t.Schema,
+			Table:  t.Name,
+			Kind:   "table",
+			Epoch:  m.epoch,
+		},
 	})
 }
 
@@ -2579,6 +2602,27 @@ func (m *Manager) requeueIndexes(ctx context.Context) {
 // create-indexes ddl op). It satisfies index.DST.
 func (m *Manager) CreateIndexes(ctx context.Context, schema, table, srcSchema, srcTable string, defs []pg.IndexDef) error {
 	return m.dstCreateIndexes(ctx, schema, table, srcSchema, srcTable, defs)
+}
+
+// markIndexDone (2B-6, FR-17) marks a swapped unit's background index build
+// done in the journal once the pool drains cleanly. The file mirror + the
+// in-memory state are always updated; the PRIMARY-journal DB row is updated
+// by the DESTINATION agent (the writer of record, architecture 08.10) when
+// the unit's DB row is agent-owned (the mesh path, or the coordinator
+// two-agent path since 2B-6): the controller holds no direct destination
+// connection, so it delegates the single-column index_done update to the
+// dest agent via the set-index-done ddl action. Non-fatal: a delegate
+// failure leaves the DB row's index_done stale (the file mirror still has
+// IndexDone=true, so a resume does not re-enqueue the build).
+func (m *Manager) markIndexDone(ctx context.Context, u *Unit) {
+	u.IndexDone = true
+	_ = m.journal.SetState(u) // file mirror + in-memory; DB skipped when agent-owned
+	if m.twoAgent != nil && (u.Mesh || u.DestJournal) {
+		_, _ = m.twoAgent.DDL(ctx, agent.DDReq{
+			Action:  "set-index-done",
+			Journal: agent.JournalRef{JobID: u.JobID, UnitID: u.UnitID},
+		})
+	}
 }
 
 // primarySegmentCount returns the number of up primary CONTENTS on the

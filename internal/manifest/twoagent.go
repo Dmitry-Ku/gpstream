@@ -234,6 +234,13 @@ type unitStreamRequest struct {
 	DstConn string
 	// DstTLS are the dest agent's pg-plane TLS settings.
 	DstCert, DstKey, DstCA string
+	// Journal (2B-6, architecture 08.10) is the unit's gpstream_units
+	// reference the destination agent writes for the COORDINATOR unit it
+	// copies, verifies and swaps (the control-plane analogue of the mesh
+	// MiniLaunch's journal fields). The runner passes it on the serve-unit
+	// control op so the dest agent journals the row itself; the controller
+	// records only the file mirror.
+	Journal agent.JournalRef
 }
 
 // unitSegmentRequest is the Manager's per-unit instruction for the P4
@@ -907,7 +914,7 @@ func (r *processTwoAgentRunner) Stream(ctx context.Context, req unitStreamReques
 // dest's persistent channel POOL (no streamMu: the dest control loop serves
 // N units in flight, correlated by ReqID; unit X rides channel X%N).
 func (r *processTwoAgentRunner) streamCoordinatorPersistent(ctx context.Context, req unitStreamRequest) (int64, uint64, uint64, string, string, bool, bool, error) {
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID, Journal: req.Journal})
 	if err != nil {
 		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
@@ -1551,7 +1558,7 @@ func (r *InProcTwoAgentRunner) Stream(ctx context.Context, req unitStreamRequest
 	// 1. Tell the long-lived dest agent to serve this unit on the persistent
 	//    channel. The ack returns immediately (the serve is registered and
 	//    waiting for the unit's UnitBegin off its channel).
-	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID})
+	ack, err := r.destCtrl.BeginServe(agent.DestServeReq{Kind: "coordinator", UnitID: req.UnitID, Journal: req.Journal})
 	if err != nil {
 		return 0, 0, 0, "", "", false, false, fmt.Errorf("two-agent: begin serve (coordinator) unit %d: %w", req.UnitID, err)
 	}
