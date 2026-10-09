@@ -1430,7 +1430,10 @@ func listIncompleteOperations(stateDir string) ([]string, error) {
 
 // cmdVersion prints the gpstream version.
 func cmdVersion(args []string) error {
-	if commit != "" {
+	// A snapshot version already embeds the short commit
+	// (0.2.0-SNAPSHOT-<commit>); print the commit in parens only when it
+	// is not redundant (tagged releases: v0.2.0 (2f4e91d)).
+	if commit != "" && !strings.HasSuffix(version, "-"+commit) {
 		fmt.Printf("gpstream %s (%s)\n", version, commit)
 	} else {
 		fmt.Printf("gpstream %s\n", version)
