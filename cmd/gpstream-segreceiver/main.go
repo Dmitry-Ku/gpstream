@@ -114,8 +114,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gpstream-segreceiver: ok (check)")
 		os.Exit(0)
 	}
-	routed := *destAddr != ""
-	if !routed && *listen == "" {
+	// Routed mode (P9, S!=D — both the single-controller and the mesh path) is
+	// identified by the route-only flags. Mesh direct_1to1 (P3) ALSO sets
+	// --dest-addr (the D-entry address book) plus --dest-count, but has NO
+	// --route-d/--route-key; distinguishing by --dest-addr alone misdetected it
+	// as routed and failed "--route-d must be >= 1" on the first live A->A run.
+	routed := *routeD >= 1 && *routeKey != ""
+	if !routed && *listen == "" && *destCount == 0 {
 		fail("--listen host:port is required (or --dest-addr for routed mode)")
 	}
 	if routed {
