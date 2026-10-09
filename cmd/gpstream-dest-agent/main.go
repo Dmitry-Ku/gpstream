@@ -214,6 +214,11 @@ func main() {
 			ReportAddr:    *reportAddr,
 			AcceptTimeout: *acceptTO,
 			StreamTimeout: *streamTO,
+			// DESIGN §4.6: receive the slice on the same transport the
+			// segreceiver sent it on (frame-ack default on) — otherwise the
+			// mini reads raw frames from a "GPSA" control stream.
+			FrameAck:     *frameAck != "off",
+			ReliablePipe: transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
 		})
 		if err != nil {
 			fail("mini agent: %v", err)
@@ -348,6 +353,7 @@ func main() {
 				}
 			}
 			miniHandles, err = launchDestMinis(ctx, srv.Hello().Report, *miniSSHUser, *portRange,
+				*frameAck, *ackTimeout, *maxReconnects, *retransmitMax,
 				*sslCert, *sslKey, *sslCA, *dataCert, *dataKey, *dataCA, segs)
 			if err != nil {
 				srv.Close()

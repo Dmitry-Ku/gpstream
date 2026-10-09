@@ -164,8 +164,17 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 				return
 			}
 			cc := &countingConn{c: c}
+			var slicePipe transfer.Pipe = cc
+			if o.FrameAck {
+				if rp, rerr := wrapSliceConn(o, l, c); rerr == nil {
+					slicePipe = rp
+				} else {
+					acceptDone <- fmt.Errorf("frame-ack transport: %w", rerr)
+					return
+				}
+			}
 			res := &segstream.SliceResult{}
-			go func(cc *countingConn, res *segstream.SliceResult) {
+			go func(cc *countingConn, pipe transfer.Pipe, res *segstream.SliceResult) {
 				defer cc.c.Close()
 				// One SliceStripper per sub-stream: it strips the
 				// sub-stream's own header/EOF and forwards complete rows to
@@ -180,9 +189,9 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 					stripOnce.Do(func() { strip = segstream.NewSliceStripper(mw) })
 					return strip.Write(p)
 				}
-				derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, writer)
+				derr := segstream.ReadStreamCompressed(sctx, pipe, res, mode, writer)
 				results <- subOut{res: res, wire: cc.Bytes(), err: derr}
-			}(cc, res)
+			}(cc, slicePipe, res)
 		}
 		close(acceptDone)
 	}()

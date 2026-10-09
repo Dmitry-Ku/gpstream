@@ -174,7 +174,7 @@ func dsnHostPort(dsn string) (string, int) {
 // listener (reportBound, host-rewritten for the layout). It returns the
 // handles (the caller stops them on teardown as the last resort; the
 // supervisor's mini-done is the clean path).
-func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, sslCert, sslKey, sslCA, dataCert, dataKey, dataCA string, segs []miniSegTarget) ([]*launch.Handle, error) {
+func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64, sslCert, sslKey, sslCA, dataCert, dataKey, dataCA string, segs []miniSegTarget) ([]*launch.Handle, error) {
 	// The report address the minis dial: the bound address, host-rewritten
 	// when it bound 0.0.0.0 (a single-host layout dials 127.0.0.1; a remote
 	// layout dials the coordinator's non-loopback IP).
@@ -211,6 +211,14 @@ func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, sslCe
 			"--data-listen", "0.0.0.0:0",
 			"--accept-timeout", "5m",
 			"--stream-timeout", "6h",
+			// DESIGN §4.6: the minis must receive the slice on the same
+			// transport the segreceivers send it on (frame-ack by default).
+			// Mismatch = the mini reads raw frames from a "GPSA" control
+			// stream (first live A->A mesh run, bad magic 0x47505341).
+			"--frame-ack", frameAck,
+			"--ack-timeout", ackTimeout,
+			"--max-reconnects", strconv.Itoa(maxReconnects),
+			"--retransmit-buffer-max", strconv.FormatInt(retransmitMax, 10),
 		}
 		if portRange != "" {
 			margs = append(margs, "--port-range", portRange)

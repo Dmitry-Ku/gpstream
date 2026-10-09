@@ -92,6 +92,15 @@ type MiniOptions struct {
 	// AcceptTimeout bounds the wait for a unit's slice connection;
 	// StreamTimeout bounds one unit's whole serve.
 	AcceptTimeout, StreamTimeout time.Duration
+
+	// FrameAck + ReliablePipe: when the slice rides the frame-ack transport
+	// (the segreceiver's --frame-ack default on, DESIGN §4.6), the accepted
+	// data connection is wrapped in a ReliablePipe receiver (the coordinator
+	// dest pattern, dest.go:224). A broken link re-dials the same listener
+	// (l) and replays un-ACKed frames, so the open COPY keeps reading in order.
+	// Off (integration tests feed a raw segstream) the conn stays raw.
+	FrameAck     bool
+	ReliablePipe transfer.ReliablePipeConfig
 	// SharedListen, when non-nil, is a pre-bound data listener the mini-agent
 	// accepts from (the runner owns and closes it). When nil the mini-agent
 	// binds DataListen / PortAlloc itself.
@@ -315,6 +324,24 @@ func ServeMini(ctx context.Context, o MiniOptions) (MiniResult, error) {
 // slice, takes srcContrib from the slice trailer, and returns the report. It
 // assumes the staging slice already exists (the supervisor created/truncated it
 // on the coordinator); the mini-agent only performs the utility COPY.
+
+// wrapSliceConn puts the slice onto the frame-ack transport when the
+// segreceiver sent it that way (DESIGN §4.6): the accepted connection
+// rides a ReliablePipe that re-dials the shared listener l on a break and
+// replays un-ACKed frames, so the in-flight COPY keeps reading in order
+// (the coordinator-dest pattern, dest.go:224). Returns the pipe to read
+// the slice from (raw conn when frame-ack is off).
+func wrapSliceConn(o MiniOptions, l net.Listener, conn net.Conn) (transfer.Pipe, error) {
+	if !o.FrameAck {
+		return conn, nil
+	}
+	rp, err := transfer.NewReliablePipeReceiverOnConn(o.ReliablePipe, conn, l)
+	if err != nil {
+		return nil, err
+	}
+	return rp, nil
+}
+
 func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniUnitReq) MiniUnitResp {
 	resp := MiniUnitResp{Op: "mini-unit-resp", ReqID: req.ReqID, UnitID: req.UnitID}
 	fail := func(format string, a ...any) MiniUnitResp {
@@ -351,6 +378,14 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 		return fail("accept slice: %v", sctx.Err())
 	}
 	defer conn.Close()
+	var slicePipe transfer.Pipe = conn
+	if o.FrameAck {
+		rp, rerr := wrapSliceConn(o, l, conn)
+		if rerr != nil {
+			return fail("frame-ack transport: %v", rerr)
+		}
+		slicePipe = rp
+	}
 	cc := &countingConn{c: conn}
 
 	// 2. Single utility-COPY pipe + COPY goroutine. The staging slice exists
@@ -394,7 +429,7 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	var logicalN atomic.Uint64
 	w := &miniSliceWriter{pw: pw, dsum: dsum, logic: &logicalN}
 	res := &segstream.SliceResult{}
-	derr := segstream.ReadStreamCompressed(sctx, cc, res, mode, w.Write)
+	derr := segstream.ReadStreamCompressed(sctx, slicePipe, res, mode, w.Write)
 	wire := cc.Bytes()
 
 	// 4. Close the pipe (EOF or error) so the COPY sees end-of-stream, then wait
