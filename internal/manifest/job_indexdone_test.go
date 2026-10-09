@@ -39,7 +39,7 @@ func TestJournalInitCreatesIndexDoneColumn(t *testing.T) {
 }
 
 // TestJournalSetStateWritesIndexDone: the upsert carries index_done in both
-// branches (row absent -> INSERT 15 cols; row present -> UPDATE index_done).
+// branches (row absent -> INSERT 16 cols; row present -> UPDATE operation_id + index_done).
 func TestJournalSetStateWritesIndexDone(t *testing.T) {
 	// INSERT branch: no row yet.
 	f := pg.NewFakeConn()
@@ -56,6 +56,9 @@ func TestJournalSetStateWritesIndexDone(t *testing.T) {
 	if !strings.Contains(log, "index_done") {
 		t.Fatalf("journal INSERT must carry index_done (FR-17), got:\n%s", log)
 	}
+	if !strings.Contains(log, "operation_id") {
+		t.Fatalf("journal INSERT must carry operation_id (2E-2), got:\n%s", log)
+	}
 
 	// UPDATE branch: a row already exists.
 	f2 := pg.NewFakeConn()
@@ -69,7 +72,10 @@ func TestJournalSetStateWritesIndexDone(t *testing.T) {
 	if !strings.Contains(log2, "UPDATE gpstream_units") {
 		t.Fatalf("expected an UPDATE when the row is present, got:\n%s", log2)
 	}
-	if !strings.Contains(log2, "index_done = $9") {
+	if !strings.Contains(log2, "operation_id = $9") {
+		t.Fatalf("journal UPDATE must set operation_id (2E-2), got:\n%s", log2)
+	}
+	if !strings.Contains(log2, "index_done = $10") {
 		t.Fatalf("journal UPDATE must set index_done (FR-17), got:\n%s", log2)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/journaldb"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -42,7 +43,7 @@ type dropResult struct {
 // ownership order (objects first, schemas last + only-when-empty), and
 // prints the JSON result. It returns the process exit code: ALWAYS 0
 // (failures are encoded in the result, see the package comment).
-func runCleanupDrop(destConn, sslCert, sslKey, sslCA, minTLS, targetsJSON string) int {
+func runCleanupDrop(destConn, sslCert, sslKey, sslCA, minTLS, targetsJSON, jobID, operationID string) int {
 	fail := func(format string, a ...any) {
 		// A setup failure (bad JSON, no connection) is reported as a JSON
 		// result too (the controller cannot distinguish stderr from the
@@ -79,8 +80,36 @@ func runCleanupDrop(destConn, sslCert, sslKey, sslCA, minTLS, targetsJSON string
 	// on its LOCAL coordinator connection and echoes the per-object outcome.
 	out, derr := a.DropObjects(ctx, targets)
 	res := dropResult{OK: derr == nil, Dropped: out.Dropped, Errors: out.Errors, Details: out.Details}
+	// 2E-2: mark this operation's gpstream_units rows dropped so a re-run of
+	// the same operation does NOT adopt the dropped rows as already-copied
+	// (the stale-row fix). The 2E-2 already-copied query only reads
+	// 'swapped'/'completed' rows, so 'dropped' is invisible to it. Best-effort
+	// (the drop itself is the authoritative effect; the marking only affects
+	// the resume keep decision): a failure is surfaced in the result, not
+	// fatal.
+	if derr == nil && jobID != "" && operationID != "" {
+		if merr := markJournalDropped(ctx, q, jobID, operationID); merr != nil {
+			res.Errors = append(res.Errors, "mark journal dropped: "+merr.Error())
+		}
+	}
 
 	json, _ := json.Marshal(res)
 	fmt.Println(string(json))
 	return 0
+}
+
+// markJournalDropped (2E-2) flips the operation's gpstream_units terminal
+// rows to 'dropped' after a successful cleanup --mode drop. It is scoped on
+// job_id AND operation_id, so a plan-hash (job_id) shared by several
+// operations is never cross-marked. The table is ensured (journaldb.Init,
+// idempotent) so a destination that only ever saw the drop still has the
+// column.
+func markJournalDropped(ctx context.Context, q pg.StreamingQuerier, jobID, operationID string) error {
+	if err := journaldb.Init(ctx, q); err != nil {
+		return err
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE gpstream_units SET state = 'dropped' WHERE job_id = $1 AND operation_id = $2 AND state IN ('swapped', 'completed')`,
+		jobID, operationID)
+	return err
 }

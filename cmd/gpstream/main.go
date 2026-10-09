@@ -1225,7 +1225,11 @@ func cmdCleanup(args []string) error {
 				return fmt.Errorf("cleanup %s: marshal drop targets: %w", t.id, terr)
 			}
 			dctx, dcancel := context.WithTimeout(context.Background(), 6*time.Minute)
-			res, derr := runRemoteCleanupDrop(dctx, agentSSH, resolvedBinary, destStr, sslCert, sslKey, sslCA, minTLS, string(targetsJSON))
+			jobID := ""
+			if units := j.Units(); len(units) > 0 {
+				jobID = units[0].JobID
+			}
+			res, derr := runRemoteCleanupDrop(dctx, agentSSH, resolvedBinary, destStr, sslCert, sslKey, sslCA, minTLS, string(targetsJSON), jobID, t.id)
 			dcancel()
 			if derr != nil {
 				audit.Close()
@@ -1293,7 +1297,7 @@ func shellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\\''`) + "'"
 }
 
-func runRemoteCleanupDrop(ctx context.Context, sshHost, destBinary, destStr, sslCert, sslKey, sslCA, minTLS, targetsJSON string) (*cleanupDropResult, error) {
+func runRemoteCleanupDrop(ctx context.Context, sshHost, destBinary, destStr, sslCert, sslKey, sslCA, minTLS, targetsJSON, jobID, operationID string) (*cleanupDropResult, error) {
 	remote := fmt.Sprintf("%s --dest %s --cleanup-drop --targets %s",
 		shellQuote(destBinary), shellQuote(destStr), shellQuote(targetsJSON))
 	if sslCert != "" {
@@ -1306,6 +1310,16 @@ func runRemoteCleanupDrop(ctx context.Context, sshHost, destBinary, destStr, ssl
 		remote += " --ssl-ca " + shellQuote(sslCA)
 	}
 	remote += " --ssl-min-tls " + shellQuote(minTLS)
+	// 2E-2: let the agent mark this operation's gpstream_units rows dropped
+	// (a re-run must not adopt a dropped operation's terminal rows). Scoping
+	// on job_id AND operation_id is safe against plan-hash collisions between
+	// operations.
+	if jobID != "" {
+		remote += " --job-id " + shellQuote(jobID)
+	}
+	if operationID != "" {
+		remote += " --operation-id " + shellQuote(operationID)
+	}
 	out, err := agent.RunRemoteOutput(ctx, sshHost, remote)
 	if err != nil {
 		return nil, err

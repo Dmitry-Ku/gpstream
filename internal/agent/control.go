@@ -229,6 +229,11 @@ type PlanReq struct {
 	// destination with this DSN (it is parsed for host:port + database name
 	// only; the destination catalog reads ride the peer channel).
 	Config json.RawMessage `json:"config"`
+	// OperationID (2E-2) is the run's operation id; the source agent scopes the
+	// already-copied (gpstream_units) query on it so a plan-hash shared by
+	// several operations is never cross-adopted. Empty = the query degrades to
+	// the job_id-only scope (a pre-2E-2 / legacy destination).
+	OperationID string `json:"operation_id,omitempty"`
 	// Timeout bounds plan formation (seconds; the run's --timeout). 0 = the
 	// config's default.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
@@ -416,20 +421,21 @@ type JournalReq struct {
 	ReqID  uint64 `json:"req_id,omitempty"`
 	Action string `json:"action"`
 	// set-state: the unit row to upsert into gpstream_units.
-	JobID     string `json:"job_id,omitempty"`
-	UnitID    int64  `json:"unit_id,omitempty"`
-	DB        string `json:"db,omitempty"`
-	Schema    string `json:"schema,omitempty"`
-	Table     string `json:"table,omitempty"`
-	Part      string `json:"part,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	State     string `json:"state,omitempty"`
-	Checksum  string `json:"checksum,omitempty"`
-	RowCount  int64  `json:"row_count,omitempty"`
-	Bytes     int64  `json:"byte_count,omitempty"`
-	Attempts  int    `json:"attempts,omitempty"`
-	Epoch     int64  `json:"epoch,omitempty"`
-	IndexDone bool   `json:"index_done,omitempty"`
+	JobID       string `json:"job_id,omitempty"`
+	UnitID      int64  `json:"unit_id,omitempty"`
+	DB          string `json:"db,omitempty"`
+	Schema      string `json:"schema,omitempty"`
+	Table       string `json:"table,omitempty"`
+	Part        string `json:"part,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	State       string `json:"state,omitempty"`
+	Checksum    string `json:"checksum,omitempty"`
+	RowCount    int64  `json:"row_count,omitempty"`
+	Bytes       int64  `json:"byte_count,omitempty"`
+	Attempts    int    `json:"attempts,omitempty"`
+	Epoch       int64  `json:"epoch,omitempty"`
+	IndexDone   bool   `json:"index_done,omitempty"`
+	OperationID string `json:"operation_id,omitempty"`
 	// save-meta: the job metadata to upsert into gpstream_jobs.
 	SnapEpoch int64  `json:"snap_epoch,omitempty"`
 	SnapID    string `json:"snap_id,omitempty"`

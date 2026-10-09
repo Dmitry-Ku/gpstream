@@ -22,19 +22,20 @@ import (
 // It mirrors the manifest.Unit fields the gpstream_units schema stores (the
 // controller's Unit carries more: the plan/layout fields are not journaled).
 type Unit struct {
-	JobID    string
-	UnitID   int64
-	DB       string // source DB (the journal keys by source names)
-	Schema   string // source schema
-	Table    string // source table
-	Part     string // partition leaf ("" for a plain table)
-	Kind     string // "table"
-	State    string // "pending"|"copying"|"swapped"|"failed"
-	Checksum string // "<rows>:<hex>" content digest (the destination's, on the data path)
-	RowCount int64
-	Bytes    int64
-	Attempts int
-	Epoch    int64
+	JobID       string
+	UnitID      int64
+	DB          string // source DB (the journal keys by source names)
+	Schema      string // source schema
+	Table       string // source table
+	Part        string // partition leaf ("" for a plain table)
+	Kind        string // "table"
+	State       string // "pending"|"copying"|"swapped"|"failed"
+	Checksum    string // "<rows>:<hex>" content digest (the destination's, on the data path)
+	RowCount    int64
+	Bytes       int64
+	Attempts    int
+	Epoch       int64
+	OperationID string // 2E-2: scopes the journal row to the operation that wrote it (see the 2E-2 query + cleanup drop). Empty = legacy row, never matches a scoped query.
 	// IndexDone (FR-17) marks the unit's background index build as finished.
 	// The destination agent writes it true on the row once the controller's
 	// index pool drains cleanly (the journal action) — the column the 10K
@@ -63,6 +64,7 @@ func Init(ctx context.Context, q pg.Querier) error {
 		    byte_count  bigint,
 		    attempts    int,
 		    epoch       bigint,
+		    operation_id text,
 		    index_done  boolean,
 		    updated     timestamptz,
 		    PRIMARY KEY (job_id, unit_id)
@@ -80,6 +82,17 @@ func Init(ctx context.Context, q pg.Querier) error {
 		EXCEPTION WHEN duplicate_column THEN
 			PERFORM 1;
 			END $$`)
+	// 2E-2: the operation_id column scopes rows to the operation that wrote
+	// them. A pre-existing table keeps a journal without it; CREATE TABLE IF
+	// NOT EXISTS never alters, so the backfill is a guarded DO block (PG 9.4
+	// has no ADD COLUMN IF NOT EXISTS). Non-fatal: a failure only degrades
+	// the 2E-2 query to the file mirror (graceful).
+	_, _ = q.Exec(ctx,
+		`DO $$ BEGIN
+			ALTER TABLE gpstream_units ADD COLUMN operation_id text;
+		EXCEPTION WHEN duplicate_column THEN
+			PERFORM 1;
+			END $$`)
 	return nil
 }
 
@@ -89,18 +102,18 @@ func Init(ctx context.Context, q pg.Querier) error {
 func SetState(ctx context.Context, q pg.Querier, u *Unit) error {
 	now := time.Now()
 	// UPDATE args: (job_id, unit_id, state, checksum, row_count, byte_count,
-	// attempts, epoch, index_done, updated).
-	updArgs := []any{u.JobID, u.UnitID, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, now}
-	// INSERT args: 15 columns.
-	insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, now}
+	// attempts, epoch, operation_id, index_done, updated).
+	updArgs := []any{u.JobID, u.UnitID, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.OperationID, u.IndexDone, now}
+	// INSERT args: 16 columns.
+	insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, u.State, u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.OperationID, u.IndexDone, now}
 	return pgUpsert(ctx, q,
 		`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
 		[]any{u.JobID, u.UnitID},
 		updArgs,
 		insArgs,
-		`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, index_done = $9, updated = $10 WHERE job_id = $1 AND unit_id = $2`,
-		`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, index_done, updated)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`)
+		`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, operation_id = $9, index_done = $10, updated = $11 WHERE job_id = $1 AND unit_id = $2`,
+		`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, operation_id, index_done, updated)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`)
 }
 
 // SetIndexDone (FR-17) marks the unit's background index build as finished on the
@@ -109,10 +122,19 @@ func SetState(ctx context.Context, q pg.Querier, u *Unit) error {
 // controller delegates this single-column update to it. It is a targeted
 // UPDATE (no full upsert): the serve-time states (swapped + checksum + row
 // count) are left untouched. A no-op if the row does not exist yet.
-func SetIndexDone(ctx context.Context, q pg.Querier, jobID string, unitID int64) error {
+func SetIndexDone(ctx context.Context, q pg.Querier, jobID string, unitID int64, operationID string) error {
+	// 2E-2: scope the index_done update on the operation too (the row's
+	// operation_id). An empty operationID (a legacy row) degrades to the
+	// job_id-only scope.
+	if operationID == "" {
+		_, err := q.Exec(ctx,
+			`UPDATE gpstream_units SET index_done = true WHERE job_id = $1 AND unit_id = $2`,
+			jobID, unitID)
+		return err
+	}
 	_, err := q.Exec(ctx,
-		`UPDATE gpstream_units SET index_done = true WHERE job_id = $1 AND unit_id = $2`,
-		jobID, unitID)
+		`UPDATE gpstream_units SET index_done = true WHERE job_id = $1 AND unit_id = $2 AND operation_id = $3`,
+		jobID, unitID, operationID)
 	return err
 }
 

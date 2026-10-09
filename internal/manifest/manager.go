@@ -523,21 +523,22 @@ func (a *agentJournalSink) SaveMeta(ctx context.Context, jobID string, m *JobMet
 
 func (a *agentJournalSink) SetState(ctx context.Context, u *Unit) error {
 	resp, err := a.runner.Journal(ctx, agent.JournalReq{
-		Action:    "set-state",
-		JobID:     u.JobID,
-		UnitID:    u.UnitID,
-		DB:        u.DB,
-		Schema:    u.Schema,
-		Table:     u.Table,
-		Part:      u.Part,
-		Kind:      u.Kind,
-		State:     string(u.State),
-		Checksum:  u.Checksum,
-		RowCount:  u.RowCount,
-		Bytes:     u.Bytes,
-		Attempts:  u.Attempts,
-		Epoch:     u.Epoch,
-		IndexDone: u.IndexDone,
+		Action:      "set-state",
+		JobID:       u.JobID,
+		UnitID:      u.UnitID,
+		DB:          u.DB,
+		Schema:      u.Schema,
+		Table:       u.Table,
+		Part:        u.Part,
+		Kind:        u.Kind,
+		State:       string(u.State),
+		Checksum:    u.Checksum,
+		RowCount:    u.RowCount,
+		Bytes:       u.Bytes,
+		Attempts:    u.Attempts,
+		Epoch:       u.Epoch,
+		IndexDone:   u.IndexDone,
+		OperationID: u.OperationID,
 	})
 	if err != nil {
 		return err
@@ -666,16 +667,17 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	units := make([]*Unit, 0, len(p.Units))
 	for i, t := range p.Units {
 		unit := &Unit{
-			JobID:     jobID(p),
-			UnitID:    int64(i + 1),
-			DB:        t.DB,
-			Schema:    t.Schema,
-			Table:     t.Name,
-			DstSchema: t.DstSchema,
-			DstName:   t.DstName,
-			Kind:      "table",
-			Bytes:     t.Bytes,
-			Conflict:  t.HasConflict,
+			JobID:       jobID(p),
+			UnitID:      int64(i + 1),
+			OperationID: m.cfg.OperationID,
+			DB:          t.DB,
+			Schema:      t.Schema,
+			Table:       t.Name,
+			DstSchema:   t.DstSchema,
+			DstName:     t.DstName,
+			Kind:        "table",
+			Bytes:       t.Bytes,
+			Conflict:    t.HasConflict,
 			// Fix 1: the partition spec (reproduced on the destination) and
 			// the planner's guard (a non-empty guard fails the unit early).
 			Partition:      t.Partition,
@@ -1810,13 +1812,14 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 		// record for this COORDINATOR unit's gpstream_units row (it copies,
 		// verifies and swaps it) — the journal key it writes the row under.
 		Journal: agent.JournalRef{
-			JobID:  u.JobID,
-			UnitID: u.UnitID,
-			DB:     t.DB,
-			Schema: t.Schema,
-			Table:  t.Name,
-			Kind:   "table",
-			Epoch:  m.epoch,
+			JobID:       u.JobID,
+			UnitID:      u.UnitID,
+			DB:          t.DB,
+			Schema:      t.Schema,
+			Table:       t.Name,
+			Kind:        "table",
+			Epoch:       m.epoch,
+			OperationID: m.cfg.OperationID,
 		},
 	})
 }
@@ -2120,13 +2123,14 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			// MESH unit (architecture 08.10): it carries the journal key
 			// (the controller's string job id + int64 unit id) + the source
 			// names + the run's snapshot epoch.
-			JournalJobID:  u.JobID,
-			JournalUnitID: u.UnitID,
-			JournalDB:     t.DB,
-			JournalSchema: t.Schema,
-			JournalTable:  t.Name,
-			JournalKind:   "table",
-			Epoch:         m.epoch,
+			JournalJobID:       u.JobID,
+			JournalUnitID:      u.UnitID,
+			JournalOperationID: m.cfg.OperationID,
+			JournalDB:          t.DB,
+			JournalSchema:      t.Schema,
+			JournalTable:       t.Name,
+			JournalKind:        "table",
+			Epoch:              m.epoch,
 		},
 		D: D,
 	}
@@ -2598,7 +2602,7 @@ func (m *Manager) markIndexDone(ctx context.Context, u *Unit) {
 	if u.Mesh || u.DestJournal {
 		_, _ = m.twoAgent.DDL(ctx, agent.DDReq{
 			Action:  "set-index-done",
-			Journal: agent.JournalRef{JobID: u.JobID, UnitID: u.UnitID},
+			Journal: agent.JournalRef{JobID: u.JobID, UnitID: u.UnitID, OperationID: m.cfg.OperationID},
 		})
 	}
 }

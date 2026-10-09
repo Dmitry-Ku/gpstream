@@ -49,9 +49,16 @@ const (
 type Unit struct {
 	JobID  string `json:"job_id"`
 	UnitID int64  `json:"unit_id"`
-	DB     string `json:"db"`
-	Schema string `json:"schema"` // SOURCE schema (read from the source cluster)
-	Table  string `json:"table"`  // SOURCE table  (read from the source cluster)
+	// OperationID (2E-2) is the operation this unit belongs to (the v4
+	// operation-id). It scopes the gpstream_units journal row: the 2E-2
+	// already-copied query and the cleanup --mode drop both filter on it, so a
+	// plan-hash (job_id) shared by several operations — or a stale row left by
+	// a dropped operation — is never adopted. Empty = legacy (never matches a
+	// scoped query; the file mirror is the fallback).
+	OperationID string `json:"operation_id,omitempty"`
+	DB          string `json:"db"`
+	Schema      string `json:"schema"` // SOURCE schema (read from the source cluster)
+	Table       string `json:"table"`  // SOURCE table  (read from the source cluster)
 	// DstSchema/DstName are the destination names after rename (FR-11/§4.10);
 	// they equal Schema/Table when no rename applies. The copy writes to these.
 	DstSchema string `json:"dst_schema,omitempty"`
@@ -364,6 +371,7 @@ func (j *Journal) Init(ctx context.Context) error {
 		    byte_count  bigint,
 		    attempts    int,
 		    epoch       bigint,
+		    operation_id text,
 		    index_done  boolean,
 		    updated     timestamptz,
 		    PRIMARY KEY (job_id, unit_id)
@@ -382,6 +390,18 @@ func (j *Journal) Init(ctx context.Context) error {
 	_, _ = j.q.Exec(ctx,
 		`DO $$ BEGIN
 			ALTER TABLE gpstream_units ADD COLUMN index_done boolean;
+		EXCEPTION WHEN duplicate_column THEN
+			PERFORM 1;
+			END $$`)
+	// 2E-2: the operation_id column scopes rows to the operation that wrote
+	// them (the 2E-2 already-copied query + cleanup --mode drop). A
+	// pre-existing table keeps a journal without it; CREATE TABLE IF NOT
+	// EXISTS never alters, so the backfill is a guarded DO block (PG 9.4 has
+	// no ADD COLUMN IF NOT EXISTS). Non-fatal: a failure only degrades the
+	// 2E-2 query to the file mirror (graceful).
+	_, _ = j.q.Exec(ctx,
+		`DO $$ BEGIN
+			ALTER TABLE gpstream_units ADD COLUMN operation_id text;
 		EXCEPTION WHEN duplicate_column THEN
 			PERFORM 1;
 			END $$`)
@@ -428,20 +448,20 @@ func (j *Journal) SetState(u *Unit) error {
 		// two-agent path since 2B-6) is the destination agent's (the writer of
 		// record); the controller records only the file mirror for it.
 		// UPDATE args: (job_id, unit_id, state, checksum, row_count,
-		// byte_count, attempts, epoch, index_done, updated).
-		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, u.Updated}
-		// INSERT args: 15 columns (job_id, unit_id, db, schema, table, part,
+		// byte_count, attempts, epoch, operation_id, index_done, updated).
+		updArgs := []any{u.JobID, u.UnitID, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.OperationID, u.IndexDone, u.Updated}
+		// INSERT args: 16 columns (job_id, unit_id, db, schema, table, part,
 		// kind, state, checksum, row_count, byte_count, attempts, epoch,
-		// index_done, updated).
-		insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.IndexDone, u.Updated}
+		// operation_id, index_done, updated).
+		insArgs := []any{u.JobID, u.UnitID, u.DB, u.Schema, u.Table, u.Part, u.Kind, string(u.State), u.Checksum, u.RowCount, u.Bytes, u.Attempts, u.Epoch, u.OperationID, u.IndexDone, u.Updated}
 		if err := pgUpsert(context.Background(), j.q,
 			`SELECT 1 FROM gpstream_units WHERE job_id = $1 AND unit_id = $2`,
 			[]any{u.JobID, u.UnitID},
 			updArgs,
 			insArgs,
-			`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, index_done = $9, updated = $10 WHERE job_id = $1 AND unit_id = $2`,
-			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, index_done, updated)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`); err != nil {
+			`UPDATE gpstream_units SET state = $3, checksum = $4, row_count = $5, byte_count = $6, attempts = $7, epoch = $8, operation_id = $9, index_done = $10, updated = $11 WHERE job_id = $1 AND unit_id = $2`,
+			`INSERT INTO gpstream_units (job_id, unit_id, "db", "schema", "table", "part", kind, state, checksum, row_count, byte_count, attempts, epoch, operation_id, index_done, updated)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`); err != nil {
 			j.noteLine("journal: gpstream_units write failed (mirror remains the resume source): " + err.Error())
 		}
 	}

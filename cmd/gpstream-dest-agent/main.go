@@ -148,6 +148,11 @@ func main() {
 	// cleanupdrop.go).
 	cleanupDrop := flag.Bool("cleanup-drop", false, "one-shot mode: drop the --targets objects (JSON array) on this agent's destination coordinator and print a JSON result (the controller's `cleanup --mode drop` driver)")
 	cleanupTargets := flag.String("targets", "[]", "one-shot drop mode: the JSON array of drop targets (schema/name/kind)")
+	// 2E-2: the operation to mark dropped in gpstream_units after the drop
+	// (both must be set for the marking; empty = the rows are left as-is,
+	// the pre-2E-2 behaviour).
+	cleanupJobID := flag.String("job-id", "", "one-shot drop mode: the operation's job id (the plan hash) to scope the journal-row marking")
+	cleanupOpID := flag.String("operation-id", "", "one-shot drop mode: the operation id to scope the journal-row marking")
 	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -168,7 +173,7 @@ func main() {
 		// One-shot drop (2D-B): connect to the local coordinator, drop the
 		// targets, print the JSON result, exit 0. No listeners, no signal
 		// handling, no mini launch — a single short-lived DB op.
-		os.Exit(runCleanupDrop(*dest, *sslCert, *sslKey, *sslCA, *sslMinTLS, *cleanupTargets))
+		os.Exit(runCleanupDrop(*dest, *sslCert, *sslKey, *sslCA, *sslMinTLS, *cleanupTargets, *cleanupJobID, *cleanupOpID))
 	}
 
 	// SIGINT/SIGTERM cancels the serve so a controller-side stop unwinds the

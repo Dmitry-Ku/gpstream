@@ -474,6 +474,10 @@ func (r *processTwoAgentRunner) Plan(ctx context.Context) (*plan.Plan, error) {
 		SegSSH:         r.sshUserPrefix(r.cfg.SourceAgentSSH),
 		Config:         cfgBytes,
 		TimeoutSeconds: int(r.cfg.Timeout / time.Second),
+		// 2E-2: the operation id — the source agent scopes its already-copied
+		// (gpstream_units) query on it so a plan-hash shared by several
+		// operations is never cross-adopted.
+		OperationID: r.cfg.OperationID,
 	}
 	resp, err := r.ctrl.Plan(req)
 	if err != nil {

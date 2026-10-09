@@ -142,13 +142,14 @@ type MiniLaunch struct {
 	// mesh-unit journal; the controller no longer writes the DB journal for
 	// mesh units — only the file mirror). JournalJobID/JournalUnitID are the
 	// journal primary key (the controller's string job id + int64 unit id).
-	JournalJobID  string `json:"journal_job_id,omitempty"`
-	JournalUnitID int64  `json:"journal_unit_id,omitempty"`
-	JournalDB     string `json:"journal_db,omitempty"`
-	JournalSchema string `json:"journal_schema,omitempty"`
-	JournalTable  string `json:"journal_table,omitempty"`
-	JournalKind   string `json:"journal_kind,omitempty"`
-	Epoch         int64  `json:"epoch,omitempty"`
+	JournalJobID       string `json:"journal_job_id,omitempty"`
+	JournalUnitID      int64  `json:"journal_unit_id,omitempty"`
+	JournalOperationID string `json:"journal_operation_id,omitempty"` // 2E-2: the operation the mesh-unit journal row belongs to
+	JournalDB          string `json:"journal_db,omitempty"`
+	JournalSchema      string `json:"journal_schema,omitempty"`
+	JournalTable       string `json:"journal_table,omitempty"`
+	JournalKind        string `json:"journal_kind,omitempty"`
+	Epoch              int64  `json:"epoch,omitempty"`
 }
 
 type DestServeReq struct {
@@ -184,13 +185,14 @@ type DestServeReq struct {
 // int64 unit id) plus the source names the row keys by and the run's
 // snapshot epoch.
 type JournalRef struct {
-	JobID  string `json:"job_id,omitempty"`
-	UnitID int64  `json:"unit_id,omitempty"`
-	DB     string `json:"db,omitempty"`
-	Schema string `json:"schema,omitempty"`
-	Table  string `json:"table,omitempty"`
-	Kind   string `json:"kind,omitempty"`
-	Epoch  int64  `json:"epoch,omitempty"`
+	JobID       string `json:"job_id,omitempty"`
+	OperationID string `json:"operation_id,omitempty"` // 2E-2: the operation the journal row belongs to (scoped 2E-2 query + cleanup drop)
+	UnitID      int64  `json:"unit_id,omitempty"`
+	DB          string `json:"db,omitempty"`
+	Schema      string `json:"schema,omitempty"`
+	Table       string `json:"table,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Epoch       int64  `json:"epoch,omitempty"`
 }
 
 // DestAck is the agent's immediate reply to "serve-unit" (the serve is
@@ -1097,16 +1099,17 @@ func (s *DestServer) journalUnitRef(ctx context.Context, ref JournalRef, state, 
 		return fmt.Errorf("serve: init gpstream_units: %w", err)
 	}
 	return journaldb.SetState(jctx, q, &journaldb.Unit{
-		JobID:    ref.JobID,
-		UnitID:   ref.UnitID,
-		DB:       ref.DB,
-		Schema:   ref.Schema,
-		Table:    ref.Table,
-		Kind:     ref.Kind,
-		State:    state,
-		Checksum: checksum,
-		RowCount: rows,
-		Epoch:    ref.Epoch,
+		JobID:       ref.JobID,
+		UnitID:      ref.UnitID,
+		OperationID: ref.OperationID,
+		DB:          ref.DB,
+		Schema:      ref.Schema,
+		Table:       ref.Table,
+		Kind:        ref.Kind,
+		State:       state,
+		Checksum:    checksum,
+		RowCount:    rows,
+		Epoch:       ref.Epoch,
 	})
 }
 
@@ -1125,16 +1128,17 @@ func (s *DestServer) journalMiniUnit(ctx context.Context, ml *MiniLaunch, state,
 		return fmt.Errorf("kind=mini: init gpstream_units: %w", err)
 	}
 	return journaldb.SetState(jctx, q, &journaldb.Unit{
-		JobID:    ml.JournalJobID,
-		UnitID:   ml.JournalUnitID,
-		DB:       ml.JournalDB,
-		Schema:   ml.JournalSchema,
-		Table:    ml.JournalTable,
-		Kind:     ml.JournalKind,
-		State:    state,
-		Checksum: checksum,
-		RowCount: rows,
-		Epoch:    ml.Epoch,
+		JobID:       ml.JournalJobID,
+		UnitID:      ml.JournalUnitID,
+		OperationID: ml.JournalOperationID,
+		DB:          ml.JournalDB,
+		Schema:      ml.JournalSchema,
+		Table:       ml.JournalTable,
+		Kind:        ml.JournalKind,
+		State:       state,
+		Checksum:    checksum,
+		RowCount:    rows,
+		Epoch:       ml.Epoch,
 	})
 }
 
@@ -1414,13 +1418,14 @@ func (s *DestServer) handleJournal(conn net.Conn, jreq *JournalReq) {
 		case "set-state":
 			return journaldb.SetState(context.Background(), q, &journaldb.Unit{
 				JobID: jreq.JobID, UnitID: jreq.UnitID, DB: jreq.DB,
-				Schema: jreq.Schema, Table: jreq.Table, Part: jreq.Part,
+				OperationID: jreq.OperationID,
+				Schema:      jreq.Schema, Table: jreq.Table, Part: jreq.Part,
 				Kind: jreq.Kind, State: jreq.State, Checksum: jreq.Checksum,
 				RowCount: jreq.RowCount, Bytes: jreq.Bytes, Attempts: jreq.Attempts,
 				Epoch: jreq.Epoch, IndexDone: jreq.IndexDone,
 			})
 		case "set-index-done":
-			return journaldb.SetIndexDone(context.Background(), q, jreq.JobID, jreq.UnitID)
+			return journaldb.SetIndexDone(context.Background(), q, jreq.JobID, jreq.UnitID, jreq.OperationID)
 		default:
 			return fmt.Errorf("journal: unknown action %q", jreq.Action)
 		}
@@ -1559,7 +1564,7 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 		// states (swapped + checksum + row count) are left untouched. A
 		// no-op if the row does not exist yet (the serve did not journal it).
 		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
-			return journaldb.SetIndexDone(context.Background(), q, dd.Journal.JobID, dd.Journal.UnitID)
+			return journaldb.SetIndexDone(context.Background(), q, dd.Journal.JobID, dd.Journal.UnitID, dd.Journal.OperationID)
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}

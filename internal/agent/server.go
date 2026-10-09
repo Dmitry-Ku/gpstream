@@ -846,7 +846,7 @@ func (s *SourceServer) BuildPlan(ctx context.Context, timeout time.Duration, cfg
 	// source->dest peer channel (no controller). The destination is the
 	// writer of record for gpstream_units, so its terminal rows are the
 	// authoritative "already copied" set for the resume keep decision.
-	stampCopiedStates(ctx, dst, p)
+	stampCopiedStates(ctx, dst, p, cfg.OperationID)
 	return p, nil
 }
 
@@ -872,13 +872,31 @@ func cellString(v any) string {
 // controller keeps (does not re-copy) already-verified tables on resume. A
 // missing gpstream_units table (a fresh destination) or a job_id with no
 // terminal rows (a fresh operation) is a no-op (every table is a to-copy).
-func stampCopiedStates(ctx context.Context, dst pg.Querier, p *plan.Plan) {
+func stampCopiedStates(ctx context.Context, dst pg.Querier, p *plan.Plan, operationID string) {
 	if dst == nil || p == nil || p.Hash == "" || len(p.Units) == 0 {
 		return
 	}
-	rows, err := dst.Query(ctx,
-		`SELECT "db", "schema", "table", state FROM gpstream_units WHERE job_id = $1 AND state IN ('swapped', 'completed')`,
-		p.Hash)
+	// 2E-2 (operation-scoped journal): scope the already-copied query on the
+	// OPERATION, not just the plan-hash (job_id). Several operations may share
+	// one plan-hash (the same table set), and a cleanup --mode drop leaves the
+	// dropped operation's terminal rows behind; without the operation_id scope
+	// a fresh run would adopt another operation's 'swapped' rows (or a stale
+	// row whose table was already dropped) and skip copying. An empty
+	// operationID (a legacy / pre-2E-2 destination, or a run without an
+	// operation id) degrades to the job_id-only scope.
+	var (
+		rows [][]any
+		err  error
+	)
+	if operationID == "" {
+		rows, err = dst.Query(ctx,
+			`SELECT "db", "schema", "table", state FROM gpstream_units WHERE job_id = $1 AND state IN ('swapped', 'completed')`,
+			p.Hash)
+	} else {
+		rows, err = dst.Query(ctx,
+			`SELECT "db", "schema", "table", state FROM gpstream_units WHERE job_id = $1 AND operation_id = $2 AND state IN ('swapped', 'completed')`,
+			p.Hash, operationID)
+	}
 	if err != nil {
 		return // gpstream_units absent (fresh destination) / query failed: nothing copied yet
 	}
