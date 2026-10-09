@@ -43,6 +43,7 @@ import (
 	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/journaldb"
 	"github.com/gpstream/gpstream/internal/portalloc"
+	"github.com/gpstream/gpstream/internal/statusfile"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -258,6 +259,9 @@ type DestServerOptions struct {
 	// DataListen / ControlListen are the bind addresses ("host:0" = pick a
 	// free port; the real addresses are reported in the hello).
 	DataListen, ControlListen string
+	// StatusFile (2D-C) is the path of the live status JSON this agent
+	// heartbeats on its OWN host (empty = disabled).
+	StatusFile string
 	// DestConn is the destination pg conn (coordinator: staging DDL, the
 	// merge COPY, the swap). The per-segment DSNs ride the launch payloads.
 	DestConn string
@@ -368,6 +372,13 @@ type DestServer struct {
 	// runCtx: the base context every serve is bounded by (RunCtx when set,
 	// else context.Background() — the process-runner behavior).
 	runCtx context.Context
+	// 2D-C: live status heartbeat (the agent writes its own status file on
+	// its host; the controller's `status` reads it).
+	statusWriter *statusfile.Writer
+	unitsServed  atomic.Int64
+	rowsCopied   atomic.Int64
+	released     atomic.Bool
+	startedAt    time.Time
 	// persConns (P1d): the live persistent coordinator connections (one per
 	// channel the source dialed; the source dials Workers of them). Each
 	// runs its own serve loop (servePersistentChannel); a loop removes its
@@ -619,6 +630,23 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 		s.peerL = pL
 		go s.acceptPeer(pL)
 	}
+	// 2D-C: start the live status heartbeat (no-op when no StatusFile).
+	s.startedAt = time.Now()
+	s.statusWriter = statusfile.NewWriter(o.StatusFile, 0, func() statusfile.Status {
+		st := "serving"
+		if s.released.Load() {
+			st = "released"
+		}
+		return statusfile.Status{
+			Side:      "dest",
+			State:     st,
+			Units:     s.unitsServed.Load(),
+			Rows:      s.rowsCopied.Load(),
+			Version:   version.String(),
+			StartedAt: s.startedAt,
+		}
+	})
+	s.statusWriter.Start()
 	go s.serveControl(s.ctrlL) // the TLS-wrapped listener, when control TLS is on
 	return s, nil
 }
@@ -1133,6 +1161,10 @@ func (s *DestServer) swapMiniFinal(ctx context.Context, schema, staging, final s
 
 func (s *DestServer) Close() {
 	s.stopOnce.Do(func() {
+		// 2D-C: stop the live status heartbeat.
+		if s.statusWriter != nil {
+			s.statusWriter.Stop()
+		}
 		// P3 production-dispatch: stop the supervisor first (send mini-done
 		// to each mini, close the report listener) so the minis exit cleanly
 		// before the agent's own teardown.
@@ -1298,6 +1330,9 @@ func (s *DestServer) serveControl(l net.Listener) {
 				if done.ReqID == 0 {
 					done.ReqID = r.ReqID
 				}
+				// 2D-C: the live status heartbeat reflects the served units/rows.
+				s.unitsServed.Add(1)
+				s.rowsCopied.Add(done.Rows)
 				_ = s.sendLine(conn, done)
 			}(req)
 		case "cancel-unit":
@@ -1338,6 +1373,8 @@ func (s *DestServer) serveControl(l net.Listener) {
 			if s.supervisor != nil {
 				s.supervisor.Stop()
 			}
+			// 2D-C: the status file reports the released state.
+			s.released.Store(true)
 			_ = s.sendLine(conn, DestReleased{Op: "released", Ok: true, ReqID: req.ReqID})
 			return
 		default:

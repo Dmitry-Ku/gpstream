@@ -93,6 +93,7 @@ func main() {
 	serve := flag.Bool("serve", false, "long-lived mode: serve units over the control protocol (one data + one control listener for the run)")
 	dataListen := flag.String("data-listen", "0.0.0.0:0", "long-lived mode: data listener address host:port (0 = pick a free port; the real address is reported in the hello)")
 	ctrlListen := flag.String("control-listen", "0.0.0.0:0", "long-lived mode: control listener address host:port (0 = pick a free port)")
+	statusFile := flag.String("status-file", "", "2D-C: live status JSON this agent heartbeats on its own host (long-lived modes; empty = off)")
 	portRange := flag.String("port-range", "", "restrict auto-picked (port 0) listener ports to LO-HI (strict firewall); empty = no range (kernel picks)")
 	// P1c: the dedicated persistent-coordinator data listener (the source
 	// agent dials it ONCE per run; every coordinator unit rides the same
@@ -289,6 +290,7 @@ func main() {
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
 			DataListen:       "", // supervisor mode: the shared data listener is off
 			ControlListen:    *ctrlListen,
+			StatusFile:       *statusFile, // 2D-C: live status heartbeat file (the agent's own host)
 			PersistListen:    persist,
 			PortAlloc:        portAlloc,
 			DestConn:         *dest,
@@ -385,6 +387,7 @@ func main() {
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
 			DataListen:    *dataListen,
 			ControlListen: *ctrlListen,
+			StatusFile:    *statusFile, // 2D-C: live status heartbeat file (the agent's own host)
 			PersistListen: *persistListen,
 			// 1F/Phase 2: the peer listener (the source agent's persistent
 			// source->dest channel: the 1F version exchange + the read-only

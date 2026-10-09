@@ -27,6 +27,7 @@ import (
 	"github.com/gpstream/gpstream/internal/manifest/resume"
 	"github.com/gpstream/gpstream/internal/monitor"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/statusfile"
 	"github.com/gpstream/gpstream/internal/transfer/dest"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
@@ -963,6 +964,12 @@ func cmdStatus(args []string) error {
 		}
 		fmt.Printf("snap-epoch:   %d (copy-mode=%s)\n", meta.SnapEpoch, cm)
 	}
+	// 2D-C: live agents (the architecture 08.10 status = file mirror + the
+	// live agents' own status files, read over the same SSH the controller
+	// uses to launch them — NO database connection). Rendered BEFORE the
+	// early return: the agents are up before the first unit state is
+	// recorded, so the live section must not depend on the journal.
+	printLiveAgents(stateDir, opID)
 	if len(units) == 0 {
 		fmt.Println("units:        none recorded")
 		return nil
@@ -1014,6 +1021,72 @@ func cmdStatus(args []string) error {
 	}
 	fmt.Printf("%d/%d units terminal\n", terminal, len(units))
 	return nil
+}
+
+// printLiveAgents (2D-C) reads the run's agents.json registry and each
+// agent's live status file (locally, or over the same SSH the controller
+// uses to launch the agents) and renders the agents' live state. A missing
+// registry (the run predates 2D-C, or it is a dry-run) = the section is
+// skipped; a stale heartbeat (the agent died) is shown with its age.
+func printLiveAgents(stateDir, opID string) {
+	path := filepath.Join(stateDir, opID, "agents.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return // no registry: nothing to poll (pre-2D-C run / dry-run)
+	}
+	var reg struct {
+		Source struct {
+			SSHHost    string `json:"ssh_host"`
+			StatusFile string `json:"status_file"`
+		} `json:"source"`
+		Dest struct {
+			SSHHost    string `json:"ssh_host"`
+			StatusFile string `json:"status_file"`
+		} `json:"dest"`
+	}
+	if err := json.Unmarshal(raw, &reg); err != nil {
+		return
+	}
+	print := func(side, sshHost, file string) {
+		if file == "" {
+			return
+		}
+		var st *statusfile.Status
+		if sshHost == "" {
+			st, _ = statusfile.ReadLocal(file)
+		} else {
+			// The agent wrote the file on its OWN host: fetch it over the
+			// same SSH the controller launches the agents with.
+			out, rerr := agent.RunRemoteOutput(context.Background(), sshHost,
+				"cat "+agent.ShellQuote(file))
+			if rerr != nil {
+				fmt.Printf("agent %s:      unreachable (%s)\n", side, rerr)
+				return
+			}
+			st, _ = statusfile.Parse([]byte(out))
+		}
+		if st == nil {
+			fmt.Printf("agent %s:      no status file (%s)\n", side, file)
+			return
+		}
+		ag := statusfile.Age(st, time.Now())
+		alive := "alive"
+		if ag > 30*time.Second {
+			alive = "stale (last heartbeat " + ag.Round(time.Second).String() + " ago)"
+		}
+		fmt.Printf("agent %s:      %s  %s  units=%d rows=%d  %s  (%s)\n",
+			side, st.State, alive, st.Units, st.Rows, st.Version, sshHostOrLocal(sshHost))
+	}
+	fmt.Println("live agents:  (2D-C status files)")
+	print("source", reg.Source.SSHHost, reg.Source.StatusFile)
+	print("dest", reg.Dest.SSHHost, reg.Dest.StatusFile)
+}
+
+func sshHostOrLocal(ssh string) string {
+	if ssh == "" {
+		return "local"
+	}
+	return ssh
 }
 
 // cmdCleanup removes the operation's journal and staging state (v4 §8):

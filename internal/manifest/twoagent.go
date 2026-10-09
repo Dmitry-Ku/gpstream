@@ -446,6 +446,9 @@ func (r *processTwoAgentRunner) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	// 2D-C: persist the agent registry (which hosts hold the live status
+	// files) so a later `status` knows where to read them.
+	r.persistAgentRegistry()
 	return nil
 }
 
@@ -524,6 +527,10 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		// sizes its source pool accordingly and validates the pin spread.
 		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--max-snapshot-delta", strconv.FormatInt(int64(r.cfg.MaxSnapshotDelta.Seconds()), 10),
+	}
+	// 2D-C: the live status heartbeat file (the agent's own host).
+	if sf := r.statusFileFor("source"); sf != "" {
+		srcArgs = append(srcArgs, "--status-file", sf)
 	}
 	if r.cfg.SSLCert != "" {
 		srcArgs = append(srcArgs, "--ssl-cert", r.cfg.SSLCert, "--ssl-key", r.cfg.SSLKey)
@@ -679,6 +686,10 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	}
 	if r.cfg.SegTLSCA != "" {
 		dargs = append(dargs, "--data-tls-ca", r.cfg.SegTLSCA)
+	}
+	// 2D-C: the live status heartbeat file (the agent's own host).
+	if sf := r.statusFileFor("dest"); sf != "" {
+		dargs = append(dargs, "--status-file", sf)
 	}
 	h, err := launch.Ensure(ctx, r.target("gpstream-dest-agent", dargs, destCtrlDial, r.cfg.DestAgentSSH))
 	if err != nil {
@@ -864,6 +875,63 @@ func agentLogPath(base string) string {
 		return p
 	}
 	return filepath.Join(os.TempDir(), base+".log")
+}
+
+// statusFileFor (2D-C) is the agent's live status file path. Each agent
+// heartbeats its own status JSON on its OWN coordinator host at this path
+// (the path is identical on both hosts: <state-dir>/<operation-id>/
+// agent-<side>.json); the controller's `status` reads it back (locally, or
+// over the same SSH it launches the agents) to report the live agents'
+// state. Empty when the operation is unresolvable (dry-run: no operation-id)
+// — the agents then run without the heartbeat (a harmless no-op).
+func (r *processTwoAgentRunner) statusFileFor(side string) string {
+	if r.cfg.StateDir == "" || r.cfg.OperationID == "" {
+		return ""
+	}
+	return filepath.Join(r.cfg.StateDir, r.cfg.OperationID, "agent-"+side+".json")
+}
+
+// agentStatusEntry (2D-C) is one agent's registry record: where the status
+// file lives (the agent's own host) and how the controller reaches it.
+type agentStatusEntry struct {
+	Side       string `json:"side"`
+	SSHHost    string `json:"ssh_host,omitempty"` // "" = local (same host as the controller)
+	StatusFile string `json:"status_file"`
+}
+
+// agentRegistry is the <state-dir>/<operation-id>/agents.json the controller
+// persists after both agents are up (2D-C): it tells a later `status` call
+// which hosts to read the live status files from.
+type agentRegistry struct {
+	Source agentStatusEntry `json:"source"`
+	Dest   agentStatusEntry `json:"dest,omitempty"`
+}
+
+// persistAgentRegistry (2D-C) writes agents.json atomically (tmp + rename).
+// Best-effort: a registry write failure never fails the run (the status file
+// is diagnostic, like runstats.json).
+func (r *processTwoAgentRunner) persistAgentRegistry() {
+	if r.cfg.StateDir == "" || r.cfg.OperationID == "" {
+		return
+	}
+	// The registry keeps the FULL ssh target (user@host:port): the status
+	// read runs RunRemoteOutput, which parses that exact form ("" = local).
+	reg := agentRegistry{
+		Source: agentStatusEntry{Side: "source", SSHHost: r.cfg.SourceAgentSSH, StatusFile: r.statusFileFor("source")},
+	}
+	if r.cfg.Dest != "" {
+		reg.Dest = agentStatusEntry{Side: "dest", SSHHost: r.cfg.DestAgentSSH, StatusFile: r.statusFileFor("dest")}
+	}
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(r.cfg.StateDir, r.cfg.OperationID)
+	tmp := filepath.Join(dir, "agents.json.tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, filepath.Join(dir, "agents.json"))
 }
 
 // stopSource tears down the source agent (used when the dest launch fails).

@@ -14,6 +14,11 @@ import (
 // command locally (a single-host layout where the source host IS the
 // segment). Lives in the agent package (not launch): launch's test imports
 // agent, so agent cannot import launch (import cycle).
+// ShellQuote single-quotes a value for the local /bin/sh or remote ssh
+// shell (the controller's status read: `cat <path>` over SSH). Exported
+// wrapper over quoteRemote (the 2C-3b probe's quoting).
+func ShellQuote(s string) string { return quoteRemote(s) }
+
 func RunRemoteOutput(ctx context.Context, sshHost, remote string) (string, error) {
 	args := []string{
 		"-o", "BatchMode=yes",

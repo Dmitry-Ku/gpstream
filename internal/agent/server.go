@@ -18,11 +18,13 @@ import (
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/statusfile"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 	"github.com/gpstream/gpstream/internal/transfer/source"
+	"github.com/gpstream/gpstream/internal/version"
 )
 
 // SourceServer is the long-lived source agent (ADR-002 remediation, P3). It
@@ -45,10 +47,16 @@ type SourceServer struct {
 	epoch    *pg.Epoch // the snapshot-epoch (Workers>1): N pinned conns, borrow/return per COPY
 	snapMode SnapshotMode
 	snapTx   bool
-	healMu   sync.Mutex
-	ctrlAddr string
-	stop     chan struct{}
-	stopped  chan struct{}
+	// 2D-C: live status heartbeat (the agent writes its own status file on
+	// its host; the controller's `status` reads it).
+	statusWriter *statusfile.Writer
+	unitsServed  atomic.Int64
+	rowsCopied   atomic.Int64
+	startedAt    time.Time
+	healMu       sync.Mutex
+	ctrlAddr     string
+	stop         chan struct{}
+	stopped      chan struct{}
 	// P1c/P1d: the persistent coordinator data channels (one connection per
 	// data worker to the destination's dedicated persistent-coordinator
 	// listener, for the whole run). P1d: N = Workers channels (Workers=1 keeps
@@ -109,6 +117,9 @@ type ServerOptions struct {
 	Snapshot SnapshotMode
 	// Listen is the control socket the controller connects to (host:port).
 	Listen string
+	// StatusFile (2D-C) is the path of the live status JSON this agent
+	// heartbeats on its OWN host (empty = disabled: one-shot / test agents).
+	StatusFile string
 	// Data-plane TLS for the agent<->agent socket (source = client).
 	DataTLSCert, DataTLSKey, DataTLSCA string
 	// ControlTLS for the control socket (this agent = server). CA present =
@@ -214,6 +225,19 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 			s.snapTx = true
 		}
 	}
+	// 2D-C: start the live status heartbeat (no-op when no StatusFile).
+	s.startedAt = time.Now()
+	s.statusWriter = statusfile.NewWriter(s.opts.StatusFile, 0, func() statusfile.Status {
+		return statusfile.Status{
+			Side:      "source",
+			State:     "serving",
+			Units:     s.unitsServed.Load(),
+			Rows:      s.rowsCopied.Load(),
+			Version:   version.String(),
+			StartedAt: s.startedAt,
+		}
+	})
+	s.statusWriter.Start()
 	return s.startControl()
 }
 
@@ -415,6 +439,9 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 		s.heal(ctx) // a failed unit may have aborted the snapshot tx (F-06)
 		return StreamResp{ReqID: reqID, Ok: false, Error: serr.Error()}
 	}
+	// 2D-C: the live status heartbeat reflects the served units/rows.
+	s.unitsServed.Add(1)
+	s.rowsCopied.Add(res.Rows)
 	return StreamResp{ReqID: reqID, Ok: true, Rows: res.Rows, Wire: res.Wire, Logical: res.Logical, Digest: res.Digest}
 }
 
@@ -538,6 +565,9 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 		s.heal(ctx) // a failed dispatch may have aborted the snapshot tx (F-06)
 		return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("COPY ON SEGMENT: %v", err)}
 	}
+	// 2D-C: the on_segment dispatch is one unit too (its rows = the unit).
+	s.unitsServed.Add(1)
+	s.rowsCopied.Add(rows)
 	return OnSegmentResp{ReqID: reqID, Ok: true, Rows: rows}
 }
 
@@ -1312,8 +1342,12 @@ func (s *SourceServer) heal(ctx context.Context) {
 	_ = beginSnapshot(ctx, s.pinned, s.snapMode)
 }
 
-// Close stops the source server (rolling back any open snapshot).
+// Close stops the source server (rolling back any open snapshot) and the
+// live status heartbeat (2D-C).
 func (s *SourceServer) Close() {
+	if s.statusWriter != nil {
+		s.statusWriter.Stop()
+	}
 	s.healMu.Lock()
 	if s.snapTx && s.epoch != nil {
 		s.epoch.Close()

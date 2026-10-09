@@ -78,6 +78,7 @@ func main() {
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
 	// Long-lived (P3) mode: listen for the controller's control protocol.
 	serve := flag.String("serve", "", "control listen address host:port (long-lived source agent mode)")
+	statusFile := flag.String("status-file", "", "2D-C: live status JSON this agent heartbeats on its own host (long-lived mode; empty = off)")
 	// P1d: --workers > 1 = snapshot-epoch (N pinned REPEATABLE READ
 	// connections); --max-snapshot-delta bounds the pin spread (seconds).
 	workers := flag.Int("workers", 1, "parallel data workers (1 = strict, N>1 = snapshot-epoch)")
@@ -138,7 +139,8 @@ func main() {
 			MaxReconnects:    *maxReconnects, // P1c: persistent channel re-dial budget
 			FrameAck:         *frameAck != "off",
 			ReliablePipe:     transfer.NewReliablePipeConfig(*ackTimeout, *maxReconnects, *retransmitMax),
-			Workers:          *workers, // P1d: 1 = strict, N>1 = snapshot-epoch
+			Workers:          *workers,    // P1d: 1 = strict, N>1 = snapshot-epoch
+			StatusFile:       *statusFile, // 2D-C: live status heartbeat file (the agent's own host)
 			MaxSnapshotDelta: time.Duration(*snapDelta * float64(time.Second)),
 		})
 		addr, err := srv.Start(ctx)
