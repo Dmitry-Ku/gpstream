@@ -634,8 +634,13 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// persist listener: coordinator units fall back to the per-unit conn).
 	r.destPersistAddr = client.Hello.Persist
 	// 1F: the mesh peer listener (the source agent dials it once before the
-	// first mesh unit for the version exchange).
-	r.destPeerAddr = client.Hello.Peer
+	// first mesh unit for the version exchange). The hello carries the BOUND
+	// address (a remote agent binds "0.0.0.0" -> the reported address is
+	// "[::]:port", a loopback alias); the SOURCE agent dials it from its own
+	// host, so for a cross-cluster dest the host must be rewritten to the
+	// destination coordinator host (the same host-rewrite as controlListen's
+	// dial address). Same-host (bound loopback) is left untouched.
+	r.destPeerAddr = rewritePeerAddr(r.destPeerAddr, r.cfg.DestAgentSSH)
 	// Mesh mode (P3 production-dispatch, architecture 08.10): the DEST-AGENT
 	// already launched the D mini-agents itself (in its constructor: it read
 	// its own catalog and started the minis, which dial the supervisor's
@@ -722,6 +727,12 @@ func (r *processTwoAgentRunner) prebindLocal() (string, error) {
 // ("user@host[:port]" / "host" / "" -> host or ""). The host decides the
 // transport: local host = subprocess, remote host = SSH.
 func (r *processTwoAgentRunner) agentHost(sshTarget string) string {
+	return bareAgentHost(sshTarget)
+}
+
+// bareAgentHost is the standalone form (used by rewritePeerAddr, which is
+// not a method).
+func bareAgentHost(sshTarget string) string {
 	host := sshTarget
 	if i := strings.LastIndex(host, "@"); i >= 0 {
 		host = host[i+1:]
@@ -730,6 +741,32 @@ func (r *processTwoAgentRunner) agentHost(sshTarget string) string {
 		host = host[:i]
 	}
 	return host
+}
+
+// rewritePeerAddr makes the destination agent's bound peer-listen address
+// dialable FROM the source agent's host. A remote dest agent binds
+// "0.0.0.0:0"; the hello reports the bound address as an any/loopback alias
+// ("[::]:port" / "127.0.0.1:port"), which a cross-cluster source agent would
+// dial as its OWN localhost (connection refused). Rewrite the host to the
+// destination coordinator host (the same host-rewrite controlListen applies
+// to its dial address). A local dest agent (bound loopback, same host) and a
+// non-loopback bound address are returned untouched.
+func rewritePeerAddr(boundPeer, destAgentSSH string) string {
+	if boundPeer == "" {
+		return boundPeer
+	}
+	host, port, err := net.SplitHostPort(boundPeer)
+	if err != nil {
+		return boundPeer
+	}
+	if host != "" && host != "::" && host != "0.0.0.0" && host != "127.0.0.1" {
+		return boundPeer
+	}
+	dh := bareAgentHost(destAgentSSH)
+	if dh == "" || agent.IsLocalHost(dh) {
+		return boundPeer
+	}
+	return net.JoinHostPort(dh, port)
 }
 
 // PeerInfo (1F) is the mesh version-exchange wiring: the destination agent's
