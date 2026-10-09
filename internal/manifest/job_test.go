@@ -53,18 +53,6 @@ func TestJournalSwapRequiresCompleted(t *testing.T) {
 	}
 }
 
-func TestJournalCleanup(t *testing.T) {
-	j := newTestJournal(t)
-	_ = j.SetState(&Unit{JobID: "j1", UnitID: 1, DB: "db", Schema: "s", Table: "t", Kind: "table", State: StateCompleted, Checksum: "a"})
-	_ = j.SetState(&Unit{JobID: "j1", UnitID: 2, DB: "db", Schema: "s", Table: "t2", Kind: "table", State: StateCompleted, Checksum: "b"})
-	if err := j.Cleanup("j1"); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-	if j.Get(1) != nil || j.Get(2) != nil {
-		t.Errorf("cleanup did not remove units")
-	}
-}
-
 func TestJournalMirrorWrites(t *testing.T) {
 	j := newTestJournal(t)
 	_ = j.SetState(&Unit{JobID: "j1", UnitID: 1, DB: "db", Schema: "s", Table: "t", Kind: "table", State: StateCompleted, Checksum: "a"})

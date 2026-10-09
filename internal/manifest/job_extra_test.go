@@ -1,7 +1,6 @@
 package manifest
 
 import (
-	"os"
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -84,20 +83,6 @@ func TestSwapMissingUnit(t *testing.T) {
 
 // TestCleanupRemovesMirrorFile verifies Cleanup truncates the file mirror
 // (covers the os.Remove branch).
-func TestCleanupRemovesMirrorFile(t *testing.T) {
-	j := newTestJournal(t)
-	_ = j.SetState(&Unit{JobID: "j1", UnitID: 1, DB: "db", Schema: "s", Table: "t", Kind: "table", State: StateCompleted, Checksum: "a"})
-	if _, err := os.Stat(j.mirror); err != nil {
-		t.Fatalf("mirror should exist: %v", err)
-	}
-	if err := j.Cleanup("j1"); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-	if _, err := os.Stat(j.mirror); !os.IsNotExist(err) {
-		t.Errorf("mirror should be removed, stat err=%v", err)
-	}
-}
-
 // TestMirrorWriteNoMirror checks a journal with no mirror path skips file
 // writes without error (covers the mirror=="" branch).
 func TestMirrorWriteNoMirror(t *testing.T) {

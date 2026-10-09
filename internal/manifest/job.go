@@ -532,27 +532,6 @@ func (j *Journal) SwapState(id int64) error {
 	return j.SetState(u)
 }
 
-// Cleanup removes all units of a job from the journal (FR-02,
-// `gpstream cleanup`). Destructive; only invoked with --yes.
-func (j *Journal) Cleanup(jobID string) error {
-	j.mu.Lock()
-	for id, u := range j.units {
-		if u.JobID == jobID {
-			delete(j.units, id)
-		}
-	}
-	j.mu.Unlock()
-	if j.q != nil {
-		_, _ = j.q.Exec(context.Background(),
-			`DELETE FROM gpstream_units WHERE job_id = $1`, jobID)
-	}
-	// Truncate the file mirror for this manifest.
-	if j.mirror != "" {
-		_ = os.Remove(j.mirror)
-	}
-	return nil
-}
-
 // Units returns a snapshot of all units (for resume/crash-recovery,
 // FR-06/FR-07).
 func (j *Journal) Units() []*Unit {
