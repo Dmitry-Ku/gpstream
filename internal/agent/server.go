@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/config"
+	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
@@ -346,6 +347,16 @@ func (s *SourceServer) serveControl(l net.Listener) {
 					return
 				}
 				_ = s.sendResp(conn, s.handleCatalog(req))
+			case "dry-run-checks":
+				// 2C-3 (architecture 08.10): the source agent reads its OWN
+				// side's dry-run values on its LOCAL source pool (the controller
+				// holds no direct source connection) and reports them back.
+				var req DryRunChecksReq
+				if uerr := json.Unmarshal(line, &req); uerr != nil {
+					_ = s.sendResp(conn, DryRunChecksResp{ReqID: probe.ReqID, Error: uerr.Error()})
+					return
+				}
+				_ = s.sendResp(conn, s.handleDryRunChecks(req))
 			default:
 				_ = s.sendResp(conn, StreamResp{ReqID: probe.ReqID, Error: fmt.Sprintf("unknown op %q", probe.Op)})
 			}
@@ -699,6 +710,22 @@ func (s *SourceServer) handleCatalog(req CatalogReq) CatalogResp {
 		resp = CatalogResp{ReqID: req.ReqID, Error: "catalog: unknown action " + req.Action}
 	}
 	return resp
+}
+
+// handleDryRunChecks (2C-3, architecture 08.10) reads the SOURCE side's
+// dry-run values on the agent's LOCAL source pool (the catalog-querier, not
+// the pinned FR-02 snapshot — a catalog fault must not abort the snapshot)
+// and reports them back. The controller holds no direct source connection;
+// it collects both sides and diffs them in memory.
+func (s *SourceServer) handleDryRunChecks(req DryRunChecksReq) DryRunChecksResp {
+	q := s.catalogQuerier()
+	if q == nil {
+		return DryRunChecksResp{ReqID: req.ReqID, Error: "source agent: source pool not ready"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	sv := dryrun.GatherSide(ctx, q, "source", req.Workers, req.SegBinary)
+	return DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Ok: true, Side: sv}
 }
 
 func (s *SourceServer) handleChecksum(req ChecksumReq) ChecksumResp {

@@ -55,6 +55,11 @@ type DestControlClient struct {
 	// delegated to the agent — the controller holds no direct destination
 	// connection, architecture 08.10).
 	ddCh map[uint64]chan DDResp
+	// dryRunCh (2C-3): the dry-run-checks op's waiters (the controller's
+	// destination-side dry-run values, read on the agent's LOCAL connection
+	// — the controller holds no direct destination connection, architecture
+	// 08.10).
+	dryRunCh map[uint64]chan DryRunChecksResp
 	// lateDone: a unit-done can arrive BEFORE its waiter registers (a fast
 	// serveOne — e.g. an unknown kind — finishes before the caller gets to
 	// WaitUnitDone). The reader buffers the raw line; WaitUnitDone picks it
@@ -91,6 +96,7 @@ func DialDestControlTLS(ctx context.Context, addr string, t ControlTLS) (*DestCo
 		releaseCh: make(map[uint64]chan DestReleased),
 		miniMapCh: make(map[uint64]chan MiniMapResp),
 		ddCh:      make(map[uint64]chan DDResp),
+		dryRunCh:  make(map[uint64]chan DryRunChecksResp),
 		lateDone:  make(map[uint64][]byte),
 		dead:      make(chan struct{}),
 	}
@@ -209,6 +215,15 @@ func (c *DestControlClient) readLoop() {
 						var d DDResp
 						_ = json.Unmarshal(line, &d)
 						delete(c.ddCh, env.ReqID)
+						c.pendMu.Unlock()
+						ch <- d
+						continue
+					}
+				case "dry-run-checks-resp":
+					if ch, ok := c.dryRunCh[env.ReqID]; ok {
+						var d DryRunChecksResp
+						_ = json.Unmarshal(line, &d)
+						delete(c.dryRunCh, env.ReqID)
 						c.pendMu.Unlock()
 						ch <- d
 						continue
@@ -489,6 +504,42 @@ func (c *DestControlClient) DDL(req DDReq) (DDResp, error) {
 		return d, nil
 	case <-c.dead:
 		return DDResp{}, errControlDead
+	}
+}
+
+// DryRunChecks (2C-3, architecture 08.10) asks the destination agent to read
+// its OWN side's dry-run values on its LOCAL destination connection and report
+// them back (the controller holds no direct destination connection). It blocks
+// until the agent answers.
+func (c *DestControlClient) DryRunChecks(req DryRunChecksReq) (DryRunChecksResp, error) {
+	id := c.nextID.Add(1)
+	req.Op = "dry-run-checks"
+	req.ReqID = id
+	ch := make(chan DryRunChecksResp, 1)
+	c.pendMu.Lock()
+	c.dryRunCh[id] = ch
+	c.pendMu.Unlock()
+	defer func() {
+		c.pendMu.Lock()
+		if c.dryRunCh[id] == ch {
+			delete(c.dryRunCh, id)
+		}
+		c.pendMu.Unlock()
+	}()
+	c.writeMu.Lock()
+	werr := SendLine(c.w, req)
+	if werr == nil {
+		werr = c.w.Flush()
+	}
+	c.writeMu.Unlock()
+	if werr != nil {
+		return DryRunChecksResp{}, werr
+	}
+	select {
+	case d := <-ch:
+		return d, nil
+	case <-c.dead:
+		return DryRunChecksResp{}, errControlDead
 	}
 }
 

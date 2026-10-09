@@ -126,6 +126,13 @@ type TwoAgentRunner interface {
 	// agent, which reads it on its LOCAL source pool (the pool, not the
 	// pinned snapshot) and reports back.
 	Catalog(ctx context.Context, req agent.CatalogReq) (agent.CatalogResp, error)
+	// DryRunChecks (2C-3, architecture 08.10) reads ONE side's dry-run
+	// values on that side's agent (its LOCAL database connection) and
+	// reports them back: side "source" -> the source agent, side "dest" ->
+	// the destination agent. The controller holds no direct database
+	// connection; it collects both sides and diffs them in memory
+	// (dryrun.FromSides).
+	DryRunChecks(ctx context.Context, req agent.DryRunChecksReq) (agent.DryRunChecksResp, error)
 	// TableExists (2B-5, architecture 08.10) reports whether schema.table
 	// exists on the source — the per-unit zero-columns guard's probe (a
 	// vanished source table must fail the unit early, before any DDL or
@@ -1191,6 +1198,38 @@ func (r *processTwoAgentRunner) TableExists(ctx context.Context, schema, table s
 	return err == nil && resp.Ok && resp.Exists
 }
 
+// DryRunChecks (2C-3, architecture 08.10) reads ONE side's dry-run values on
+// that side's agent (its LOCAL database connection). side "source" routes to
+// the source agent (the source pool, the on_segment probe when segBinary is
+// set); side "dest" routes to the destination agent (a fresh LOCAL coordinator
+// connection). The controller holds no direct database connection.
+func (r *processTwoAgentRunner) DryRunChecks(ctx context.Context, req agent.DryRunChecksReq) (agent.DryRunChecksResp, error) {
+	if req.Side == "dest" {
+		if r.destCtrl == nil {
+			return agent.DryRunChecksResp{}, fmt.Errorf("two-agent: destination agent not started (dry-run dest checks)")
+		}
+		resp, err := r.destCtrl.DryRunChecks(req)
+		if err != nil {
+			return resp, fmt.Errorf("two-agent: dest dry-run-checks: %w", err)
+		}
+		if !resp.Ok && resp.Error != "" {
+			return resp, fmt.Errorf("two-agent: dest dry-run-checks: %s", resp.Error)
+		}
+		return resp, nil
+	}
+	if r.ctrl == nil {
+		return agent.DryRunChecksResp{}, fmt.Errorf("two-agent: source agent not started (dry-run source checks)")
+	}
+	resp, err := r.ctrl.DryRunChecks(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: source dry-run-checks: %w", err)
+	}
+	if !resp.Ok && resp.Error != "" {
+		return resp, fmt.Errorf("two-agent: source dry-run-checks: %s", resp.Error)
+	}
+	return resp, nil
+}
+
 // Release ends the run (commits the source snapshot) and stops the agents.
 func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	var cerr error
@@ -1857,6 +1896,30 @@ func (r *InProcTwoAgentRunner) TableExists(ctx context.Context, schema, table st
 		return false
 	}
 	return r.srv.TableExists(ctx, schema, table)
+}
+
+// DryRunChecks (2C-3, architecture 08.10) mirrors the process runner: it
+// routes side "source" to the in-process source agent and side "dest" to the
+// in-process destination agent over their (real, in-process) control sockets.
+func (r *InProcTwoAgentRunner) DryRunChecks(ctx context.Context, req agent.DryRunChecksReq) (agent.DryRunChecksResp, error) {
+	if req.Side == "dest" {
+		if r.destCtrl == nil {
+			return agent.DryRunChecksResp{}, fmt.Errorf("two-agent: in-proc dest agent not started (dry-run dest checks)")
+		}
+		resp, err := r.destCtrl.DryRunChecks(req)
+		if err != nil {
+			return resp, fmt.Errorf("two-agent: in-proc dest dry-run-checks: %w", err)
+		}
+		return resp, nil
+	}
+	if r.ctrl == nil {
+		return agent.DryRunChecksResp{}, fmt.Errorf("two-agent: in-proc source agent not started (dry-run source checks)")
+	}
+	resp, err := r.ctrl.DryRunChecks(req)
+	if err != nil {
+		return resp, fmt.Errorf("two-agent: in-proc source dry-run-checks: %w", err)
+	}
+	return resp, nil
 }
 
 // Release ends the run (commits the source snapshot) and stops the agents.

@@ -40,6 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/journaldb"
 	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
@@ -1202,6 +1203,17 @@ func (s *DestServer) serveControl(l net.Listener) {
 			}
 			s.handleDDL(conn, &dd)
 			continue
+		case "dry-run-checks":
+			// 2C-3 (architecture 08.10): the controller's destination-side
+			// dry-run values, read on this agent's LOCAL connection (the
+			// controller holds no direct destination connection).
+			var dreq DryRunChecksReq
+			if uerr := json.Unmarshal(line, &dreq); uerr != nil {
+				_ = s.sendLine(conn, DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Error: "dry-run-checks: unmarshal: " + uerr.Error()})
+				continue
+			}
+			s.handleDryRunChecks(conn, &dreq)
+			continue
 		case "serve-unit":
 			ack := DestAck{Op: "ack", Ok: true, ReqID: req.ReqID}
 			if req.Kind == "" {
@@ -1438,6 +1450,25 @@ func (s *DestServer) ddlExec(conn net.Conn, dd *DDReq, op func(pg.StreamingQueri
 	}
 	defer q.Close()
 	return op(q)
+}
+
+// handleDryRunChecks (2C-3, architecture 08.10) reads the DESTINATION side's
+// dry-run values on a fresh LOCAL connection to the destination coordinator
+// (the agent's long-lived pool is untouched) and reports them back. The
+// controller holds no direct destination connection; it collects both sides
+// and diffs them in memory.
+func (s *DestServer) handleDryRunChecks(conn net.Conn, req *DryRunChecksReq) {
+	resp := DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Ok: true}
+	err := s.ddlExec(conn, &DDReq{ReqID: req.ReqID}, func(q pg.StreamingQuerier) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		resp.Side = dryrun.GatherSide(ctx, q, "dest", req.Workers, "")
+		return nil
+	})
+	if err != nil {
+		resp = DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Error: err.Error()}
+	}
+	_ = s.sendLine(conn, resp)
 }
 
 // serveOne runs one unit on the shared data listener and reports it. The

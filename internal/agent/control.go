@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -357,6 +358,34 @@ type CatalogResp struct {
 	Error        string `json:"error,omitempty"`
 }
 
+// DryRunChecksReq is the controller's dry-run pre-flight instruction to a
+// (source or destination) agent (2C-3, architecture 08.10): the agent reads
+// its OWN side's dry-run values on its LOCAL database connection (the
+// controller holds no direct database connection) and reports them back.
+// Side is "source" or "dest" (the agent's own side; the controller issues it
+// to the matching agent). Workers is the run's --workers (the source side's
+// max_connections sizing); SegBinary (source side) is the
+// gpstream-segreceiver path the on_segment probe checks on the segment hosts
+// (empty = the on_segment check is not run).
+type DryRunChecksReq struct {
+	Op        string `json:"op"` // "dry-run-checks"
+	ReqID     uint64 `json:"req_id,omitempty"`
+	Side      string `json:"side"`
+	Workers   int    `json:"workers,omitempty"`
+	SegBinary string `json:"seg_binary,omitempty"`
+}
+
+// DryRunChecksResp is the agent's dry-run pre-flight report: its side's raw
+// values (JSON-safe — the wire round-trip is value-identical). The controller
+// collects both sides and computes the diff in memory (dryrun.FromSides).
+type DryRunChecksResp struct {
+	Op    string             `json:"op"` // "dry-run-checks-resp" (the dest readLoop routes by it)
+	Ok    bool               `json:"ok"`
+	ReqID uint64             `json:"req_id,omitempty"`
+	Side  *dryrun.SideValues `json:"side,omitempty"`
+	Error string             `json:"error,omitempty"`
+}
+
 // SendLine writes one control message (JSON + newline) to w.
 func SendLine(w io.Writer, msg any) error {
 	b, err := json.Marshal(msg)
@@ -512,6 +541,8 @@ func (c *ControlClient) call(req, resp any) error {
 		r.ReqID = id
 	case *CatalogReq:
 		r.ReqID = id
+	case *DryRunChecksReq:
+		r.ReqID = id
 	}
 	ch := make(chan []byte, 1)
 	c.pendingMu.Lock()
@@ -652,6 +683,19 @@ func (c *ControlClient) Plan(req PlanReq) (PlanResp, error) {
 func (c *ControlClient) Catalog(req CatalogReq) (CatalogResp, error) {
 	req.Op = "catalog"
 	var resp CatalogResp
+	if err := c.call(&req, &resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+// DryRunChecks (2C-3, architecture 08.10) asks the source agent to read its
+// OWN side's dry-run values on its LOCAL source connection and report them
+// back (the controller holds no direct source connection). It blocks until
+// the agent answers.
+func (c *ControlClient) DryRunChecks(req DryRunChecksReq) (DryRunChecksResp, error) {
+	req.Op = "dry-run-checks"
+	var resp DryRunChecksResp
 	if err := c.call(&req, &resp); err != nil {
 		return resp, err
 	}
