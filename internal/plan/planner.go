@@ -1318,11 +1318,32 @@ func asString(v any) string {
 	return fmt.Sprint(v)
 }
 
+// toInt64 normalizes the integer types a pgx row can yield. The catalog
+// "encoding" column is int4 -> pgx scans it as int32; the older int64/int-only
+// switch fell through to 0 (= SQL_ASCII) for every UTF8/other source,
+// producing a false "SQL_ASCII -> UTF8 [DATA DESTRUCTIVE]" finding. Handle the
+// full integer family (int8..uint64) so a real encoding is never lost.
 func toInt64(v any) int64 {
 	switch x := v.(type) {
 	case int64:
 		return x
 	case int:
+		return int64(x)
+	case int32:
+		return int64(x)
+	case int16:
+		return int64(x)
+	case int8:
+		return int64(x)
+	case uint:
+		return int64(x)
+	case uint8:
+		return int64(x)
+	case uint16:
+		return int64(x)
+	case uint32:
+		return int64(x)
+	case uint64:
 		return int64(x)
 	}
 	return 0
