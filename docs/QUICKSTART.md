@@ -133,7 +133,7 @@ What happens:
 - It builds the plan, runs the **transfer engine** (`source -> stream -> dest`)
   with **no intermediate storage**, and records every transition in the
   operation manifest — so the operation is crash-recoverable.
-- Each unit lands (verify only with `--verify on`, off by default), indexes are rebuilt in the
+- Each unit lands (content verification on by default — digests always computed, `--verify off` only disables the swap gate), indexes are rebuilt in the
   **background** (F-17), and the staging table is **atomically swapped** to its
   final name. A Prometheus `/metrics` endpoint is served when you pass
   `--metrics-addr`.

@@ -83,7 +83,7 @@ DSN points to (P1e coordinator guard; a violation aborts the agent and the
 |-------|------|---------|--------|-------|
 | `AutoResume` | int | **`0`** | `--auto-resume` / env / file | `N ≥ 0`; `0` = manual only. |
 | `OnUnitFailure` | string | `""` → `continue` | `--on-unit-failure` / env / file | `continue` (default) \| `abort` (F-06). |
-| `Verify` | `VerifyMode` | **`off`** | `--verify` / file | `on`/`off` (post-copy content verification). |
+| `Verify` | `VerifyMode` | **`on`** | `--verify` / file | `on`/`off` (post-copy content verification). On by default — digests are always computed; `off` only disables the swap gate. |
 
 ### 1.8 Indexes (F-17)
 | Field | Type | Default | Source | Notes |
@@ -258,7 +258,7 @@ compress = "zstd"
 zstd_level = 3
 rate_limit = 10
 workers = 2
-verify = "off"
+verify = "on"
 ssl_ca   = "/secrets/ca.pem"
 ```
 

@@ -294,11 +294,11 @@ segrecv s=0  segrecv s=1   ...  segrecv s=S-1  ──────data───�
   XOR_D(srcContrib)`, `dstDigest = XOR_D(dstAcc)` over the summed row count.
   The merge order is immaterial (FR-02), and the mini mesh verifies **without
   re-reading any table** — the same guarantee the inline coordinator digest
-  gives, extended to the per-segment path. (Note: the *current* `--copy-mode
-  mesh` runtime path — the dest-agent `ServeSegments` merge — still keeps the
-  post-copy re-read; the inline digest groundwork for the segment path (P0b)
-  is in `ServeSegments` but not yet wired into the manager's verify step. The
-  mini-agent path above is what wires it through the per-segment write.)
+  gives, extended to the per-segment path. (The legacy non-supervisor
+  `ServeSegments`/`ServeRouted` serves are no longer dispatched by the manager
+  — the production mesh path is always the `kind="mini"` supervisor path
+  above — so the per-segment verify is inline on the data path, not a
+  post-copy re-read.)
 - **Crash / orphan (P2 guarantee).** A mini-agent whose report channel drops
   (the supervisor process died) **exits immediately** (orphan-exit), not by
   timeout — a destination cluster is never left with a mini-agent wedged on a
@@ -442,7 +442,7 @@ suite as evidence for the target.**
 | Many small tables / more concurrency   | `--workers N` up |
 | Direct segment→segment routing        | `--copy-mode mesh` (source segments read in parallel; per-segment writes are auto-selected sub-paths); `direct_1to1` (S==D, equal hash keys) takes the fast-path write automatically |
 | Trade CPU for wire bytes              | `--compress zstd[:level]` (default zstd:3) |
-| Protect integrity during the push     | `--verify on` for critical copies (`off` default — the COPY row count is the check; `on` adds a content digest: on the coordinator path it is computed **inline on the data path** (no re-read of either table, P9-E); the mesh/routed paths keep a post-copy re-read) |
+| Protect integrity during the push     | `--verify on` for critical copies (`on` by default — the digests are ALWAYS computed; `--verify off` only disables the swap gate. The digest is computed **inline on the data path** on both sides — the coordinator path (P9-E) and the mesh/mini path (source digest in the slice trailers, destination mini tees the COPY) — so **no table is re-read** to verify) |
 
 ## Honest notes
 

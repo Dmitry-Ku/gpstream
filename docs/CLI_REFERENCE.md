@@ -197,7 +197,8 @@ Conflict policy semantics:
 - **`overwrite`** — copy to a staging table and swap over the final. Always
   rewrites: an existing destination is re-copied even when its data already
   matches the source (no pre-copy content comparison — that would read the
-  whole table twice; the only content check is the post-copy `--verify on`).
+  whole table twice; the only content check is the `--verify on` digest (inline
+  on the data path, no re-read).
   If the destination table is referenced by foreign keys on
   other destination tables (a prior run's restored FK set, or an operator
   table), the dependent FK constraints are dropped before the swap (equivalent
@@ -255,7 +256,7 @@ the on-wire agent-to-agent volume.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--auto-resume <N>` | `AutoResume` | `0` (`N >= 0`; `0` = manual only) |
-| `--verify on\|off` | `Verify` | `off` (content verification of the copied data; off = none, the COPY row count is the check. On the coordinator path the digest is computed inline on the data path (no re-read, P9-E); mesh/routed keep a post-copy re-read) |
+| `--verify on\|off` | `Verify` | `on` (content verification of the copied data; on by default — the digests are ALWAYS computed and `--verify off` only disables the swap gate. The digest is computed **inline on the data path** on both sides — the coordinator path (P9-E) and the mesh/mini path (the source digest rides the slice trailers, the destination mini tees the stream into the utility COPY) — so **no table is re-read** to verify) |
 | `--on-unit-failure continue\|abort` | `OnUnitFailure` | `""` → continue (spec F-06) |
 
 ### Transport / frame-ack (T-B, §4.6)
