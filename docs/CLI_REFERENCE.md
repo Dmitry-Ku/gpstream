@@ -92,7 +92,8 @@ subset of flags (listed per-command below) and ignore the rest.
   is a reachability FAIL, not a silent PASS. **Any FAIL aborts with the
   report (no plan is built).** On success it renders the deterministic plan
   summary (units, volume, conflicts, redistribution, plan hash); on
-  `--timeout` prints the collected fragment as a prediction/forecast. `run`
+  `--timeout` prints the collected fragment as a prediction/forecast. The
+  plan is **printed, not persisted** (the dry-run holds no state). `run`
   always persists the plan JSON to `<state-dir>/<operation-id>/plan.json`.
 - **`bench`** — measures the **input stream** (F-14): streams the selected
   source tables through the real data path (read → frame → compress) and
@@ -121,10 +122,15 @@ subset of flags (listed per-command below) and ignore the rest.
   derived conservatively from the manifest (a pre-existing, conflicted
   destination table is never touched), restoring the receiver to its
   pre-operation state (F-02). `--mode drop` requires `--dest <connstring>`
-  (`--ssl-ca` is honoured). Each removal is recorded to `audit.log` **before**
+  (`--ssl-ca` is honoured) and runs the drop on the destination coordinator
+  through the **dest agent** — `--dest-agent-ssh user@host[:port]` names that
+  host (omitted = local), `--dest-agent-binary` overrides the agent path
+  (default: convention resolution); the controller opens no direct
+  destination connection. Each removal is recorded to `audit.log` **before**
   the state dir is removed (F-13). **Flags:** `--operation-id <id>` (or
   `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest
-  <connstring>`, `--ssl-ca`.
+  <connstring>`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`, `--ssl-min-tls`,
+  `--dest-agent-ssh`, `--dest-agent-binary`.
 - **`version`** — prints the gpstream build version. No flags.
 - **`help`** / `-h` / `--help` — prints built-in help (commands + flags).
   The man page is installed by the package (`man gpstream`).
@@ -423,8 +429,8 @@ operator reads the number and decides. The `--locale-check` flag was removed
 ### Operation identity / state (v4 §8 "State")
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--operation-id <id\|latest>` | `OperationID` | `""` (operation identity. `run`: a name, or omitted = a generated timestamp id `YYYYMMDDTHHMMSSZ` UTC, collision-suffixed `-2`…; the state dir is then a chronological history. `status`/`resume`/`cleanup`: a name or `latest` = the newest operation. The plan JSON is always persisted to `<state-dir>/<operation-id>/plan.json`) |
-| `--state-dir <dir>` | `StateDir` | `/var/lib/gpstream` (operation state lives at `<state-dir>/<operation-id>/`, the plan JSON at `<state-dir>/<operation-id>/plan.json`) |
+| `--operation-id <id\|latest>` | `OperationID` | `""` (operation identity. `run`: a name, or omitted = a generated timestamp id `YYYYMMDDTHHMMSSZ` UTC, collision-suffixed `-2`…; the state dir is then a chronological history. `status`/`resume`/`cleanup`: a name or `latest` = the newest operation. `run` persists the plan JSON to `<state-dir>/<operation-id>/plan.json`; `dry-run` prints the plan without persisting it) |
+| `--state-dir <dir>` | `StateDir` | `/var/lib/gpstream` (operation state lives at `<state-dir>/<operation-id>/`; `run` persists the plan JSON at `<state-dir>/<operation-id>/plan.json`) |
 
 ### Observability (F-04)
 | Flag | Config field | Default |
@@ -447,7 +453,7 @@ bespoke and shared:
 |---------|-------|
 | `status` | `--operation-id <id>` (required), `--state-dir <dir>` |
 | `resume` | `--operation-id <id>` (required), `--state-dir <dir>`, `--auto-resume <N>` |
-| `cleanup` | `--operation-id <id>` (or `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest <connstring>`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`, `--ssl-min-tls`, **`--yes` (always required — cleanup is destructive)** |
+| `cleanup` | `--operation-id <id>` (or `--all-incomplete`), `--state-dir <dir>`, `--mode drop`, `--dest <connstring>`, `--dest-agent-ssh user@host[:port]`, `--dest-agent-binary <path>`, `--ssl-ca`, `--ssl-cert`, `--ssl-key`, `--ssl-min-tls`, **`--yes` (always required — cleanup is destructive)** |
 
 `--operation-id <id>` names the operation directly; the state is resolved at
 `<state-dir>/<operation-id>/`.

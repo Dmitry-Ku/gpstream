@@ -579,7 +579,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		// P1d: size the destination pg pool for the concurrent persistent
 		// serves (the run's data-worker count). In supervisor mode it is
 		// the fallback coordinator path's pool (the user-confirmed
-		// "уже реализовано для режима coordinator" mechanism).
+		// "already implemented for coordinator mode" mechanism).
 		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",

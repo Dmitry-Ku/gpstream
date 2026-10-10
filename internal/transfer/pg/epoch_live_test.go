@@ -68,7 +68,7 @@ func TestLiveEpochPinAndDelta(t *testing.T) {
 // TestLiveEpochDeltaReject constructs an epoch whose pins are deliberately
 // spread wider than the limit (by nudging the recorded t_fix) and confirms
 // ValidateDelta rejects it — the run must not start. This is the P1d
-// "delta-валидация: пины сверх лимита → отказ старта" gate.
+// "delta-validation: pins beyond the limit -> startup refusal" gate.
 func TestLiveEpochDeltaReject(t *testing.T) {
 	_, p := startEpochLive(t, 5662, 3)
 	ctx := context.Background()
@@ -197,7 +197,7 @@ func TestLiveEpochConcurrentCopy(t *testing.T) {
 // TestLiveEpochHeal aborts one pinned connection's snapshot transaction, heals
 // it (re-pin), and confirms: (a) the healed connection reads a fresh snapshot
 // (it sees a write committed after the ORIGINAL pin), and (b) Heal validates the
-// re-pin against the epoch base (baseMin). This is the P1d "heal пере-пина"
+// re-pin against the epoch base (baseMin). This is the P1d "heal a re-pin"
 // path.
 func TestLiveEpochHeal(t *testing.T) {
 	_, p := startEpochLive(t, 5664, 2)

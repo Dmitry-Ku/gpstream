@@ -106,5 +106,3 @@ func testCopyStream() []byte {
 	b = append(b, 0xFF, 0xFF)
 	return b
 }
-
-

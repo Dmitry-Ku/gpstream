@@ -1,6 +1,6 @@
 // Package version carries the build identity every gpstream binary reports
-// (1F, architecture 08.10: "все бинарники отчитываются версией; dest-agent
-// сверяет до первого юнита").
+// (1F, architecture 08.10: every binary reports its version; the dest agent
+// cross-checks all of them before the first unit).
 //
 // Version and Commit are set at build time with -ldflags:
 //

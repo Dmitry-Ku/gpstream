@@ -109,10 +109,10 @@ gpstream dry-run \
   --dbs orders
 ```
 
-Every operation persists its deterministic plan to
-`<state-dir>/<operation-id>/plan.json`. Two dry-runs of the same scope produce
-the same **plan hash** (printed on screen and stored in the plan JSON) — use it
-to confirm a plan has not changed between runs.
+`run` persists its deterministic plan to `<state-dir>/<operation-id>/plan.json`
+(a dry-run prints the plan without persisting it). Two plans of the same scope
+produce the same **plan hash** (printed on screen, and stored in the plan JSON
+on a `run`) — use it to confirm a plan has not changed between runs.
 
 ---
 

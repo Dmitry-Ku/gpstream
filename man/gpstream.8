@@ -23,8 +23,9 @@ Execute the copy: stream source to dest with no intermediate storage.
 .B dry-run
 Self-diagnose the source/dest clusters (any FAIL aborts with the report),
 then plan the copy without
-executing (\fB--timeout\fR S bounds the plan; the plan JSON is always persisted
-to \fB<state-dir>/<operation-id>/plan.json\fR).
+executing (\fB--timeout\fR S bounds the plan). The plan is printed, not
+persisted (the dry-run holds no state); \fBrun\fR always persists the plan
+JSON to \fB<state-dir>/<operation-id>/plan.json\fR.
 .TP
 .B bench
 Measure the input stream: stream the selected source tables through the real
@@ -56,7 +57,12 @@ drop
 .BR --dest
 <connstring> also drops the destination objects this operation created
 (surviving staging, renamed-in or created final tables, renamed-in schemas)
-to restore the pre-operation state.
+to restore the pre-operation state; the drop runs on the destination
+coordinator through the dest agent (launched with
+.BR --dest-agent-ssh
+user@host[:port], omitted = local;
+.BR --dest-agent-binary
+overrides the agent path, default convention).
 .B version
 Print the binary version.
 .TP
@@ -380,10 +386,11 @@ suffix is appended on a same-second collision) is generated, so the state
 dir is a chronological history of runs and the newest operation is the last
 entry. \fBstatus\fR/\fBresume\fR/\fBcleanup\fR: a name, or the magic
 value \fBlatest\fR, which resolves to the newest operation folder (by
-timestamp name, falling back to mtime for operator-chosen names). The
-deterministic plan (CR-4) is always persisted to
+timestamp name, falling back to mtime for operator-chosen names).
+\fBrun\fR persists the deterministic plan (CR-4) to
 .BR <state-dir>/<operation-id>/plan.json
-alongside the journal. Note: a timestamp default means a re-run of the same
+alongside the journal (a dry-run prints the plan without persisting it). Note:
+a timestamp default means a re-run of the same
 plan is a \emph{new} operation; to resume an earlier one pass its id (or
 \fBlatest\fR).
 .TP
@@ -430,6 +437,7 @@ GPSTREAM_SOURCE/DEST variable; endpoints come from --source/--dest or the
 config file. Recognised variables (all prefixed GPSTREAM_):
 .RI RATE_LIMIT ,
 .RI WORKERS ,
+.RI MAX_SNAPSHOT_DELTA ,
 .RI COMPRESS ,
 .RI AUTO_RESUME ,
 .RI ON_UNIT_FAILURE ,
@@ -441,9 +449,17 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .RI SSL_CERT ,
 .RI SSL_KEY ,
 .RI SSL_CA ,
+.RI SOURCE_AGENT_BINARY ,
+.RI DEST_AGENT_BINARY ,
+.RI SEG_BINARY ,
+.RI SEG_LISTEN ,
+.RI PORT_RANGE ,
 .RI SEG_TLS_CERT ,
 .RI SEG_TLS_KEY ,
-.RI SEG_TLS_CA .
+.RI SEG_TLS_CA ,
+.RI CONTROL_TLS_CERT ,
+.RI CONTROL_TLS_KEY ,
+.RI CONTROL_TLS_CA .
 .SH SEE ALSO
 .BR gpstream(8) ,
 docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,

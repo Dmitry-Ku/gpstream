@@ -36,10 +36,10 @@ func (a *Allocator) isAddrInUse(err error) bool {
 // the same port to two callers in the same process (successive Next calls do
 // not re-probe a port it already gave out).
 type Allocator struct {
-	lo, hi     int
-	reserved   map[int]bool
-	exclude    map[int]bool // caller-provided "do not pick" (e.g. a port this process already bound)
-	mu         sync.Mutex
+	lo, hi   int
+	reserved map[int]bool
+	exclude  map[int]bool // caller-provided "do not pick" (e.g. a port this process already bound)
+	mu       sync.Mutex
 }
 
 // New builds an Allocator. hi < lo is a misconfiguration and yields a

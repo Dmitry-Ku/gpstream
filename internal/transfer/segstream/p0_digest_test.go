@@ -136,7 +136,7 @@ func TestDigestXORAcrossSlices(t *testing.T) {
 	rnd := rand.New(rand.NewSource(42))
 	// Generate N independent single rows so we can regroup them freely into
 	// different partitionings.
-	total := 240 // divisible by 3 and 4 so every split uses all rows
+	total := 240                    // divisible by 3 and 4 so every split uses all rows
 	single := make([][]byte, total) // each = header+1row+EOF
 	for i := 0; i < total; i++ {
 		s := genSlice(rnd, 1)

@@ -6,6 +6,7 @@
 // against fakes (CR-7: the diagnostic must detect all seeded faults on a test
 // bench).
 package dryrun
+
 import (
 	"context"
 	"fmt"

@@ -18,6 +18,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `man gpstream-selftest` alias removed; docs updated (CLI_REFERENCE, INSTALL,
   ADMIN_GUIDE, TROUBLESHOOTING, QUICKSTART, README, ADR-001).
 
+### Changed
+
+- **Docs / man: Phase-2 drift corrected.** `dry-run` prints the plan but does
+  NOT persist it (2C: the controller holds no state and the plan is not
+  written to `<state-dir>/<operation-id>/plan.json`); `run` persists it. The
+  stale "always persisted" wording was fixed in CLI_REFERENCE,
+  CONFIGURATION, OPERATOR_GUIDE, QUICKSTART, TROUBLESHOOTING, the `--help`
+  text and `man gpstream.8`. `cleanup --mode drop` now documents the
+  agent-executed drop (`--dest-agent-ssh`, `--dest-agent-binary`) and the
+  full flag list. The man ENVIRONMENT section now lists all recognised
+  `GPSTREAM_*` variables 1:1 with `config.ApplyEnv` (12 were missing:
+  MAX_SNAPSHOT_DELTA, SOURCE/DEST_AGENT_BINARY, SEG_BINARY, SEG_LISTEN,
+  PORT_RANGE, CONTROL_TLS_CERT/KEY/CA). Rendered with groff on the GP6
+  testbed to verify.
+- **English-only hygiene:** residual Cyrillic in code comments and one
+  CHANGELOG line translated to English (check-english.sh green); repo-wide
+  `gofmt -l .` clean (CI gates on both).
+
 ### Fixed
 
 - **Mini-agent hello read deadline leaked onto the long-lived report
@@ -110,7 +128,7 @@ substring tags) was renamed as a matched pair so the mock still binds.
 
 - **Mesh crash-matrix: kill-supervisor → mini orphan-exit.** `tests/integration/two_agent_mesh_crash_test.go` (gp6lab, no pg): a real `ServeMini` dials a real report listener, the test plays the supervisor, reads the mini's `hello`, then CLOSES the report connection (simulating the supervisor process dying). The mini's next control read sees EOF and `ServeMini` returns promptly (units=0, clean exit) — well within the generous 60s accept/stream timeouts, proving the exit is the **orphan-exit** (report-channel drop → immediate self-exit), not a timeout. This is the coordinator-death side of the P2 guarantee: a mini-agent whose report channel is severed unwinds at once, so a destination cluster is never left with a mini-agent wedged on a dead control channel.
 
-- **Mesh crash-matrix: kill-segreceiver (data-обрыв → unit fail + re-copy) — local acceptance.** `tests/integration/two_agent_mesh_kill_segreceiver_test.go` (gp6lab, D=2 real `ServeMini` on separate pgtest clusters emulating 2 segment hosts, a real `Supervisor`): a fake segreceiver is killed MID-UNIT (two compressed data frames, then the connection dies — no trailer). The supervisor's `ServeUnit` returns a **unit failure** naming the truncated slice (`stream ended without trailer`), the killed segment's staging slice stays **empty** (the failed utility COPY rolls back — no partial rows land), and the clean segment's slice is loaded in full. Resume = the FR-07 re-copy: after the staging slices are reset, a re-serve of the same unit with intact slices completes — combined rows == the seeded count, BOTH combined srcDigest and dstDigest == the buffered reference (XOR_D == the full accumulator, FR-02), each staging slice == its PerSeg count.
+- **Mesh crash-matrix: kill-segreceiver (data connection drop -> unit fail + re-copy) — local acceptance.** `tests/integration/two_agent_mesh_kill_segreceiver_test.go` (gp6lab, D=2 real `ServeMini` on separate pgtest clusters emulating 2 segment hosts, a real `Supervisor`): a fake segreceiver is killed MID-UNIT (two compressed data frames, then the connection dies — no trailer). The supervisor's `ServeUnit` returns a **unit failure** naming the truncated slice (`stream ended without trailer`), the killed segment's staging slice stays **empty** (the failed utility COPY rolls back — no partial rows land), and the clean segment's slice is loaded in full. Resume = the FR-07 re-copy: after the staging slices are reset, a re-serve of the same unit with intact slices completes — combined rows == the seeded count, BOTH combined srcDigest and dstDigest == the buffered reference (XOR_D == the full accumulator, FR-02), each staging slice == its PerSeg count.
 
 - **Mesh crash-matrix: kill-mini (dead mini → orphan → unit fail + re-copy) — local acceptance.** `tests/integration/two_agent_mesh_kill_mini_test.go` (gp6lab, D=2 real `ServeMini` on separate pgtest clusters emulating 2 segment hosts, a real `Supervisor`) — the coordinator-side twin of kill-supervisor and the last of the three local crash-matrix scenarios. A destination-segment mini-agent DIES MID-UNIT: the test severs the dead mini's persistent REPORT connection (the signal the supervisor uses to detect a dead mini; exposed by a minimal `Supervisor.ReportConn` test hook, not used in production). The clean mini's slice is loaded first (which deterministically proves the supervisor has already sent `mini-unit` to both minis and is blocked on the D report reads), then the dead mini's report channel is cut — the supervisor's `ServeUnit` returns a **unit failure** naming the orphan (`mini seg 1 report channel dropped (orphan)`), the dead segment's staging slice is **empty** (the mini died before loading — no partial rows), and the surviving segment's slice is loaded in full. Resume = the FR-07 re-copy: after the staging slices are truncated, a FRESH mesh (new supervisor + re-launched minis, as a run-level resume does) re-copies the same unit — combined rows == the seeded count, BOTH combined srcDigest and dstDigest == the buffered reference (XOR_D == the full accumulator, FR-02), each staging slice == its PerSeg count. The surviving mini is also checked to exit (not wedge) when the phase-1 supervisor stops. The remaining P5 **live** increment is the S≠D A→D multi-segment validation + the production-dispatch mini-mesh, gated on the multi-segment GP6 stand + SVG-topology confirmation rule.
 

@@ -162,10 +162,10 @@ data copy.
 - Low **confidence** means some inputs (volume, collation, redistribution)
   could not be determined offline — the fields that cannot be predicted
   without a live copy are labelled as **predictions**, not fake numbers.
-- Inspect the full plan: `cat <state-dir>/<operation-id>/plan.json` (every
-  operation persists it there). There is **no `report` subcommand** — the final
-  summary is printed on completion and the durable record is the journal under
-  `<state-dir>/<operation-id>/`.
+- Inspect the full plan: `cat <state-dir>/<operation-id>/plan.json`
+  (`run` persists it there; a dry-run only prints the plan). There is **no
+  `report` subcommand** — the final summary is printed on completion and the
+  durable record is the journal under `<state-dir>/<operation-id>/`.
 
 ---
 

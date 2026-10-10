@@ -401,8 +401,8 @@ type DestServer struct {
 	// registration. The per-channel serve loop signals it when the unit's
 	// data arrives (started) and delivers the result (done); the serve op
 	// (serveOne) waits on it. The registry is keyed by UnitID because the
-	// channel loop sees the UnitBegin's unit-id (the spec's "unit-done
-	// маппится по unit-id").
+	// channel loop sees the UnitBegin's unit-id (the spec: "unit-done is
+	// mapped by unit-id").
 	unitMu  sync.Mutex
 	unitReg map[uint32]*unitServe
 	// meshMu (P1d): the mesh serves (segments / direct / routed) stay

@@ -1811,8 +1811,9 @@ Planning / operation:
                                    (YYYYMMDDTHHMMSSZ UTC) so the state dir is a
                                    chronological history; status/resume/cleanup:
                                    a name or 'latest' (the newest operation).
-                                   The plan JSON is always persisted to
-                                   <state-dir>/<operation-id>/plan.json.
+                                   run persists the plan JSON to
+                                   <state-dir>/<operation-id>/plan.json
+                                   (dry-run prints the plan, no persist).
   --state-dir dir                  state root (default /var/lib/gpstream)
   --metrics-addr addr              serve Prometheus /metrics during run
   --config file                    config file (TOML or YAML)

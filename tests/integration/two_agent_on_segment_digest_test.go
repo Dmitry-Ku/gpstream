@@ -34,7 +34,8 @@ import (
 // Both must equal the reference digest of the FULL source binary-COPY stream
 // (the row multiset the kernel would have produced), which proves the
 // destination loaded exactly the source's rows. The manager's verify stays on
-// the re-read fallback in P0b (the plan: "verify-on пока re-read fallback");
+// the re-read fallback in P0b (the plan: "verify-on, re-read fallback for
+// now");
 // this test exercises the groundwork the mesh verify (P3) will consume.
 func TestTwoAgentOnSegmentDigests(t *testing.T) {
 	const (
@@ -110,8 +111,8 @@ func TestTwoAgentOnSegmentDigests(t *testing.T) {
 				Spec: agent.UnitSpec{
 					JobID: jobID, UnitID: unitID,
 					Schema: "public", Table: finalTab, Staging: stage, Overwrite: true,
-					Compress:     "zstd",
-					Cols:         cols, Dist: dist, Part: part,
+					Compress: "zstd",
+					Cols:     cols, Dist: dist, Part: part,
 					VerifyDigest: verifyDigest,
 				},
 				Segments:      nSeg,
@@ -206,8 +207,8 @@ func TestTwoAgentOnSegmentDigests(t *testing.T) {
 			Spec: agent.UnitSpec{
 				JobID: jobID, UnitID: unitID,
 				Schema: "public", Table: finalTab, Staging: staging + "_neg", Overwrite: true,
-				Compress:     "zstd",
-				Cols:         cols, Dist: dist, Part: part,
+				Compress: "zstd",
+				Cols:     cols, Dist: dist, Part: part,
 				VerifyDigest: true,
 			},
 			Segments:      nSeg,

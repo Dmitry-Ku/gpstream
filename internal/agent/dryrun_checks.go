@@ -1,11 +1,12 @@
 // Package agent — 2C-3b (architecture 08.10): the AGENT-SIDE on_segment /
 // mini-readiness dry-run checks (A+). The dry-run must NOT run a real ON
 // SEGMENT kernel dispatch (no `COPY ... TO PROGRAM ... ON SEGMENT`, no
-// launching the segriver / mini) — "ядро НЕ проверяем". Instead the side's
-// AGENT (running as gpadmin on its cluster's coordinator) reads its own
-// segment catalog and SSHes to each segment host to verify the binary
-// (presence + executability + version) and the listen-port config. gpadmin
-// has passwordless SSH to its own segments (the standard Greenplum layout).
+// launching the segreceiver / mini) — "the kernel is NOT checked". Instead
+// the side's AGENT (running as gpadmin on its cluster's coordinator) reads
+// its own segment catalog and SSHes to each segment host to verify the
+// binary (presence + executability + version) and the listen-port config.
+// gpadmin has passwordless SSH to its own segments (the standard Greenplum
+// layout).
 //
 // The kernel's ON SEGMENT support itself is NOT probed (the first real run
 // verifies it) and is reported as a note, per the design decision.

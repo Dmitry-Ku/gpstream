@@ -147,7 +147,7 @@ place.
 |-------|------|---------|--------|-------|
 | `DryRun` | bool | `false` | `--dry-run` | Plan only, do not execute. |
 | `Timeout` | time.Duration | **`120s`** | `--timeout` / file | `run`/`dry-run`: bounds plan formation (F-10 §6 default). `bench`: the benchmark wall-time limit (unlimited when not passed). |
-| `OperationID` | string | `""` | `--operation-id` | Operation identity. `run`: a name, or omitted = a generated timestamp id (`YYYYMMDDTHHMMSSZ` UTC, collision-suffixed) so the state dir is a chronological history. `status`/`resume`/`cleanup`: a name or `latest` (newest operation). The plan JSON is always persisted to `<state-dir>/<operation-id>/plan.json`. |
+| `OperationID` | string | `""` | `--operation-id` | Operation identity. `run`: a name, or omitted = a generated timestamp id (`YYYYMMDDTHHMMSSZ` UTC, collision-suffixed) so the state dir is a chronological history. `status`/`resume`/`cleanup`: a name or `latest` (newest operation). `run` persists the plan JSON to `<state-dir>/<operation-id>/plan.json`; `dry-run` prints the plan without persisting it. |
 
 ### 1.15 Observability (F-04)
 | Field | Type | Default | Source |

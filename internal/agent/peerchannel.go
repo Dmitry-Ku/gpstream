@@ -6,8 +6,8 @@
 // message is the source's SourceVersion (the 1F cross-check); after the ack
 // the channel multiplexes read-only destination-catalog queries (dst-query).
 //
-// Why: architecture 08.10 — "Контроллер не должен открывать прямые соединения
-// к БД вообще, он должен делегировать это агентам!" The SOURCE agent runs
+// Why: architecture 08.10 — the controller must open NO direct database
+// connections at all; it delegates them to the agents. The SOURCE agent runs
 // plan.Build (2A) / the resume lists (2E) / the dry-run checks (2C) with its
 // LOCAL source pool + a remote destination querier (remoteQuerier) that
 // proxies each read-only destination-catalog query to the destination agent,

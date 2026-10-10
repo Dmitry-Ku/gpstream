@@ -5,7 +5,9 @@
 // no part). The destination agent cross-checks its own version, the mini
 // versions (from the MiniHello's), the source version and the segreceiver
 // versions; a mismatch is a HARD error with the list of discrepancies,
-// before any data flows ("правило «все версии равны»", confirmed 08.10).
+// before any data flows (the "all versions must be equal" rule, confirmed
+// 08.10).
+
 package agent
 
 import "fmt"
