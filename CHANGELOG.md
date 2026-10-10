@@ -34,7 +34,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `TestServeMiniUnitRoutedDataIdlePerSubStream`, `TestMiniIdleConfigDefaults`.
 
 - **dry-run: the source's Yandex-fork COPY TO PROGRAM gate is checked and
-- **dry-run: the source's Yandex-fork COPY TO PROGRAM gate is checked and
   surfaces as a mesh blocker.** The mesh `on_segment` data path launches the
   segreceivers via `COPY ... TO PROGRAM ... ON SEGMENT`, which the Yandex GP
   fork gates behind the `ycmdb.yc_allow_copy_to_program` GUC (PGC_POSTMASTER).
@@ -99,6 +98,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   ADMIN_GUIDE, TROUBLESHOOTING, QUICKSTART, README, ADR-001).
 
 ### Changed
+
+- **dry-run output: operator-facing, no design refs.** The printed plan
+  summary and diagnostic strings no longer carry internal requirement/task
+  tags (`FR-x`, `CR-x`, `T4b`, `F-x`, `ADR-xxx`) — they are traceability
+  markers for the spec, not operator information (kept in code comments).
+  The constant-PASS `topology` check (the two-agent data path is the only
+  topology; it verified nothing) is no longer printed. The `cpu/disk`
+  summary line — a constant string with no prediction model behind it — is
+  removed (dry-run does not predict CPU/disk; the live run measures it).
 
 - **Docs / man: Phase-2 drift corrected.** `dry-run` prints the plan but does
   NOT persist it (2C: the controller holds no state and the plan is not

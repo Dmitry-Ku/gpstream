@@ -146,7 +146,6 @@ func Run(ctx context.Context, src, dst pg.Querier, opts Options) *Report {
 	r.checkStatementTimeouts("source", src)
 	r.checkStatementTimeouts("dest", dst)
 	r.checkConnSizing(ctx, "source", src, opts.Workers)
-	r.checkTopology(opts)
 	return r
 }
 
@@ -179,17 +178,6 @@ func (r *Report) checkConnSizing(ctx context.Context, side string, q pg.Querier,
 	}
 	r.Add(Check{Name: "max_connections", Side: side, Sev: Pass,
 		Msg: fmt.Sprintf("max_connections=%d >= %d for --workers %d", mc, need, workers)})
-}
-
-// checkTopology confirms the data-plane architecture (P7): the build is
-// always two-agent — the source/dest agents carry the (compressed) data
-// stream and the controller holds no data connections (ADR-002, remediated
-// and since the only topology). Constant PASS.
-func (r *Report) checkTopology(Options) {
-	r.Add(Check{
-		Name: "topology", Side: "network", Sev: Pass,
-		Msg: "two-agent data path: the data stream runs source agent -> dest agent (compressed on the wire) and the controller holds no data connections (ADR-002)",
-	})
 }
 
 // checkStatementTimeouts warns when an operator-set statement/idle timeout
@@ -412,7 +400,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Side: "network",
 			Sev:  Warn,
 			Msg:  fmt.Sprintf("LC_COLLATE differs: source=%q dest=%q", srcColl, dstColl),
-			Rec:  "differences affect partition routing; review before start (FR-10)",
+			Rec:  "differences affect partition routing; review before start",
 		})
 	} else {
 		r.Add(Check{Name: "collation", Side: "network", Sev: Pass, Msg: "collation matches or unknown"})
@@ -432,7 +420,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Sev:  Warn,
 			Msg: fmt.Sprintf("same locale name (%s) but DIFFERENT glibc sort behavior (behavioral probe): source=%v dest=%v",
 				orUnknown(srcColl), srcSig, dstSig),
-			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision (F-16)",
+			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision",
 		})
 	}
 	// F-16: column-level (attcollation) spot check. A dry-run has no
@@ -449,7 +437,7 @@ func (r *Report) checkCollation(src, dst pg.Querier) {
 			Side: "network",
 			Sev:  Warn,
 			Msg:  fmt.Sprintf("explicit column collation(s) %v on the source are not installed in the destination database", missing),
-			Rec:  "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ (FR-16)",
+			Rec:  "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ",
 		})
 	}
 }
@@ -472,7 +460,7 @@ func (r *Report) checkEncoding(src, dst pg.Querier) {
 			Side: "network",
 			Sev:  Warn,
 			Msg:  fmt.Sprintf("database encoding differs: source=%s dest=%s", srcEnc, dstEnc),
-			Rec:  "an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE) — create the destination database with the source's encoding before the load (F-16)",
+			Rec:  "an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE) — create the destination database with the source's encoding before the load",
 		})
 	}
 }

@@ -579,9 +579,9 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	} else {
 		fmt.Printf("conflicts:     none\n")
 	}
-	fmt.Printf("redistribution: skew %.0f%% — %s (FR-15/CR-5)\n",
+	fmt.Printf("redistribution: skew %.0f%% — %s\n",
 		p.Redistrib.Skew*100, p.Redistrib.Reason)
-	fmt.Printf("route:         %s (T4b)\n", routeSummaryLine(p))
+	fmt.Printf("route:         %s\n", routeSummaryLine(p))
 	// Fix 1: partitioned parents with a collation-unsafe combination (string
 	// key + no DEFAULT partition + destination collation differs) cannot be
 	// copied without losing rows. Surface them as explicit warnings so the
@@ -598,11 +598,11 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 		fmt.Printf("partition guard: %d unit(s) would FAIL at run time (add a DEFAULT partition or align collations)\n", guarded)
 	}
 	if len(p.Collations) > 0 {
-		fmt.Printf("collation:     %d difference(s) (FR-10/FR-16)\n", len(p.Collations))
+		fmt.Printf("collation:     %d difference(s)\n", len(p.Collations))
 		for _, cd := range p.Collations {
 			switch {
 			case cd.IsColumn():
-				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) (column, FR-16)\n",
+				fmt.Printf("  - %s.%s: %q (source) vs %q (destination) (column)\n",
 					cd.Table, cd.Column, cd.SrcCollation, cd.DstCollation)
 			case cd.IsEncoding():
 				fmt.Printf("  - %s: encoding %s (DATA DESTRUCTIVE if you proceed — strings will be reinterpreted)\n",
@@ -617,7 +617,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	// itself, so the operator sees what is detected (F-11 "optional —
 	// views/functions").
 	if oo := p.OtherObjects; len(oo.Views) > 0 || len(oo.MatViews) > 0 || oo.Functions > 0 {
-		fmt.Printf("other objects: %d view(s), %d materialized view(s), %d function(s) detected (F-11 metadata) — not carried by the data copy\n",
+		fmt.Printf("other objects: %d view(s), %d materialized view(s), %d function(s) detected — not carried by the data copy\n",
 			len(oo.Views), len(oo.MatViews), oo.Functions)
 		for _, v := range oo.Views {
 			fmt.Printf("  - view %s\n", v)
@@ -632,17 +632,16 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	if len(p.MissingExtensions) > 0 {
 		fmt.Printf("extensions:    %d source extension(s) used by copied columns are MISSING in the destination: %s\n",
 			len(p.MissingExtensions), strings.Join(p.MissingExtensions, ", "))
-		fmt.Printf("  ! install BEFORE running: CREATE EXTENSION <name> (F-11 metadata phase)\n")
+		fmt.Printf("  ! install BEFORE running: CREATE EXTENSION <name>\n")
 	}
 	// v2 §26: the dry-run must also surface locale, rate-limit/CPU/disk,
 	// TLS/compression overhead, background index jobs, an aggregate warning
 	// line, expected errors, and a confidence. These are predictions (the plan
 	// is formed offline), so they are labelled as such where they cannot be
 	// measured without a live copy.
-	fmt.Printf("rate-limit:    %s (FR-14)\n", rateLimitNote(cfg))
-	fmt.Printf("cpu/disk:      prediction (measured on a live copy; FR-13)\n")
-	fmt.Printf("tls/compress:  %s (FR-13/FR-12)\n", overheadNote(cfg))
-	fmt.Printf("background idx: %d unit(s) pending (FR-17)\n", backgroundIndexNote(cfg, p))
+	fmt.Printf("rate-limit:    %s\n", rateLimitNote(cfg))
+	fmt.Printf("tls/compress:  %s\n", overheadNote(cfg))
+	fmt.Printf("background idx: %d unit(s) pending\n", backgroundIndexNote(cfg, p))
 	warnings := len(p.Conflicts) + len(p.Collations)
 	fmt.Printf("warnings:      %d (conflicts+collation)\n", warnings)
 	if p.Partial {
@@ -652,7 +651,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	}
 	fmt.Printf("confidence:    %s\n", confidenceNote(p))
 	if p.Hash != "" {
-		fmt.Printf("plan hash:     %s (deterministic, CR-4)\n", p.Hash)
+		fmt.Printf("plan hash:     %s (deterministic)\n", p.Hash)
 	} else if p.Partial {
 		fmt.Printf("plan hash:     — (partial plan; no deterministic hash)\n")
 	}
@@ -846,7 +845,7 @@ func startMetricsServer(ctx context.Context, addr string, m *monitor.Metrics) fu
 			fmt.Fprintf(os.Stderr, "gpstream: metrics: %v\n", err)
 		}
 	}()
-	fmt.Printf("metrics:     %s/metrics (FR-04)\n", strings.TrimRight(addr, "/"))
+	fmt.Printf("metrics:     %s/metrics\n", strings.TrimRight(addr, "/"))
 	return func() {
 		_ = srv.Shutdown(ctx)
 	}
@@ -1650,7 +1649,7 @@ func cmdRun(args []string) error {
 	// An admin reviews and accepts the risk (string sort/index semantics may
 	// differ) rather than gpstream silently deciding.
 	if len(p.Collations) > 0 {
-		fmt.Printf("collation:    %d difference(s) detected (FR-10/FR-16) — review before relying on string sort/index semantics:\n", len(p.Collations))
+		fmt.Printf("collation:    %d difference(s) detected — review before relying on string sort/index semantics:\n", len(p.Collations))
 		for _, cd := range p.Collations {
 			switch {
 			case cd.IsColumn():

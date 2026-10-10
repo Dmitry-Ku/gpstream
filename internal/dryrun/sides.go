@@ -205,7 +205,6 @@ func FromSides(src, dst *SideValues, opts Options) *Report {
 	r.addCopyToProgramGUCCheck(src, opts.CopyMode)
 	r.addMiniReadyChecks(dst)
 	r.addTLSCheck(opts.MinTLS)
-	r.addTopologyCheck()
 	return r
 }
 
@@ -308,7 +307,7 @@ func (r *Report) addCollationChecks(src, dst *SideValues) {
 	if nameDiff {
 		r.Add(Check{Name: "collation", Side: "network", Sev: Warn,
 			Msg: fmt.Sprintf("LC_COLLATE differs: source=%q dest=%q", src.Collation, dst.Collation),
-			Rec: "differences affect partition routing; review before start (FR-10)"})
+			Rec: "differences affect partition routing; review before start"})
 	} else {
 		r.Add(Check{Name: "collation", Side: "network", Sev: Pass, Msg: "collation matches or unknown"})
 	}
@@ -316,13 +315,13 @@ func (r *Report) addCollationChecks(src, dst *SideValues) {
 		r.Add(Check{Name: "collation-behavior", Side: "network", Sev: Warn,
 			Msg: fmt.Sprintf("same locale name (%s) but DIFFERENT glibc sort behavior (behavioral probe): source=%v dest=%v",
 				orUnknown(src.Collation), src.CollationSig, dst.CollationSig),
-			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision (F-16)"})
+			Rec: "string sort, ORDER BY, index and partition-routing semantics will differ on the destination; the data migrates byte-for-byte but its ordering changes — admin decision"})
 	}
 	missing := missingCollationsFromSets(src.SourceCollationsUsed, dst.DestCollationsInstalled)
 	if len(missing) > 0 {
 		r.Add(Check{Name: "column-collation", Side: "network", Sev: Warn,
 			Msg: fmt.Sprintf("explicit column collation(s) %v on the source are not installed in the destination database", missing),
-			Rec: "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ (FR-16)"})
+			Rec: "CREATE COLLATION in the destination (or accept the DB-default collation) before the data load — sorting/index semantics over those columns will differ"})
 	}
 }
 
@@ -334,7 +333,7 @@ func (r *Report) addEncodingChecks(src, dst *SideValues) {
 	if src.Encoding != dst.Encoding {
 		r.Add(Check{Name: "encoding", Side: "network", Sev: Warn,
 			Msg: fmt.Sprintf("database encoding differs: source=%s dest=%s", src.Encoding, dst.Encoding),
-			Rec: "an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE) — create the destination database with the source's encoding before the load (F-16)"})
+			Rec: "an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE) — create the destination database with the source's encoding before the load"})
 	}
 }
 
@@ -443,12 +442,6 @@ func (r *Report) addTLSCheck(minTLS string) {
 	r.Add(Check{Name: "tls", Side: "network", Sev: Warn,
 		Msg: fmt.Sprintf("min TLS %s required (full cert validation in M2)", minTLS),
 		Rec: "provide --ssl-ca / --ssl-cert for mTLS"})
-}
-
-// addTopologyCheck confirms the two-agent data-plane architecture (P7).
-func (r *Report) addTopologyCheck() {
-	r.Add(Check{Name: "topology", Side: "network", Sev: Pass,
-		Msg: "two-agent data path: the data stream runs source agent -> dest agent (compressed on the wire) and the controller holds no data connections (ADR-002)"})
 }
 
 // gatherExtensions returns the installed extension names on q's database.
