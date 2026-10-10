@@ -96,13 +96,31 @@ subset of flags (listed per-command below) and ignore the rest.
   plan is **printed, not persisted** (the dry-run holds no state). `run`
   always persists the plan JSON to `<state-dir>/<operation-id>/plan.json`.
 - **`bench`** — measures the **input stream** (F-14): streams the selected
-  source tables through the real data path (read → frame → compress) and
-  **discards** the payload instead of writing a
-  destination. Source only (`--dest`, if given, is ignored); all
-  selection/performance options as for `run` (`--rate-limit` is reported but
-  does not throttle the benchmark). Prints per-table and total
-  rows, wire/logical bytes, elapsed and MB/s. `--timeout S` is the benchmark
-  wall-time limit (unlimited when not passed).
+  source tables through the real data path and **discards** the payload
+  instead of writing a destination. The copy mode is honored
+  (`--copy-mode coordinator|mesh`): **coordinator** streams one
+  `COPY ... TO STDOUT` from the source coordinator; **mesh** runs the real
+  `COPY ... TO PROGRAM (gpstream-segreceiver ...) ON SEGMENT`, so the GP
+  kernel launches a segreceiver on every primary source segment and each
+  streams its slice. The payload ends in a **drain sink on the controller**
+  (frame v2 + compression + frame-ack + data TLS per the flags, so the
+  transport overhead is in the measurement). Source only (`--dest`, if
+  given, is ignored); all selection/performance options as for `run`
+  (`--rate-limit` is reported but does not throttle the benchmark). Prints
+  per-table and total rows, wire and logical bytes, elapsed and MB/s.
+  **Metric source per mode:** coordinator rows/wire/logical come from the
+  source agent's counters (one stream to the drain); mesh rows come from the
+  GP kernel's `ON SEGMENT` row count (cross-checked against the per-slice
+  trailer sum, a mismatch aborts the unit) and wire/logical are counted by
+  the drain (the source agent cannot see the per-segment streams). The drain
+  binds one listener per source content in mesh and serves the slices
+  concurrently (mirroring the production per-segment mini-agent endpoints); a
+  remote source agent dials the controller's primary non-loopback IPv4 + a
+  free port, a local source agent (single-host layout) uses loopback.
+  `--seg-tls-cert/--seg-tls-key` turn the drain into a TLS server (the
+  certificate must be valid for the drain address the segreceivers dial).
+  `--timeout S` is the benchmark wall-time limit (unlimited when not
+  passed).
 - **`status`** — reports an operation's state (F-02/06/07) from the durable
   manifest (operation-id, snap-epoch, per-unit id/state/kind/
   db.schema.table/bytes/epoch). **Flags:** `--operation-id <id|latest>`

@@ -13,14 +13,14 @@ func TestRewritePeerAddr(t *testing.T) {
 		destSSH   string
 		want      string
 	}{
-		{"remote any6 rewrite", "[::]:46738", "gp@192.168.122.16", "192.168.122.16:46738"},
-		{"remote any4 rewrite", "0.0.0.0:46738", "gp@192.168.122.16", "192.168.122.16:46738"},
+		{"remote any6 rewrite", "[::]:46738", "gp@10.0.0.16", "10.0.0.16:46738"},
+		{"remote any4 rewrite", "0.0.0.0:46738", "gp@10.0.0.16", "10.0.0.16:46738"},
 		{"remote loopback rewrite", "127.0.0.1:46738", "gp@vm6", "vm6:46738"},
 		{"local dest untouched (loopback host)", "127.0.0.1:46738", "gp@localhost", "127.0.0.1:46738"},
 		{"local dest untouched (no ssh)", "127.0.0.1:46738", "", "127.0.0.1:46738"},
-		{"explicit non-loopback untouched", "192.168.122.16:46738", "gp@192.168.122.16", "192.168.122.16:46738"},
-		{"empty untouched", "", "gp@192.168.122.16", ""},
-		{"garbage untouched", "not-a-port", "gp@192.168.122.16", "not-a-port"},
+		{"explicit non-loopback untouched", "10.0.0.16:46738", "gp@10.0.0.16", "10.0.0.16:46738"},
+		{"empty untouched", "", "gp@10.0.0.16", ""},
+		{"garbage untouched", "not-a-port", "gp@10.0.0.16", "not-a-port"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

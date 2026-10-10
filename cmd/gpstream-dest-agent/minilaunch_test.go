@@ -40,7 +40,7 @@ func TestCatInt64(t *testing.T) {
 // coordinator and the unit's rows landed in the master slice while the
 // segments stayed empty. Both forms must land on the segment's host:port.
 func TestSegmentUtilityDSN(t *testing.T) {
-	const segHost, segPort = "192.168.122.13", 20001
+	const segHost, segPort = "10.0.0.13", 20001
 	cases := []struct {
 		name    string
 		dsn     string
@@ -50,17 +50,17 @@ func TestSegmentUtilityDSN(t *testing.T) {
 		{
 			name: "keyword form rewrites host and port, keeps the rest",
 			dsn:  "host=127.0.0.1 port=5432 dbname=t_live user=gpadmin sslmode=disable",
-			want: "host=192.168.122.13 port=20001 dbname=t_live user=gpadmin sslmode=disable gp_session_role=utility",
+			want: "host=10.0.0.13 port=20001 dbname=t_live user=gpadmin sslmode=disable gp_session_role=utility",
 		},
 		{
 			name: "keyword form without port gains the segment port",
 			dsn:  "host=127.0.0.1 dbname=t_live",
-			want: "host=192.168.122.13 dbname=t_live port=20001 gp_session_role=utility",
+			want: "host=10.0.0.13 dbname=t_live port=20001 gp_session_role=utility",
 		},
 		{
 			name: "url form rewrites the host and adds utility",
 			dsn:  "postgres://gpadmin@127.0.0.1:5432/t_live?sslmode=disable",
-			want: "postgres://gpadmin@192.168.122.13:20001/t_live?gp_session_role=utility&sslmode=disable",
+			want: "postgres://gpadmin@10.0.0.13:20001/t_live?gp_session_role=utility&sslmode=disable",
 		},
 		{
 			name:    "no host= field is an error",

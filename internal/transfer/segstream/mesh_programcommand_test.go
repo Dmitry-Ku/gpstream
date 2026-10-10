@@ -74,7 +74,7 @@ func TestProgramCommandMesh(t *testing.T) {
 // (comma-separated), plus the routing flags (--route-key/--route-d/--route-
 // workers). This is the B->D dev case (S=4 != D=3).
 func TestProgramCommandRoutedMesh(t *testing.T) {
-	addrBook := "192.168.122.15:15001,192.168.122.15:15002,192.168.122.15:15003"
+	addrBook := "10.0.0.15:15001,10.0.0.15:15002,10.0.0.15:15003"
 	cmd, err := ProgramCommandRoutedMesh("/usr/bin/gpstream-segreceiver", addrBook, 1, 2,
 		"", "", "", "zstd", "23:0", 3, 2)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestProgramCommandRoutedMesh(t *testing.T) {
 	// A single-host:port (broadcast) address is valid for the routed-mesh
 	// program too (the grid repeats it D times) — but the D-entry form is
 	// the mesh layout.
-	if _, err := ProgramCommandRoutedMesh("/usr/bin/gpstream-segreceiver", "192.168.122.15:15001", 1, 2,
+	if _, err := ProgramCommandRoutedMesh("/usr/bin/gpstream-segreceiver", "10.0.0.15:15001", 1, 2,
 		"", "", "", "zstd", "23:0", 3, 2); err != nil {
 		t.Fatalf("broadcast (1 addr) must be valid for routed-mesh: %v", err)
 	}

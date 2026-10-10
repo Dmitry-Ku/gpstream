@@ -1,4 +1,4 @@
-.TH GPSTREAM 8 "2026-09-30" "gpstream 0.1.0" "User Commands"
+.TH GPSTREAM 8 "2026-10-10" "gpstream 0.2.0" "User Commands"
 .SH NAME
 gpstream \- high-throughput logical copy of data between Greenplum 6 clusters
 .SH SYNOPSIS
@@ -349,8 +349,11 @@ In-flight window per stream (default 64MiB).
 .BR --verify
 on|off
 Content verification after the copy (default
+.B on
+: the digests are always computed inline on the data path;
 .B off
-). With
+only disables the swap gate — unverified data is then never swapped in
+only on the row-count check). With
 .B on
 , after each unit lands the content checksum is re-derived on the source
 (same snapshot as the data COPY) and on the destination, and a mismatch sets

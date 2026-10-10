@@ -181,7 +181,7 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `SmallTableThreshold` | `1 MiB` |
 | `ZstdLevel` | `3` |
 | `AutoResume` | `0` |
-| `Verify` | `off` |
+| `Verify` | `on` |
 | `Timeout` | `120s` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |

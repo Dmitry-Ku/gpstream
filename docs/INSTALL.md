@@ -34,7 +34,7 @@ repository, so build directly from the source tree.
 | **Go** | `go 1.27` (the module declares `go 1.27.1`). A Go 1.27 toolchain is required to build. |
 | **Kernel** | Linux **6.1+** kernel for the Linux package/runtime targets. |
 | **Network (build only)** | Module fetches need a reachable Go module proxy (see note below). |
-| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`/`bench`**. |
+| **Greenplum cluster** | **Not required** to build, and **not required** to run `--help`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`**; **`bench` needs only the source** (the payload is drained on the controller and discarded — no destination). |
 
 ### Module proxy note (important)
 
@@ -72,8 +72,8 @@ Verify the build immediately:
 ```
 
 > A live Greenplum cluster is **not** needed for `--help` or `version`.
-> `dry-run` (self-diagnostic + plan) and `run`/`bench` require reachable
-> clusters.
+> `dry-run` (self-diagnostic + plan) and `run` require reachable clusters;
+> `bench` needs only the source (no destination).
 
 ---
 

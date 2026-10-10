@@ -7,20 +7,21 @@ direct high-speed network — **no intermediate storage**, snapshot consistency,
 crash-recovery, background index rebuild, redistribution accounting, and a
 fully deterministic `--dry-run` plan.
 
-<p align="center"><a href="assets/architecture.svg"><img src="assets/architecture.svg" alt="gpstream architecture: coordinator and on_segment copy modes" width="900"></a></p>
+<p align="center"><a href="assets/architecture.svg"><img src="assets/architecture.svg" alt="gpstream architecture: coordinator and mesh copy modes" width="900"></a></p>
 
-*Architecture: two copy modes (coordinator / on_segment), the control plane,
+*Architecture: two copy modes (coordinator / mesh), the control plane,
 the encrypted WAN channel (mTLS, GPST v2 frames, zstd, frame-ACK), and the
 capabilities — parallelism, checksums, RST-resume, resume, rate-limit,
 encryption, observability. [Open full-size SVG](assets/architecture.svg).*
 
-> **Milestone status (this build):** M1 core **verified**. `run` now performs a
-> real transfer — it is wired into the job Manager (source → stream → dest) and
-> proven against live PostgreSQL clusters by the `tests/integration`
-> suite (build tag `integration`). `dry-run` reports real reachability failures (no silent fake fallback). Greenplum-specific paths (segment fan-out,
-> `gp_segment_connect`) and live-cluster chaos (`kill -9` resume, 100 Gbit/s
-> channel) are validated via the PG/fake substitute, not a live Greenplum — see
-> `RC-CHECKLIST.md`.
+> **Milestone status (this build):** core **verified** on a real GP6
+> two-cluster stand (1221 tables / 196M rows, coordinator and mesh modes,
+> TLS + frame-ack, index rebuild). `run` performs a real transfer wired into
+> the job Manager (source agent → stream → dest agent, zero-DB controller);
+> `bench` measures the input stream in both copy modes. The
+> `gp6lab`-tagged integration suite exercises the data path against real
+> PostgreSQL/Greenplum (see `internal/pgtest`); `dry-run` reports real
+> reachability failures (no silent fake fallback).
 
 ## Why streaming, not `gpbackup`/`gpcopy`
 
@@ -65,7 +66,7 @@ gpstream run
   [--map-db src=dst] [--map-schema src=dst] [--map-table src=dst]
   [--compress none|zlib|zstd[:level]] [--zstd-level N]
   [--small-table-threshold SIZE]                       # F-12, default 1MiB
-  [--copy-mode coordinator|on_segment]
+  [--copy-mode coordinator|mesh]
   [--seg-listen HOST:PORT]
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
   [--workers N] [--rate-limit <rate>]                 # e.g. 40, 40gbps, 400mbps
@@ -73,7 +74,7 @@ gpstream run
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
   [--max-reconnects N] [--retransmit-buffer-max SIZE]
-  [--verify on|off]                                    # post-copy verification; default: off
+  [--verify on|off]                                    # post-copy verification; default: on
   [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)
   [--operation-id <id|latest>] [--state-dir DIR]
@@ -81,7 +82,7 @@ gpstream run
   [--config file.toml]
 
 gpstream dry-run  [--timeout S]                     # same selection flags as run
-gpstream bench    [--timeout S]                     # input-stream rate: read source, discard payload (no dest)
+gpstream bench    [--timeout S]                     # input-stream rate: read source, discard payload (no dest; --copy-mode coordinator|mesh)
 gpstream status   --operation-id <id|latest>
 gpstream resume   --operation-id <id|latest>
 gpstream cleanup  --operation-id <id|latest> [--all-incomplete] [--mode drop] [--dest <conn>] --yes
@@ -124,7 +125,7 @@ gpstream/
 │   │   ├── pg/              # COPY TO/FROM, schema DDL, conn pool
 │   │   ├── source/          # source-side read path
 │   │   ├── dest/            # dest-side write path, segment balance
-│   │   ├── segstream/       # segment-direct data plane (on_segment)
+│   │   ├── segstream/       # segment-direct data plane (mesh / ON SEGMENT)
 │   │   └── compress/        # zstd/zlib
 │   ├── manifest/            # operation manifest, dest objects, resume
 │   ├── monitor/             # metrics, events, /metrics

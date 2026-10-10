@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Dependencies
+
+- **`github.com/jackc/pgx/v5` 5.10.0 → 5.11.0** (Dependabot #1). Minor:
+  decoder hardening + faster date/time text decoding; the behavior change
+  (impossible dates such as `2024-02-30` are rejected instead of
+  normalized) does not affect gpstream (the only timestamptz column we
+  scan is `gpstream_units.updated`, always valid), and we use concrete
+  `pgx.Conn`/`pgxpool` types (no custom `pgx.Rows` implementations, so the
+  new `Rows.TypeMap` method is a non-issue). COPY BINARY data path (pgconn)
+  unchanged. Verified: build/vet + full test suite green on the merge
+  commit.
+- **`github.com/klauspost/compress` 1.20.0 → 1.20.1** (Dependabot #2).
+  Patch: zstd reset-options fix for reused frame decoders + flate EOF
+  handling. Verified: full test suite green; zstd 4MB encode/decode
+  throughput unchanged within noise (encode ~290→285 MB/s,
+  decode ~2940→2920 MB/s).
+
 ### Added
 
 - **L2 data-plane watchdog: `--data-idle-timeout` (default 5m).** A unit's

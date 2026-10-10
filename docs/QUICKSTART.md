@@ -12,9 +12,10 @@ monitor, and recover if needed.
 > conflicting units and continue), or `--resolve-conflicts overwrite` /
 > `truncate` (replace / truncate+load).
 
-> **Cluster requirement:** `--help` needs no cluster. **`run`,
-> `dry-run` and `run`/`bench` require a reachable source and destination cluster**
-> (a dry-run plans against the live topology).
+> **Cluster requirement:** `--help` needs no cluster. **`run` and
+> `dry-run` require a reachable source and destination cluster** (a dry-run
+> plans against the live topology). **`bench` needs only the source** — the
+> payload is drained on the controller and discarded (no destination).
 >
 > **Where it installs:** the `gpstream` package goes on the **controller
 > host** (the machine you run it from — it does not have to be a cluster

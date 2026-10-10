@@ -126,13 +126,15 @@ After each unit is streamed and landed, gpstream can verify it:
 
 | Mode | Flag | Behaviour |
 |------|------|-----------|
-| `off` | `--verify off` **default** | No content verification; the COPY row count is the landed-data check. |
-| `on` | `--verify on` | After each unit lands, re-derive the content checksum on the source and on the destination and compare; a mismatch sets the unit to `failed` (the staging table is dropped). |
+| `on` | `--verify on` **default** | After each unit lands, the content digest is compared on the source and on the destination; a mismatch sets the unit to `failed` (the staging table is dropped). |
+| `off` | `--verify off` | Disables the swap gate; the COPY row count is the landed-data check. |
 
-The default is **`off`** — a run reads each source table exactly once (the
-data COPY). With **`on`**, each verified unit records a checksum and the journal
-persists it, so a resumed run knows what was already verified. For a critical
-migration, run `--verify on`.
+The default is **`on`**. The content digest is computed **inline on the data
+path** on both sides (source digest rides the slice trailers; the destination
+mini tees the stream into the utility COPY), so **no table is re-read** to
+verify — a default run still reads each source table exactly once. Each
+verified unit records a checksum and the journal persists it, so a resumed run
+knows what was already verified; `--verify off` only disables the swap gate.
 
 Consistency (F-02): the source agent always reads under one run-wide
 REPEATABLE READ snapshot per database, so every table is copied from the same

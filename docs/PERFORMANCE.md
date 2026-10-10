@@ -157,15 +157,27 @@ headroom (N+4).
 ## Measuring the input stream (`gpstream bench`)
 
 To isolate the **source-side** rate from the link/destination, `gpstream
-bench` streams the selected source tables through the real data path (read →
-frame → compress) and **discards** the payload — no
-destination is opened. It applies the same selection and performance options
-as `run` (`--workers`, `--compress`; `--rate-limit` is accepted and reported
-but does **not** throttle the benchmark — the pacer is not wired into the
-data path yet), and
-prints per-table and total rows, wire/logical bytes, elapsed and MB/s.
-`--timeout S` bounds the benchmark wall-time. Use it to answer "how fast can
-the source feed the pipeline?" before committing to a full run.
+bench` streams the selected source tables through the real data path and
+**discards** the payload — no destination is opened. The copy mode is honored
+(`--copy-mode coordinator|mesh`): **coordinator** streams one
+`COPY ... TO STDOUT` from the source coordinator; **mesh** runs the real
+`COPY ... TO PROGRAM (gpstream-segreceiver ...) ON SEGMENT`, so the GP kernel
+launches a segreceiver on every primary source segment and each streams its
+slice. The payload ends in a **drain sink on the controller** (frame v2 +
+compression + frame-ack + data TLS per `--seg-tls-*`/`--frame-ack`, so the
+transport overhead is in the measurement). It applies the same selection and
+performance options as `run` (`--workers`, `--compress`; `--rate-limit` is
+accepted and reported but does **not** throttle the benchmark — the pacer is
+not wired into the data path yet), and prints per-table and total rows,
+wire/logical bytes, elapsed and MB/s. **Metric source per mode:**
+coordinator rows/wire/logical come from the source agent's counters; mesh
+rows come from the GP kernel's `ON SEGMENT` row count (cross-checked against
+the per-slice trailer sum) and wire/logical are counted by the drain (the
+source agent cannot see the per-segment streams). The drain binds one
+listener per source content in mesh and serves the slices concurrently
+(mirroring the production per-segment mini-agent endpoints). `--timeout S`
+bounds the benchmark wall-time. Use it to answer "how fast can the source
+feed the pipeline?" before committing to a full run.
 
 ## Data ports
 
