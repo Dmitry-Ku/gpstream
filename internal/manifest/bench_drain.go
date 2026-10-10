@@ -54,6 +54,54 @@ func (r *processTwoAgentRunner) benchDrainListen(listenAddr string) (net.Listene
 	return l, nil
 }
 
+// benchMeshDrainListeners binds S drain listeners — one per source content —
+// mirroring the PRODUCTION mesh topology: in a real run each destination
+// segment's mini-agent listens on its own port and receives its slice
+// CONCURRENTLY. A single shared listener would serialize the S segreceiver
+// streams (the drain drains slice 0 to completion before reading slice 1),
+// which understates the mesh input-stream throughput. Binding :0 directly
+// (and reading the bound port back) avoids the check-then-bind port race.
+// It returns the listeners and the S-entry address book the source segments
+// dial (entry s = content s's listener).
+func (r *processTwoAgentRunner) benchMeshDrainListeners(S int) ([]net.Listener, string, error) {
+	host := r.agentHost(r.cfg.SourceAgentSSH)
+	local := host == "" || agent.IsLocalHost(host)
+	var advertise string // the host the source segments dial
+	if !local {
+		ip, e := config.PrimaryIPv4()
+		if e != nil {
+			return nil, "", fmt.Errorf("bench: mesh drain address: %w (set a routable controller NIC; the source segments must reach it)", e)
+		}
+		advertise = ip
+	} else {
+		advertise = "127.0.0.1"
+	}
+	var listeners []net.Listener
+	book := make([]string, S)
+	for c := 0; c < S; c++ {
+		l, err := net.Listen("tcp", net.JoinHostPort(ifLocal(local), "0"))
+		if err != nil {
+			for _, k := range listeners {
+				_ = k.Close()
+			}
+			return nil, "", fmt.Errorf("bench: bind mesh drain content %d: %w", c, err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		listeners = append(listeners, l)
+		book[c] = net.JoinHostPort(advertise, fmt.Sprint(port))
+	}
+	return listeners, strings.Join(book, ","), nil
+}
+
+// ifLocal picks the bind host: loopback for the single-host layout, 0.0.0.0
+// (all interfaces) for the multi-host layout.
+func ifLocal(local bool) string {
+	if local {
+		return "127.0.0.1"
+	}
+	return "0.0.0.0"
+}
+
 // benchDrainTLS upgrades an accepted drain connection to TLS when the
 // operator configured the data-plane TLS (--seg-tls-*): the drain serves with
 // the same keypair the agents use, so the benchmark measures the real
@@ -191,37 +239,54 @@ type benchMeshDrainResult struct {
 	Err     error
 }
 
-// benchMeshDrain accepts S slices on l (one per source segreceiver), reads
-// each to completion and aggregates. It returns when all S slices are done
-// (or ctx fires / an accept fails — the first error is reported, the rest of
-// the accepted slices are still drained so the segreceivers can finish).
-func benchMeshDrain(ctx context.Context, cfg *config.Config, l net.Listener, S int, wantMode compress.Mode) benchMeshDrainResult {
-	out := benchMeshDrainResult{}
-	for s := 0; s < S; s++ {
-		conn, aerr := benchDrainAccept(ctx, l)
-		if aerr != nil {
-			if out.Err == nil {
-				out.Err = fmt.Errorf("bench: drain accept slice %d/%d: %w", s, S, aerr)
-			}
-			continue
-		}
-		tc, terr := benchDrainTLS(cfg, conn)
-		if terr != nil {
-			_ = conn.Close()
-			if out.Err == nil {
-				out.Err = fmt.Errorf("bench: drain TLS slice %d/%d: %w", s, S, terr)
-			}
-			continue
-		}
-		rows, wire, logical, rerr := drainMeshSlice(ctx, cfg, l, tc, wantMode)
-		if rerr != nil && out.Err == nil {
-			out.Err = rerr
-		}
-		out.Rows += rows
-		out.Wire += wire
-		out.Logical += logical
+// benchMeshDrain serves S drain listeners (one per source content) and reads
+// every slice to COMPLETION IN PARALLEL — each content's goroutine accepts,
+// TLS-upgrades and drains its own slice, exactly as the production
+// mini-agents do (one mini per destination segment, all concurrent). It
+// returns when all S slices are done (or ctx fires / an accept fails — the
+// first error is reported, the other slices are still drained so the
+// segreceivers can finish).
+func benchMeshDrain(ctx context.Context, cfg *config.Config, listeners []net.Listener, wantMode compress.Mode) benchMeshDrainResult {
+	S := len(listeners)
+	type sliceOut struct {
+		res benchMeshDrainResult
 	}
-	return out
+	results := make(chan sliceOut, S)
+	for i, l := range listeners {
+		go func(i int, l net.Listener) {
+			out := benchMeshDrainResult{}
+			conn, aerr := benchDrainAccept(ctx, l)
+			if aerr != nil {
+				out.Err = fmt.Errorf("bench: drain accept slice %d/%d: %w", i, S, aerr)
+				results <- sliceOut{out}
+				return
+			}
+			tc, terr := benchDrainTLS(cfg, conn)
+			if terr != nil {
+				_ = conn.Close()
+				out.Err = fmt.Errorf("bench: drain TLS slice %d/%d: %w", i, S, terr)
+				results <- sliceOut{out}
+				return
+			}
+			rows, wire, logical, rerr := drainMeshSlice(ctx, cfg, l, tc, wantMode)
+			if rerr != nil {
+				out.Err = rerr
+			}
+			out.Rows, out.Wire, out.Logical = rows, wire, logical
+			results <- sliceOut{out}
+		}(i, l)
+	}
+	agg := benchMeshDrainResult{}
+	for i := 0; i < S; i++ {
+		r := <-results
+		agg.Rows += r.res.Rows
+		agg.Wire += r.res.Wire
+		agg.Logical += r.res.Logical
+		if r.res.Err != nil && agg.Err == nil {
+			agg.Err = r.res.Err
+		}
+	}
+	return agg
 }
 
 // BenchMesh streams ONE table through the MESH on_segment source read (F-14,
@@ -251,28 +316,26 @@ func (r *processTwoAgentRunner) BenchMesh(ctx context.Context, unitID, jobID uin
 		return 0, 0, 0, fmt.Errorf("bench: mesh needs a Greenplum source with up segments (segment-count=%d)", S)
 	}
 
-	listenAddr, dialAddr, err := r.benchDrainAddr()
+	listeners, book, err := r.benchMeshDrainListeners(S)
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	l, err := r.benchDrainListen(listenAddr)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	defer l.Close()
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
 
 	wantMode, _, perr := compress.Parse(compressStr)
 	if perr != nil {
 		return 0, 0, 0, fmt.Errorf("bench: mesh compress %q: %w", compressStr, perr)
 	}
 
-	// The D-entry address book: S identical drain entries — segreceiver s
-	// (source segment s) dials entry s (the bench drain, which accepts all S
-	// slices on one listener).
-	book := strings.TrimSuffix(strings.Repeat(dialAddr+",", S), ",")
-
+	// The D-entry address book: entry s = content s's own drain listener
+	// (the source segreceiver dials the entry matching its content id, like
+	// the production mini-agents' per-segment endpoints).
 	drainDone := make(chan benchMeshDrainResult, 1)
-	go func() { drainDone <- benchMeshDrain(ctx, r.cfg, l, S, wantMode) }()
+	go func() { drainDone <- benchMeshDrain(ctx, r.cfg, listeners, wantMode) }()
 
 	req := agent.OnSegmentReq{
 		Op:            "onsegment",
