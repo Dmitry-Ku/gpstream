@@ -5,7 +5,7 @@ All notable changes to gpstream are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.3.0] - 2026-10-10
 
 ### Dependencies
 
