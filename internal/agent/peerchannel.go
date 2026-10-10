@@ -306,6 +306,14 @@ func (s *SourceServer) gatherSourceVersion(ctx context.Context, segBinary, segSS
 		// gp_segment_configuration): S=0 (no segreceivers) is the correct
 		// report, not an error.
 	}
+	// An empty segBinary = the segreceiver is not part of this run's data
+	// path (the coordinator mode never launches segreceivers): do not SSH
+	// the segments for a version that is irrelevant — report the segment
+	// count only, with no segreceiver identities to cross-check.
+	if segBinary == "" {
+		sv.S = len(segHosts)
+		return sv, nil
+	}
 	var segs []SegVersion
 	for _, h := range segHosts {
 		ssh := ""
@@ -315,13 +323,13 @@ func (s *SourceServer) gatherSourceVersion(ctx context.Context, segBinary, segSS
 		remote := "'" + segBinary + "' --version"
 		v, gerr := RunRemoteOutput(ctx, ssh, remote)
 		if gerr != nil {
-			return sv, fmt.Errorf("version exchange: segriver --version on %s: %w", h, gerr)
+			return sv, fmt.Errorf("version exchange: segreceiver --version on %s: %w", h, gerr)
 		}
 		// The segreceiver prints "<name> <ver (commit)>": drop the binary
 		// name token so it compares against the destination's identity.
 		fields := strings.Fields(v)
 		if len(fields) < 2 {
-			return sv, fmt.Errorf("version exchange: segriver --version on %s: empty (got %q)", h, v)
+			return sv, fmt.Errorf("version exchange: segreceiver --version on %s: empty (got %q)", h, v)
 		}
 		segs = append(segs, SegVersion{Host: h, Version: strings.Join(fields[1:], " ")})
 	}

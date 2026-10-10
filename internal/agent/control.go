@@ -94,7 +94,7 @@ type OnSegmentReq struct {
 	// non-mesh unit / a dest without a peer listener).
 	PeerAddr string `json:"peer_addr,omitempty"`
 	// SegSSH (1F) is the "user@" prefix the source agent SSHes to its source
-	// segment hosts to gather "segriver --version" (the dry-run A+ mechanism;
+	// segment hosts to gather "segreceiver --version" (the dry-run A+ mechanism;
 	// gpadmin has passwordless SSH to its segments). Empty = no SSH
 	// (single-host layout: the source host IS the segment).
 	SegSSH   string `json:"seg_ssh,omitempty"`

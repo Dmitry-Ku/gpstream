@@ -127,7 +127,7 @@ type TwoAgentRunner interface {
 	// PeerInfo (1F) is the mesh version-exchange wiring: the destination
 	// agent's peer listener address (the source agent dials it once before
 	// the first mesh unit) + the "user@" prefix the source SSHes to its
-	// source segments to gather "segriver --version". Empty peer = no
+	// source segments to gather "segreceiver --version". Empty peer = no
 	// exchange (the in-process runner / a dest without a peer listener).
 	PeerInfo() (peerAddr string, segSSH string)
 	// Release ends the run (commits the source snapshot) and stops the agents.
@@ -779,7 +779,7 @@ func rewritePeerAddr(boundPeer, destAgentSSH string) string {
 // PeerInfo (1F) is the mesh version-exchange wiring: the destination agent's
 // peer listener address (the source agent dials it once before the first
 // mesh unit) + the "user@" prefix the source SSHes to its source segments to
-// gather "segriver --version". Empty peer = no exchange (a dest without a
+// gather "segreceiver --version". Empty peer = no exchange (a dest without a
 // peer listener / not in supervisor mode).
 func (r *processTwoAgentRunner) PeerInfo() (peerAddr string, segSSH string) {
 	return r.destPeerAddr, r.sshUserPrefix(r.cfg.SourceAgentSSH)

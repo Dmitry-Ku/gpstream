@@ -22,7 +22,7 @@ func TestCheckVersions(t *testing.T) {
 		{"all equal", SourceVersion{Version: own, S: 2, SegReceivers: []SegVersion{{Host: "h0", Version: own}, {Host: "h1", Version: own}}}, map[int]string{0: own, 1: own}, false, ""},
 		{"no segs no minis", SourceVersion{Version: own}, map[int]string{}, false, ""},
 		{"source mismatch", SourceVersion{Version: "9.9 (zzz)"}, nil, true, "source-agent="},
-		{"segriver mismatch", SourceVersion{Version: own, S: 1, SegReceivers: []SegVersion{{Host: "h0", Version: "0.1.0 (old)"}}}, nil, true, "segriver@h0="},
+		{"segreceiver mismatch", SourceVersion{Version: own, S: 1, SegReceivers: []SegVersion{{Host: "h0", Version: "0.1.0 (old)"}}}, nil, true, "segreceiver@h0="},
 		{"mini mismatch", SourceVersion{Version: own}, map[int]string{0: "0.1.0 (old)"}, true, "mini[seg0]"},
 	}
 	for _, tc := range cases {
@@ -77,7 +77,7 @@ func TestPeerExchange(t *testing.T) {
 	}()
 
 	s := NewSourceServer(ServerOptions{})
-	req := OnSegmentReq{Op: "onsegment", PeerAddr: l.Addr().String(), SegBinary: "/nonexistent/segriver"}
+	req := OnSegmentReq{Op: "onsegment", PeerAddr: l.Addr().String(), SegBinary: "/nonexistent/segreceiver"}
 	if perr := s.peerExchange(t.Context(), req); perr != nil {
 		t.Fatalf("peerExchange (match): %v", perr)
 	}
@@ -123,7 +123,7 @@ func TestPeerExchangeMismatch(t *testing.T) {
 	}()
 
 	s := NewSourceServer(ServerOptions{})
-	req := OnSegmentReq{Op: "onsegment", PeerAddr: l.Addr().String(), SegBinary: "/nonexistent/segriver"}
+	req := OnSegmentReq{Op: "onsegment", PeerAddr: l.Addr().String(), SegBinary: "/nonexistent/segreceiver"}
 	perr := s.peerExchange(t.Context(), req)
 	if perr == nil {
 		t.Fatal("want a hard error (mismatch), got nil")

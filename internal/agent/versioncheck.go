@@ -55,7 +55,7 @@ func CheckVersions(own string, sv SourceVersion, miniVersions map[int]string) er
 	}
 	for _, g := range sv.SegReceivers {
 		if g.Version != want {
-			mismatches = append(mismatches, fmt.Sprintf("segriver@%s=%s (want %s)", g.Host, g.Version, want))
+			mismatches = append(mismatches, fmt.Sprintf("segreceiver@%s=%s (want %s)", g.Host, g.Version, want))
 		}
 	}
 	for seg, v := range miniVersions {

@@ -442,7 +442,7 @@ func (s *SourceServer) handleStream(req StreamReq) StreamResp {
 
 // peerExchange (1F-2) is the source->dest version exchange: the source
 // agent reads its OWN segment catalog (gp_segment_configuration, role='p':
-// the S primary hosts), SSH-gathers "segriver --version" from every segment
+// the S primary hosts), SSH-gathers "segreceiver --version" from every segment
 // host (the dry-run A+ mechanism; gpadmin has passwordless SSH to its
 // segments — the launch.RunSSHOutput local path covers the single-host
 // layout), and reports its own build identity + the per-host segreceiver

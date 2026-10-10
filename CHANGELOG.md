@@ -57,6 +57,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **BUG #15 (coordinator mode, Greenplum source): the 1F version exchange
+  crashed the plan with `segriver --version on <seg>: exit status 127`.**
+  `cfg.SegBinary` is only resolved in mesh mode (segreceivers are part of
+  the mesh data path), so in `--copy-mode coordinator` the source agent's
+  version exchange ran `'' --version` over SSH on every source segment and
+  failed the whole build-plan. Now an empty segbinary skips the segreceiver
+  gather entirely: the segment count is still reported (informational), but
+  there are no segreceiver identities to cross-check in this mode.
+  Regression: `TestGatherSourceVersionNoSegBinary`.
+- **operator-facing typo: `segriver` -> `segreceiver`** in the version
+  exchange errors, the version-mismatch report and the docs.
+
+
 - **BUG #14 (dry-run mesh deadlock): the controller no longer waits for the
   mesh MiniMap on a dry-run.** `startDest` waited up to 120s for the dest
   agent's D-entry address book in mesh mode, but a dry-run starts the dest
@@ -123,8 +136,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **English-only hygiene:** residual Cyrillic in code comments and one
   CHANGELOG line translated to English (check-english.sh green); repo-wide
   `gofmt -l .` clean (CI gates on both).
-
-### Fixed
 
 - **Source→dest peer channel not TLS-wrapped on the source side (BUG #12)** —
   the destination wraps the peer listener (the 1F version exchange + the
