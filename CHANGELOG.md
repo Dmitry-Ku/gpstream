@@ -55,6 +55,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `TestGatherSideCollectsCopyToProgramGUC`.
 
 
+### Changed
+
+- **dry-run/run output is now copy-mode relevant.** The `route` line and the
+  `route`/`on_segment` checks no longer print mesh-only concepts (per-table
+  route modes, eligible (s,d) pairs, the segreceiver capability) in the
+  coordinator mode, where they describe a data path that is not used: the
+  coordinator line now reads `coordinator — one COPY via the destination
+  coordinator (per-table route modes not used); layout: N → M segs, ...` and
+  the mesh line reads `mesh — ...; units: N direct_1to1 / N router_full /
+  N merge`. The `on_segment` capability check is emitted for mesh only (the
+  segreceivers are a mesh data-path component), and the COPY TO PROGRAM GUC
+  PASS message is mode-aware.
+
 ### Fixed
 
 - **BUG #15 (coordinator mode, Greenplum source): the 1F version exchange

@@ -197,11 +197,11 @@ func FromSides(src, dst *SideValues, opts Options) *Report {
 	r := &Report{Healthy: true}
 	r.addSideChecks(src, opts.Workers)
 	r.addSideChecks(dst, opts.Workers)
-	r.addRouteChecks(src, dst)
+	r.addRouteChecks(src, dst, opts.CopyMode)
 	r.addCollationChecks(src, dst)
 	r.addEncodingChecks(src, dst)
 	r.addExtensionChecks(src, dst)
-	r.addOnSegmentChecks(src)
+	r.addOnSegmentChecks(src, opts.CopyMode)
 	r.addCopyToProgramGUCCheck(src, opts.CopyMode)
 	r.addMiniReadyChecks(dst)
 	r.addTLSCheck(opts.MinTLS)
@@ -277,8 +277,11 @@ func (r *Report) addSideChecks(sv *SideValues, workers int) {
 	}
 }
 
-// addRouteChecks is the informational route-mode summary (M4/T4b).
-func (r *Report) addRouteChecks(src, dst *SideValues) {
+// addRouteChecks is the informational route-mode summary (M4/T4b). The route
+// modes describe the SEGMENT-TO-SEGMENT placement; in the coordinator copy
+// mode they do not drive the data path (one coordinator COPY), so the check
+// is labelled "layout" there.
+func (r *Report) addRouteChecks(src, dst *SideValues, copyMode string) {
 	srcSeg := int32(0)
 	dstSeg := int32(0)
 	if src.Greenplum {
@@ -293,10 +296,20 @@ func (r *Report) addRouteChecks(src, dst *SideValues) {
 			Rec: "expected on plain PostgreSQL; on a GP6 pair the plan reports direct_1to1 / router_full per table"})
 		return
 	}
+	if copyMode != "mesh" {
+		// coordinator (the default): one COPY through the destination
+		// coordinator, which redistributes per the destination layout. The
+		// per-table route modes do not drive the data path, so report the
+		// layout only.
+		r.Add(Check{Name: "route", Side: "src->dst", Sev: Pass,
+			Msg: fmt.Sprintf("route: coordinator — one COPY via the destination coordinator (per-table route modes not used); layout: src=%d dst=%d segments",
+				srcSeg, dstSeg)})
+		return
+	}
 	pairs := route.PairCount(srcSeg, dstSeg)
 	directOK := srcSeg == dstSeg
 	r.Add(Check{Name: "route", Side: "src->dst", Sev: Pass,
-		Msg: fmt.Sprintf("route-mode: src=%d dst=%d segments, %d eligible (s,d) pair(s)%s",
+		Msg: fmt.Sprintf("route: mesh — src=%d dst=%d segments, %d eligible (s,d) pair(s)%s",
 			srcSeg, dstSeg, pairs, boolStr(directOK, "direct_1to1 possible", "direct_1to1 not possible (S!=D) — router_full"))})
 }
 
@@ -361,7 +374,12 @@ func (r *Report) addExtensionChecks(src, dst *SideValues) {
 }
 
 // addOnSegmentChecks (source side): the segment-direct capability (on_segment).
-func (r *Report) addOnSegmentChecks(src *SideValues) {
+func (r *Report) addOnSegmentChecks(src *SideValues, copyMode string) {
+	if copyMode != "mesh" {
+		// segreceivers are part of the mesh data path only — any other mode
+		// never launches them, so the capability is not a property of this run
+		return
+	}
 	if len(src.OnSegmentSummary) == 0 {
 		return // no segreceiver path supplied — the check is not run
 	}
@@ -398,8 +416,13 @@ func (r *Report) addCopyToProgramGUCCheck(src *SideValues, copyMode string) {
 		return // GUC absent (non-Yandex build) or the probe did not run
 	}
 	if strings.ToLower(src.CopyToProgramGUC) == "on" {
-		r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Pass,
-			Msg: fmt.Sprintf("GUC %s = on (source: COPY TO PROGRAM allowed; the mesh on_segment dispatch can run)", segstreamGUCName())})
+		if copyMode == "mesh" {
+			r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Pass,
+				Msg: fmt.Sprintf("GUC %s = on (source: COPY TO PROGRAM allowed; the mesh on_segment dispatch can run)", segstreamGUCName())})
+		} else {
+			r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Pass,
+				Msg: fmt.Sprintf("GUC %s = on (source: COPY TO PROGRAM allowed; not required by the coordinator path)", segstreamGUCName())})
+		}
 		return
 	}
 	// Present but not "on": this build forbids COPY TO PROGRAM.

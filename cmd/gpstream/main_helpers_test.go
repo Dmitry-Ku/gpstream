@@ -142,11 +142,12 @@ func TestLoadRunStats(t *testing.T) {
 func TestPlanNotes(t *testing.T) {
 	// Unresolved route (plain PG / no segments): coordinator-only note.
 	p := &plan.Plan{}
-	if got := routeSummaryLine(p); got != "not resolvable (plain-PostgreSQL or no segments) — coordinator path only" {
+	if got := routeSummaryLine(p, config.Config{CopyMode: config.CopyMesh}); got != "not resolvable (plain-PostgreSQL or no segments) — coordinator path only" {
 		t.Errorf("routeSummaryLine unresolved = %q", got)
 	}
 
-	// Resolved route with mixed units.
+	// Resolved route with mixed units (mesh: the per-mode unit mix).
+	mesh := config.Config{CopyMode: config.CopyMesh}
 	p = &plan.Plan{
 		Route: plan.RouteSummary{
 			Resolved:           true,
@@ -163,15 +164,23 @@ func TestPlanNotes(t *testing.T) {
 			{RouteMode: "coordinator"},
 		},
 	}
-	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, same-major, 2 eligible pair(s), router_full (S!=D); units: 2 direct_1to1 / 1 router_full / 0 merge" {
+	if got := routeSummaryLine(p, mesh); got != "mesh — src=4 dst=8 segs, same-major, 2 eligible pair(s), router_full (S!=D); units: 2 direct_1to1 / 1 router_full / 0 merge" {
 		t.Errorf("routeSummaryLine resolved = %q", got)
 	}
 
 	// Mixed-major + direct-eligible variant.
 	p.Route.GPVersionEqual = false
 	p.Route.PossibleDirect1to1 = true
-	if got := routeSummaryLine(p); got != "src=4 dst=8 segs, mixed-major, 2 eligible pair(s), direct_1to1 possible; units: 2 direct_1to1 / 1 router_full / 0 merge" {
+	if got := routeSummaryLine(p, mesh); got != "mesh — src=4 dst=8 segs, mixed-major, 2 eligible pair(s), direct_1to1 possible; units: 2 direct_1to1 / 1 router_full / 0 merge" {
 		t.Errorf("routeSummaryLine mixed = %q", got)
+	}
+
+	// Non-mesh (coordinator, incl. the empty default): the route modes do
+	// not drive the data path — the line reports the layout only.
+	for _, m := range []config.Config{{CopyMode: config.CopyCoordinator}, {}} {
+		if got := routeSummaryLine(p, m); got != "coordinator — one COPY via the destination coordinator (per-table route modes not used); layout: 4 → 8 segs, mixed-major" {
+			t.Errorf("routeSummaryLine non-mesh (%q) = %q", m.CopyMode, got)
+		}
 	}
 
 	// rateLimitNote / overheadNote / backgroundIndexNote.

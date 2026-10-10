@@ -581,7 +581,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 	}
 	fmt.Printf("redistribution: skew %.0f%% — %s\n",
 		p.Redistrib.Skew*100, p.Redistrib.Reason)
-	fmt.Printf("route:         %s\n", routeSummaryLine(p))
+	fmt.Printf("route:         %s\n", routeSummaryLine(p, cfg))
 	// Fix 1: partitioned parents with a collation-unsafe combination (string
 	// key + no DEFAULT partition + destination collation differs) cannot be
 	// copied without losing rows. Surface them as explicit warnings so the
@@ -661,7 +661,7 @@ func printPlanSummary(p *plan.Plan, cfg config.Config) {
 // the (S,D) segment counts, how many (s,d) pairs the layout admits, and the
 // per-unit mode mix (direct_1to1 vs router_full). When the route is not
 // resolvable (plain PostgreSQL) it degrades to a clear note instead of a number.
-func routeSummaryLine(p *plan.Plan) string {
+func routeSummaryLine(p *plan.Plan, cfg config.Config) string {
 	if !p.Route.Resolved {
 		return "not resolvable (plain-PostgreSQL or no segments) — coordinator path only"
 	}
@@ -687,7 +687,16 @@ func routeSummaryLine(p *plan.Plan) string {
 	if p.Route.PossibleDirect1to1 {
 		d1 = "direct_1to1 possible"
 	}
-	return fmt.Sprintf("src=%d dst=%d segs, %s, %d eligible pair(s), %s; units: %d direct_1to1 / %d router_full / %d merge",
+	if cfg.CopyMode != config.CopyMesh {
+		// Coordinator (the default): the data is one COPY through the
+		// destination coordinator, which redistributes per the destination
+		// layout. The per-table route modes do not drive the data path, so
+		// they are not printed — only the segment layout that the final data
+		// distribution depends on.
+		return fmt.Sprintf("coordinator — one COPY via the destination coordinator (per-table route modes not used); layout: %d → %d segs, %s",
+			p.Route.SrcSegments, p.Route.DstSegments, ver)
+	}
+	return fmt.Sprintf("mesh — src=%d dst=%d segs, %s, %d eligible pair(s), %s; units: %d direct_1to1 / %d router_full / %d merge",
 		p.Route.SrcSegments, p.Route.DstSegments, ver, p.Route.EligiblePairs, d1, direct, router, merge)
 }
 
