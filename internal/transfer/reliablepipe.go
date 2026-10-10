@@ -107,6 +107,16 @@ type ReliablePipeConfig struct {
 	// sender's MaxReconnects budget (RESILIENCE: budget exhausted -> unit
 	// failed -> resume).
 	ResumeTimeout time.Duration
+	// CloseTimeout bounds the sender's Close ring-drain: how long Close
+	// waits for the peer to ACK every written frame before tearing the
+	// transport down. A TCP close with un-ACKed data in the send buffer
+	// (and unread data in the receive buffer) yields an RST, not a FIN —
+	// the kernel discards the un-ACKed tail and the peer loses the stream
+	// end (BUG #9: the end-of-stream trailer of a long stream). Draining
+	// first makes the close a clean FIN. A dead/stuck peer is bounded by
+	// this window; the unit then fails via the normal budget (the
+	// receiver's ResumeTimeout) and the controller resumes it.
+	CloseTimeout time.Duration
 }
 
 // DefaultReliablePipeConfig is the R2-approved default set: --frame-ack on,
@@ -130,6 +140,7 @@ func DefaultReliablePipeConfig() ReliablePipeConfig {
 		AckByteInterval:     1 << 20,
 		AckTimeInterval:     100 * time.Millisecond,
 		ResumeTimeout:       30 * time.Second,
+		CloseTimeout:        10 * time.Second,
 	}
 }
 
@@ -460,13 +471,21 @@ func (rp *ReliablePipe) SetCorruptor(fn func(b []byte) []byte) {
 	l.mu.Unlock()
 }
 
-// Close finishes the pipe (idempotent). The SENDER end first sends a clean
-// FIN (in order after every data frame on the wire) so the receiver gets a
-// clean end-of-stream (io.EOF) rather than a transport error; if the FIN
-// cannot be sent the transport close below still yields EOF on the receiver.
-// The RECEIVER end just tears down.
+// Close finishes the pipe (idempotent). The SENDER end first DRAINS the
+// retransmit ring — it waits (bounded by CloseTimeout) for the peer to ACK
+// every written frame, so no data frame is left in flight when the transport
+// tears down: a socket closed with un-ACKed send data (and unread receive
+// data) RSTs instead of FINs, and the peer loses the stream tail (BUG #9:
+// the end-of-stream trailer of a long stream). If the ring cannot drain
+// (dead/stuck peer) the close proceeds best-effort and the unit fails via
+// the normal budget (the receiver's ResumeTimeout) — the controller resumes.
+// The sender then sends a clean FIN (in order after every data frame on the
+// wire) so the receiver gets a clean end-of-stream (io.EOF) rather than a
+// transport error; if the FIN cannot be sent the transport close below still
+// yields EOF on the receiver. The RECEIVER end just tears down.
 func (rp *ReliablePipe) Close() error {
 	if rp.role == rpSender {
+		rp.drainRing(rp.cfg.CloseTimeout)
 		_ = rp.sendCtrl(ctrlFin, nil) // best effort; order on the wire is kept
 	}
 	l := rp.link
@@ -475,6 +494,35 @@ func (rp *ReliablePipe) Close() error {
 	c, _ := rp.currentConn()
 	_ = c.Close()
 	return nil
+}
+
+// drainRing blocks until the peer has ACKed every frame the sender has
+// written (the retransmit ring is empty), or until the timeout elapses, or
+// the pipe dies. It returns true only if the ring drained clean. A
+// cumulative ACK implies the receiver has consumed each frame into its
+// output buffer (Read serves it before the EOF), so a drained ring means the
+// whole stream — including the last frame — is on the receiver's side.
+func (rp *ReliablePipe) drainRing(timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		rp.ringMu.Lock()
+		empty := rp.ringBytes == 0
+		dead := rp.dead.Load()
+		rp.ringMu.Unlock()
+		if dead || rp.link.aborted.Load() {
+			return false
+		}
+		if empty {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // linkGone marks the link permanently gone (the accept loop stopped, or the
