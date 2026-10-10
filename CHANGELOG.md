@@ -38,6 +38,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Source→dest peer channel not TLS-wrapped on the source side (BUG #12)** —
+  the destination wraps the peer listener (the 1F version exchange + the
+  read-only dst-query loop) in the data-plane TLS, but the source agent's
+  `dialPeer` still dialed it with a plain `net.Dial` and sent its version
+  report in plaintext. The TLS handshake failed, the destination closed the
+  connection, and the build-plan aborted with "peer: read verdict: EOF"
+  (found on the first data-TLS live run, INC8 D→A). The source now performs
+  the TLS client handshake against the peer listener (verifying the
+  destination against the CA and presenting its data-TLS keypair for mTLS)
+  before sending the version report — the same client-side completion as the
+  BUG #11 report-channel fix. Regression: `TestDialPeerOverDataTLS` (the
+  version exchange over a TLS-wrapped, mTLS peer listener; RED without the
+  fix: "peer: read verdict: EOF").
+
 - **Mini-agent report channel not TLS-wrapped on the mini side (BUG #11)** —
   with the data-plane TLS enabled (`--seg-tls-*`), the supervisor wraps the
   mini report listener in TLS (mTLS), but the mini-agent still dialed the

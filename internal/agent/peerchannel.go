@@ -18,6 +18,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 	"github.com/gpstream/gpstream/internal/version"
 )
@@ -64,13 +66,43 @@ var errPeerDead = errors.New("peer channel: connection closed")
 // dst-query reader loop. On a version mismatch the connection is closed and
 // the error returned (no data / no plan flows — a mixed-version deployment
 // must fail fast).
-func dialPeer(ctx context.Context, peerAddr string, sv SourceVersion) (*peerChannel, error) {
+func dialPeer(ctx context.Context, peerAddr string, sv SourceVersion, dataCert, dataKey, dataCA string) (*peerChannel, error) {
 	dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer dcancel()
 	d := net.Dialer{}
 	conn, err := d.DialContext(dctx, "tcp", peerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("peer: dial dest peer %s: %w", peerAddr, err)
+	}
+	// The destination wraps the peer listener in the data-plane TLS (it is a
+	// data-plane channel: it carries the dst-query loop + the 1F version
+	// exchange). When data TLS is on the source must be the TLS client — a
+	// plaintext version report against a TLS server fails the handshake and
+	// the destination closes the connection (BUG #12, same class as BUG #11:
+	// the report-channel TLS the supervisor added was never matched on the
+	// dialing side). The source presents its data-TLS keypair (the destination
+	// runs mTLS: CA-set requires a client cert) and verifies the destination
+	// against the CA.
+	if transfer.TLSEnabled(dataCert, dataKey, dataCA) {
+		host, herr := hostOf(peerAddr)
+		if herr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("peer: bad peer addr %q: %w", peerAddr, herr)
+		}
+		ccfg, cerr := transfer.ClientTLSConfig(host, dataCert, dataKey, dataCA, "")
+		if cerr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("peer: tls config: %w", cerr)
+		}
+		tc := tls.Client(conn, ccfg)
+		hctx, hcanc := context.WithTimeout(ctx, 30*time.Second)
+		if hserr := tc.HandshakeContext(hctx); hserr != nil {
+			hcanc()
+			_ = conn.Close()
+			return nil, fmt.Errorf("peer: tls handshake with dest: %w", hserr)
+		}
+		hcanc()
+		conn = tc
 	}
 	pc := &peerChannel{
 		conn:    conn,
@@ -318,7 +350,7 @@ func (s *SourceServer) ensurePeerChannel(ctx context.Context, peerAddr, segBinar
 			s.peerErr = gerr
 			return
 		}
-		c, derr := dialPeer(ectx, peerAddr, sv)
+		c, derr := dialPeer(ectx, peerAddr, sv, s.opts.DataTLSCert, s.opts.DataTLSKey, s.opts.DataTLSCA)
 		if derr != nil {
 			s.peerErr = derr
 			return
