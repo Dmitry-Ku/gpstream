@@ -7,6 +7,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **BUG #13 (mesh, controller): `StreamMini` hung the whole run when the source
+  ON SEGMENT dispatch failed.** The source error paths (transport error and
+  `Ok=false`) called `WaitUnitDone` WITHOUT `CancelUnit` — unlike the
+  coordinator path (`streamCoordinatorPersistent`). When the source COPY fails
+  (e.g. `COPY TO PROGRAM ... ON SEGMENT` rejected on a build where external
+  program COPY is disabled), the unit's data never reaches the destination
+  minis, so the supervisor never emits unit-done: the first worker parks in
+  `WaitUnitDone` holding `streamMu` forever, and every other worker parks on
+  `streamMu.Lock()` — the run deadlocks with no error and no progress
+  (INC8, 1221 tables, workers=2: both units stuck in `copying`, journal
+  frozen, source agent idle). `StreamMini` now sends `CancelUnit` before
+  `WaitUnitDone` on both error paths (the dest fails the in-flight serve and
+  the wait returns promptly with the cancel failure), mirroring the
+  coordinator path. Regression: `TestStreamMiniCancelsDestOnSourceOnSegmentFailure`
+  (fake source/dest control agents over loopback; RED without the fix —
+  `StreamMini` parks 15s in `WaitUnitDone`, GREEN with it).
+
+
 ### Removed
 
 - **`gpstream selftest` subcommand + `internal/selftest` package** (removed

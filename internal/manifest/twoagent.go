@@ -1038,10 +1038,17 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 	o.DestAddr = r.miniAddrs
 	oresp, err := r.ctrl.OnSegment(o)
 	if err != nil {
+		// BUG #13: the source dispatch failed, so the unit's data will not
+		// reach the minis. Cancel the in-flight serve so the dest supervisor
+		// fails it and the matching WaitUnitDone returns promptly instead of
+		// blocking (holding streamMu) until the mini AcceptTimeout. Mirrors
+		// the coordinator path (streamCoordinatorPersistent).
+		_, _ = r.destCtrl.CancelUnit(o.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", false, false, nil, fmt.Errorf("two-agent: onsegment (mini) unit %d: %w", o.UnitID, err)
 	}
 	if !oresp.Ok {
+		_, _ = r.destCtrl.CancelUnit(o.UnitID)
 		_, _ = r.destCtrl.WaitUnitDone(ack.ReqID)
 		return 0, 0, 0, "", "", false, false, nil, fmt.Errorf("two-agent: source agent onsegment (mini) unit %d: %s", o.UnitID, oresp.Error)
 	}
