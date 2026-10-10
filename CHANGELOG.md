@@ -20,6 +20,35 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Mini-agent hello read deadline leaked onto the long-lived report
+  connection (BUG #8)** — `AcceptMinis` bound the mini-hello read with an
+  absolute 30s `SetReadDeadline` and never cleared it, so the deadline
+  survived onto the report connection. A per-unit mini-unit-resp arrives only
+  after the mini has received its FULL slice — well over 30s on a large
+  table — so the supervisor's next report read failed with `i/o timeout` and
+  every healthy mini was mis-reported as an orphan (live crash+resume on a
+  5GB table: unit failed, no swap). The deadline is now cleared once the
+  hello is in; a dead mini still surfaces as a connection drop
+  (orphan-exit). The hello bound is configurable (`WithHelloTimeout`, 30s
+  default) with a regression test (RED without the fix: `i/o timeout`).
+
+- **`ReliablePipe.Close()` dropped the end-of-stream trailer on long streams
+  (BUG #9)** — the sender (segreceiver) finished and closed immediately,
+  leaving the last frame un-ACKed in the ring while the peer's ACKs were
+  still in the sender's socket receive buffer. A TCP close with un-ACKed send
+  data and unread receive data yields an RST instead of a FIN — the kernel
+  discards the un-ACKed tail, the receiver sees a transport break, waits
+  ResumeTimeout for a re-dial that never comes, and the stream ends without
+  its trailer (`ErrTruncatedStream`). `Close()` on the sender now drains the
+  ring first (bounded by the new `CloseTimeout` config, default 10s): it
+  waits for the peer to ACK every written frame, so the close is a clean FIN
+  and no stream tail can be RST-discarded. A dead/stuck peer bounds the drain
+  by `CloseTimeout` and the unit then fails via the receiver's ResumeTimeout
+  budget (the controller resumes) — the failure path is unchanged. Regression:
+  `TestReliablePipeTCPCloseDrainsRing` (cross-process TCP, 50 frames, Close
+  immediately after the last Write). Found by the INC7 scale run
+  (200M rows / ~10 GB); fixed and re-verified GREEN on `2e04561`.
+
 - **Stale `gpstream doctor` references** (the command was already folded into
   `dry-run` at P1e, `6e82847`, but still referenced): the CI smoke step ran
   `./bin/gpstream doctor` and FAILED on every push since 07.10 — removed (the
