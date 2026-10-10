@@ -19,8 +19,6 @@ import (
 	"github.com/gpstream/gpstream/internal/launch"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/portalloc"
-	"github.com/gpstream/gpstream/internal/transfer"
-	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -140,50 +138,55 @@ type TwoAgentRunner interface {
 	// and discards the frames) — no destination database is involved. The
 	// source agent's report is authoritative.
 	Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (rows int64, wire, logical uint64, err error)
+	// BenchMesh streams ONE table through the MESH on_segment source read
+	// (the F-14 mesh input-stream benchmark): the source agent runs the real
+	// COPY ... TO PROGRAM (segreceiver) ON SEGMENT; the GP kernel launches
+	// the segreceiver on every primary source segment and each streams its
+	// slice to the runner's drain (frame v2 + compression + frame-ack + data
+	// TLS per config). The destination cluster is not involved. rows comes
+	// from the kernel's COPY row count (cross-checked against the per-slice
+	// trailer sum); wire/logical are counted by the drain (the source agent
+	// cannot see them — the segreceivers stream independently per segment).
+	BenchMesh(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (rows int64, wire, logical uint64, err error)
 }
 
 // benchViaCtrl is the shared Bench implementation for both runners: the
-// runner's control client is already connected (Start), so it pre-binds a
-// loopback drain sink, instructs the long-lived source agent to stream the
-// unit to it, and returns the source agent's own report (rows + on-wire +
-// logical volume). The sink reads the UnitSpec header, decompresses the
-// framed stream and discards it; a source that dies mid-stream surfaces as a
-// sink error (the io.Copy hits EOF only on a clean stream end).
-func benchViaCtrl(ctrl *agent.ControlClient, ctx context.Context, unitID, jobID uint32, schema, table, compressStr string) (int64, uint64, uint64, error) {
-	listen, err := prebindLoopback()
+// runner's control client is already connected (Start), so it binds a drain
+// sink the source agent can dial, instructs the long-lived source agent to
+// stream the unit to it, and returns the source agent's own report (rows +
+// on-wire + logical volume). The drain address is layout-aware: loopback for
+// a local source agent (the gp6lab / single-host layout), the controller's
+// routable IPv4 + a free port for a remote one (the multi-host GP6 layout —
+// a loopback prebind here is the source agent's OWN localhost, where nobody
+// listens). The sink reads the UnitSpec header, then the framed stream
+// (frame-ack + data TLS per the operator config, like the destination agent)
+// and discards it; a source that dies mid-stream surfaces as a sink error.
+func benchViaCtrl(ctrl *agent.ControlClient, cfg *config.Config, ctx context.Context, unitID, jobID uint32, schema, table, compressStr string) (int64, uint64, uint64, error) {
+	r := &processTwoAgentRunner{cfg: cfg} // benchDrainAddr only needs cfg + the source-host layout
+	listen, dial, err := r.benchDrainAddr()
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("bench: pre-bind drain sink: %w", err)
+		return 0, 0, 0, err
 	}
+	l, err := r.benchDrainListen(listen)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer l.Close()
+
 	sinkDone := make(chan error, 1)
 	go func() {
-		l, lerr := net.Listen("tcp", listen)
-		if lerr != nil {
-			sinkDone <- lerr
-			return
-		}
-		defer l.Close()
-		conn, aerr := l.Accept()
+		conn, aerr := benchDrainAccept(ctx, l)
 		if aerr != nil {
-			sinkDone <- aerr
+			sinkDone <- fmt.Errorf("bench: drain accept: %w", aerr)
 			return
 		}
-		defer conn.Close()
-		spec, serr := agent.ReadUnitSpec(conn)
-		if serr != nil {
-			sinkDone <- serr
+		tc, terr := benchDrainTLS(cfg, conn)
+		if terr != nil {
+			_ = conn.Close()
+			sinkDone <- terr
 			return
 		}
-		mode, _, perr := compress.Parse(spec.Compress)
-		if perr != nil {
-			sinkDone <- perr
-			return
-		}
-		fr := transfer.NewFramedReader(conn, compress.NewDec(mode))
-		if _, cerr := io.Copy(io.Discard, fr); cerr != nil {
-			sinkDone <- cerr
-			return
-		}
-		sinkDone <- nil
+		sinkDone <- drainCoordinatorSlice(ctx, cfg, l, tc)
 	}()
 	sreq := agent.StreamReq{
 		Op:       "stream",
@@ -192,7 +195,7 @@ func benchViaCtrl(ctrl *agent.ControlClient, ctx context.Context, unitID, jobID 
 		JobID:    jobID,
 		UnitID:   unitID,
 		Compress: compressStr,
-		DestAddr: listen,
+		DestAddr: dial,
 	}
 	resp, serr := ctrl.Stream(sreq)
 	if serr != nil {
@@ -211,11 +214,11 @@ func benchViaCtrl(ctrl *agent.ControlClient, ctx context.Context, unitID, jobID 
 }
 
 func (r *processTwoAgentRunner) Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (int64, uint64, uint64, error) {
-	return benchViaCtrl(r.ctrl, ctx, unitID, jobID, schema, table, compress)
+	return benchViaCtrl(r.ctrl, r.cfg, ctx, unitID, jobID, schema, table, compress)
 }
 
 func (r *InProcTwoAgentRunner) Bench(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (int64, uint64, uint64, error) {
-	return benchViaCtrl(r.ctrl, ctx, unitID, jobID, schema, table, compress)
+	return benchViaCtrl(r.ctrl, r.cfg, ctx, unitID, jobID, schema, table, compress)
 }
 
 // unitStreamRequest is the Manager's per-unit instruction to the runner.

@@ -56,14 +56,22 @@ func (s *BenchStats) WireRate() float64 {
 }
 
 // BenchAll runs the input-stream benchmark over the selected units (F-14, P7).
-// Each unit is read through the two-agent source path: the source agent runs
-// the real COPY ... TO STDOUT -> frame v2 -> compression -> socket pipeline and
-// reports the row count + on-wire + logical volume; the runner receives the
-// stream on a drain sink (it reads the UnitSpec header, decompresses and
-// discards the frames) so the measured wall time is the source's production
-// rate and no destination database is involved. Units run on a WorkersPerPair
-// pool, exactly like a run; the --timeout deadline (ctx) cuts the benchmark
-// short and the partial result is returned with TimedOut set.
+// Each unit is read through the two-agent source path; the runner receives the
+// stream on a drain sink (no destination database is involved) so the measured
+// wall time is the source's production rate:
+//   - coordinator: the source agent runs the real COPY ... TO STDOUT -> frame
+//     v2 -> compression -> socket pipeline and reports rows + wire + logical
+//     (its own counters); the drain discards the stream.
+//   - mesh: the source agent runs the real COPY ... TO PROGRAM (segreceiver)
+//     ON SEGMENT; the GP kernel launches the segreceiver on every primary
+//     source segment and each streams its slice to the drain. rows comes from
+//     the kernel's COPY row count (cross-checked against the per-slice trailer
+//     sum); wire/logical are the drain's counters (the source agent cannot see
+//     them — the segreceivers stream independently per segment).
+//
+// Units run on a WorkersPerPair pool, exactly like a run; the --timeout
+// deadline (ctx) cuts the benchmark short and the partial result is returned
+// with TimedOut set.
 //
 // When runner is nil a process runner is started for the benchmark and
 // released on return (cmdBench); the unit tests inject a fake runner.
@@ -84,10 +92,7 @@ func (m *Manager) BenchAll(ctx context.Context, units []plan.Table, runner TwoAg
 			_ = runner.Release(context.Background())
 		}
 	}()
-	switch m.cfg.CopyMode {
-	case config.CopyMesh:
-		return nil, fmt.Errorf("bench: --copy-mode mesh measures the per-segment source read (COPY ON SEGMENT), which requires a real Greenplum source; run it on the lab (gp6lab build tag)")
-	}
+	mesh := m.cfg.CopyMode == config.CopyMesh
 	workers := m.cfg.WorkersPerPair
 	if workers < 1 {
 		workers = 1
@@ -132,7 +137,16 @@ func (m *Manager) BenchAll(ctx context.Context, units []plan.Table, runner TwoAg
 				t0 := time.Now()
 				uc, _ := m.unitCompressors(t)
 				res.CompOff = m.compressionOffFor(t)
-				rows, wire, logical, err := runner.Bench(ctx, uint32(u.UnitID), jobIDFromHash(u.JobID), t.Schema, t.Name, m.twoAgentCompressString(uc))
+				var rows int64
+				var wire, logical uint64
+				var err error
+				if mesh {
+					// Mesh: the real per-segment source read (COPY ON SEGMENT,
+					// the segreceivers stream to the runner's drain).
+					rows, wire, logical, err = runner.BenchMesh(ctx, uint32(u.UnitID), jobIDFromHash(u.JobID), t.Schema, t.Name, m.twoAgentCompressString(uc))
+				} else {
+					rows, wire, logical, err = runner.Bench(ctx, uint32(u.UnitID), jobIDFromHash(u.JobID), t.Schema, t.Name, m.twoAgentCompressString(uc))
+				}
 				res.Elapsed = time.Since(t0)
 				res.Rows = rows
 				res.Wire = wire

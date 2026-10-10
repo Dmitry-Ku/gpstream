@@ -68,6 +68,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
   segreceivers are a mesh data-path component), and the COPY TO PROGRAM GUC
   PASS message is mode-aware.
 
+### Added
+
+- **`bench` in mesh mode** (F-14): `--copy-mode mesh` now runs the real
+  per-segment source read — the source agent issues
+  `COPY ... TO PROGRAM (gpstream-segreceiver ...) ON SEGMENT`, the GP kernel
+  launches the segreceiver on every primary source segment, and each
+  segreceiver streams its slice (frame v2 + compression + frame-ack + data
+  TLS per `--seg-tls-*` / `--frame-ack`) to a drain sink on the controller
+  (no destination cluster; the payload is discarded). Metrics are labelled
+  per mode in the header: mesh rows come from the GP kernel's COPY row count
+  (cross-checked against the per-slice trailer sum), mesh wire/logical are
+  counted by the drain (the source agent cannot see the per-segment streams);
+  coordinator rows/wire/logical come from the source agent's counters.
+- **`bench` works multi-host (both modes).** The drain sink was loopback-only
+  (the single-host gp6lab layout); a remote source agent dials its OWN
+  localhost, where nobody listens — the benchmark silently produced no
+  progress. The drain now binds the controller's routable IPv4 + a free port
+  for a remote source agent (loopback kept for the local layout) and serves
+  data TLS + the frame-ack protocol when configured, so the measured wire
+  volume includes the real transport overhead.
+- Tests: `TestBenchMeshDrainFrameAck` / `TestBenchMeshDrainPlain` (the drain
+  against the real `segstream.SendCompressed` send path, with and without
+  frame-ack); `TestBenchAllMeshDispatch` (mesh routes units through
+  `BenchMesh`).
+
 ### Fixed
 
 - **BUG #15 (coordinator mode, Greenplum source): the 1F version exchange

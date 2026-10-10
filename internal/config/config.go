@@ -1011,6 +1011,14 @@ func (c *Config) ResolveSegListen(nUnits int) error {
 	return nil
 }
 
+// PrimaryIPv4 is the exported form of primaryIPv4 (the bench drain binds a
+// routable controller address the source segments can dial).
+func PrimaryIPv4() (string, error) { return primaryIPv4() }
+
+// FreePortOnHost finds a free TCP port on the given host (the bench drain
+// pre-binds it; the kernel may race it, which is acceptable for a benchmark).
+func FreePortOnHost(host string) (int, error) { return freePort(host) }
+
 // primaryIPv4 returns the first non-loopback, global IPv4 address of the
 // host (the one the source segments are most likely to reach).
 func primaryIPv4() (string, error) {

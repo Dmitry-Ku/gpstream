@@ -36,6 +36,10 @@ type fakeBenchRunner struct {
 	wire    uint64
 	logical uint64
 	block   bool
+	// benchMeshCalls counts the BenchMesh dispatches (the mesh-mode unit
+	// test asserts the mesh path is taken).
+	benchMeshCalls int
+	benchCalls     int
 }
 
 func (f *fakeBenchRunner) Start(context.Context) error { return nil }
@@ -71,6 +75,12 @@ func (f *fakeBenchRunner) Bench(ctx context.Context, unitID, jobID uint32, schem
 		<-ctx.Done()
 		return 0, 0, 0, ctx.Err()
 	}
+	f.benchCalls++
+	return f.rows, f.wire, f.logical, nil
+}
+
+func (f *fakeBenchRunner) BenchMesh(ctx context.Context, unitID, jobID uint32, schema, table, compress string) (int64, uint64, uint64, error) {
+	f.benchMeshCalls++
 	return f.rows, f.wire, f.logical, nil
 }
 
@@ -148,17 +158,37 @@ func TestBenchAllEmptyUnits(t *testing.T) {
 	}
 }
 
-// TestBenchAllRejectsSegmentModes: P7 — on_segment measures the
-// per-segment source read, which needs a real Greenplum source (gp_segment_id
-// + ON SEGMENT / routing); on a non-GP source they are refused with a clear
-// message pointing at the lab.
-func TestBenchAllRejectsSegmentModes(t *testing.T) {
+// TestBenchAllMeshDispatch: --copy-mode mesh routes every unit through the
+// mesh source read (runner.BenchMesh: the real COPY ON SEGMENT + the
+// segreceivers streaming to the drain) instead of the coordinator Bench.
+func TestBenchAllMeshDispatch(t *testing.T) {
+	runner := &fakeBenchRunner{rows: 1, wire: 100, logical: 40}
 	m := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyMesh })
-	if _, err := m.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
-		t.Fatal("benchall(on_segment): want the real-GP error")
+	st, err := m.BenchAll(context.Background(), mkBenchUnits(2), runner)
+	if err != nil {
+		t.Fatalf("benchall(mesh): %v", err)
 	}
-	m2 := newMgr(t, pg.NewFakeConn(), nil, func(c *config.Config) { c.CopyMode = config.CopyMesh })
-	if _, err := m2.BenchAll(context.Background(), mkBenchUnits(1), &fakeBenchRunner{}); err == nil {
-		t.Fatal("benchall(on_segment): want the real-GP error")
+	if st == nil || len(st.Results) != 2 {
+		t.Fatalf("benchall(mesh) results = %v, want 2", st)
+	}
+	if runner.benchMeshCalls != 2 {
+		t.Errorf("mesh units: BenchMesh called %d times, want 2", runner.benchMeshCalls)
+	}
+	if runner.benchCalls != 0 {
+		t.Errorf("mesh units: Bench (coordinator) called %d times, want 0", runner.benchCalls)
+	}
+	// The mesh path still reports per-unit volume (the drain's counters stand
+	// in for the fake's canned triple).
+	if st.TotalRows != 2 || st.TotalWire != 200 || st.TotalLogical != 80 {
+		t.Errorf("mesh totals = rows %d wire %d logical %d, want 2/200/80", st.TotalRows, st.TotalWire, st.TotalLogical)
+	}
+	// Coordinator mode takes the other branch.
+	cr := &fakeBenchRunner{rows: 1, wire: 5, logical: 5}
+	mc := newMgr(t, pg.NewFakeConn(), nil, nil)
+	if _, err := mc.BenchAll(context.Background(), mkBenchUnits(1), cr); err != nil {
+		t.Fatalf("benchall(coordinator): %v", err)
+	}
+	if cr.benchCalls != 1 || cr.benchMeshCalls != 0 {
+		t.Errorf("coordinator units: Bench %d / BenchMesh %d, want 1 / 0", cr.benchCalls, cr.benchMeshCalls)
 	}
 }

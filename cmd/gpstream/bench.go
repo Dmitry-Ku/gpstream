@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -80,6 +81,14 @@ func cmdBench(args []string) error {
 	fmt.Println("gpstream bench")
 	fmt.Println("==============")
 	fmt.Println("mode:           input stream only (source read -> frame -> compress -> discard; no destination)")
+	switch cfg.CopyMode {
+	case config.CopyMesh:
+		fmt.Println("copy-mode:      mesh — COPY ON SEGMENT: the segreceivers on the source segments stream the slices to the drain (per-segment source read)")
+		fmt.Println("metrics:        rows: the GP kernel's COPY ON SEGMENT row count; wire/logical: counted by the drain on the controller (the source agent cannot see the per-segment streams)")
+	default:
+		fmt.Println("copy-mode:      coordinator — COPY TO STDOUT on the source coordinator, one stream to the drain")
+		fmt.Println("metrics:        rows/wire/logical from the source agent's counters (on the source)")
+	}
 	fmt.Printf("units:          %s\n", plan.BenchSummaryLine(units))
 	fmt.Printf("workers:        %d\n", cfg.WorkersPerPair)
 	fmt.Printf("compression:    %s\n", comp)
