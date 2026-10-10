@@ -213,7 +213,7 @@ func dsnHostPort(dsn string) (string, int) {
 // listener (reportBound, host-rewritten for the layout). It returns the
 // handles (the caller stops them on teardown as the last resort; the
 // supervisor's mini-done is the clean path).
-func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64, sslCert, sslKey, sslCA, dataCert, dataKey, dataCA string, segs []miniSegTarget) ([]*launch.Handle, error) {
+func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, frameAck, ackTimeout string, maxReconnects int, retransmitMax int64, sslCert, sslKey, sslCA, dataCert, dataKey, dataCA string, dataIdleTimeout time.Duration, segs []miniSegTarget) ([]*launch.Handle, error) {
 	// The report address the minis dial: the bound address, host-rewritten
 	// when it bound 0.0.0.0 (a single-host layout dials 127.0.0.1; a remote
 	// layout dials the coordinator's non-loopback IP).
@@ -250,6 +250,7 @@ func launchDestMinis(ctx context.Context, reportBound, sshUser, portRange, frame
 			"--data-listen", "0.0.0.0:0",
 			"--accept-timeout", "5m",
 			"--stream-timeout", "6h",
+			"--data-idle-timeout", dataIdleTimeout.String(),
 			// DESIGN §4.6: the minis must receive the slice on the same
 			// transport the segreceivers send it on (frame-ack by default).
 			// Mismatch = the mini reads raw frames from a "GPSA" control

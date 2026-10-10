@@ -133,6 +133,14 @@ type Config struct {
 	// never pins an epoch, so this has no effect there.
 	MaxSnapshotDelta time.Duration
 
+	// DataIdleTimeout (L2 data-plane watchdog) bounds a unit's data
+	// (sub-)stream silence: no byte arrives for this long -> the destination
+	// mini-agent declares the stream dead and FAILS the unit (idle-based, so
+	// it is size- and link-independent: a 2-hour table streams continuously
+	// and never trips it; a wedged segreceiver / a GUC flip mid-copy goes
+	// silent and fails after the timeout). 0 disables.
+	DataIdleTimeout time.Duration
+
 	// Resilience (FR-06/FR-07).
 	AutoResume int // N >= 0; 0 = manual only
 	// OnUnitFailure selects what the run does when a unit fails (spec F-06):
@@ -285,6 +293,7 @@ func Default() Config {
 		SSLMinTLS:           "1.2",
 		WorkersPerPair:      1,                   // P1d: default 1 = strict (one exact snapshot point; N>1 = snapshot-epoch)
 		MaxSnapshotDelta:    1 * time.Second,     // P1d: snapshot-epoch pin-spread limit (seconds)
+		DataIdleTimeout:     5 * time.Minute,     // L2: no data bytes on a unit's stream for this long -> fail the unit
 		StateDir:            "/var/lib/gpstream", // v4 §8 "State"
 	}
 }
@@ -327,6 +336,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxSnapshotDelta < 0 {
 		return fmt.Errorf("max-snapshot-delta must be >= 0 seconds (0 disables the check), got %s", c.MaxSnapshotDelta)
+	}
+	if c.DataIdleTimeout < 0 {
+		return fmt.Errorf("data-idle-timeout must be >= 0 (0 disables the watchdog), got %s", c.DataIdleTimeout)
 	}
 	if c.AutoResume < 0 {
 		return fmt.Errorf("auto-resume must be >= 0")
@@ -543,6 +555,11 @@ func (c *Config) ApplyEnv() {
 	if v, ok := get("MAX_SNAPSHOT_DELTA"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxSnapshotDelta = time.Duration(n) * time.Second
+		}
+	}
+	if v, ok := get("DATA_IDLE_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.DataIdleTimeout = d
 		}
 	}
 	if v, ok := get("COMPRESS"); ok {
@@ -842,6 +859,10 @@ func assignConfigString(c *Config, key, v string) {
 	case "max_snapshot_delta":
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxSnapshotDelta = time.Duration(n) * time.Second
+		}
+	case "data_idle_timeout":
+		if d, err := time.ParseDuration(v); err == nil {
+			c.DataIdleTimeout = d
 		}
 	case "compress":
 		c.Compression = Compression(v)

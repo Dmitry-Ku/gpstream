@@ -185,6 +185,18 @@ func parseConfig(args []string) (config.Config, error) {
 			// N>1). 0 disables the check; default 1s.
 			i++
 			cfg.MaxSnapshotDelta = time.Duration(atoi(args[i])) * time.Second
+		case "--data-idle-timeout":
+			// L2 data-plane watchdog: no data bytes on a unit's stream for
+			// this long -> the destination mini-agent fails the unit
+			// (idle-based; safe for large tables / narrow links). 0 disables.
+			i++
+			if d, perr := time.ParseDuration(args[i]); perr != nil {
+				return cfg, fmt.Errorf("invalid --data-idle-timeout %q: %v", args[i], perr)
+			} else if d < 0 {
+				return cfg, fmt.Errorf("data-idle-timeout must be >= 0 (0 disables), got %s", args[i])
+			} else {
+				cfg.DataIdleTimeout = d
+			}
 
 		// Resilience (FR-06/FR-07).
 		case "--auto-resume":
@@ -1764,6 +1776,9 @@ Performance:
   --workers N                      parallel workers per host-pair (default 1; 1 = strict, N>1 = snapshot-epoch)
   --max-snapshot-delta SEC         snapshot-epoch pin-spread limit in seconds for
                                    --workers N>1 (0 disables; default 1s)
+  --data-idle-timeout DUR          L2 watchdog: no data bytes on a unit's
+                                   stream for this long -> fail the unit
+                                   (idle-based; default 5m, 0 disables)
   --small-table-threshold size     tables smaller than this copy with compression
                                    off (default 1MiB; 0 disables)
   --index-workers N                background index-build workers (default 2)

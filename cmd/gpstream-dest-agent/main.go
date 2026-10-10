@@ -77,6 +77,7 @@ func main() {
 	// Timeouts.
 	acceptTO := flag.Duration("accept-timeout", 5*time.Minute, "wait for the source agent's connection")
 	streamTO := flag.Duration("stream-timeout", 6*time.Hour, "whole-stream timeout")
+	dataIdleTO := flag.Duration("data-idle-timeout", 5*time.Minute, "L2 data-plane watchdog: no data bytes on a unit's stream for this long -> fail the unit (0 disables; the controller forwards its --data-idle-timeout)")
 	// Frame-ACK (DESIGN §4.6): frame-level ACK + RST-resume on the data
 	// socket. The controller passes the run's values (default on).
 	frameAck := flag.String("frame-ack", "on", "frame-level ACK + RST-resume on the data socket: on|off (default on)")
@@ -198,22 +199,23 @@ func main() {
 			fail("invalid --port-range %q: %v", *portRange, perr)
 		}
 		res, err := agent.ServeMini(ctx, agent.MiniOptions{
-			Seg:           *seg,
-			Version:       version.String(),
-			DataListen:    *dataListen,
-			PortAlloc:     portAlloc,
-			PrimaryDSN:    *dest,
-			SSLCert:       *sslCert,
-			SSLKey:        *sslKey,
-			SSLCA:         *sslCA,
-			SSLMinTLS:     *sslMinTLS,
-			DataTLSCert:   *dataCert,
-			DataTLSKey:    *dataKey,
-			DataTLSCA:     *dataCA,
-			DataTLSMinTLS: *dataMinTLS,
-			ReportAddr:    *reportAddr,
-			AcceptTimeout: *acceptTO,
-			StreamTimeout: *streamTO,
+			Seg:             *seg,
+			Version:         version.String(),
+			DataListen:      *dataListen,
+			PortAlloc:       portAlloc,
+			PrimaryDSN:      *dest,
+			SSLCert:         *sslCert,
+			SSLKey:          *sslKey,
+			SSLCA:           *sslCA,
+			SSLMinTLS:       *sslMinTLS,
+			DataTLSCert:     *dataCert,
+			DataTLSKey:      *dataKey,
+			DataTLSCA:       *dataCA,
+			DataTLSMinTLS:   *dataMinTLS,
+			ReportAddr:      *reportAddr,
+			AcceptTimeout:   *acceptTO,
+			StreamTimeout:   *streamTO,
+			DataIdleTimeout: *dataIdleTO,
 			// DESIGN §4.6: receive the slice on the same transport the
 			// segreceiver sent it on (frame-ack default on) — otherwise the
 			// mini reads raw frames from a "GPSA" control stream.
@@ -354,7 +356,7 @@ func main() {
 			}
 			miniHandles, err = launchDestMinis(ctx, srv.Hello().Report, *miniSSHUser, *portRange,
 				*frameAck, *ackTimeout, *maxReconnects, *retransmitMax,
-				*sslCert, *sslKey, *sslCA, *dataCert, *dataKey, *dataCA, segs)
+				*sslCert, *sslKey, *sslCA, *dataCert, *dataKey, *dataCA, *dataIdleTO, segs)
 			if err != nil {
 				srv.Close()
 				fail("launch D mini-agents: %v", err)

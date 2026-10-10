@@ -9,6 +9,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **L2 data-plane watchdog: `--data-idle-timeout` (default 5m).** A unit's
+  data (sub-)stream that receives NO byte for this long is declared dead by
+  the destination mini-agent: the stream is killed (a ReliablePipe receiver
+  is closed — `markDead`, so the blocked read gets EOF and no re-accept — or
+  the raw connection is closed), the unit FAILS with a diagnostic, and the
+  controller's `WaitUnitDone` unblocks through the normal `unit-done` path.
+  Idle-based, so it is size- and link-independent: a 2-hour table streams
+  continuously and never trips it; a wedged segreceiver — including a GUC
+  flip mid-copy that makes the source's `COPY TO PROGRAM` die while the
+  destination still waits — goes silent and fails after the timeout instead
+  of hanging the run. Wired `gpstream run` → dest-agent → mini (the flag is
+  accepted by the controller and forwarded down); per sub-stream in routed
+  units (one dead source segment fails the unit even while the others
+  flow). The accept phase of both serve paths is also bounded by the accept
+  timeout (L2 accept-gap): a segreceiver that never dials fails the unit
+  after the accept timeout instead of holding it open for the 6-hour stream
+  timeout, and a late accept is closed so it cannot steal the NEXT unit's
+  connection. Source side: the dead stream's segreceiver exhausts its
+  `--max-reconnects` budget and exits, the `COPY TO PROGRAM` fails, and the
+  source agent's error path (BUG #13) cancels the unit. Regressions:
+  `TestIdlePipeDataKeepsStreamAlive`, `TestServeMiniUnitDataIdleTimeout`,
+  `TestServeMiniUnitAcceptGap`, `TestServeMiniUnitRoutedAcceptGap`,
+  `TestServeMiniUnitRoutedDataIdlePerSubStream`, `TestMiniIdleConfigDefaults`.
+
+- **dry-run: the source's Yandex-fork COPY TO PROGRAM gate is checked and
 - **dry-run: the source's Yandex-fork COPY TO PROGRAM gate is checked and
   surfaces as a mesh blocker.** The mesh `on_segment` data path launches the
   segreceivers via `COPY ... TO PROGRAM ... ON SEGMENT`, which the Yandex GP

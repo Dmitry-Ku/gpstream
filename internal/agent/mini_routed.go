@@ -156,11 +156,46 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 	results := make(chan subOut, nTotal)
 	acceptDone := make(chan error, 1)
 	var logicalN atomic.Uint64
+	// L2 accept-gap: each sub-stream connection must arrive within the
+	// accept timeout (a segreceiver that never dials must not hold the unit
+	// open for the whole 6-hour stream timeout). The budget is PER ACCEPT
+	// (a slow start of N connections does not consume the later ones).
+	acceptTO := o.AcceptTimeout
 	go func() {
 		for i := 0; i < nTotal; i++ {
-			c, aerr := l.Accept()
-			if aerr != nil {
-				acceptDone <- aerr
+			acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
+			acc := make(chan net.Conn, 1)
+			accErr := make(chan error, 1)
+			go func() {
+				c, err := l.Accept()
+				if err != nil {
+					accErr <- err
+					return
+				}
+				acc <- c
+			}()
+			var c net.Conn
+			select {
+			case c = <-acc:
+				acceptCancel()
+			case e := <-accErr:
+				acceptCancel()
+				acceptDone <- e
+				return
+			case <-acceptCtx.Done():
+				acceptCancel()
+				// Do not steal the connection: if the late accept lands
+				// (a segreceiver dialing this timed-out unit), close it so
+				// the sender's stream fails fast and the NEXT unit's Accept
+				// is not consumed by this unit's orphaned accept goroutine.
+				go func() {
+					select {
+					case c := <-acc:
+						_ = c.Close()
+					case <-ctx.Done():
+					}
+				}()
+				acceptDone <- fmt.Errorf("accept sub-stream %d: no connection within %v (segreceiver did not dial): %w", i, acceptTO, acceptCtx.Err())
 				return
 			}
 			cc := &countingConn{c: c}
@@ -172,6 +207,17 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 					acceptDone <- fmt.Errorf("frame-ack transport: %w", rerr)
 					return
 				}
+			}
+			if o.DataIdleTimeout > 0 {
+				// L2 data-idle watchdog: per sub-stream (one dead source
+				// segment's sub-stream must fail the unit even while the
+				// others still flow). Frame-ack: ReliablePipe.Close (markDead:
+				// blocked Read EOF, no re-accept); raw: close the connection.
+				idleClose := func() error { return c.Close() }
+				if rp, ok := slicePipe.(*transfer.ReliablePipe); ok {
+					idleClose = rp.Close
+				}
+				slicePipe = newIdlePipe(slicePipe, idleClose, o.DataIdleTimeout)
 			}
 			res := &segstream.SliceResult{}
 			go func(cc *countingConn, pipe transfer.Pipe, res *segstream.SliceResult) {

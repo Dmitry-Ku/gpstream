@@ -92,6 +92,15 @@ type MiniOptions struct {
 	// AcceptTimeout bounds the wait for a unit's slice connection;
 	// StreamTimeout bounds one unit's whole serve.
 	AcceptTimeout, StreamTimeout time.Duration
+	// DataIdleTimeout (L2 data-plane watchdog) bounds a unit's data
+	// (sub-)stream silence: no byte arrives for this long -> the stream is
+	// declared dead (the mini closes the slice connection; the blocked read
+	// unblocks) and the unit FAILS with a diagnostic instead of waiting out
+	// the 6-hour stream timeout. Idle-based, so it is size- and
+	// link-independent (a 2-hour table streams bytes continuously and never
+	// trips it; a wedged segreceiver or a GUC flip mid-copy goes silent and
+	// fails after the timeout). 0 disables.
+	DataIdleTimeout time.Duration
 
 	// FrameAck + ReliablePipe: when the slice rides the frame-ack transport
 	// (the segreceiver's --frame-ack default on, DESIGN §4.6), the accepted
@@ -385,7 +394,12 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	sctx, scancel := context.WithTimeout(ctx, sto)
 	defer scancel()
 
-	// 1. Accept the ONE slice connection (bounded by the stream timeout).
+	// 1. Accept the ONE slice connection, bounded by the accept timeout
+	// (L2 accept-gap: a segreceiver that never dials must not hold the unit
+	// open for the whole 6-hour stream timeout).
+	acceptTO := o.AcceptTimeout
+	acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
+	defer acceptCancel()
 	type acceptOut struct {
 		c   net.Conn
 		err error
@@ -402,6 +416,21 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 			return fail("accept slice: %v", a.err)
 		}
 		conn = a.c
+	case <-acceptCtx.Done():
+		// Do not steal the connection: if the late accept lands (a
+		// segreceiver dialing this timed-out unit), close it so the sender's
+		// stream fails fast and the NEXT unit's Accept is not consumed by
+		// this unit's orphaned accept goroutine.
+		go func() {
+			select {
+			case a := <-acc:
+				if a.c != nil {
+					_ = a.c.Close()
+				}
+			case <-ctx.Done():
+			}
+		}()
+		return fail("accept slice: no connection within %v (segreceiver did not dial): %v", acceptTO, acceptCtx.Err())
 	case <-sctx.Done():
 		return fail("accept slice: %v", sctx.Err())
 	}
@@ -415,6 +444,19 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 		slicePipe = rp
 	}
 	cc := &countingConn{c: conn}
+	if o.DataIdleTimeout > 0 {
+		// L2 data-idle watchdog: no byte on the slice for DataIdleTimeout ->
+		// kill the stream and fail the unit instead of waiting out the 6-hour
+		// stream timeout. Frame-ack: ReliablePipe.Close (markDead: the blocked
+		// Read gets EOF, the receiver stops re-accepting so a resuming
+		// segreceiver is not swapped back in). Raw: close the connection (the
+		// blocked read unblocks).
+		idleClose := func() error { return conn.Close() }
+		if rp, ok := slicePipe.(*transfer.ReliablePipe); ok {
+			idleClose = rp.Close
+		}
+		slicePipe = newIdlePipe(slicePipe, idleClose, o.DataIdleTimeout)
+	}
 
 	// 2. Single utility-COPY pipe + COPY goroutine. The staging slice exists
 	// (the supervisor created it on the coordinator; it is replicated to this

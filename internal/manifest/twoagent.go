@@ -583,6 +583,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--accept-timeout", "5m",
 		"--stream-timeout", "6h",
+		"--data-idle-timeout", r.cfg.DataIdleTimeout.String(),
 		"--frame-ack", r.cfg.FrameAckArg(),
 		"--ack-timeout", r.cfg.AckTimeout,
 		"--max-reconnects", strconv.Itoa(r.cfg.MaxReconnects),
