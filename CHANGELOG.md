@@ -58,6 +58,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **BUG #14 (dry-run mesh deadlock): the controller no longer waits for the
+  mesh MiniMap on a dry-run.** `startDest` waited up to 120s for the dest
+  agent's D-entry address book in mesh mode, but a dry-run starts the dest
+  agent with `--dry-run`, which does NOT launch the D mini-agents (their
+  readiness is the 2C-3b SSH check), so the MiniMap never became ready and
+  every mesh dry-run failed with "mini-map not ready after 2m0s". The
+  address book is consumed only by `StreamMini`, which the dry-run never
+  calls — the wait is now skipped when `cfg.DryRun` (the in-code contract:
+  the dry-run "must not deadlock on the mini-map"). First live mesh dry-run
+  (INC8 topology, D->A) surfaced it.
+
 - **BUG #13 (mesh, controller): `StreamMini` hung the whole run when the source
   ON SEGMENT dispatch failed.** The source error paths (transport error and
   `Ok=false`) called `WaitUnitDone` WITHOUT `CancelUnit` — unlike the

@@ -648,7 +648,13 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// report listener). The controller does NOT launch them — it only waits
 	// for the MiniMap (the D-entry address book the dest-agent reports
 	// through its control protocol; the segreceivers' --dest-addr).
-	if mesh {
+	// BUG #14: a dry-run starts the dest agent with --dry-run, which does NOT
+	// launch the D minis (readiness is the 2C-3b SSH check instead), so the
+	// MiniMap would never become ready and the wait would always time out.
+	// The address book is consumed only by StreamMini, which the dry-run
+	// never calls — skip the wait (the comment at the --dry-run arg: "must
+	// not deadlock on the mini-map" — it was the controller side that forgot).
+	if mesh && !r.cfg.DryRun {
 		addrs, err := r.MiniMap(ctx, 120*time.Second)
 		if err != nil {
 			r.Release(ctx)
