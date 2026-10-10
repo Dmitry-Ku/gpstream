@@ -76,6 +76,17 @@ type SideValues struct {
 	// supplied).
 	OnSegmentOK      bool     `json:"on_segment_ok,omitempty"`
 	OnSegmentSummary []string `json:"on_segment_summary,omitempty"`
+	// CopyToProgramGUC (source side) is the value of the Yandex-fork GUC
+	// ycmdb.yc_allow_copy_to_program (the gate for COPY TO PROGRAM, which the
+	// mesh on_segment data path uses to launch the segreceivers). Read from
+	// pg_settings (not current_setting) so a MISSING GUC (a non-Yandex build,
+	// where COPY TO PROGRAM is allowed by default) is distinguishable from a
+	// PRESENT-but-off GUC (a Yandex build that forbids it). Empty = the GUC
+	// is not defined on this build (or the probe did not run).
+	// CopyToProgramGUCSource is the pg_settings source (default /
+	// configuration file / ...).
+	CopyToProgramGUC       string `json:"copy_to_program_guc,omitempty"`
+	CopyToProgramGUCSource string `json:"copy_to_program_guc_source,omitempty"`
 	// MiniReady is the dest side's mini-agent readiness note (SSH to the D
 	// segment hosts: mini binary + ports, WITHOUT a real launch). Empty =
 	// not a supervisor / not checked.
@@ -155,6 +166,20 @@ func GatherSide(ctx context.Context, q pg.Querier, side string, workers int) *Si
 	// Side-specific collation sets (the column-collation diff, F-16).
 	if side == "source" {
 		sv.SourceCollationsUsed = sourceCollationsUsed(ctx, q)
+		// The Yandex-fork COPY TO PROGRAM gate (mesh on_segment launches the
+		// segreceivers via COPY ... TO PROGRAM ... ON SEGMENT). Read from
+		// pg_settings so a MISSING GUC (non-Yandex build: COPY TO PROGRAM is
+		// allowed by default) is distinguishable from a PRESENT-but-off GUC
+		// (Yandex build: forbidden — a hard mesh blocker the dry-run must
+		// surface). The coordinator path (COPY ... TO STDOUT) does not need
+		// it. (The agent's on_segment A+ check below covers the binary /
+		// listen-grid / SSH facets, not the GUC.)
+		if rows, gerr := q.Query(ctx, "SELECT setting, source FROM pg_settings WHERE name = '"+segstreamGUCName()+"'"); gerr == nil && len(rows) > 0 && len(rows[0]) >= 2 {
+			sv.CopyToProgramGUC = cellAsStr(rows[0][0])
+			if len(rows[0]) > 1 {
+				sv.CopyToProgramGUCSource = cellAsStr(rows[0][1])
+			}
+		}
 		// on_segment (A+) + mini-ready (dest) are set by the AGENT after this
 		// gather (they need SSH to the segment hosts — see dryrun_checks.go).
 	} else {
@@ -177,6 +202,7 @@ func FromSides(src, dst *SideValues, opts Options) *Report {
 	r.addEncodingChecks(src, dst)
 	r.addExtensionChecks(src, dst)
 	r.addOnSegmentChecks(src)
+	r.addCopyToProgramGUCCheck(src, opts.CopyMode)
 	r.addMiniReadyChecks(dst)
 	r.addTLSCheck(opts.MinTLS)
 	r.addTopologyCheck()
@@ -348,6 +374,53 @@ func (r *Report) addOnSegmentChecks(src *SideValues) {
 	r.Add(Check{Name: "on_segment", Side: "source", Sev: Warn,
 		Msg: "segment-direct capability degraded: " + strings.Join(src.OnSegmentSummary, "; "),
 		Rec: "the job will fall back to the coordinator path; fix the items above to enable the 2.0x segment-direct fast path"})
+}
+
+// segstreamGUCName is the Yandex-fork gate for COPY TO PROGRAM. It mirrors
+// segstream.GUCName (dryrun does not import the transfer layer).
+func segstreamGUCName() string { return "ycmdb.yc_allow_copy_to_program" }
+
+// addCopyToProgramGUCCheck (source side): the mesh on_segment data path
+// launches the segreceivers via `COPY ... TO PROGRAM ... ON SEGMENT`, which
+// the Yandex GP fork gates behind the ycmdb.yc_allow_copy_to_program GUC
+// (PGC_POSTMASTER). The check is a HARD BLOCKER only for --copy-mode mesh:
+//
+//   - GUC absent (non-Yandex build) -> no finding: COPY TO PROGRAM is
+//     allowed there by default; the on_segment capability check verifies the
+//     actual dispatch;
+//   - GUC present and "on" -> PASS (the mesh path can dispatch);
+//   - GUC present and "off" -> FAIL for mesh (the on_segment dispatch is
+//     rejected at run time with "forbidden to COPY to or from an external
+//     program" — the run must not start; the admin sets the GUC in
+//     postgresql.conf of every source data-dir and restarts), WARN otherwise
+//     (the coordinator path does not use COPY TO PROGRAM).
+func (r *Report) addCopyToProgramGUCCheck(src *SideValues, copyMode string) {
+	if src == nil || src.CopyToProgramGUC == "" {
+		return // GUC absent (non-Yandex build) or the probe did not run
+	}
+	if strings.ToLower(src.CopyToProgramGUC) == "on" {
+		r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Pass,
+			Msg: fmt.Sprintf("GUC %s = on (source: COPY TO PROGRAM allowed; the mesh on_segment dispatch can run)", segstreamGUCName())})
+		return
+	}
+	// Present but not "on": this build forbids COPY TO PROGRAM.
+	if copyMode == "mesh" {
+		r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Fail,
+			Msg: fmt.Sprintf("GUC %s = %q (source: COPY TO PROGRAM is forbidden, but --copy-mode mesh launches the segreceivers via COPY ... TO PROGRAM ... ON SEGMENT) — the run cannot start", segstreamGUCName(), src.CopyToProgramGUC),
+			Rec: "set ycmdb.yc_allow_copy_to_program=on in postgresql.conf of EVERY source data-dir (master and all segments) and restart the cluster (gpstop -ar); or re-run with --copy-mode coordinator (which uses COPY ... TO STDOUT and does not need the GUC)"})
+		return
+	}
+	r.Add(Check{Name: "copy_to_program_guc", Side: "source", Sev: Warn,
+		Msg: fmt.Sprintf("GUC %s = %q (source: COPY TO PROGRAM is forbidden on this build; the mesh on_segment path would not work)", segstreamGUCName(), src.CopyToProgramGUC),
+		Rec: "the coordinator path is unaffected (COPY ... TO STDOUT); for mesh, set ycmdb.yc_allow_copy_to_program=on in postgresql.conf of every source data-dir and restart"})
+}
+
+// cellAsStr renders a result cell as a string (nil -> "").
+func cellAsStr(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
 }
 
 // addMiniReadyChecks (dest side): the mini-agent readiness note.

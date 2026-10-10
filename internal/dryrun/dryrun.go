@@ -114,6 +114,11 @@ type Options struct {
 	// max_connections against the run's connection demand (P1d). 0 disables
 	// the connection-sizing check.
 	Workers int
+	// CopyMode is the run's --copy-mode ("mesh" / "coordinator"). "mesh"
+	// makes the source's Yandex-fork COPY TO PROGRAM gate a hard requirement
+	// (the on_segment data path launches the segreceivers via COPY ... TO
+	// PROGRAM ... ON SEGMENT); otherwise the check is informational.
+	CopyMode string
 	// (P7) the data plane is always two-agent: the source/dest agents carry
 	// the data and the controller holds no data connections. There is no
 	// topology to select, so the check below is a constant confirmation.

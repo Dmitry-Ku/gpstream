@@ -7,6 +7,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **dry-run: the source's Yandex-fork COPY TO PROGRAM gate is checked and
+  surfaces as a mesh blocker.** The mesh `on_segment` data path launches the
+  segreceivers via `COPY ... TO PROGRAM ... ON SEGMENT`, which the Yandex GP
+  fork gates behind the `ycmdb.yc_allow_copy_to_program` GUC (PGC_POSTMASTER).
+  The dry-run now reads that GUC on the SOURCE side (from `pg_settings`, so a
+  MISSING GUC on a non-Yandex build — where COPY TO PROGRAM is allowed by
+  default — is distinguishable from a PRESENT-but-off GUC) and reports:
+  - `--copy-mode mesh` + GUC present but `off` → **FAIL** (hard blocker): the
+    run cannot start; the operator sets `ycmdb.yc_allow_copy_to_program=on` in
+    `postgresql.conf` of every source data-dir and restarts, or re-runs with
+    `--copy-mode coordinator`.
+  - `--copy-mode coordinator` + GUC `off` → **WARN** (informational): the
+    coordinator path uses `COPY ... TO STDOUT` and is unaffected.
+  - GUC `on` or absent (non-Yandex build) → PASS / no finding.
+
+  This catches the INC8 live failure (D as source, GUC off by default) before
+  the run starts, instead of on the first unit. The source agent reads the GUC
+  on its LOCAL connection (architecture 08.10 — the controller holds no DB
+  connection). Regression: `TestFromSidesCopyToProgramGUC` +
+  `TestGatherSideCollectsCopyToProgramGUC`.
+
+
 ### Fixed
 
 - **BUG #13 (mesh, controller): `StreamMini` hung the whole run when the source

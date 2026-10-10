@@ -458,7 +458,7 @@ func cmdDryRun(args []string) error {
 	}
 	// The controller diffs the two sides IN MEMORY (no DB access).
 	rep := dryrun.FromSides(srcResp.Side, dstResp.Side,
-		dryrun.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair})
+		dryrun.Options{MinTLS: cfg.SSLMinTLS, SegmentBinary: segBin, Workers: cfg.WorkersPerPair, CopyMode: string(cfg.CopyMode)})
 	if cfg.CopyMode == config.CopyMesh && cfg.Dest != "" && !urlFormDSN(cfg.Dest) {
 		rep.Add(dryrun.Check{
 			Name: "dest-dsn-form",
