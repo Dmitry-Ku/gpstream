@@ -1563,15 +1563,17 @@ func cmdRun(args []string) error {
 		}
 	}
 	// on_segment: an empty --seg-listen resolves to the controller's primary
-	// non-loopback IP + a prebound free port (each unit then binds
-	// base+unitID). The host must be routable from the SOURCE segment hosts;
-	// a multi-homed controller should pass --seg-listen explicitly.
+	// non-loopback IP + a prebound free port (the dry-run probes that the
+	// base is free on the source segments). The host must be routable from
+	// the SOURCE segment hosts; a multi-homed controller should pass
+	// --seg-listen explicitly. (The mesh data path itself binds per mini at
+	// launch; the controller holds no data ports.)
 	if cfg.CopyMode == config.CopyMesh {
 		if err := cfg.ResolveSegListen(len(p.Units)); err != nil {
 			mgr.ReleaseAgents()
 			return fmt.Errorf("run: %w", err)
 		}
-		fmt.Printf("seg-listen:     %s (auto; base+unitID per unit)\n", cfg.SegListen)
+		fmt.Printf("seg-listen:     %s (auto; dry-run base-port probe only — the mesh data path binds per mini at launch, the controller holds no data ports)\n", cfg.SegListen)
 	}
 
 	// The deterministic plan (CR-4) is persisted alongside the journal so it
@@ -1790,9 +1792,11 @@ Performance:
 
 Transport / resilience:
   --copy-mode coordinator|mesh                data path (default coordinator)
-  --seg-listen HOST:PORT           on_segment base listen addr the segreceivers
-                                   dial (default: auto = controller primary IP +
-                                   a free port; each unit binds base+unitID)
+  --seg-listen HOST:PORT           on_segment base listen addr (default: auto =
+                                   controller primary IP + a free port; the
+                                   dry-run probes it is free on the source
+                                   segments — the mesh data path itself binds
+                                   per mini at launch)
   --port-range LO-HI          restrict the auto data/control port
                                    allocation to an allowed range (strict
                                    firewall); default auto = agent binds :0 +

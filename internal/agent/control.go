@@ -362,8 +362,8 @@ type DryRunChecksReq struct {
 	// Empty = no SSH (single-host / plain-PostgreSQL source).
 	SegSSH string `json:"seg_ssh,omitempty"`
 	// SegListen (2C-3b) is the run's --seg-listen base (host:port); the source
-	// agent checks the base port is FREE on each S segment host (the segriver
-	// grid is base+unitID at run time). Empty = the port check is not run.
+	// agent checks the base port is FREE on each S segment host. Empty = the
+	// port check is not run.
 	SegListen string `json:"seg_listen,omitempty"`
 }
 

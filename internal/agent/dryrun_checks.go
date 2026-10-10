@@ -123,8 +123,7 @@ func segListenPort(segListen string) (int, bool) {
 // catalog (the S primary hosts) and SSHes to each to verify the segreceiver
 // binary (presence + executability + version against the agent's own build
 // identity) and — when --seg-listen is set — that the listen-grid BASE port
-// is free (the per-unit grid is base+unitID at run time; a busy base means
-// the grid origin is taken). The kernel's ON SEGMENT support is NOT probed
+// is free (a busy base means the grid origin is taken). The kernel's ON SEGMENT support is NOT probed
 // (no real dispatch) and is reported as a note. Returns (false, nil) when
 // segBinary is empty (the check is not run).
 func (s *SourceServer) checkOnSegmentAPlus(ctx context.Context, q pg.Querier, segBinary, segSSH, segListen string, greenplum bool) (bool, []string) {

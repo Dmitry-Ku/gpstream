@@ -990,10 +990,11 @@ func ResolveSegBinaryOrEmpty() (string, error) {
 // ResolveSegListen fills an empty --seg-listen (on_segment only) so the
 // operator does not have to name a controller address: the controller's
 // primary non-loopback IPv4 + a free port (prebound, so the base is almost
-// certainly free; each unit then binds base+unitID at its own start). The
-// host must be routable from the SOURCE segment hosts — a multi-homed
+// certainly free — the dry-run re-probes it on the source segment hosts).
+// The host must be routable from the SOURCE segment hosts — a multi-homed
 // controller should set --seg-listen explicitly. nUnits is only used for a
-// clearer error if the free-port probe fails.
+// clearer error if the free-port probe fails. (The mesh data path binds per
+// mini at launch; the controller holds no data ports.)
 func (c *Config) ResolveSegListen(nUnits int) error {
 	if c.SegListen != "" {
 		return nil
