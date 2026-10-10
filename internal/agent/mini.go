@@ -266,6 +266,34 @@ func ServeMini(ctx context.Context, o MiniOptions) (MiniResult, error) {
 	if rerr != nil {
 		return out, fmt.Errorf("mini: dial report %s: %w", o.ReportAddr, rerr)
 	}
+	// The supervisor wraps the report listener in the data-plane TLS (it is a
+	// data-plane channel: the mini's report connection carries the per-unit
+	// digest/row accumulation). When data TLS is on the mini must be the TLS
+	// client — a plaintext hello against a TLS server fails the handshake and
+	// the supervisor closes the report listener (BUG #11). The mini presents
+	// its data-TLS keypair (the supervisor runs mTLS: CA-set requires a
+	// client cert) and verifies the supervisor against the CA.
+	if transfer.TLSEnabled(o.DataTLSCert, o.DataTLSKey, o.DataTLSCA) {
+		host, _, herr := net.SplitHostPort(o.ReportAddr)
+		if herr != nil {
+			_ = report.Close()
+			return out, fmt.Errorf("mini: report addr %q: %w", o.ReportAddr, herr)
+		}
+		ccfg, cerr := transfer.ClientTLSConfig(host, o.DataTLSCert, o.DataTLSKey, o.DataTLSCA, o.DataTLSMinTLS)
+		if cerr != nil {
+			_ = report.Close()
+			return out, fmt.Errorf("mini: report tls config: %w", cerr)
+		}
+		tc := tls.Client(report, ccfg)
+		hctx, hcanc := context.WithTimeout(ctx, 15*time.Second)
+		if hserr := tc.HandshakeContext(hctx); hserr != nil {
+			hcanc()
+			_ = report.Close()
+			return out, fmt.Errorf("mini: report tls handshake: %w", hserr)
+		}
+		hcanc()
+		report = tc
+	}
 	defer report.Close()
 	rw := bufio.NewWriter(report)
 	rr := bufio.NewReader(report)

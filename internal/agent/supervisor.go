@@ -191,7 +191,17 @@ func (s *Supervisor) WithHelloTimeout(d time.Duration) *Supervisor {
 }
 
 // Addr is the report listener's bound address (the mini-agents dial it).
-func (s *Supervisor) Addr() string { return s.reportL.Addr().String() }
+// It reads reportL under the lock and tolerates a closed listener (a
+// failed/aborted AcceptMinis or Stop closes it): a nil reportL yields ""
+// instead of a nil-pointer panic in the caller (the DestServer's Hello).
+func (s *Supervisor) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reportL == nil {
+		return ""
+	}
+	return s.reportL.Addr().String()
+}
 
 // AcceptMinis accepts D mini-agent report connections and reads each one's
 // hello, returning the MiniMap (seg -> data addr). It blocks until D hellos

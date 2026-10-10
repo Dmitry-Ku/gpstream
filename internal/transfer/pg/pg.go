@@ -97,10 +97,29 @@ func hostOf(connStr string) (string, error) {
 	return "", nil
 }
 
+// explicitSSLMode returns the conn string's sslmode value when it is set
+// explicitly (URL query or keyword form), or "" when absent (the default is
+// applied by ensureVerifyFull).
+func explicitSSLMode(connStr string) string {
+	if u, err := url.Parse(connStr); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		return u.Query().Get("sslmode")
+	}
+	for _, part := range strings.Fields(connStr) {
+		if v, ok := strings.CutPrefix(part, "sslmode="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // NewConn opens a connection from a connection string, honouring the TLS
 // flags from FR-13. The secret material (cert/key/ca paths) is resolved here,
-// never passed via argv.
+// never passed via argv. An explicit sslmode in the conn string WINS over the
+// flags: sslmode=disable stays plaintext even when --ssl-* are set (they
+// configure the data plane / a different cluster's CA, not this connection);
+// otherwise the flags apply the verify-full default + CA bundle + mTLS cert.
 func NewConn(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string) (*Conn, error) {
+	explicit := explicitSSLMode(connStr)
 	connStr = ensureVerifyFull(connStr)
 	host, err := hostOf(connStr)
 	if err != nil {
@@ -110,7 +129,7 @@ func NewConn(ctx context.Context, connStr, sslCert, sslKey, sslCA, minTLS string
 	if err != nil {
 		return nil, fmt.Errorf("parse conn: %w", err)
 	}
-	if sslCA != "" || sslCert != "" {
+	if (sslCA != "" || sslCert != "") && explicit != "disable" {
 		cfg.TLSConfig, err = buildTLS(host, sslCert, sslKey, sslCA, minTLS)
 		if err != nil {
 			return nil, err

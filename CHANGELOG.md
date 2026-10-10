@@ -38,6 +38,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Mini-agent report channel not TLS-wrapped on the mini side (BUG #11)** —
+  with the data-plane TLS enabled (`--seg-tls-*`), the supervisor wraps the
+  mini report listener in TLS (mTLS), but the mini-agent still dialed the
+  report address with a plain `net.DialTimeout` and sent its hello in
+  plaintext. The TLS handshake failed (`first record does not look like a TLS
+  handshake`), `AcceptMinis` errored and closed the report listener, and the
+  DestServer's Hello then read `Supervisor.Addr()` on a closed supervisor —
+  a nil `reportL` dereference panicked the whole destination agent (found on
+  the first data-TLS live run, INC8 D→A). The mini now performs the TLS
+  client handshake against the report address (verifying the supervisor
+  against the CA and presenting its data-TLS keypair for mTLS) before sending
+  the hello. Defensive: `Supervisor.Addr()` reads `reportL` under the lock
+  and returns "" for a closed listener instead of panicking. Regression:
+  `TestServeMiniReportOverDataTLS` (real mini + supervisor over TLS; RED
+  without the fix: handshake error).
+
+- **`NewConn` overrode an explicit `sslmode=disable` when `--ssl-*` were set
+  (BUG #10)** — the PG-plane TLS flags (FR-13) rebuilt the connection's TLS
+  config unconditionally whenever a cert/CA was present, clobbering an
+  explicit `sslmode=disable` in the conn string. A data-TLS run (PG plane
+  plaintext, data plane encrypted) then made every agent PG connection
+  attempt TLS against an `ssl=off` cluster and fail at startup ("server
+  refused TLS connection"). The flags now apply only when the conn string
+  does not set `sslmode=disable` explicitly (the verify-full default and the
+  CA/mTLS config still apply otherwise). Regression:
+  `TestNewConnExplicitDisableWinsOverSSLFlags` (the client's first packet
+  must be a plaintext startup message, not an SSLRequest).
+
 - **Mini-agent hello read deadline leaked onto the long-lived report
   connection (BUG #8)** — `AcceptMinis` bound the mini-hello read with an
   absolute 30s `SetReadDeadline` and never cleared it, so the deadline
