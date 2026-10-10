@@ -28,19 +28,24 @@ persisted (the dry-run holds no state); \fBrun\fR always persists the plan
 JSON to \fB<state-dir>/<operation-id>/plan.json\fR.
 .TP
 .B bench
-Measure the input stream: stream the selected source tables through the real
-data path (\fBCOPY ... TO STDOUT\fR \-> frame v2 \-> compression) and discard
-the payload instead of writing a
-destination. It reports the source's production rate \emph{before} the
-network/destination hop, so the operator can size \fB--workers\fR and
-compare the input rate against \fB--rate-limit\fR (the value does not
-throttle the benchmark — the pacer is not wired into the data path yet).
-Only the source is used;
-\fB--dest\fR (if given) is ignored. Per-table and total rows, wire and
-logical bytes, elapsed and MB/s are printed. \fB--timeout\fR S is the
-benchmark wall-time limit (unlimited when not passed); all other
-selection/performance options (CLI > env > toml) are honored exactly as for
-\fBrun\fR.
+Measure the input stream (F-14): stream the selected source tables through
+the real data path and discard the payload instead of writing a
+destination. The copy mode is honored (\fB--copy-mode\fR
+coordinator|mesh): coordinator streams one
+\fBCOPY ... TO STDOUT\fR from the source coordinator; mesh runs the real
+\fBCOPY ... TO PROGRAM (gpstream-segreceiver ...) ON SEGMENT\fR so the GP
+kernel launches a segreceiver on every primary source segment and each
+streams its slice. The payload ends in a drain sink on the controller
+(frame v2 + compression + frame-ack + data TLS per the flags, so the
+transport overhead is in the measurement). It reports the source's
+production rate, so the operator can size \fB--workers\fR and compare the
+input rate against \fB--rate-limit\fR (the value does not throttle the
+benchmark — the pacer is not wired into the data path yet). Only the source
+is used; \fB--dest\fR (if given) is ignored. Per-table and total rows,
+wire and logical bytes, elapsed and MB/s are printed (see
+\fBBENCHMARK\fR). \fB--timeout\fR S is the benchmark wall-time limit
+(unlimited when not passed); all other selection/performance options
+(CLI > env > toml) are honored exactly as for \fBrun\fR.
 .TP
 .B status
 Report operation state (\fB--operation-id\fR id).
@@ -423,6 +428,43 @@ When an agent's
 enables mTLS, the controller presents
 .B --control-tls-cert / --control-tls-key
 to that agent.
+.SH BENCHMARK
+\fBbench\fR reports, per table and in total:
+.TP
+.B rows
+the source row count. coordinator: the source agent's COPY counter
+(the GP kernel's count of the
+\fBCOPY ... TO STDOUT\fR stream). mesh: the GP kernel's
+\fBCOPY ... ON SEGMENT\fR row count, cross-checked against the sum of the
+per-slice trailers the drain reads (a mismatch aborts the unit — the
+measurement would be void).
+.TP
+.B wire
+the raw on-network bytes of the unit's stream(s) — framed payload
++ protocol overhead (frame-ack control, TLS records when
+\fB--seg-tls-*\fR is set). coordinator: counted by the source agent
+(one stream to the drain). mesh: counted by the drain (the source agent
+cannot see the per-segment streams).
+.TP
+.B logical
+the decompressed payload bytes (the data volume before compression).
+.TP
+.B elapsed / rate
+wall time and MB/s (logical and wire) per table and in total.
+The drain runs on the CONTROLLER host (no destination cluster is involved,
+nothing is written, no DDL, no journal). A remote source agent dials the
+controller's primary non-loopback IPv4 + a free port (bound on 0.0.0.0); a
+local source agent (single-host layout) uses loopback. In mesh mode the
+drain binds one listener per source content and serves the slices
+concurrently, mirroring the production per-segment mini-agent endpoints.
+\fB--seg-tls-cert\fR /
+\fB--seg-tls-key\fR
+turn the drain into a TLS server (the handshake and record overhead are
+inside the measurement; the certificate must be valid for the drain
+address the segreceivers dial). \fB--frame-ack\fR,
+\fB--compress\fR
+and the reliable-pipe flags configure the measured transport exactly as for
+\fBrun\fR.
 .SH ENVIRONMENT
 Configuration precedence: CLI > environment > config file > defaults.
 Secrets are taken
