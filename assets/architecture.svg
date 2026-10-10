@@ -10,7 +10,7 @@
 <rect width="4000" height="3000" fill="#0b1220"/>
 <rect width="4000" height="3000" fill="url(#grid)"/>
 <text x="2000.0" y="92" font-family="Inter, 'Liberation Sans', sans-serif" font-size="62" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">gpstream — Greenplum Copy Architecture</text>
-<text x="2000.0" y="156" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">two modes: coordinator  |  mesh      encrypted WAN channel      frame-ACK · RST-resume · journal</text>
+<text x="2000.0" y="156" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">two modes: coordinator  |  mesh      WAN channel (TLS opt)      frame-ACK · RST-resume · journal</text>
 <rect x="700" y="210" width="2600" height="210" rx="18" fill="#101a2c" opacity="1.0"/>
 <rect x="700" y="210" width="2600" height="210" rx="18" fill="rgba(30,41,59,0.4)" stroke="#a9b7c7" stroke-width="2.5"/>
 <text x="2000.0" y="272" font-family="Inter, 'Liberation Sans', sans-serif" font-size="44" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">gpstream controller  (control plane)</text>
@@ -25,15 +25,15 @@
 <rect x="1579.3333333333335" y="300" width="411.6666666666667" height="112" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="1579.3333333333335" y="300" width="411.6666666666667" height="112" rx="12" fill="rgba(30,41,59,0.45)" stroke="#a9b7c7" stroke-width="2"/>
 <text x="1785.1666666666667" y="344" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#a9b7c7" text-anchor="middle" opacity="1.0" font-weight="600">monitor</text>
-<text x="1785.1666666666667" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">Prometheus :9090</text>
+<text x="1785.1666666666667" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">Prometheus /metrics</text>
 <rect x="2009.0" y="300" width="411.6666666666667" height="112" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="2009.0" y="300" width="411.6666666666667" height="112" rx="12" fill="rgba(30,41,59,0.45)" stroke="#a9b7c7" stroke-width="2"/>
 <text x="2214.8333333333335" y="344" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#a9b7c7" text-anchor="middle" opacity="1.0" font-weight="600">journal (resume)</text>
-<text x="2214.8333333333335" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">op-id, re-dial</text>
+<text x="2214.8333333333335" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">journal.jsonl, op-id</text>
 <rect x="2438.666666666667" y="300" width="411.6666666666667" height="112" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="2438.666666666667" y="300" width="411.6666666666667" height="112" rx="12" fill="rgba(30,41,59,0.45)" stroke="#a9b7c7" stroke-width="2"/>
-<text x="2644.5000000000005" y="344" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#a9b7c7" text-anchor="middle" opacity="1.0" font-weight="600">doctor</text>
-<text x="2644.5000000000005" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">stand pre-check</text>
+<text x="2644.5000000000005" y="344" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#a9b7c7" text-anchor="middle" opacity="1.0" font-weight="600">dry-run</text>
+<text x="2644.5000000000005" y="386" font-family="Inter, 'Liberation Sans', sans-serif" font-size="22" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">read-only pre-checks</text>
 <rect x="2868.3333333333335" y="300" width="411.6666666666667" height="112" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="2868.3333333333335" y="300" width="411.6666666666667" height="112" rx="12" fill="rgba(30,41,59,0.45)" stroke="#fda4af" stroke-width="2"/>
 <text x="3074.166666666667" y="344" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="600">no data connections</text>
@@ -48,8 +48,8 @@
 <circle cx="0" cy="16" r="5" fill="#101a2c"/>
 </g>
 <text x="2000" y="672" font-family="Inter, 'Liberation Sans', sans-serif" font-size="46" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="600">WAN</text>
-<text x="2000" y="718" font-family="Inter, 'Liberation Sans', sans-serif" font-size="28" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="400">TLS (mTLS — ca)</text>
-<text x="2000" y="772" font-family="Inter, 'Liberation Sans', sans-serif" font-size="28" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="400">GPST v2 · zstd · checksum · frame-ACK</text>
+<text x="2000" y="718" font-family="Inter, 'Liberation Sans', sans-serif" font-size="28" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="400">TLS (opt) · mTLS (ca)</text>
+<text x="2000" y="772" font-family="Inter, 'Liberation Sans', sans-serif" font-size="28" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="400">GPST v2 · zstd · CRC · frame-ACK</text>
 <rect x="90" y="480" width="3820" height="960" rx="20" fill="none" stroke="#fcd34d" stroke-width="2" stroke-dasharray="14,10" opacity="0.9"/>
 <text x="130" y="536" font-family="Inter, 'Liberation Sans', sans-serif" font-size="42" fill="#fcd34d" text-anchor="start" opacity="1.0" font-weight="600">MODE 1 — COORDINATOR  (classic)</text>
 <rect x="130" y="580" width="1390" height="800" rx="18" fill="#101a2c" opacity="1.0"/>
@@ -68,7 +68,7 @@
 <rect x="-19" y="2" width="38" height="30" rx="7" fill="#67e8f9" opacity="0.9"/>
 <circle cx="0" cy="16" r="5" fill="#101a2c"/>
 </g>
-<text x="865" y="838" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#67e8f9" text-anchor="start" opacity="1.0" font-weight="400">pg COPY TO PROGRAM (utility) · TLS verify-full</text>
+<text x="865" y="838" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#67e8f9" text-anchor="start" opacity="1.0" font-weight="400">pg COPY TO STDOUT (binary) · TLS verify-full</text>
 <rect x="170" y="1100" width="400" height="150" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="170" y="1100" width="400" height="150" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="370" y="1165" font-family="Inter, 'Liberation Sans', sans-serif" font-size="34" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segment 0</text>
@@ -90,14 +90,14 @@
 <rect x="2520" y="860" width="1310" height="170" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="2520" y="860" width="1310" height="170" rx="14" fill="rgba(52,211,153,0.10)" stroke="#6ee7b7" stroke-width="2.5"/>
 <text x="3175" y="925" font-family="Inter, 'Liberation Sans', sans-serif" font-size="38" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">dest-agent</text>
-<text x="3175" y="978" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">WAN → decode → pg COPY (utility)</text>
+<text x="3175" y="978" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">WAN → decode → staging → swap</text>
 <line x1="3175" y1="860" x2="3175" y2="800" stroke="#67e8f9" stroke-width="3.5" marker-end="url(#m-cyan)" opacity="0.95"/>
 <g transform="translate(3125,808) scale(0.62)">
 <path d="M -13 2 v -12 a 13 13 0 0 1 26 0 v 12" fill="none" stroke="#67e8f9" stroke-width="5"/>
 <rect x="-19" y="2" width="38" height="30" rx="7" fill="#67e8f9" opacity="0.9"/>
 <circle cx="0" cy="16" r="5" fill="#101a2c"/>
 </g>
-<text x="3215" y="838" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#67e8f9" text-anchor="start" opacity="1.0" font-weight="400">pg COPY (utility) · TLS verify-full</text>
+<text x="3215" y="838" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#67e8f9" text-anchor="start" opacity="1.0" font-weight="400">pg COPY FROM STDIN · TLS verify-full</text>
 <rect x="2520" y="1100" width="400" height="150" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="2520" y="1100" width="400" height="150" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="2720" y="1165" font-family="Inter, 'Liberation Sans', sans-serif" font-size="34" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segment 0</text>
@@ -116,7 +116,7 @@
 <rect x="-19" y="2" width="38" height="30" rx="7" fill="#fda4af" opacity="0.9"/>
 <circle cx="0" cy="16" r="5" fill="#101a2c"/>
 </g>
-<text x="2000" y="844" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="600">data:  zstd frames + checksum  (TLS)</text>
+<text x="2000" y="844" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="600">data:  zstd frames + CRC  (TLS)</text>
 <line x1="2480" y1="968" x2="1520" y2="968" stroke="#6ee7b7" stroke-width="3.5" stroke-dasharray="7,8" marker-end="url(#m-emer)" opacity="0.95"/>
 <text x="2000" y="1012" font-family="Inter, 'Liberation Sans', sans-serif" font-size="27" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="400">frame-ACK  (credits, backpressure)</text>
 <rect x="130.0" y="1270" width="917.0" height="130" rx="12" fill="#101a2c" opacity="1.0"/>
@@ -143,7 +143,7 @@
 <rect x="170" y="1690" width="1310" height="130" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="170" y="1690" width="1310" height="130" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="825" y="1755" font-family="Inter, 'Liberation Sans', sans-serif" font-size="36" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">coordinator + source-agent</text>
-<text x="825" y="1798" font-family="Inter, 'Liberation Sans', sans-serif" font-size="27" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">ON SEGMENT dispatch (1 read per segment) · pg TLS verify-full</text>
+<text x="825" y="1798" font-family="Inter, 'Liberation Sans', sans-serif" font-size="27" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">COPY TO PROGRAM (segriver) ON SEGMENT · pg verify-full</text>
 <rect x="170" y="1880" width="400" height="140" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="170" y="1880" width="400" height="140" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="370" y="1940" font-family="Inter, 'Liberation Sans', sans-serif" font-size="34" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segment 0</text>
@@ -185,7 +185,7 @@
 <rect x="2540" y="2070" width="560" height="150" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="2540" y="2070" width="560" height="150" rx="14" fill="rgba(52,211,153,0.10)" stroke="#6ee7b7" stroke-width="2.5"/>
 <text x="2820" y="2130" font-family="Inter, 'Liberation Sans', sans-serif" font-size="32" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">mini-agent</text>
-<text x="2820" y="2175" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">1 slice → utility COPY (local seg)</text>
+<text x="2820" y="2175" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">S×W sub-streams → 1 utility COPY</text>
 <line x1="2820" y1="2020" x2="2820" y2="2070" stroke="#6ee7b7" stroke-width="3.5" marker-end="url(#m-emer)" opacity="0.95"/>
 <rect x="3180" y="1880" width="560" height="140" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="3180" y="1880" width="560" height="140" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
@@ -194,7 +194,7 @@
 <rect x="3180" y="2070" width="560" height="150" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="3180" y="2070" width="560" height="150" rx="14" fill="rgba(52,211,153,0.10)" stroke="#6ee7b7" stroke-width="2.5"/>
 <text x="3460" y="2130" font-family="Inter, 'Liberation Sans', sans-serif" font-size="32" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">mini-agent</text>
-<text x="3460" y="2175" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">1 slice → utility COPY (local seg)</text>
+<text x="3460" y="2175" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">S×W sub-streams → 1 utility COPY</text>
 <line x1="3460" y1="2020" x2="3460" y2="2070" stroke="#6ee7b7" stroke-width="3.5" marker-end="url(#m-emer)" opacity="0.95"/>
 <path d="M 1520 2094 Q 2000 2069.5 2480 2105" fill="none" stroke="#fda4af" stroke-width="3.5" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.85"/>
 <path d="M 1520 2094 Q 2000 2104.5 2480 2175" fill="none" stroke="#fda4af" stroke-width="3.5" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.85"/>
@@ -210,11 +210,11 @@
 <rect x="130.0" y="2350" width="917.0" height="130" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="130.0" y="2350" width="917.0" height="130" rx="12" fill="rgba(30,41,59,0.45)" stroke="#6ee7b7" stroke-width="2"/>
 <text x="588.5" y="2396" font-family="Inter, 'Liberation Sans', sans-serif" font-size="29" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">direct_1to1 fast path</text>
-<text x="588.5" y="2442" font-family="Inter, 'Liberation Sans', sans-serif" font-size="25" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">S==D + equal keys: S COPYs, no rehash</text>
+<text x="588.5" y="2442" font-family="Inter, 'Liberation Sans', sans-serif" font-size="25" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">S==D + equal dist keys + same major</text>
 <rect x="1071.0" y="2350" width="917.0" height="130" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="1071.0" y="2350" width="917.0" height="130" rx="12" fill="rgba(30,41,59,0.45)" stroke="#fcd34d" stroke-width="2"/>
 <text x="1529.5" y="2396" font-family="Inter, 'Liberation Sans', sans-serif" font-size="29" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="600">fallback merge</text>
-<text x="1529.5" y="2442" font-family="Inter, 'Liberation Sans', sans-serif" font-size="25" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">SliceMux → 1 COPY (coordinator)</text>
+<text x="1529.5" y="2442" font-family="Inter, 'Liberation Sans', sans-serif" font-size="25" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">ServeRouted → 1 COPY (coordinator)</text>
 <rect x="2012.0" y="2350" width="917.0" height="130" rx="12" fill="#101a2c" opacity="1.0"/>
 <rect x="2012.0" y="2350" width="917.0" height="130" rx="12" fill="rgba(30,41,59,0.45)" stroke="#6ee7b7" stroke-width="2"/>
 <text x="2470.5" y="2396" font-family="Inter, 'Liberation Sans', sans-serif" font-size="29" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">checksum + verify</text>
@@ -233,9 +233,9 @@
 <rect x="607.75" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="607.75" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#6ee7b7" stroke-width="2.5"/>
 <text x="830.625" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">Checksums</text>
-<text x="830.625" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">per frame / stream</text>
-<text x="830.625" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">checksum; verify:</text>
-<text x="830.625" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">count + SHA-256; skip on re-run</text>
+<text x="830.625" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">per-frame CRC;</text>
+<text x="830.625" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">verify: rows + digest;</text>
+<text x="830.625" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">resume skips done</text>
 <rect x="1075.5" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="1075.5" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#fda4af" stroke-width="2.5"/>
 <text x="1298.375" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="600">Link recovery</text>
@@ -245,15 +245,15 @@
 <rect x="1543.25" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="1543.25" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#fcd34d" stroke-width="2.5"/>
 <text x="1766.125" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="600">Resume</text>
-<text x="1766.125" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">journal (op-id =</text>
-<text x="1766.125" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">plan-hash); after crash —</text>
-<text x="1766.125" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">from checkpoint; conflicts</text>
+<text x="1766.125" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">journal (op-id);</text>
+<text x="1766.125" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">after crash — from</text>
+<text x="1766.125" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">checkpoint; conflicts</text>
 <rect x="2011.0" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="2011.0" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="2233.875" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#b4a7f7" text-anchor="middle" opacity="1.0" font-weight="600">Compression</text>
-<text x="2233.875" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">zstd per stream;</text>
-<text x="2233.875" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">compression-off</text>
-<text x="2233.875" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">events</text>
+<text x="2233.875" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">zstd (lvl 3) per stream;</text>
+<text x="2233.875" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">compression_off</text>
+<text x="2233.875" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">event</text>
 <rect x="2478.75" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="2478.75" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#fcd34d" stroke-width="2.5"/>
 <text x="2701.625" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="600">Rate-limit</text>
@@ -263,13 +263,13 @@
 <rect x="2946.5" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="2946.5" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#fda4af" stroke-width="2.5"/>
 <text x="3169.375" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="600">Encryption</text>
-<text x="3169.375" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">TLS on all WAN</text>
-<text x="3169.375" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">channels; mTLS (ca);</text>
+<text x="3169.375" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">WAN: TLS (opt);</text>
+<text x="3169.375" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">mTLS with ca (opt);</text>
 <text x="3169.375" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">pg-plane: verify-full</text>
 <rect x="3414.25" y="2596" width="445.75" height="330" rx="16" fill="#101a2c" opacity="1.0"/>
 <rect x="3414.25" y="2596" width="445.75" height="330" rx="16" fill="rgba(30,41,59,0.45)" stroke="#6ee7b7" stroke-width="2.5"/>
 <text x="3637.125" y="2666" font-family="Inter, 'Liberation Sans', sans-serif" font-size="33" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="600">Observability</text>
-<text x="3637.125" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">Prometheus :9090;</text>
-<text x="3637.125" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">doctor pre-check;</text>
+<text x="3637.125" y="2730" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">Prometheus /metrics;</text>
+<text x="3637.125" y="2774" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">dry-run pre-checks;</text>
 <text x="3637.125" y="2818" font-family="Inter, 'Liberation Sans', sans-serif" font-size="26" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">events + journal</text>
 </svg>
