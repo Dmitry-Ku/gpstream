@@ -48,7 +48,7 @@
 <text x="892" y="874" font-family="Inter, 'Liberation Sans', sans-serif" font-size="18" fill="#6ee7b7" text-anchor="start" opacity="1.0" font-weight="600" letter-spacing="2">DEST COORDINATOR</text>
 <text x="1020" y="928" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">dest-agent</text>
 <text x="1020" y="968" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">staging DDL · launches minis</text>
-<text x="1020" y="998" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">swap (controller decision)</text>
+<text x="1020" y="998" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">swap (its own decision)</text>
 <text x="1020" y="1026" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">journal gpstream_units</text>
 <rect x="1220" y="840" width="300" height="200" rx="16" fill="#101a2c"/><rect x="1220" y="840" width="300" height="200" rx="16" fill="rgba(251,113,133,0.10)" stroke="#fda4af" stroke-width="2.5"/>
 <text x="1242" y="874" font-family="Inter, 'Liberation Sans', sans-serif" font-size="18" fill="#fda4af" text-anchor="start" opacity="1.0" font-weight="600" letter-spacing="2">DEST SEGMENT ×D</text>

@@ -62,7 +62,7 @@
 <text x="1280" y="700" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">into the staging table (binary)</text>
 <rect x="1010" y="746" width="540" height="84" rx="16" fill="#101a2c"/><rect x="1010" y="746" width="540" height="84" rx="16" fill="rgba(139,122,235,0.12)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="1280" y="778" font-family="Inter, 'Liberation Sans', sans-serif" font-size="24" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">atomic swap + journal</text>
-<text x="1280" y="806" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">ALTER ... RENAME (controller decision)</text>
+<text x="1280" y="806" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">ALTER ... RENAME (dest-agent decision)</text>
 <text x="1280" y="828" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">journal gpstream_units (writer of record)</text>
 <line x1="1280" y1="374" x2="1280" y2="404" stroke="#93a4b8" stroke-width="3" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.9"/>
 <line x1="1280" y1="488" x2="1280" y2="518" stroke="#93a4b8" stroke-width="3" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.9"/>

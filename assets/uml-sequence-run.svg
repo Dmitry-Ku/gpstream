@@ -48,17 +48,18 @@
 <line x1="640" y1="660" x2="960" y2="660" stroke="#fda4af" stroke-width="3" marker-end="url(#m-rose)" opacity="0.9"/>
 <text x="800.0" y="650" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="400">GPST v2 stream — zstd, per-frame CRC; digest + rows in trailer</text>
 <line x1="960" y1="710" x2="1478" y2="710" stroke="#fda4af" stroke-width="3" marker-end="url(#m-rose)" opacity="0.9"/>
-<text x="1225.0" y="700" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="400">staging DDL + COPY FROM STDIN</text>
-<line x1="960" y1="760" x2="380" y2="760" stroke="#6ee7b7" stroke-width="3" stroke-dasharray="8,8" marker-end="url(#m-emer)" opacity="0.9"/>
-<text x="670.0" y="750" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="400">unit-done (rows, digest, swap?)</text>
-<path d="M 380 795 L 530 795 L 530 829 L 388 829" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
-<text x="380" y="790" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">verify: digest compare -&gt; journal.jsonl</text>
-<line x1="380" y1="880" x2="960" y2="880" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-rose)" opacity="0.9"/>
-<text x="670.0" y="870" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#fcd34d" text-anchor="middle" opacity="1.0" font-weight="400">swap (controller decision)</text>
-<line x1="960" y1="930" x2="1478" y2="930" stroke="#fda4af" stroke-width="3" marker-end="url(#m-rose)" opacity="0.9"/>
-<text x="1225.0" y="920" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="400">ALTER ... RENAME + journal gpstream_units</text>
-<path d="M 960 965 L 1100 965 L 1100 999 L 968 999" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
-<text x="960" y="960" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">index pool: background rebuild (index_done)</text>
+<text x="1219.0" y="700" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#fda4af" text-anchor="middle" opacity="1.0" font-weight="400">staging DDL + COPY FROM STDIN (dest stream)</text>
+<path d="M 960 755 L 1090 755 L 1090 791 L 968 791" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
+<text x="972" y="747" font-family="Inter, 'Liberation Sans', sans-serif" font-size="19" fill="#93a4b8" text-anchor="start" opacity="1.0" font-weight="400">verify: src vs dst digest</text>
+<path d="M 960 815 L 1090 815 L 1090 851 L 968 851" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
+<text x="972" y="807" font-family="Inter, 'Liberation Sans', sans-serif" font-size="19" fill="#93a4b8" text-anchor="start" opacity="1.0" font-weight="400">swap (dest-agent) + journal</text>
+
+<line x1="960" y1="885" x2="380" y2="885" stroke="#6ee7b7" stroke-width="3" stroke-dasharray="8,8" marker-end="url(#m-emer)" opacity="0.9"/>
+<text x="670" y="875" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#6ee7b7" text-anchor="middle" opacity="1.0" font-weight="400">unit-done (rows, digest, swapped)</text>
+<path d="M 380 915 L 515 915 L 515 951 L 388 951" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
+<text x="392" y="907" font-family="Inter, 'Liberation Sans', sans-serif" font-size="19" fill="#93a4b8" text-anchor="start" opacity="1.0" font-weight="400">mirror to journal.jsonl</text>
+<path d="M 960 985 L 1090 985 L 1090 1021 L 968 1021" fill="none" stroke="#fcd34d" stroke-width="3" marker-end="url(#m-amber)" opacity="0.9"/>
+<text x="972" y="977" font-family="Inter, 'Liberation Sans', sans-serif" font-size="19" fill="#93a4b8" text-anchor="start" opacity="1.0" font-weight="400">index rebuild (index_done)</text>
 <line x1="120" y1="1070" x2="380" y2="1070" stroke="#a9b7c7" stroke-width="3" marker-end="url(#m-slate)" opacity="0.9"/>
 <text x="250.0" y="1060" font-family="Inter, 'Liberation Sans', sans-serif" font-size="21" fill="#a9b7c7" text-anchor="middle" opacity="1.0" font-weight="400">status / resume / cleanup</text>
 <line x1="380" y1="1115" x2="120" y2="1115" stroke="#a9b7c7" stroke-width="3" stroke-dasharray="8,8" marker-end="url(#m-slate)" opacity="0.9"/>
