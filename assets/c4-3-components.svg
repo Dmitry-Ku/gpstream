@@ -68,6 +68,6 @@
 <line x1="1280" y1="488" x2="1280" y2="518" stroke="#93a4b8" stroke-width="3" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.9"/>
 <line x1="1280" y1="602" x2="1280" y2="632" stroke="#93a4b8" stroke-width="3" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.9"/>
 <line x1="1280" y1="716" x2="1280" y2="746" stroke="#93a4b8" stroke-width="3" stroke-dasharray="16,10" marker-end="url(#m-rose)" opacity="0.9"/>
-<text x="820" y="940" font-family="Inter, 'Liberation Sans', sans-serif" font-size="24" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">mesh mode: the same components run per segment — segriver (source segs) → mini-agent (dest segs)</text>
+<text x="820" y="940" font-family="Inter, 'Liberation Sans', sans-serif" font-size="24" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">mesh mode: the same components run per segment — segreceiver (source segs) → mini-agent (dest segs)</text>
 <text x="820" y="974" font-family="Inter, 'Liberation Sans', sans-serif" font-size="24" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">S×D×W streams; both coordinators off the data path</text>
 </svg>

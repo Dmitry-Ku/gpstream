@@ -35,10 +35,10 @@
 <text x="220" y="928" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">source-agent</text>
 <text x="220" y="968" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">coordinator: COPY TO STDOUT</text>
 <text x="220" y="998" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">mesh: COPY TO PROGRAM</text>
-<text x="220" y="1026" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">(segriver) ON SEGMENT</text>
+<text x="220" y="1026" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">(segreceiver) ON SEGMENT</text>
 <rect x="420" y="840" width="300" height="200" rx="16" fill="#101a2c"/><rect x="420" y="840" width="300" height="200" rx="16" fill="rgba(251,113,133,0.10)" stroke="#fda4af" stroke-width="2.5"/>
 <text x="442" y="874" font-family="Inter, 'Liberation Sans', sans-serif" font-size="18" fill="#fda4af" text-anchor="start" opacity="1.0" font-weight="600" letter-spacing="2">SOURCE SEGMENT ×S</text>
-<text x="570" y="928" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segriver (×S)</text>
+<text x="570" y="928" font-family="Inter, 'Liberation Sans', sans-serif" font-size="30" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segreceiver (×S)</text>
 <text x="570" y="968" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">kernel-launched, one per</text>
 <text x="570" y="998" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">segment; streams its slice</text>
 <text x="570" y="1026" font-family="Inter, 'Liberation Sans', sans-serif" font-size="20" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">(mesh); dials dest entry</text>

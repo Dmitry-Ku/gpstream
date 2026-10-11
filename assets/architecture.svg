@@ -143,7 +143,7 @@
 <rect x="170" y="1690" width="1310" height="130" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="170" y="1690" width="1310" height="130" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="825" y="1755" font-family="Inter, 'Liberation Sans', sans-serif" font-size="36" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">coordinator + source-agent</text>
-<text x="825" y="1798" font-family="Inter, 'Liberation Sans', sans-serif" font-size="27" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">COPY TO PROGRAM (segriver) ON SEGMENT · pg verify-full</text>
+<text x="825" y="1798" font-family="Inter, 'Liberation Sans', sans-serif" font-size="27" fill="#93a4b8" text-anchor="middle" opacity="1.0" font-weight="400">COPY TO PROGRAM (segreceiver) ON SEGMENT · pg verify-full</text>
 <rect x="170" y="1880" width="400" height="140" rx="14" fill="#101a2c" opacity="1.0"/>
 <rect x="170" y="1880" width="400" height="140" rx="14" fill="rgba(139,122,235,0.16)" stroke="#b4a7f7" stroke-width="2.5"/>
 <text x="370" y="1940" font-family="Inter, 'Liberation Sans', sans-serif" font-size="34" fill="#eef3f8" text-anchor="middle" opacity="1.0" font-weight="600">segment 0</text>
