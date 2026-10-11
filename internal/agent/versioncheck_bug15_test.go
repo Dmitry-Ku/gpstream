@@ -58,16 +58,3 @@ func TestGatherSourceVersionNoSegBinary(t *testing.T) {
 		t.Fatalf("SegReceivers = %v, want empty (no segreceivers in this mode)", sv.SegReceivers)
 	}
 }
-
-// execDDL runs one DDL/DML statement on the test cluster (local helper — the
-// package-level one lives behind the gp6lab build tag).
-func execDDL(dsn, sql string) error {
-	ctx := context.Background()
-	conn, err := pg.NewConn(ctx, dsn, "", "", "", "")
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = conn.Exec(ctx, sql)
-	return err
-}

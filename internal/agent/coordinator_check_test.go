@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/gpstream/gpstream/internal/pgtest"
-	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
 // These tests prove the P1e coordinator guard (requirement 2 — 30986/30989):
@@ -131,15 +130,4 @@ func seedCoordTable(dsn string, port uint32, coordHostname, coordAddress string)
 	return execDDL(dsn, fmt.Sprintf(
 		"INSERT INTO gp_segment_configuration VALUES ('%s','%s',%d,-1)",
 		coordHostname, coordAddress, port))
-}
-
-func execDDL(dsn, sql string) error {
-	ctx := context.Background()
-	conn, err := pg.NewConn(ctx, dsn, "", "", "", "")
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = conn.Exec(ctx, sql)
-	return err
 }
