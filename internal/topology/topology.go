@@ -82,6 +82,29 @@ func (t *Topology) UpCount() int {
 	return len(up)
 }
 
+// PrimaryHostnames returns the distinct up primary segment hostnames in
+// content order. The value is the catalog's `hostname` column (stored in
+// Segment.Address — the catalog query selects `hostname`, not `address`),
+// i.e. the name OTHER clusters' processes use to dial these segments
+// (the mesh segreceivers' destination mini-agent dials). De-duplicated: a
+// multi-segment host appears once (the name check is per host, not per
+// segment).
+func (t *Topology) PrimaryHostnames() []string {
+	if t == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, s := range t.Segments {
+		if s.Content < 0 || s.Role != "p" || s.Status != "u" || s.Address == "" || seen[s.Address] {
+			continue
+		}
+		seen[s.Address] = true
+		out = append(out, s.Address)
+	}
+	return out
+}
+
 // IsGreenplum reports whether the catalog was found and parsed.
 func (t *Topology) IsGreenplum() bool {
 	return t != nil

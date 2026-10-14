@@ -25,7 +25,12 @@ Self-diagnose the source/dest clusters (any FAIL aborts with the report),
 then plan the copy without
 executing (\fB--timeout\fR S bounds the plan). The plan is printed, not
 persisted (the dry-run holds no state); \fBrun\fR always persists the plan
-JSON to \fB<state-dir>/<operation-id>/plan.json\fR.
+JSON to \fB<state-dir>/<operation-id>/plan.json\fR. In
+\fB--copy-mode mesh\fR the dry-run also verifies that every destination
+segment hostname resolves from every source segment host (the mesh
+segreceivers dial the destination segment mini-agents by those names; an
+unresolvable name fails the mesh run mid-copy) — a FAIL finding names the
+(host, name) pairs and the /etc/hosts fix.
 .TP
 .B bench
 Measure the input stream (F-14): stream the selected source tables through

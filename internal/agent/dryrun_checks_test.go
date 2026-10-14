@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestQuoteRemote(t *testing.T) {
 func TestProbeScriptAndParse(t *testing.T) {
 	// The script must reference the binary (quoted) and, only when asked,
 	// the /dev/tcp port probe.
-	s := probeScript("/bin/x", 12345, false)
+	s := probeScript("/bin/x", 12345, false, nil)
 	if !strings.Contains(s, `test -x '/bin/x'`) {
 		t.Errorf("script missing the -x test: %s", s)
 	}
@@ -43,7 +44,7 @@ func TestProbeScriptAndParse(t *testing.T) {
 	if strings.Contains(s, "/dev/tcp") {
 		t.Errorf("script must NOT probe the port when checkPort=false: %s", s)
 	}
-	sp := probeScript("/bin/x", 12345, true)
+	sp := probeScript("/bin/x", 12345, true, nil)
 	if !strings.Contains(sp, "/dev/tcp/127.0.0.1/12345") {
 		t.Errorf("script missing the /dev/tcp port probe: %s", sp)
 	}
@@ -53,8 +54,11 @@ func TestProbeScriptAndParse(t *testing.T) {
 	if !strings.HasSuffix(sp, "true\n") {
 		t.Errorf("script must end with `true` (always exit 0 — a BUSY port is a finding, not a transport fault): %s", sp)
 	}
+	if strings.Contains(sp, "getent") {
+		t.Errorf("script must NOT probe names when nameChecks is empty: %s", sp)
+	}
 
-	// Parser: the three-line contract.
+	// Parser: the three-line contract (no name checks).
 	cases := []struct {
 		name     string
 		out      string
@@ -72,10 +76,116 @@ func TestProbeScriptAndParse(t *testing.T) {
 		{"empty", "", false, "", ""},
 	}
 	for _, c := range cases {
-		b, v, p := parseProbe(c.out)
+		b, v, p, nf, _ := parseProbe(c.out, nil)
 		if b != c.wantBin || v != c.wantVer || p != c.wantPort {
 			t.Errorf("%s: parseProbe = (%v,%q,%q), want (%v,%q,%q)", c.name, b, v, p, c.wantBin, c.wantVer, c.wantPort)
 		}
+		if nf != nil {
+			t.Errorf("%s: parseProbe with no nameChecks must not report failures, got %v", c.name, nf)
+		}
+	}
+}
+
+// TestProbeScriptNameChecks (mesh preflight, 14.10) proves the name
+// resolution probe: one quoted getent line per requested name, the result
+// token carries the name verbatim, and the parser reports exactly the
+// unresolvable names (NAME_FAIL or a MISSING result line — missing output
+// fails loud, the dial would just as well fail).
+func TestProbeScriptNameChecks(t *testing.T) {
+	names := []string{"vm5", "vm6"}
+	s := probeScript("/bin/x", 0, false, names)
+	for _, n := range names {
+		if !strings.Contains(s, "getent hosts '"+n+"'") {
+			t.Errorf("script missing the quoted getent probe for %s: %s", n, s)
+		}
+		if !strings.Contains(s, "echo NAME_OK "+n) || !strings.Contains(s, "echo NAME_FAIL "+n) {
+			t.Errorf("script missing the NAME_OK/NAME_FAIL result tokens for %s: %s", n, s)
+		}
+	}
+	if !strings.HasSuffix(s, "true\n") {
+		t.Errorf("script must still end with `true` with name checks: %s", s)
+	}
+	if !strings.Contains(s, "echo NAMEPROBE_DONE") {
+		t.Errorf("script missing the NAMEPROBE_DONE marker (mixed-version guard): %s", s)
+	}
+
+	cases := []struct {
+		name      string
+		out       string
+		wants     []string
+		wantFails []string
+		wantRan   bool
+	}{
+		{
+			name:    "all resolve",
+			out:     "BIN_OK\n\nNAME_OK vm5\nNAME_OK vm6\nNAMEPROBE_DONE\n",
+			wants:   names,
+			wantRan: true,
+		},
+		{
+			name:  "one fails",
+			out:   "BIN_OK\n\nNAME_OK vm5\nNAME_FAIL vm6\nNAMEPROBE_DONE\n",
+			wants: names, wantFails: []string{"vm6"},
+			wantRan: true,
+		},
+		{
+			name:  "missing result line fails loud",
+			out:   "BIN_OK\n\nNAME_OK vm5\nNAMEPROBE_DONE\n",
+			wants: names, wantFails: []string{"vm6"},
+			wantRan: true,
+		},
+		{
+			name:    "empty output, names requested",
+			out:     "",
+			wants:   names,
+			wantRan: false, // no marker: the probe did not run — not a failure
+		},
+		{
+			name:    "old agent output (no marker): unverified, not failed",
+			out:     "BIN_OK\n0.2.0 (abc)\nPORT_FREE\n",
+			wants:   names,
+			wantRan: false,
+		},
+	}
+	for _, c := range cases {
+		_, _, _, got, ran := parseProbe(c.out, c.wants)
+		if ran != c.wantRan {
+			t.Errorf("%s: nameProbeRan = %v, want %v", c.name, ran, c.wantRan)
+		}
+		if len(got) != len(c.wantFails) {
+			t.Errorf("%s: parseProbe failures = %v, want %v", c.name, got, c.wantFails)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.wantFails[i] {
+				t.Errorf("%s: parseProbe failures = %v, want %v", c.name, got, c.wantFails)
+			}
+		}
+	}
+}
+
+// TestHostProbeLocalNameChecks (mesh preflight, 14.10) runs the REAL probe
+// script on the local host (sshHost empty -> /bin/sh) with one resolvable
+// and one guaranteed-unresolvable name, proving the script + parser +
+// RunRemoteOutput round-trip end to end (getent must exist — the same
+// dependency the production probe has on every GP segment host).
+func TestHostProbeLocalNameChecks(t *testing.T) {
+	if _, terr := exec.LookPath("getent"); terr != nil {
+		t.Skip("getent not available on this platform (the probe needs it)")
+	}
+	binOK, _, _, nameFails, nameRan, err := hostProbe(context.Background(), "", "local", "/bin/true", 0, false,
+		[]string{"localhost", "gpstream-nosuchhost-xyz-1410"})
+	if err != nil {
+		t.Fatalf("local hostProbe: %v", err)
+	}
+	if !binOK {
+		t.Errorf("local probe: /bin/true must report BIN_OK")
+	}
+	if !nameRan {
+		t.Fatalf("local probe: the NAMEPROBE_DONE marker must be seen (the local agent is the current version)")
+	}
+	if len(nameFails) != 1 || nameFails[0] != "gpstream-nosuchhost-xyz-1410" {
+		t.Errorf("name failures = %v, want [gpstream-nosuchhost-xyz-1410] (localhost resolves, the fake name must not)", nameFails)
 	}
 }
 

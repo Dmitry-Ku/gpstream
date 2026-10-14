@@ -750,8 +750,12 @@ func (s *SourceServer) handleDryRunChecks(req DryRunChecksReq) DryRunChecksResp 
 	// agent SSHes to each S segment host (the segreceiver binary presence +
 	// executability + version, the listen-grid base port). The kernel's ON
 	// SEGMENT support is NOT probed (the first real run verifies it).
+	// req.NameChecks (mesh preflight, 14.10) adds a per-host name-resolution
+	// probe for the destination segment hostnames (the segreceivers dial the
+	// destination mini-agents by those names from these hosts).
 	if req.SegBinary != "" {
-		sv.OnSegmentOK, sv.OnSegmentSummary = s.checkOnSegmentAPlus(ctx, q, req.SegBinary, req.SegSSH, req.SegListen, sv.Greenplum)
+		sv.OnSegmentOK, sv.OnSegmentSummary, sv.NameCheckFailures, sv.NameChecksProbed, sv.NameChecksUnsupported =
+			s.checkOnSegmentAPlus(ctx, q, req.SegBinary, req.SegSSH, req.SegListen, req.NameChecks, sv.Greenplum)
 	}
 	return DryRunChecksResp{Op: "dry-run-checks-resp", ReqID: req.ReqID, Ok: true, Side: sv}
 }

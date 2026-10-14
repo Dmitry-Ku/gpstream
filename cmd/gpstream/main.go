@@ -449,24 +449,33 @@ func cmdDryRun(args []string) error {
 	// 2C-3: gather both sides' dry-run values via the agents (read-only). The
 	// source side carries the on_segment A+ inputs (the segreceiver path +
 	// the SSH user prefix + the listen-grid base, when set); the dest side
-	// runs its own mini-readiness SSH check (supervisor mode).
+	// runs its own mini-readiness SSH check (supervisor mode). The DEST side
+	// is gathered FIRST: in mesh mode its segment hostnames feed the source
+	// side's name-resolution preflight (the segreceivers dial the destination
+	// mini-agents by those names from the source segment hosts — the 14.10
+	// E2 finding: an unresolvable name fails the mesh run mid-copy).
 	segBin := cfg.SegBinary
 	if segBin == "" {
 		segBin, _ = config.ResolveSegBinaryOrEmpty()
 	}
-	srcResp, err := r.DryRunChecks(ctx, agent.DryRunChecksReq{
-		Side:      "source",
-		Workers:   cfg.WorkersPerPair,
-		SegBinary: segBin,
-		SegSSH:    sshUserPrefix(cfg.SourceAgentSSH),
-		SegListen: cfg.SegListen,
-	})
-	if err != nil {
-		return fmt.Errorf("dry-run: source checks: %w", err)
-	}
 	dstResp, err := r.DryRunChecks(ctx, agent.DryRunChecksReq{Side: "dest", Workers: cfg.WorkersPerPair})
 	if err != nil {
 		return fmt.Errorf("dry-run: dest checks: %w", err)
+	}
+	var nameChecks []string
+	if cfg.CopyMode == config.CopyMesh && dstResp.Side != nil {
+		nameChecks = dstResp.Side.SegmentHosts
+	}
+	srcResp, err := r.DryRunChecks(ctx, agent.DryRunChecksReq{
+		Side:       "source",
+		Workers:    cfg.WorkersPerPair,
+		SegBinary:  segBin,
+		SegSSH:     sshUserPrefix(cfg.SourceAgentSSH),
+		SegListen:  cfg.SegListen,
+		NameChecks: nameChecks,
+	})
+	if err != nil {
+		return fmt.Errorf("dry-run: source checks: %w", err)
 	}
 	// The controller diffs the two sides IN MEMORY (no DB access).
 	rep := dryrun.FromSides(srcResp.Side, dstResp.Side,

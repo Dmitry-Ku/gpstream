@@ -365,6 +365,14 @@ type DryRunChecksReq struct {
 	// agent checks the base port is FREE on each S segment host. Empty = the
 	// port check is not run.
 	SegListen string `json:"seg_listen,omitempty"`
+	// NameChecks (mesh preflight, 14.10) are hostnames the SOURCE agent must
+	// verify resolve from EACH of its S segment hosts: the mesh segreceivers
+	// dial the destination segment mini-agents by the destination catalog's
+	// hostname, and an unresolvable name fails the mesh run mid-copy after
+	// ~5 min of per-unit retries (0 rows). The controller passes the dest
+	// side's SegmentHosts here for --copy-mode mesh only; empty = the name
+	// check is not run.
+	NameChecks []string `json:"name_checks,omitempty"`
 }
 
 // DryRunChecksResp is the agent's dry-run pre-flight report: its side's raw

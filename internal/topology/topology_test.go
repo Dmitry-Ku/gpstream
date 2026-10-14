@@ -230,3 +230,52 @@ func TestToStrCoercions(t *testing.T) {
 		}
 	}
 }
+
+// TestPrimaryHostnames (mesh preflight, 14.10) proves the name list the
+// controller feeds the source agent's name check: distinct UP PRIMARY
+// hostnames in content order — mirrors, the coordinator row, down segments,
+// and duplicate hosts (a multi-segment host) excluded / de-duplicated.
+func TestPrimaryHostnames(t *testing.T) {
+	t.Helper()
+	mk := func(segs ...Segment) *Topology { return &Topology{Segments: segs} }
+
+	// Mirrors + coordinator excluded; content order preserved.
+	tt := mk(
+		Segment{Content: -1, Role: "p", Status: "u", Address: "coordinator"},
+		Segment{Content: 0, Role: "p", Status: "u", Address: "seg0"},
+		Segment{Content: 0, Role: "m", Status: "u", Address: "seg0m"},
+		Segment{Content: 1, Role: "p", Status: "u", Address: "seg1"},
+		Segment{Content: 1, Role: "m", Status: "u", Address: "seg1m"},
+	)
+	if got := tt.PrimaryHostnames(); len(got) != 2 || got[0] != "seg0" || got[1] != "seg1" {
+		t.Errorf("primary hosts = %v, want [seg0 seg1] (mirrors+coordinator excluded)", got)
+	}
+
+	// Down primaries excluded.
+	tt2 := mk(
+		Segment{Content: 0, Role: "p", Status: "u", Address: "seg0"},
+		Segment{Content: 1, Role: "p", Status: "d", Address: "seg1-down"},
+	)
+	if got := tt2.PrimaryHostnames(); len(got) != 1 || got[0] != "seg0" {
+		t.Errorf("down primary = %v, want [seg0] only", got)
+	}
+
+	// A multi-segment host de-duplicates to one entry (the check is per
+	// host, not per segment).
+	tt3 := mk(
+		Segment{Content: 0, Role: "p", Status: "u", Address: "hostA"},
+		Segment{Content: 1, Role: "p", Status: "u", Address: "hostA"},
+		Segment{Content: 2, Role: "p", Status: "u", Address: "hostB"},
+	)
+	if got := tt3.PrimaryHostnames(); len(got) != 2 || got[0] != "hostA" || got[1] != "hostB" {
+		t.Errorf("de-dup = %v, want [hostA hostB]", got)
+	}
+
+	// Empty / nil topology -> no names (no panic).
+	if got := (&Topology{}).PrimaryHostnames(); got != nil {
+		t.Errorf("empty topology = %v, want nil", got)
+	}
+	if got := (*Topology)(nil).PrimaryHostnames(); got != nil {
+		t.Errorf("nil topology = %v, want nil", got)
+	}
+}

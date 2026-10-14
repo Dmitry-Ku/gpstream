@@ -91,6 +91,28 @@ type SideValues struct {
 	// segment hosts: mini binary + ports, WITHOUT a real launch). Empty =
 	// not a supervisor / not checked.
 	MiniReady string `json:"mini_ready,omitempty"`
+	// SegmentHosts are the side's UP primary segment hostnames (the catalog's
+	// hostname column, content order, de-duplicated — topology
+	// PrimaryHostnames). The controller passes the DEST side's SegmentHosts to
+	// the source agent as mesh name checks: the mesh segreceivers dial the
+	// destination segment mini-agents BY THESE NAMES, resolved on the source
+	// segment hosts (an unresolvable name fails the mesh run mid-copy — the
+	// 14.10 E2 finding).
+	SegmentHosts []string `json:"segment_hosts,omitempty"`
+	// NameCheckFailures (source side, mesh preflight) are the unresolvable
+	// (destination hostname, source segment host) pairs, formatted
+	// "name (from host)". Empty = nothing failed (or the check did not run).
+	NameCheckFailures []string `json:"name_check_failures,omitempty"`
+	// NameChecksProbed (source side) is the number of (host, name) probes
+	// executed (0 = the check did not run — e.g. a non-Greenplum source,
+	// where the mesh path has no segment-to-segment dials).
+	NameChecksProbed int `json:"name_checks_probed,omitempty"`
+	// NameChecksUnsupported (source side) is true when name checks were
+	// requested but no host's probe output carried the done marker — an
+	// older agent version whose probe script predates the name checks. The
+	// check is then UNVERIFIED (not failed): the report warns to update the
+	// agents rather than false-failing every name.
+	NameChecksUnsupported bool `json:"name_checks_unsupported,omitempty"`
 }
 
 // GatherSide reads ONE side's raw dry-run values on q (the side's LOCAL
@@ -118,6 +140,7 @@ func GatherSide(ctx context.Context, q pg.Querier, side string, workers int) *Si
 	if top, err := topology.Read(ctx, q); err == nil && top != nil && top.IsGreenplum() {
 		sv.Greenplum = true
 		sv.UpCount = top.UpCount()
+		sv.SegmentHosts = top.PrimaryHostnames()
 	}
 
 	// Disk: a live probe (the bench injects a fault via the sentinel query).
@@ -202,6 +225,7 @@ func FromSides(src, dst *SideValues, opts Options) *Report {
 	r.addEncodingChecks(src, dst)
 	r.addExtensionChecks(src, dst)
 	r.addOnSegmentChecks(src, opts.CopyMode)
+	r.addNameResolutionChecks(src, dst, opts.CopyMode)
 	r.addCopyToProgramGUCCheck(src, opts.CopyMode)
 	r.addMiniReadyChecks(dst)
 	r.addTLSCheck(opts.MinTLS)
@@ -391,6 +415,56 @@ func (r *Report) addOnSegmentChecks(src *SideValues, copyMode string) {
 	r.Add(Check{Name: "on_segment", Side: "source", Sev: Warn,
 		Msg: "segment-direct capability degraded: " + strings.Join(src.OnSegmentSummary, "; "),
 		Rec: "the job will fall back to the coordinator path; fix the items above to enable the 2.0x segment-direct fast path"})
+}
+
+// addNameResolutionChecks (mesh preflight, 14.10 E2 finding): the mesh
+// segreceivers on the SOURCE segments dial the destination segment
+// mini-agents BY the destination catalog's hostname (the MiniMap address
+// book), resolved on the source segment hosts. When a name does not resolve
+// there, the mesh run fails MID-COPY after ~5 min of per-unit retries with
+// `dial tcp: lookup <name>: no such host` and 0 rows — the coordinator mode
+// is unaffected (its cross-cluster dials are master-to-master by IP). The
+// dry-run surfaces it BEFORE any data moves:
+//
+//   - FAIL when a (dest hostname, source segment host) pair does not
+//     resolve (the run as configured cannot succeed);
+//   - Pass when every probe succeeded;
+//   - Warn when the name checks were requested but no agent ran them (an
+//     older agent version — the check is unverified, not failed: update the
+//     agents, do not false-fail every name);
+//   - Pass "not applicable" when the source side has no segment hosts of its
+//     own (plain-PostgreSQL source — the mesh path is master-level and
+//     dials no destination segment names);
+//   - no finding at all in non-mesh mode or when the destination has no
+//     segment hostnames to resolve (plain-PostgreSQL destination).
+func (r *Report) addNameResolutionChecks(src, dst *SideValues, copyMode string) {
+	if copyMode != "mesh" {
+		return
+	}
+	if len(dst.SegmentHosts) == 0 {
+		return // non-Greenplum destination — no segment-to-segment dials by name
+	}
+	if len(src.NameCheckFailures) > 0 {
+		r.Add(Check{Name: "name-resolution", Side: "src->dst", Sev: Fail,
+			Msg: "mesh: destination segment hostname(s) do NOT resolve from the source segment host(s): " +
+				strings.Join(src.NameCheckFailures, ", "),
+			Rec: "the mesh segreceivers dial the destination mini-agents by these names on the SOURCE side; add the name(s) to /etc/hosts (or DNS) on the affected source host(s), e.g. `192.168.122.15 vm5`, then re-run the dry-run"})
+		return
+	}
+	if src.NameChecksUnsupported {
+		r.Add(Check{Name: "name-resolution", Side: "src->dst", Sev: Warn,
+			Msg: "mesh name resolution: NOT checked (the source agent ran no name probe — older agent version?)",
+			Rec: "update the source/destination agents to the controller's version and re-run the dry-run; until then the mesh run's name dialing is unverified"})
+		return
+	}
+	if src.NameChecksProbed == 0 {
+		r.Add(Check{Name: "name-resolution", Side: "src->dst", Sev: Pass,
+			Msg: "mesh name resolution: not applicable (no source segment hosts — master-level path dials no destination segment names)"})
+		return
+	}
+	r.Add(Check{Name: "name-resolution", Side: "src->dst", Sev: Pass,
+		Msg: fmt.Sprintf("mesh name resolution: all %d destination segment hostname(s) resolve from the source segment hosts (%d probes)",
+			len(dst.SegmentHosts), src.NameChecksProbed)})
 }
 
 // segstreamGUCName is the Yandex-fork gate for COPY TO PROGRAM. It mirrors
