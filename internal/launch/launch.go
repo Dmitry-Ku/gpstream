@@ -165,17 +165,57 @@ func remoteStart(ctx context.Context, t Target) error {
 	return runSSH(ctx, t, full)
 }
 
-// remoteStop best-effort signals the remote agent to exit (pkill by the
-// binary's basename on the control host). The agent's control-timeout orphan
-// protection is the real guarantee; this just makes Stop timely.
+// remoteStop best-effort signals the remote agent to exit (pkill by an
+// INSTANCE-SPECIFIC pattern on the control host). The agent's control-timeout
+// orphan protection is the real guarantee; this just makes Stop timely.
+//
+// BUG (14.10, live e2e pair runs): the old pattern was the bare binary
+// basename (pkill -f gpstream-source-agent), so when two concurrent runs
+// shared an agent host, one run's Stop killed the OTHER run's agent
+// mid-copy (its source agent logged "control connection lost (controller
+// gone)" and exited; the surviving run's next control write got a broken
+// pipe and its remaining units failed). The instance-specific pattern is
+// the binary + that agent's unique control-listen address: every run
+// allocates its own control port, so no sibling run's agent matches.
 func remoteStop(t Target) {
+	host := sshHostOnly(t.SSHHost)
+	_ = runSSH(context.Background(), Target{SSHHost: host},
+		fmt.Sprintf("pkill -f '%s'", remoteStopPattern(t)))
+}
+
+// remoteStopPattern builds the pkill -f pattern for one agent instance:
+// the binary basename + its control-listen flag/value. The source agent
+// carries the control listen in --serve; the destination agent in
+// --control-listen (both are present in every mode). The listen address is
+// unique per run (the controller allocates a fresh control port), which is
+// what makes the pattern instance-specific. When no control-listen arg is
+// found (unknown/legacy target shape) it falls back to the bare basename
+// so orphan cleanup still happens.
+func remoteStopPattern(t Target) string {
 	base := t.Binary
 	if i := strings.LastIndexByte(base, '/'); i >= 0 {
 		base = base[i+1:]
 	}
-	host := sshHostOnly(t.SSHHost)
-	_ = runSSH(context.Background(), Target{SSHHost: host},
-		fmt.Sprintf("pkill -f %s", base))
+	for i, a := range t.Args {
+		if (a == "--serve" || a == "--control-listen") && i+1 < len(t.Args) {
+			return base + `.*` + a + " " + escapeRegExp(t.Args[i+1])
+		}
+	}
+	return base
+}
+
+// escapeRegExp escapes the ERE metacharacters in s (pkill -f takes an
+// extended regular expression) so the listen address matches literally.
+func escapeRegExp(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		switch c {
+		case '.', '+', '*', '?', '(', ')', '[', ']', '{', '}', '^', '$', '|', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
 
 // sshHostOnly strips the port from user@host:port (the pkill runs on the host;

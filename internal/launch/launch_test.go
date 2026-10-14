@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"testing"
 	"time"
@@ -136,6 +137,47 @@ func TestSSHHostOnly(t *testing.T) {
 		if got := sshHostOnly(in); got != want {
 			t.Fatalf("sshHostOnly(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestRemoteStopPatternIsInstanceSpecific (BUG 14.10, live e2e pair runs):
+// the pkill pattern must identify ONE agent instance (binary + its unique
+// control-listen), not the bare binary name — otherwise one run's Stop kills
+// a sibling run's agent on the shared host mid-copy.
+func TestRemoteStopPatternIsInstanceSpecific(t *testing.T) {
+	src := Target{
+		Binary: "/usr/local/bin/gpstream-source-agent",
+		Args:   []string{"--src", "postgresql://u@h/db", "--snapshot", "db", "--serve", "0.0.0.0:33923"},
+	}
+	got := remoteStopPattern(src)
+	want := `gpstream-source-agent.*--serve 0\.0\.0\.0:33923`
+	if got != want {
+		t.Fatalf("source pattern = %q, want %q", got, want)
+	}
+	// A sibling run (same binary, different control port) must NOT match.
+	re := regexp.MustCompile(got)
+	sibling := "gpstream-source-agent --src postgresql://u@h/db --serve 0.0.0.0:46096"
+	if re.MatchString(sibling) {
+		t.Fatalf("pattern %q matches a sibling run's agent: %q", got, sibling)
+	}
+	own := "gpstream-source-agent --src postgresql://u@h/db --serve 0.0.0.0:33923 --connect-timeout 10s"
+	if !re.MatchString(own) {
+		t.Fatalf("pattern %q must match its own agent: %q", got, own)
+	}
+
+	dst := Target{
+		Binary: "gpstream-dest-agent",
+		Args:   []string{"--dest", "postgresql://u@h/db", "--control-listen", "0.0.0.0:41000", "--persist-listen", "0.0.0.0:41001"},
+	}
+	if got := remoteStopPattern(dst); got != `gpstream-dest-agent.*--control-listen 0\.0\.0\.0:41000` {
+		t.Fatalf("dest pattern = %q", got)
+	}
+
+	// Legacy/unknown shape: no control-listen arg -> bare basename (the
+	// orphan-cleanup guarantee is preserved, never weakened to nothing).
+	legacy := Target{Binary: "gpstream-source-agent", Args: []string{"--weird"}}
+	if got := remoteStopPattern(legacy); got != "gpstream-source-agent" {
+		t.Fatalf("legacy pattern = %q, want the bare basename", got)
 	}
 }
 
