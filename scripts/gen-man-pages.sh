@@ -18,5 +18,6 @@ for cmd in run dry-run bench status resume cleanup version; do
   {
     echo ".so ${MAIN##*/}"
   } > "$out"
+  chmod 644 "$out"
   echo "generated $out"
 done
