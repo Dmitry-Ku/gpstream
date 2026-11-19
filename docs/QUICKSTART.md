@@ -20,8 +20,12 @@ monitor, and recover if needed.
 > **Where it installs:** the `gpstream` package goes on the **controller
 > host** (the machine you run it from — it does not have to be a cluster
 > host). For `--copy-mode mesh` it also goes on **every source segment
-> host** (it supplies `gpstream-segreceiver`). The **destination** never runs
-> any gpstream code. Details: [INSTALL.md](INSTALL.md#63-deployment-model-what-goes-where).
+> host** (it supplies `gpstream-segreceiver`). By default the **destination**
+> runs no gpstream code; for a cross-host dest placement it runs
+> `gpstream-dest-agent`, and under `--copy-mode mesh` it additionally runs the
+> per-segment `gpstream-dest-agent --mini` agents (coordinated by the
+> dest-agent supervisor on the destination coordinator). Details:
+> [INSTALL.md](INSTALL.md#63-deployment-model-what-goes-where).
 
 ---
 
@@ -165,10 +169,11 @@ gpstream status --operation-id <id>
 ### 6.2 The `/metrics` endpoint
 
 There is no separate `metrics` subcommand — the Prometheus endpoint is served
-**during a run** when you pass `--metrics-addr`:
+**during a run** when you pass `--metrics-addr` (a `host:port` address without
+a scheme, e.g. `localhost:9100` or `:9100`):
 
 ```bash
-gpstream run --dbs orders --metrics-addr http://localhost:9100
+gpstream run --dbs orders --metrics-addr localhost:9100
 curl -s http://localhost:9100/metrics
 ```
 
@@ -201,14 +206,14 @@ re-read behaviour is fixed (a table is kept only if it was verified under one sn
 ### 7.2 Clean up
 
 `cleanup` removes an operation's state and (optionally) its destination
-objects:
+objects. `--yes` is always required (cleanup is destructive):
 
 ```bash
-gpstream cleanup --operation-id <id>
+gpstream cleanup --operation-id <id> --yes
 # remove all incomplete operations
-gpstream cleanup --all-incomplete
+gpstream cleanup --all-incomplete --yes
 # also drop the destination objects the operation created
-gpstream cleanup --operation-id <id> --mode drop --dest "$DST"
+gpstream cleanup --operation-id <id> --mode drop --dest "$DST" --yes
 ```
 
 ---
@@ -260,7 +265,7 @@ gpstream dry-run --source "$SRC" --dest "$DST" --dbs orders
 #    proceeds. If a target table already exists, the run STOPS by default —
 #    re-run with --resolve-conflicts skip (keep what's there) or
 #    --resolve-conflicts overwrite (replace it) to proceed deliberately.
-gpstream run --source "$SRC" --dest "$DST" --dbs orders --operation-id first-copy --metrics-addr http://localhost:9100
+gpstream run --source "$SRC" --dest "$DST" --dbs orders --operation-id first-copy --metrics-addr localhost:9100
 
 # 5. Monitor
 gpstream status --operation-id first-copy
@@ -284,7 +289,7 @@ per database (F-02), so the whole copy sees a single point in time.
 | Object class | `--metadata-only`, `--data-only` (default: both) |
 | Rename | `--map-db`, `--map-schema`, `--map-table` |
 | Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
-| Compression | `--compress none\|zlib\|zstd[:1-22]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
+| Compression | `--compress none\|zlib\|zstd[:1-19]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|mesh`, `--seg-listen` (optional; auto when omitted) |
 | Performance | `--workers N`, `--rate-limit <rate>` (ETA baseline + load diagnostics; the flow is paced by backpressure) |
 | Resilience | `--auto-resume N`, `--on-unit-failure continue\|abort`, `--verify on\|off`, `--frame-ack`, `--ack-timeout`, `--max-reconnects` |

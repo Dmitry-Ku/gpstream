@@ -6,20 +6,23 @@
 - **Restores:** ADR-001 data path (source agent ↔ dest agent stream)
 > SUPERSEDED v2 (2026-10-04): the phase plan below (P0–P6) is executed and
 historical. The TARGET architecture it must be read against is: (1) TWO
-copy modes only — `coordinator` and `on_segment`; the `direct` mode (P5)
-is removed, its per-segment write survives as the per-table AUTO
-sub-paths of `on_segment` — 1:1 (S==D, equal hash keys), routed (S!=D,
-hash key), merge (non-routable fallback: non-hash distribution, non-GP
-destination, partitioned parents); (2) agents run on the CLUSTER HOSTS
+copy modes only — `coordinator` and `mesh` (renamed from `on_segment`);
+the `direct` mode (P5) is removed, its per-segment write survives as the
+per-table AUTO sub-paths of `mesh` — 1:1 (S==D, equal hash keys), routed
+(S!=D, hash key), merge (non-routable fallback: non-hash distribution,
+non-GP destination, partitioned parents); (2) agents run on the CLUSTER HOSTS
 where their pg connections open — source agent on the source master
 (long-lived, FR-02 snapshot, ON SEGMENT dispatch), dest agent on the
 destination coordinator (coordinator mode) or destination segments
-(on_segment sub-paths), launched remotely by the controller (SSH/daemon)
-— NOT as local controller subprocesses; (3) ports: each long-lived agent
+(mesh sub-paths), launched by the controller — remotely over SSH
+(multi-host GP6 layout) or as a local subprocess (single-host / gp6lab
+layout; internal/launch); (3) ports: each long-lived agent
 binds one data + one control port (auto `:0`, real address reported to the
 controller in the control handshake and embedded in the ON SEGMENT
 ProgramCommand); units multiplex by unit_id frames on the listener —
-per-unit ports (base+unitID) are removed. The WAN leg carries only the
+per-unit ports (base+unitID) are removed from the live path (the
+`segstream.UnitListen` helper remains in the code, unused by production
+paths). The WAN leg carries only the
 compressed framed stream; the controller holds no data connections.
 
 ## Goal
@@ -40,9 +43,10 @@ Acceptance (the ADR-002 debt is closed when):
    volume.
 2. The controller process holds **no data connections** (no pg conn to
    source/dest during the copy; only agent control conns).
-3. All three copy modes work through agents (coordinator / on_segment /
-   direct), and the single-controller mode keeps working as a fallback
-   (`--topology single`).
+3. All copy modes work through agents (`coordinator` / `mesh`, with the
+   per-table 1:1 / routed / merge sub-paths); the two-agent path is the
+   only data path — the `--topology` flag (and the `--topology single`
+   fallback) was removed.
 
 ## Design
 
@@ -51,8 +55,8 @@ Acceptance (the ADR-002 debt is closed when):
 | Process | Host | Role |
 |---|---|---|
 | `gpstream` (controller) | operator's choice | plan, journal, orchestration, status/resume/cleanup, metrics |
-| `gpstream-source-agent` | source master (coordinator mode) / source segments (on_segment) | opens the source pg conn, holds the FR-02 snapshot, `COPY ... TO STDOUT`, frame v2 + zstd, pushes to the dest agent |
-| `gpstream-dest-agent` | destination master (coordinator) / destination segments (direct) | receives the stream, decompresses, `COPY ... FROM STDIN` (coordinator) or per-segment `COPY` (direct) |
+| `gpstream-source-agent` | source master (both modes; triggers the ON SEGMENT dispatch — `gpstream-segreceiver`, not the source agent, runs on the source segments) | opens the source pg conn, holds the FR-02 snapshot, `COPY ... TO STDOUT` (coordinator) or the ON SEGMENT dispatch (mesh), frame v2 + zstd, pushes to the dest agent |
+| `gpstream-dest-agent` | destination coordinator (supervisor; the mesh minis run on the destination segments) | receives the stream, decompresses, `COPY ... FROM STDIN` (coordinator) or per-segment utility `COPY` (mesh 1:1 / routed) |
 
 `gpstream-segreceiver` (existing) stays the on_segment source-side
 program (it is already a per-segment binary); it gains a compressed-output
@@ -63,22 +67,30 @@ option instead of framing raw.
 The controller talks to the agents over short-lived control connections
 (JSON over TLS, same cert bundle as the pg plane):
 
-1. `plan-ready`: controller sends the plan (units, staging names,
-   distribution, compression, rate limit) to each agent once.
-2. `unit-start {unit_id, table, target, snapshot_token}`: per unit, the
-   controller tells the source agent which table to stream and hands the
-   dest agent the target staging name. The source agent dials the dest
-   agent (address from the plan), performs the agent handshake (mTLS,
-   unit_id + job_id binding, as `segstream.HandshakeFilter` already does),
-   and streams.
-3. `unit-done {unit_id, rows, wire, logical, trailer_sha256}`: the dest
-   agent reports the trailer (rows + sha256) back to the controller via
-   its control conn; the controller journals `completed`, then instructs
-   the dest agent to swap (`ALTER ... RENAME`) — the swap stays a
-   controller decision (journal semantics unchanged).
-4. Heartbeat + cancel: the controller can cancel a unit (agent aborts the
-   stream); a dead agent is detected by heartbeat timeout and the unit is
-   marked failed (resume/re-run semantics unchanged).
+1. `build-plan`: the long-lived source agent builds the plan (units,
+   staging names, distribution, compression, rate limit) and returns it to
+   the controller (the source agent runs `plan.Build` with its local source
+   pool + a remote destination querier; the controller opens no destination
+   connection for planning).
+2. Per unit, the controller sends the source agent a `stream` (coordinator
+   path) or `onsegment` (mesh path: the source agent runs the ON SEGMENT
+   dispatch) instruction `{schema, table, job_id, unit_id, dest, staging,
+   compress}` and the dest agent a `serve-unit` (+ immediate `ack`). The
+   source agent dials the dest agent (address from the unit instruction),
+   performs the agent handshake (mTLS, unit_id + job_id binding, as
+   `segstream.HandshakeFilter` already does), and streams. The FR-02
+   snapshot is run-wide on the source agent (there is no per-unit snapshot
+   token).
+3. `unit-done {unit_id, rows, logical, wire, retransmitted, reconnects,
+   swapped, verified, events, digest, src_digest}`: the dest agent reports
+   the unit back to the controller via its control conn. The swap: on the
+   mesh path the dest agent (supervisor) compares the source vs dest
+   content digests and swaps itself; on the coordinator path the
+   controller journals `completed` and swaps (runUnit step 9).
+4. Heartbeat + cancel: the controller can cancel a unit (`cancel-unit`;
+   the agent aborts the stream); a dead agent is detected by heartbeat
+   timeout and the unit is marked failed (resume/re-run semantics
+   unchanged).
 
 Why the source dials the dest (not the other way): the source side owns
 the snapshot and the data; the dest agent publishes a per-unit listen
@@ -97,9 +109,11 @@ reason the refactor is mechanical, not a rewrite.
 ### Snapshot & consistency
 
 The FR-02 REPEATABLE READ snapshot moves into the source agent (it owns
-the source pg conn). The pinned-conn logic (`establishSnapshot`,
-`unitSource`, `--consistent-tables` per-table snapshots) moves with it,
-unchanged. The controller no longer touches source data.
+the source pg conn). The pinned-conn logic (`beginSnapshot` per pinned
+connection, `heal` re-establish after a unit failure) moves with it. The
+`--consistent-db/--consistent-cluster/--consistent-tables` scopes were
+removed (P7): the source agent always runs one run-wide REPEATABLE READ
+snapshot per database. The controller no longer touches source data.
 
 ### Journal
 
@@ -112,12 +126,15 @@ journal (single writer preserved).
 - **coordinator (default):** 1 source agent (master) ↔ 1 dest agent
   (master), N units pipelined over the same mTLS stream (multiplexed by
   unit_id frames, as the on_segment SliceMux already multiplexes).
-- **on_segment:** segreceiver on each source segment pushes compressed
-  slice streams to the dest agent; the dest agent merges (SliceMux moves
-  to the dest agent) and COPYs via the coordinator.
-- **direct:** the dest agent fans out per-segment `COPY FROM STDIN` to
-  destination segments (today's `copyStreamDirect` dest side moves into
-  the dest agent); the RowRouter runs in the source agent.
+- **mesh (formerly `on_segment`):** segreceiver on each source segment
+  pushes compressed slice streams to the dest agent; the dest agent merges
+  (SliceMux moves to the dest agent) and COPYs via the coordinator.
+- **direct (removed — see v2 note; the per-segment write survives as the
+  1:1 / routed sub-paths of `mesh`):** the dest agent fans out per-segment
+  `COPY FROM STDIN` to destination segments (today's dest-side direct load
+  — `ServeDirect`, internal/agent/direct.go — moves into the dest agent);
+  the row router runs in `gpstream-segreceiver` (RoutedSender), not in the
+  source agent.
 
 ### Deployment
 
@@ -166,10 +183,10 @@ agent↔agent stream reuse `--ssl-cert/--ssl-key/--ssl-ca` (mTLS).
   three processes (source agent mid-COPY, dest agent mid-verify,
   controller between journal writes). Mitigation: keep the journal as the
   single source of truth; agents report monotonic state; resume =
-  controller re-issues `unit-start` (staging truncate-on-resume already
-  exists in runUnit).
+  controller re-issues the unit (`stream`/`onsegment` + `serve-unit`;
+  staging truncate-on-resume already exists in runUnit).
 - **Snapshot lifetime** now spans an agent process: agent death must
-  COMMIT/ROLLBACK the pinned snapshot (the `healSnapshot` logic moves to
+  COMMIT/ROLLBACK the pinned snapshot (the `heal` re-establish logic moves to
   the agent + a controller-side watchdog for a dead agent).
 - **Test surface grows** (process orchestration in integration tests).
   Mitigation: the pgtest harness + a loopback agent pair already cover
@@ -183,3 +200,9 @@ agent↔agent stream reuse `--ssl-cert/--ssl-key/--ssl-ca` (mTLS).
   parallel) — possible later on the same protocol.
 - Compression of the pg-plane legs (coordinator ↔ agent) — those become
   short control conns in two-agent mode.
+
+## Post-decision changes (verified against the code, 2026-11-19)
+
+- The `--topology` flag referenced by P3 (historical phase) was removed:
+  the two-agent data path is now the only one (CHANGELOG.md: "Removed:
+  `--topology` flag — the two-agent data path is now the only one").

@@ -17,11 +17,11 @@ not a file on disk. The security concerns are therefore:
 | Concern | gpstream posture |
 |---------|------------------|
 | Credential leakage (argv, logs, process list) | Secrets come from **env / file, never argv** (§2) |
-| Wire eavesdropping / MITM | TLS always enforced, min **1.2** (§3) |
+| Wire eavesdropping / MITM | PG legs `verify-full` by default; agent data-socket TLS opt-in; min **1.2** (§3) |
 | ~~**Controller host as data trust root**~~ | Removed in P7: the two-agent transport is the only data path, the data stream never transits the controller (ADR-002 closed) |
 | Overwriting live data by accident | **Non-destructive default** (§4) |
 | Corrupted / truncated copy | Checksum + verify (§5) |
-| Destructive action without intent | `--yes` guard on cancel/rollback/cleanup (§6) |
+| Destructive action without intent | `--yes` guard on `cleanup` (§6) |
 | Wrong cluster / wrong target | `dry-run` (§7) |
 | Undocumented operator action | **Audit log** (`audit.log`, §10) |
 
@@ -40,7 +40,7 @@ captured log line.
 | TLS cert | `--ssl-cert <file>` / `GPSTREAM_SSL_CERT` | argv |
 | TLS key | `--ssl-key <file>` / `GPSTREAM_SSL_KEY` | argv |
 | TLS CA | `--ssl-ca <file>` / `GPSTREAM_SSL_CA` | argv |
-| Min TLS | `--ssl-min-tls <v>` / `GPSTREAM_SSL_MIN_TLS` | — |
+| Min TLS | `--ssl-min-tls <v>` (flag only — there is no `GPSTREAM_SSL_MIN_TLS` env) | — |
 
 In practice, put these in a restricted-env wrapper (your cron / process
 manager / init unit of choice) and keep the connection strings out of any
@@ -54,19 +54,30 @@ command line; the env and file layers keep it off argv.
 
 ## 3. Transport encryption (TLS)
 
-`buildTLS` **always** enforces TLS on the connection, with a minimum of
-**TLS 1.2** by default.
+Encryption has **two planes with different defaults**:
+
+- **PG legs (coordinator ↔ clusters):** encrypted **by default** —
+  `sslmode=verify-full` is applied when the DSN sets no explicit `sslmode`
+  (`ensureVerifyFull`). An explicit `sslmode` in the DSN (any value,
+  including `disable`) is respected **as-is** — gpstream does not override
+  a deliberately plaintext PG connection.
+- **Agent data socket (source agent ↔ dest agent):** **plaintext by
+  default**. TLS is opt-in and keyed on the serving keypair
+  (`--seg-tls-cert` / `--seg-tls-key`, env `GPSTREAM_SEG_TLS_CERT` /
+  `GPSTREAM_SEG_TLS_KEY`); `--seg-tls-ca` / `GPSTREAM_SEG_TLS_CA`
+  additionally makes the hop mTLS (a client certificate is required).
+
+PG-plane TLS settings:
 
 - `--ssl-cert` / `GPSTREAM_SSL_CERT` — client certificate (file path)
 - `--ssl-key`  / `GPSTREAM_SSL_KEY`  — client key (file path)
 - `--ssl-ca`   / `GPSTREAM_SSL_CA`   — CA bundle (file path)
-- `--ssl-min-tls` / `GPSTREAM_SSL_MIN_TLS` — minimum TLS version (default `1.2`)
-The pg data plane is **encrypted by default** (`sslmode=verify-full` is
-enforced unless the connstring sets an explicit `sslmode`); there is no bare
-`--tls` flag to assert it — the connection string carries the mode.
+- `--ssl-min-tls` — minimum TLS version (default `1.2`; flag only, no env
+  variant)
 
-A copy over an unencrypted link is refused. There is no
-`InsecureSkipVerify` path in the shipped configuration.
+There is no bare `--tls` flag to assert encryption — the connection string
+carries the PG-plane mode. There is no `InsecureSkipVerify` path in the
+shipped configuration.
 
 ### Server identity: `verify-full` (hostname check)
 
@@ -86,8 +97,9 @@ guarantee.
 ### Controller host as a data trust root (ADR-002)
 
 The two-agent transport is the only data path: the data stream runs source
-agent → dest agent over a real, TLS-protected socket and the controller only
-holds control-plane (catalog) connections. The controller
+agent → dest agent over a real socket and the controller only holds
+control-plane (catalog) connections. The socket is **plaintext by default** —
+enable TLS for it with the `--seg-tls-*` trio above (§3). The controller
 host then needs to be trusted for the *plan* (table names, DDL, state) but
 not for the data; the data trust roots become the two agent hosts (one per
 cluster), which are the hosts that run the COPYs.
@@ -109,8 +121,9 @@ To change behavior you opt in with a single flag:
 | `--resolve-conflicts stop` | **default** — a conflict stops the run |
 | `--resolve-conflicts skip` | skip conflicting objects (reported in `conflicts.jsonl`) |
 | `--resolve-conflicts overwrite` | replace the target (staging + atomic swap, verified) |
-| `--resolve-conflicts truncate` | truncate then reload (in-place) |
-| `--overwrite` / `--truncate` | shorthand opt-ins for the matching policy |
+| `--resolve-conflicts truncate` | **unsupported in the two-agent topology** — accepted by the CLI, but rejected at runtime (every unit fails); see `TROUBLESHOOTING.md` §4 |
+| `--overwrite` | shorthand opt-in for `--resolve-conflicts overwrite` |
+| `--truncate` | accepted (it sets the truncate policy) but the policy is rejected at runtime as above |
 
 `--overwrite` / `--truncate` are **not** the default; the safe default is
 `stop`.
@@ -121,30 +134,31 @@ To change behavior you opt in with a single flag:
 
 | Knob | Values | Default |
 |------|--------|---------|
-| `--verify` | `on` \| `off` | `off` |
+| `--verify` | `on` \| `off` | `on` |
 
-With **`on`**, after each unit lands its content checksum is re-derived on both
-sides (the source read shares the data COPY's snapshot) and compared; a mismatch
-sets the unit to `failed` and drops the staging table — no unverified data is
-ever swapped in. The default is **`off`** (no content verification; the COPY
-protocol's row count is the landed-data check), so a default run reads each
-source table exactly once — there is no pre-copy source/destination digest
-comparison.
+With **`on`** (the default), after each unit lands its content checksum is
+re-derived on both sides (the source read shares the data COPY's snapshot)
+and compared; a mismatch sets the unit to `failed` and drops the staging
+table — no unverified data is ever swapped in. The digest is computed inline
+on the data path (no re-read), so a default run still reads each source
+table exactly once. `--verify off` disables the swap gate (the COPY
+protocol's row count becomes the landed-data check).
 
 ---
 
 ## 6. Destructive commands require `--yes`
 
-The commands that can destroy work require an explicit `--yes`:
+There is exactly one destructive command, and it requires an explicit
+`--yes`:
 
 | Command | Why it needs `--yes` |
 |---------|---------------------|
-| `cancel`  | abandons an in-flight job |
-| `rollback` | undoes a completed/swap |
-| `cleanup`  | removes abandoned data |
+| `cleanup`  | removes the operation's state (and, with `--mode drop`, destination objects) |
 
-Without `--yes` these refuse to run. This is the guard against an
-accidental destructive operation.
+There is **no `cancel` subcommand** (stop a run by killing the process —
+see `FAILOVER.md`) and **no `rollback` subcommand** (recovery is `resume`
+plus `cleanup --mode drop`). Without `--yes`, `cleanup` refuses to run.
+This is the guard against an accidental destructive operation.
 
 ---
 
@@ -185,11 +199,11 @@ material.
 ## 9. Security checklist
 
 - [ ] Secrets via env / EnvironmentFile, **not** argv (FR-08).
-- [ ] TLS enforced; `--ssl-min-tls >= 1.2`.
+- [ ] PG legs: `sslmode=verify-full` (default) or an explicit DSN mode; `--ssl-min-tls >= 1.2`; agent data socket: `--seg-tls-*` set when the link is untrusted.
 - [ ] Server certificate covers the DSN host (`verify-full` hostname check).
 - [ ] `dry-run` returns **PASS** against the real clusters.
 - [ ] `ConflictAction = stop` (non-destructive) unless a specific copy
-      intentionally opts into `overwrite`/`truncate` via `--resolve-conflicts`.
+      intentionally opts into `overwrite` via `--resolve-conflicts`.
 - [ ] `--verify on` for critical copies.
 - [ ] Destructive commands invoked only with `--yes`, deliberately.
 - [ ] `audit.log` retained / reviewed per the operation's retention policy.
@@ -207,7 +221,7 @@ line: `{"ts", "action", ...fields}` (F-13 "audit log of actions").
 
 | action | When | Fields |
 |--------|------|--------|
-| `run` | `gpstream run` starts (before any copy) | operation-id, units, copy-mode, on-unit-failure, compression, consistency mode |
+| `run` | `gpstream run` starts (before any copy) | operation-id, units, copy-mode, on-unit-failure, compression |
 | `run-finished` | `gpstream run` ends | units, rows, skipped, failed, error (if any) |
 | `resume` | `gpstream resume` | operation-id, requeued, attempt (or error) |
 | `cleanup` | `gpstream cleanup` (logged **before** the state dir is removed) | operation-id, mode, units |

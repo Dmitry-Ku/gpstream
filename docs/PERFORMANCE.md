@@ -34,8 +34,8 @@ source agent --(framed, compressed)--> FramedPipe --(framed, decompressed)--> de
 ```
 
 - The source agent runs `COPY ... TO STDOUT`; the destination runs
-  `COPY ... FROM STDIN` **in parallel** over a single connection
-  (`copyStream`).
+  `COPY ... FROM STDIN` **in parallel** over a single connection (driven by
+  `pg.Conn.WriteCopy`, `internal/transfer/pg/copy.go`).
 - The transport is a `net.Pipe` (tests) or a `net.Conn` (production,
   optionally TLS, FR-13). It is **back-pressure-respecting** and holds
   data **only in RAM** — there is no intermediate storage and **no full DB
@@ -64,8 +64,9 @@ and **decompresses**; a CRC mismatch yields `ErrCorrupt`, which is
 
 ### `--rate-limit <rate>`
 
-Sets a **baseline** in **Gbps** (the flag accepts `bps`, `mbit`, and `gbit`
-units, e.g. `50gbit`, `40000mbit`). Default is **0** — no baseline.
+Sets a **baseline** in **Gbps** (the flag accepts a bare Gbps number or
+`gbit`/`gbps`/`gb` and `mbit`/`mb` units, e.g. `50gbit`, `40000mbit`,
+`100gbps`, `80gb`). Default is **0** — no baseline.
 
 **What it does today (honest status):** the value drives the **ETA estimate**
 in the dry-run plan and seeds the **adaptive load diagnostics** below. It does
@@ -123,7 +124,8 @@ of the controller).
 
 `--workers N` controls the **bounded worker pool** (FR-03) **and** the
 snapshot semantics of the run. `Manager.Run` dispatches `N` workers over a
-channel of units; `N` is validated (a value `< 1` is clamped to `1`). The flow
+channel of units; `N` is validated (a value `< 1` is a hard error —
+`workers must be >= 1, got N` — it is NOT clamped). The flow
 is paced by backpressure; the planned shared pacer (one for the whole pool, so
 the *total* flow — not each worker — stays under the ceiling) is backlog work
 (FR-14).
@@ -183,12 +185,14 @@ feed the pipeline?" before committing to a full run.
 
 Data ports are allocated automatically: every long-lived agent binds `:0`
 and reports its real (routable) address in the control handshake, so the
-stream needs no pre-planned port. A run uses exactly 3 ports in coordinator
-mode (source control + dest data + dest control) — the mesh
-segreceivers dial the dest agent's shared data listener, so the segment
-count adds no ports. In mesh (direct_1to1) mode a run uses **4+D** ports
-(source control + dest control + dest report + dest data + D mini-agent data
-ports, one per destination segment). For strict firewalls, restrict the
+stream needs no pre-planned port. A run uses exactly 4 ports in coordinator
+mode (source control + dest control + dest data + dest PEER) — the peer
+listener is allocated in ALL modes: the source agent dials it for the
+persistent source→dest channel (the 1F version exchange + the read-only
+dst-query loop). The mesh segreceivers dial the dest agent's shared data
+listener, so the segment count adds no ports. In mesh (direct_1to1) mode a
+run uses **4+D** ports (source control + dest control + dest report + dest
+data + D mini-agent data ports, one per destination segment). For strict firewalls, restrict the
 auto-allocated
 ports with `--port-range <LO-HI>`: same-host agents get pre-bound
 ports from the range, remote (SSH-launched) agents bind their auto-picked
@@ -226,12 +230,14 @@ lives on as the per-table auto sub-paths of `mesh`):
   COPYs (one per dest segment, routed by content-id) instead of merging them
   into one coordinator COPY — **no SliceMux, no destination re-distribution**.
   The source side is the same ON SEGMENT dispatch (the kernel streams the
-  same slices). The run logs `direct_1to1_fastpath` per such table. A
+  same slices). The run logs `mesh_direct_write` per such table (fields
+  `table`, `segments`, `reason`). A
   partitioned parent, or a live destination segment-count mismatch (a primary
   down since planning), degrades to the mesh merge path. The hash-aware
   routing kernel (`internal/route`, `ResolveMode`) is the single source of
-  the mode; see `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27.md` (only
-  `direct_1to1` (S==D) and `router_full` are correct under the GP jump-hash).
+  the mode: under the GP jump-hash (REDUCE_JUMP_HASH) only `direct_1to1`
+  (S==D) and `router_full` are valid — the fan-in / congruence fast-path
+  assumptions were disproven (see the comments in `internal/route/mode.go`).
 
 ### Small-table → coordinator fallback (P1b)
 
@@ -389,14 +395,18 @@ re-scanned the source table *and* the destination staging table (a full extra
 read of ~100 TB); the inline digest removes both re-reads for the cost of a
 per-row SHA-256 that the copy already pays to touch the bytes.
 
-**Honest scope:** the inline path covers the coordinator data path (including
-the DISTRIBUTED REPLICATED fallback into it). The **mesh** and **routed**
-sub-paths (multi-slice, per-segment utility COPYs) keep the **legacy post-copy
-re-read** (re-derive on the source snapshot + verify the destination staging
-table) — wiring the inline digest through the N-slice merge is the remaining
-follow-up. When a copy mode does not report inline digests, the verify step
-transparently falls back to the re-read, so `--verify on` is always correct,
-only the re-read cost differs by path. Off by default (`off`), where the
+**Honest scope:** the inline path covers **every** copy mode (the coordinator
+data path, the DISTRIBUTED REPLICATED fallback into it, and the **mesh** /
+**routed** sub-paths with their multi-slice, per-segment utility COPYs — each
+mini tees its sub-streams and reports per-segment XOR digests that the
+supervisor combines across the D segments, §Mesh topology). The **legacy
+post-copy re-read** (re-derive on the source snapshot + verify the destination
+staging table) was **removed (08.10)**: it was a full re-scan of both tables,
+unacceptable at the M7 scale. There is no re-read fallback — when a copy mode
+does not report inline digests (a data path that stopped carrying the content
+digest), the verify step **fails the unit** with `verify: inline digests
+missing (src=… dst=…)`. `--verify` is **on by default** (`on`): the digests
+are ALWAYS computed; `--verify off` only disables the swap gate, where the
 COPY protocol's row count is the landed-data check.
 
 ## Compression

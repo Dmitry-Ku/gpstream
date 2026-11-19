@@ -36,7 +36,7 @@ reference and the TOML/YAML key table.
 
 ---
 
-## Commands (9 dispatch entries)
+## Commands (8 dispatch entries)
 
 The dispatcher (`run`) accepts the following subcommands. `copy`/`plan` from
 older drafts are **not** separate commands: **`dry-run`** performs the
@@ -236,9 +236,10 @@ Conflict policy semantics:
 | `--compress none\|zlib\|zstd[:1-19]` | `Compression` / `ZstdLevel` | `zstd` / `3` (`zstd:level` sets the level, 1–19) |
 | `--zstd-level <1-19>` | `ZstdLevel` | `3` |
 | `--small-table-threshold <size>` | `SmallTableThreshold` | `1MiB` (F-12: tables smaller than this copy with compression off; `0` disables the auto-disable; suffixes K/M/G) |
-| `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbps`, …). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
+| `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbit`, … — suffixes gbit/gbps/gb/mbit/mb). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
 | `--workers <N>` | `WorkersPerPair` | `1` (must be `>= 1`, validated; **1 = strict** — one pinned REPEATABLE READ connection, one exact snapshot point, serial data phases; **N>1 = snapshot-epoch** — N pinned connections in an ε-window, N parallel data streams, bounded by `--max-snapshot-delta`) |
 | `--max-snapshot-delta SEC` | `MaxSnapshotDelta` | `1` (seconds; the snapshot-epoch pin-spread limit for `--workers N>1`: the run's N REPEATABLE READ pins must be no more than this apart, else the run refuses to start with the actual Δ. `0` disables the check. The live pin spread is ~ms, so the default leaves ~three orders of magnitude of headroom. No effect at `--workers 1`) |
+| `--data-idle-timeout DUR` | `DataIdleTimeout` | `5m` (L2 data-plane watchdog: no data bytes on a unit's stream for this long -> the destination mini-agent fails the unit; idle-based, safe for large tables / narrow links. `0` disables the check) |
 
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
@@ -509,7 +510,8 @@ it also removes destination-side objects, so use it deliberately. `run`,
 Environment variables are read by `ApplyEnv()` (the env layer of
 CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 
-`RATE_LIMIT`, `WORKERS`, `MAX_SNAPSHOT_DELTA`, `COMPRESS`,
+`RATE_LIMIT`, `WORKERS`, `MAX_SNAPSHOT_DELTA`, `DATA_IDLE_TIMEOUT`,
+`COMPRESS`,
 `SMALL_TABLE_THRESHOLD`, `AUTO_RESUME`, `ON_UNIT_FAILURE`, `SSL_CERT`,
 `SSL_KEY`, `SSL_CA`, `SOURCE_AGENT_BINARY`, `DEST_AGENT_BINARY`,
 `SEG_BINARY`, `SEG_LISTEN`, `PORT_RANGE`, `SEG_TLS_CERT`, `SEG_TLS_KEY`,

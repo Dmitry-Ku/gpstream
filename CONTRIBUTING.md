@@ -1,9 +1,9 @@
 # Contributing to gpstream
 
 Thanks for your interest! gpstream is a large-data migration tool for
-Greenplum clusters; contributions are reviewed against
-[TASK-SPEC-v4](TASK-SPEC-v4.md), which is the single source of truth for
-feature requirements (F-01…F-18) and non-functional constraints (§7).
+Greenplum clusters; contributions are reviewed against `TASK-SPEC-v4.md`
+(kept out of the repository by design), which is the single source of truth
+for feature requirements (F-01…F-18) and non-functional constraints (§7).
 
 ## Process
 

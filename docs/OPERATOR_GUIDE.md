@@ -146,8 +146,8 @@ point in time.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--rate-limit` | `0` (none) | Baseline for the ETA + adaptive load diagnostics in Gbps (accepts `bps`/`mbit`/`gbit` units). Does not cap the flow — backpressure paces it; enforced ceiling is backlog (PERFORMANCE.md). |
-| `--workers` | `2` | Concurrent workers per host-pair. |
+| `--rate-limit` | `0` (none) | Baseline for the ETA + adaptive load diagnostics in Gbps (accepts a bare Gbps number or `gbit`/`gbps`/`gb`/`mbit`/`mb` units). Does not cap the flow — backpressure paces it; enforced ceiling is backlog (PERFORMANCE.md). |
+| `--workers` | `1` | Concurrent workers per host-pair (1 = strict; N>1 = snapshot-epoch). |
 | `--compress` | `zstd` | `none` / `zlib` / `zstd`. |
 | `--compress zstd:9` | level 3 | zstd level **1–19** (validated). |
 
@@ -283,8 +283,6 @@ In parallel, every operator action on the operation is appended to
 | `run-finished` | `gpstream run` ends | `operation-id`, `units`, `rows`, `skipped`, `failed`, `error` (if any) |
 | `resume` | `gpstream resume` | `operation-id`, `requeued`, `attempt` (or `error`) |
 | `cleanup` | `gpstream cleanup` — logged **before** the state dir is removed | `operation-id`, `mode` (`state`/`drop`), `units`, `dropped` (objects removed with `--mode drop`) |
-| `cleanup_drop` | each destination object removed by `cleanup --mode drop` (F-02) | `operation-id`, `kind` (`staging`/`table`/`schema`), `schema`, `object`, `reason` |
-| `cleanup_drop_failed` | a destination object that could NOT be dropped (reported, run continues) | `operation-id`, `kind`, `schema`, `object`, `error` |
 
 `events.jsonl` is what the run did; `audit.log` is what the operator did.
 Both are best-effort (a write failure never fails the action).

@@ -42,9 +42,10 @@ The operation journal (ADR-001 §4.3) has **two writers**:
 
 1. **Primary record** — a table in the destination service DB,
    `gpstream_units` (`job_id, unit_id, "db", "schema", "table", "part",
-   kind, state, checksum, row_count, byte_count, attempts, epoch, updated`,
-   primary key `(job_id, unit_id)`), created with
-   `CREATE TABLE IF NOT EXISTS`.
+   kind, state, checksum, row_count, byte_count, attempts, epoch,
+   operation_id, index_done, updated`, primary key `(job_id, unit_id)`),
+   created with `CREATE TABLE IF NOT EXISTS`; pre-existing tables are
+   backfilled with `operation_id` / `index_done` via guarded ALTERs.
 2. **File mirror** — a local JSON-lines file at
    `<state-dir>/<operation-id>/journal.jsonl` (default
    `/var/lib/gpstream/<operation-id>/journal.jsonl`).
@@ -58,20 +59,25 @@ re-scan (F-03/F-07).
 Alongside the journal the operation directory also holds `events.jsonl`
 (diagnostic event stream, F-04/F-14), `audit.log` (operator actions, F-13),
 `conflicts.jsonl` (F-10), `runstats.json` (heartbeat), and `jobmeta.json`
-(snapshot-epoch metadata read by `status`/`resume`).
+(snapshot-epoch metadata read by `status`; the re-run reads it when it
+establishes the next epoch).
 
 ## Resume (the primary recovery path)
 
 ### `--auto-resume N` on a live copy
 
-Pass `--auto-resume N` to `run`. If, after the run, any unit did not reach a
-terminal state, gpstream loops: resume the incomplete units, re-run the
+Pass `--auto-resume N` to `run`. **Only when the run itself returns no
+error** does gpstream loop: re-queue the incomplete units, re-run the
 manager, repeat — up to **N** times. The attempt counter enforces the limit;
 once `attempts >= N` the resume manager refuses
 (`auto-resume: max attempts (N) reached`).
 
-Default `AutoResume` is **0** (no auto-resume). Set it to, e.g., `3` to let
-transient network/CPU faults heal themselves.
+The condition matters: a run in which any unit *failed* returns that first
+unit error, so it does **not** enter the loop — a failed unit does not
+self-heal; it waits for an explicit `gpstream resume` plus a re-run with the
+same `--operation-id`.
+
+Default `AutoResume` is **0** (no auto-resume).
 
 ### `gpstream resume`
 
@@ -79,12 +85,15 @@ transient network/CPU faults heal themselves.
 gpstream resume --operation-id <id> [--auto-resume N]
 ```
 
-Reopens the journal (the file mirror, optionally the live dest-DB journal)
-and re-queues every unit **not** in a terminal state — it **skips** units
-already `completed` / `swapped` / `failed` (they are not re-copied). Output:
+Reopens the journal **from the file mirror** (the live dest-DB journal is
+not read — the destination DB is not connected at all) and re-queues every
+unit **not** in a terminal state — it **skips** units already
+`completed` / `swapped` / `failed` (they are not re-copied). Re-queueing
+marks the units pending in the journal; it does not copy anything — the
+actual re-copy happens on a re-run with the same `--operation-id`. Output:
 
 ```
-resume: operation <id>: re-queued 4 unit(s)
+resume: operation <id>: re-queued 4 unit(s) (attempt 1, max 0)
 ```
 
 or, when everything is already terminal:
@@ -154,9 +163,12 @@ Recovery is only safe because of two guarantees in `runUnit`
    verified copy, the staging table still holds the verified data — the run
    reports the error and a resume retries the swap, so no data is lost.
 
-In-place mode (`--resolve-conflicts truncate`) copies into the final table
-directly after `TRUNCATE`; it is idempotent, so a retry re-copies from a clean
-table.
+**In-place mode (`--resolve-conflicts truncate`) is unsupported** in the
+two-agent topology: the flag is accepted by the CLI, but every unit fails at
+runtime with `two-agent topology does not support the in-place copy target
+(--truncate); use the default staging+swap path`. The data path is
+staging+swap only, so the crash-recovery guarantees above apply to every
+conflict policy that actually runs.
 
 ## Fault isolation (one bad unit does not kill the batch)
 
@@ -189,7 +201,8 @@ OP=my-copy          # the --operation-id used for the run
 gpstream status --operation-id "$OP"
 
 # 2. Decide:
-gpstream resume --operation-id "$OP" --auto-resume 3        # re-run incomplete units
+gpstream resume --operation-id "$OP"      # re-queue incomplete units (copies nothing)
+gpstream run ... --operation-id "$OP"     # re-run: re-copies the re-queued + re-read units
 # (to discard the operation's footprint and dest objects instead:)
 gpstream cleanup --operation-id "$OP" --mode drop --dest "$DST" --yes
 

@@ -62,12 +62,14 @@ from the flags or the file.
 | `SmallTableThreshold` | int64 | **`1MiB`** | `--small-table-threshold` / env / file | F-12: a table whose estimated size is below this copies with compression **off**. `0` disables the auto-disable. |
 | `RateLimit` | float64 | `0` (none) | `--rate-limit` / env / file | Gbps baseline for the ETA + adaptive load diagnostics (AIMD, F-14). Does not cap the flow — backpressure paces it; the enforced ceiling (pacer) is backlog. |
 | `WorkersPerPair` | int | **`1`** | `--workers` / env / file | Must be **≥ 1** (validate). 1 = strict (one snapshot point); N>1 = snapshot-epoch. |
+| `MaxSnapshotDelta` | time.Duration | **`1s`** | `--max-snapshot-delta` / env / file | P1d: for `--workers N > 1`, the N REPEATABLE READ pins must be taken within this spread (seconds) or the run refuses to start. `0` disables the check; no effect in strict mode (`--workers 1`). |
+| `DataIdleTimeout` | time.Duration | **`5m`** | `--data-idle-timeout` / env / file | L2 data-plane watchdog: no byte on a unit's data stream for this long → the destination declares the stream dead and fails the unit (idle-based, size- and link-independent). `0` disables. |
 
 ### 1.6a Transport (two-agent, ADR-002)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `SourceAgentSSH` | string | `""` | `--source-agent-ssh` (CLI only) | P1e: `user@host[:port]` of the source cluster's master. **May be omitted** (or name a local host) → the source agent runs as a local subprocess on the gpstream host. Remote host → launched over SSH. No env/file source (the Inc2c env vars were removed, P1e). |
-| `DestAgentSSH` | string | `""` | `--dest-agent-ssh` (CLI only) | P1e: `user@host[:port]` of the destination cluster's coordinator. Same semantics as `SourceAgentSSH`. |
+| `SourceAgentSSH` | string | `""` | `--source-agent-ssh` / file `source_agent_ssh` | P1e: `user@host[:port]` of the source cluster's master. **May be omitted** (or name a local host) → the source agent runs as a local subprocess on the gpstream host. Remote host → launched over SSH. No env source (the Inc2c env vars were removed, P1e). |
+| `DestAgentSSH` | string | `""` | `--dest-agent-ssh` / file `dest_agent_ssh` | P1e: `user@host[:port]` of the destination cluster's coordinator. Same semantics as `SourceAgentSSH` (file key `dest_agent_ssh`, no env source). |
 | `SourceAgentBinary` | string | `""` → resolved | `source_agent_binary` / `GPSTREAM_SOURCE_AGENT_BINARY` | gpstream-source-agent path. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `run` / `bench`. |
 | `DestAgentBinary` | string | `""` → resolved | `dest_agent_binary` / `GPSTREAM_DEST_AGENT_BINARY` | gpstream-dest-agent path. Resolved by convention as above. |
 
@@ -123,6 +125,9 @@ place.
 | `SSLKey` | string | `""` | `--ssl-key` / env / file | **Secret — env/file, never argv (F-08).** |
 | `SSLCA` | string | `""` | `--ssl-ca` / env / file | **Secret — env/file, never argv (F-08).** |
 | `SSLMinTLS` | string | **`1.2`** | `--ssl-min-tls` / file | Minimum TLS version. The pg plane uses `sslmode=verify-full` by default. |
+| `ControlTLSCert` | string | `""` | `--control-tls-cert` / env / file | Control-channel TLS: the client cert the controller presents (mTLS, when an agent requires a client certificate). |
+| `ControlTLSKey` | string | `""` | `--control-tls-key` / env / file | **Secret — env/file, never argv (F-08).** |
+| `ControlTLSCA` | string | `""` | `--control-tls-ca` / env / file | **Secret — env/file, never argv (F-08).** Trusted CA bundle the controller verifies the agents' control-socket certificates against. |
 
 ### 1.12 Transport (T-B, §1.3)
 | Field | Type | Default | Source | Notes |
@@ -133,12 +138,14 @@ place.
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
 | `SegTLSKey` | string | `""` | `--seg-tls-key` / env / file | Controller serving key. |
 | `SegTLSCA` | string | `""` | `--seg-tls-ca` / env / file | CA for the segment data plane. |
+| `PortRange` | string | `""` → auto | `--port-range` / env / file | Restricts the auto data/control port allocation to a `LO-HI` range (or a single `LO` base) for strict-firewall environments. Empty = fully automatic (every long-lived agent binds `:0` and reports its address in the handshake). The range size is checked against the mode's requirement at run/dry-run time (coordinator: **4** ports; mesh: **4 + D**). |
+| `NoRoutedWrite` | bool | `false` | `--no-routed-write` (CLI only) | P9: disables the routed segment-to-segment data path for S≠D topologies — on_segment then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers. |
 
 ### 1.13 Frame-ack / reliability (§4.6)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `FrameAck` | string | `on` | `--frame-ack` / env / file | `on` (default) \| `off` (plain pipe). |
-| `AckTimeout` | string | `30s` | `--ack-timeout` / env / file | `15s` \| `30s` \| `adaptive` (3x median RTT). |
+| `FrameAck` | string | `on` | `--frame-ack` / env | `on` (default) \| `off` (plain pipe). |
+| `AckTimeout` | string | `30s` | `--ack-timeout` / env | `15s` \| `30s` \| `adaptive` (3x median RTT). |
 | `MaxReconnects` | int | `20` | `--max-reconnects` / env | Reconnect budget; exhausted = unit failed. |
 | `RetransmitBufferMax` | int64 | `64MiB` | `--retransmit-buffer-max` / env | In-flight window per stream. |
 
@@ -186,6 +193,8 @@ their zero values (`""`, `false`, `0`, `nil`, `[]`).
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
 | `WorkersPerPair` | `1` |
+| `MaxSnapshotDelta` | `1s` |
+| `DataIdleTimeout` | `5m` |
 | `StateDir` | `/var/lib/gpstream` |
 
 `Validate()` additionally normalises the frame-ack defaults in place:
@@ -217,12 +226,16 @@ overlays known scalar leaves via `assignConfigString`. Only **scalar leaves**
 are honoured (non-scalar nodes are skipped). The accepted keys (all lowercase)
 are:
 
-**Naming rule:** a file key is the CLI flag name with dashes turned into
-underscores — `--index-priority` ↔ `index_priority`, `--workers` ↔
-`workers`. The 22 keys below are 1:1 with 22 CLI flags, so the name
-in the docs without the leading `--` is exactly the file key. Env vars are the
-same names uppercased under the `GPSTREAM_` prefix where they exist (env
-covers a different, session-level subset).
+**Naming rule:** for every key that has a CLI flag, the file key is the flag
+name with dashes turned into underscores — `--index-priority` ↔
+`index_priority`, `--workers` ↔ `workers`. The 31 keys below are exactly the
+set `assignConfigString` accepts: 28 of them mirror a CLI flag, and the three
+binary-path keys (`source_agent_binary`, `dest_agent_binary`, `seg_binary`)
+have no CLI flag (the binaries resolve by convention). Several CLI flags
+(`--frame-ack`, `--ack-timeout`, `--max-reconnects`,
+`--retransmit-buffer-max`, `--dry-run`, `--operation-id`, …) have no file
+key. Env vars are the same names uppercased under the `GPSTREAM_` prefix
+where they exist (env covers a different subset — see §3.2).
 
 | File key | Field | Notes |
 |----------|-------|-------|
@@ -230,6 +243,8 @@ covers a different, session-level subset).
 | `dest` | `Dest` | |
 | `rate_limit` | `RateLimit` | parsed as float |
 | `workers` | `WorkersPerPair` | parsed as int |
+| `max_snapshot_delta` | `MaxSnapshotDelta` | int seconds |
+| `data_idle_timeout` | `DataIdleTimeout` | parsed as duration |
 | `compress` | `Compression` | `none`/`zlib`/`zstd` |
 | `zstd_level` | `ZstdLevel` | parsed as int (1–19) |
 | `small_table_threshold` | `SmallTableThreshold` | int64 bytes, or a size with a `K`/`M`/`G`/`T` suffix (same notation as the CLI) |
@@ -243,11 +258,18 @@ covers a different, session-level subset).
 | `seg_tls_cert` | `SegTLSCert` | **secret** |
 | `seg_tls_key` | `SegTLSKey` | **secret** |
 | `seg_tls_ca` | `SegTLSCA` | **secret** |
+| `control_tls_cert` | `ControlTLSCert` | **secret** |
+| `control_tls_key` | `ControlTLSKey` | **secret** |
+| `control_tls_ca` | `ControlTLSCA` | **secret** |
+| `source_agent_ssh` | `SourceAgentSSH` | `user@host[:port]`; no env source (P1e) |
+| `dest_agent_ssh` | `DestAgentSSH` | `user@host[:port]`; no env source (P1e) |
+| `source_agent_binary` | `SourceAgentBinary` | binary path; no CLI flag |
+| `dest_agent_binary` | `DestAgentBinary` | binary path; no CLI flag |
+| `seg_binary` | `SegBinary` | binary path; no CLI flag |
+| `seg_listen` | `SegListen` | `host:port` |
+| `port_range` | `PortRange` | `LO-HI` or a single `LO` base |
 | `index_priority` | `IndexPriority` | `size`/`fifo` |
 | `timeout` | `Timeout` | parsed as duration |
-| `consistent_db` | `ConsistentDB` | `true`/`1` |
-| `consistent_cluster` | `ConsistentCluster` | `true`/`1` |
-| `consistent_tables` | `ConsistentTables` | `true`/`1` |
 
 A file example:
 
@@ -284,6 +306,16 @@ ssl_ca   = "/secrets/ca.pem"
 | `GPSTREAM_ACK_TIMEOUT` | `AckTimeout` | string |
 | `GPSTREAM_MAX_RECONNECTS` | `MaxReconnects` | int |
 | `GPSTREAM_RETRANSMIT_BUFFER_MAX` | `RetransmitBufferMax` | size (e.g. `64M`) |
+| `GPSTREAM_MAX_SNAPSHOT_DELTA` | `MaxSnapshotDelta` | int seconds |
+| `GPSTREAM_DATA_IDLE_TIMEOUT` | `DataIdleTimeout` | duration |
+| `GPSTREAM_SOURCE_AGENT_BINARY` | `SourceAgentBinary` | string (path) |
+| `GPSTREAM_DEST_AGENT_BINARY` | `DestAgentBinary` | string (path) |
+| `GPSTREAM_SEG_BINARY` | `SegBinary` | string (path) |
+| `GPSTREAM_SEG_LISTEN` | `SegListen` | `host:port` |
+| `GPSTREAM_PORT_RANGE` | `PortRange` | `LO-HI` or a single `LO` base |
+| `GPSTREAM_CONTROL_TLS_CERT` | `ControlTLSCert` | string (**secret**) |
+| `GPSTREAM_CONTROL_TLS_KEY` | `ControlTLSKey` | string (**secret**) |
+| `GPSTREAM_CONTROL_TLS_CA` | `ControlTLSCA` | string (**secret**) |
 
 ApplyEnv does not clobber values already set by higher-precedence sources, so
 CLI beats env and env beats file.
@@ -291,6 +323,14 @@ CLI beats env and env beats file.
 > **Endpoints are not env-driven:** there is no `GPSTREAM_SOURCE`/
 > `GPSTREAM_DEST`. The source/destination connstrings come from the
 > `--source`/`--dest` flags or the file.
+
+> **`GPSTREAM_DATA_LOG` is not a `Config` key:** it is read directly by the
+> data path (`internal/transfer/datalog.go`, Inc3.4) — an opt-in data-path
+> debug log (frame-ack transport events: reconnect attempts, ring replay
+> size, resume routing, duplicate frames) written to stderr. Off by default;
+> enable with `GPSTREAM_DATA_LOG=1` (any non-empty value other than `0`/
+> `off`). The agent's stderr is captured in the controller's run log, the
+> segreceiver's stderr lands in the GPDB segment log. See `gpstream(8)`.
 
 ---
 
@@ -319,16 +359,19 @@ failed validation aborts the command.
 
 ## 5. Secrets and F-08
 
-Secrets — the SSL certificate, key, and CA (`SSLCert`, `SSLKey`, `SSLCA`) and
-the segment-plane keypair/CA (`SegTLSCert`, `SegTLSKey`, `SegTLSCA`) —
-**come only from environment variables or a `0600` file, never from argv
+Secrets — the SSL certificate, key, and CA (`SSLCert`, `SSLKey`, `SSLCA`),
+the segment-plane keypair/CA (`SegTLSCert`, `SegTLSKey`, `SegTLSCA`), and the
+control-channel keypair/CA (`ControlTLSCert`, `ControlTLSKey`, `ControlTLSCA`)
+— **come only from environment variables or a `0600` file, never from argv
 (F-08).** Although `parseConfig` technically accepts them on the command
 line, the production posture is to supply them via:
 
 - env: `GPSTREAM_SSL_CERT`, `GPSTREAM_SSL_KEY`, `GPSTREAM_SSL_CA` (and
-  `GPSTREAM_SEG_TLS_CERT`/`_KEY`/`_CA`); or
+  `GPSTREAM_SEG_TLS_CERT`/`_KEY`/`_CA`, `GPSTREAM_CONTROL_TLS_CERT`/`_KEY`/
+  `_CA`); or
 - the config file: `ssl_cert`, `ssl_key`, `ssl_ca` (and `seg_tls_cert`/
-  `seg_tls_key`/`seg_tls_ca`) in a file with `0600` permissions.
+  `seg_tls_key`/`seg_tls_ca`, `control_tls_cert`/`control_tls_key`/
+  `control_tls_ca`) in a file with `0600` permissions.
 
 This keeps secrets out of the process command line (visible via `ps`, shell
 history, and job schedulers). `SSLMinTLS` (a non-secret version string,
@@ -349,7 +392,7 @@ Given `config.Default()`, a file, environment, and CLI, the final value of
 - CLI `--workers 4` → **4** (wins).
 - else env `GPSTREAM_WORKERS=3` → **3**.
 - else file `workers = 2` → **2**.
-- else default → **2** (default).
+- else default → **1** (default).
 
 The same last-wins ordering applies to every field: **CLI > env > file >
 defaults**.

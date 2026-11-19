@@ -19,8 +19,8 @@ anything).
 
 | Module | Version | License | Why it is here |
 |---|---|---|---|
-| `github.com/jackc/pgx/v5` | v5.10.0 | MIT | The only pure-Go PostgreSQL driver with the features gpstream needs: `pgxpool` (one connection per operation — FR-03/FR-02 pool model), binary `COPY TO/FROM STDIN` streaming (FR-01 data plane), `sslmode=verify-full` with a custom CA bundle (F-13), and `gp_session_role=utility` DSN parameters for direct segment sessions (R5). A C-based driver (libpq) is exactly what FR-08 forbids (runtime C dependency). Verified against the target kernel, PostgreSQL 9.4.26 (GP6). |
-| `github.com/klauspost/compress` | v1.20.0 | BSD-3 | zstd compression for the wire (FR-12: adaptive, with per-unit auto-disable for small tables). Pure-Go, no cgo — the spec names zstd explicitly as the example allowed library. The alternative (stdlib `compress/zlib`) is ~3–5× slower at the same ratio and would push the compression degradation thresholds (FR-14) into the noise on a 100 GbE channel. |
+| `github.com/jackc/pgx/v5` | v5.13.0 | MIT | The only pure-Go PostgreSQL driver with the features gpstream needs: `pgxpool` (one connection per operation — FR-03/FR-02 pool model), binary `COPY TO/FROM STDIN` streaming (FR-01 data plane), `sslmode=verify-full` with a custom CA bundle (F-13), and `gp_session_role=utility` DSN parameters for direct segment sessions (R5). A C-based driver (libpq) is exactly what FR-08 forbids (runtime C dependency). Verified against the target kernel, PostgreSQL 9.4.26 (GP6). |
+| `github.com/klauspost/compress` | v1.20.4 | BSD-3 | zstd compression for the wire (FR-12: adaptive, with per-unit auto-disable for small tables). Pure-Go, no cgo — the spec names zstd explicitly as the example allowed library. The alternative (stdlib `compress/zlib`) is ~3–5× slower at the same ratio and would push the compression degradation thresholds (FR-14) into the noise on a 100 GbE channel. |
 | `github.com/BurntSushi/toml` | v1.6.0 | MIT | Config file parsing (`/etc/gpstream/gpstream.toml` — F-05). Pure-Go, no cgo. TOML is the spec's primary config format; the parser is small and dependency-free. |
 | `gopkg.in/yaml.v3` | v3.0.1 | Apache-2.0 | YAML config support (F-05 allows TOML/**or** YAML; `.yaml`/`.yml` config files are accepted with the same schema). Pure-Go, no cgo. |
 
@@ -53,8 +53,9 @@ runtime dependency; the binary is statically linked
 - Static build: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags
   "-s -w" -o gpstream ./cmd/gpstream` (CI: `.github/workflows/ci.yml`,
   artifact `gpstream-linux-amd64`).
-- Dependency integrity: `go mod verify` (checked in CI via `govulncheck`
-  job) — all module hashes match go.sum.
+- Dependency integrity: `go mod verify` — all module hashes match go.sum.
+  CI additionally runs the `govulncheck` job (`go run
+  golang.org/x/vuln/cmd/govulncheck@latest ./...`) as the vulnerability scan.
 - Two-distribution acceptance (FR-08): the same static binary runs on
   CentOS 7 (glibc 2.17) and CentOS 8 (glibc 2.28) hosts with zero installed
   dependencies — verified on the lab (TESTBED-PROVISION-RUNBOOK.md).

@@ -20,33 +20,33 @@ The following components, mapping to the `internal/` packages:
 ```
 CLI (cmd/gpstream) ── parses flags, binds config, dispatches subcommands
   │
-  ├── planner      build the full object graph BEFORE start; estimate volume /
+  ├── plan         build the full object graph BEFORE start; estimate volume /
   │                time; detect conflicts + collation differences; emit an
   │                idempotent plan (FR-10). No time/randomness in the plan hash.
   │
-  ├── job          Job Manager: journal (DB + file mirror), checkpoints, staging
-  │                + atomic swap, cleanup, auto-resume (FR-02/FR-06/FR-07)
+  ├── manifest     Job Manager: journal (DB + file mirror, in `journaldb`),
+  │                checkpoints, staging + atomic swap, cleanup, auto-resume
+  │                (FR-02/FR-06/FR-07)
   │
-  ├── stream       host-pair workers (separate processes), frame framing + crc
+  ├── transfer     frame framing + crc, compressed agent↔agent stream
   │                (FR-01/§4.2)
   │
-  ├── source       source agents: COPY TO from segments (gp_segment_connect),
-  │                checksum (FR-01/FR-02)
+  ├── agent        source + dest agents: COPY TO from segments
+  │                (gp_segment_connect), COPY FROM into staging, checksum +
+  │                verify (FR-01/FR-02)
   │
-  ├── dest         dest agents: COPY FROM into staging, verify (FR-01/FR-02)
+  ├── index        background index builder (FR-17)
   │
-  ├── indexer      background index builder (FR-17)
+  ├── ratelimit    adaptive rate limiter from /proc metrics (FR-14)
   │
-  ├── limiter      adaptive rate limiter from /proc metrics (FR-14)
-  │
-  ├── metrics      progress + JSON/CSV + optional /metrics (FR-04)
+  ├── monitor      progress + JSON/CSV + optional /metrics (FR-04)
   │
   └── dryrun       self-diagnostic for dry-run, PASS/FAIL/WARN (FR-05/CR-7)
 ```
 
-Plus shared packages: `config` (defaults + flag/env binding, FR-08), `pg`
-(connection + pluggable `Querier` so components are testable without a live
-cluster).
+Plus shared packages: `config` (defaults + flag/env binding, FR-08),
+`transfer/pg` (connection + pluggable `Querier` so components are testable
+without a live cluster).
 
 ### Data path (FR-01)
 
@@ -84,9 +84,34 @@ is done when all units are done plus a final report.
 
 - Separate worker processes (FR-06): a worker death does not kill the job;
   systemd `Restart=on-failure` + an internal watchdog.
-- The `pg.Querier` interface lets `dryrun`, `planner`, and the source/dest
-  agents be unit-tested with `pg.FakeConn` (no live cluster) — this is how
+- The `transfer/pg.Querier` interface lets `dryrun`, `plan`, and the
+  source/dest agents be unit-tested with `transfer/pg.FakeConn` (no live
+  cluster) — this is how
   CR-7 (detect all seeded faults) and plan-determinism (CR-4) are verified.
 - The plan hash is a pure function of (units, compression, workers, …) with no
   time or randomness, so two `--dry-run` on an unchanged topology are
   byte-identical (FR-10/CR-4).
+
+## Post-decision changes (verified against the code, 2026-11-19)
+
+- **Data path:** the two-agent data path (ADR-002 remediation) is now the
+  only data path since the `--topology` flag was removed (CHANGELOG.md);
+  the controller holds no data connections.
+- **Read from source segments:** `COPY ... TO PROGRAM 'gpstream-segreceiver
+  ...' ON SEGMENT` dispatch (internal/transfer/segstream) —
+  `gp_segment_connect` (the mechanism named above) never appeared in the
+  code.
+- **Frame fields:** the wire frame is v2 — `{job_id, unit_id, seq,
+  content_id, flags}` plus the on-wire length and crc32
+  (internal/transfer/stream.go). The `table_oid`/`part_id` fields named
+  above were never shipped; the legacy v1 layout (still decodable for
+  backward compatibility) carries only job_id, unit_id and seq.
+- **Verification:** content digests on the data path — the Trailer carries
+  the per-slice SHA256, the per-row XOR digest and the row count, compared
+  source-vs-destination (internal/transfer/stream.go,
+  internal/agent/destserver.go) — plus row count; `gp_table_checksum`
+  (named above) is not used.
+- **Worker model:** units run on a bounded in-process worker pool
+  (`cfg.WorkersPerPair`, internal/manifest/manager.go); the separate
+  processes are the source/dest agents launched by the controller
+  (internal/launch).

@@ -32,7 +32,7 @@ repository, so build directly from the source tree.
 | Requirement | Detail |
 | --- | --- |
 | **Go** | `go 1.27` (the module declares `go 1.27.1`). A Go 1.27 toolchain is required to build. |
-| **Kernel** | Linux **6.1+** kernel for the Linux package/runtime targets. |
+| **Kernel** | No minimum for the package/runtime: the binary is static (CGO_ENABLED=0) with no runtime library dependency — proven on EL7/glibc 2.17 and EL8/glibc 2.28 (F-16 acceptance). |
 | **Network (build only)** | Module fetches need a reachable Go module proxy (see note below). |
 | **Greenplum cluster** | **Not required** to build, and **not required** to run `--help`. A **reachable live cluster is required for `dry-run`** (it self-diagnoses both clusters and must not mask an unreachable one — CR-7) **and for `run`**; **`bench` needs only the source** (the payload is drained on the controller and discarded — no destination). |
 
@@ -110,8 +110,8 @@ make amd64     # -> bin/gpstream-amd64  (GOOS=linux GOARCH=amd64)
 make cross     # alias for amd64
 ```
 
-The resulting binary runs on any host with a Linux 6.1+ kernel; it is insensitive
-to the host's glibc / kernel version (see §7).
+The resulting binary is static (CGO_ENABLED=0) and insensitive to the host's
+glibc / kernel version — proven on EL7/glibc 2.17 and EL8/glibc 2.28 (see §7).
 
 ---
 
@@ -123,7 +123,7 @@ The `packaging/` tree holds the distribution artifacts:
 | --- | --- |
 | `packaging/logrotate.conf` | logrotate configuration for gpstream logs. |
 | `packaging/examples/` | Example configuration `gpstream.toml`. |
-| `packaging/scripts/` | Package lifecycle scripts (post-install/pre-upgrade/post-remove). |
+| `packaging/scripts/` | Package lifecycle scripts (post-install/pre-remove/post-remove). |
 
 ### 6.1 Install the RPM
 
@@ -142,7 +142,7 @@ lives in `.goreleaser.yaml`). It places the same set of files as the RPM;
 install with `dpkg -i gpstream-<ver>-amd64.deb` (or `apt install ./...`).
 The binary is static (CGO_ENABLED=0), so the package carries no library
 dependencies and installs cleanly on a wide range of Debian/Ubuntu hosts
-with a Linux 6.1+ kernel.
+(proven on EL7/glibc 2.17 and EL8/glibc 2.28).
 
 ## 6.3 Deployment model: what goes where
 
@@ -284,9 +284,8 @@ Config values resolve with precedence **CLI > env (`GPSTREAM_*`) > file
 | `Compression` | `zstd` |
 | `ZstdLevel` | `3` (range 1–19) |
 | `AutoResume` | `0` (manual only) |
-| `Verify` | `off` (post-copy content verification; `--verify on` enables it) |
+| `Verify` | `on` (post-copy content verification; `--verify off` disables it) |
 | `Timeout` | `120s` |
-| `ConsistentDB` | `true` |
 | `IndexPriority` | `size` |
 | `SSLMinTLS` | `1.2` |
 | `WorkersPerPair` | `1` |
@@ -301,6 +300,6 @@ are shown commented with mode `0600` for the key file.
 
 - [ ] Go 1.27 toolchain present.
 - [ ] `export GOPROXY=https://proxy.golang.org,direct` set (proxy 403 fallback).
-- [ ] `go build -o bin/gpstream ./cmd/gpstream` succeeds; `make cross` builds both archs.
+- [ ] `go build -o bin/gpstream ./cmd/gpstream` succeeds; `make cross` builds the amd64 cross binary (`bin/gpstream-amd64`).
 - [ ] `gpstream version` prints the build version.
 - [ ] For a real copy: source and dest clusters are reachable (verify with `gpstream dry-run`).

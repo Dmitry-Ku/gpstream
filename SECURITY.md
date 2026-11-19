@@ -4,7 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | yes (pre-1.0, pilot) |
+| 0.1.x   | no (historical) |
+| 0.3.0   | yes (pre-1.0) |
+| 0.3.1   | yes (current release, pre-1.0) |
 
 Pre-1.0 releases are covered while the M0–M7 milestones are open; after the
 1.0 tag, security fixes are backported to the latest two minor releases.
@@ -31,9 +33,11 @@ boundaries that matter most:
 - **Transport** — TLS ≥ 1.2 with cert validation on the streaming path
   (F-13); `--ssl-ca` / `--ssl-cert` for mTLS. The dry-run diagnostic reports the
   configured minimum before start.
-- **Credentials** — connection strings via environment (`GPSTREAM_SRC_*`,
-  `GPSTREAM_DST_*`) or `--config` file (mode 0600). Credentials are never
-  written to the manifest, logs, or `/metrics`.
+- **Credentials** — connection strings via the `--source`/`--dest` flags or the
+  `source`/`dest` keys of a config file (mode 0600); endpoints are **not
+  env-driven** (there is no `GPSTREAM_SRC_*`/`GPSTREAM_DST_*` — see
+  docs/CONFIGURATION.md). Credentials are never written to the manifest, logs,
+  or `/metrics`.
 - **Integrity** — per-frame checksums, per-chunk manifest records, and
   destination reconciliation after resume (F-17).
 - **Least privilege** — the streaming role needs only the privileges the

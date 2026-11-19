@@ -22,7 +22,7 @@ invented.
 | Missing / bad connection string | `--source` / `--dest` (or the config file) | set a valid connstring |
 | Cluster unreachable | network / host / port | fix network; re-run `dry-run` |
 | **0 up-segments** | segment count | a 0-up report is a **FAIL**, not a pass — bring segments up |
-| TLS too old | `--ssl-min-tls` (default `1.2`) | TLS is **always** enforced; use >= 1.2 |
+| TLS too old | `--ssl-min-tls` (default `1.2`) | PG-leg TLS is **on by default** (`sslmode=verify-full` unless the DSN sets an explicit `sslmode`); use >= 1.2 |
 
 Key facts: a **missing connection string is a reachability FAIL** (not a
 silent pass), and **0 up-segments is a FAIL**. `dry-run` will never report a
@@ -62,8 +62,8 @@ that died — resume is the correct mechanism.
 
 | Knob | Flag / env | What it does |
 |------|-----------|--------------|
-| Rate limit | `--rate-limit <rate>` (`GPSTREAM_RATE_LIMIT`) | baseline for the ETA + adaptive load diagnostics (accepts `bps`/`mbit`/`gbit`); does not cap throughput — the flow is paced by backpressure |
-| Workers | `--workers N` (default `2`) | parallelism per host-pair |
+| Rate limit | `--rate-limit <rate>` (`GPSTREAM_RATE_LIMIT`) | baseline for the ETA + adaptive load diagnostics (a bare number is Gbps; suffixes `gbit`/`gbps`/`gb` = gigabit, `mbit`/`mb` = megabit — there is no `bps` unit); does not cap throughput — the flow is paced by backpressure |
+| Workers | `--workers N` (default `1`; 1 = strict, N>1 = snapshot-epoch) | parallelism per host-pair |
 | Compression | `--compress` (default `zstd`, level 3) | reduces wire bytes |
 
 Throughput is bounded by the link and by backpressure (a slow destination
@@ -104,8 +104,9 @@ deliberately.
 | `--resolve-conflicts stop` | **default** — a conflict stops the run |
 | `--resolve-conflicts skip` | skip conflicting objects (reported in `conflicts.jsonl`) |
 | `--resolve-conflicts overwrite` | replace the target (staging + atomic swap, verified) |
-| `--resolve-conflicts truncate` | truncate then reload (in-place) |
-| `--overwrite` / `--truncate` | shorthand opt-ins for the matching policy |
+| `--resolve-conflicts truncate` | **unsupported in the two-agent topology** — the flag is accepted, but every unit fails at runtime (`two-agent topology does not support the in-place copy target (--truncate); use the default staging+swap path`) |
+| `--overwrite` | shorthand opt-in for `--resolve-conflicts overwrite` |
+| `--truncate` | accepted (it sets the truncate policy) but the policy is rejected at runtime as above |
 
 If you expected an overwrite, add `--resolve-conflicts overwrite` (or
 `--overwrite`). If you expected a skip, pass `--resolve-conflicts skip` —

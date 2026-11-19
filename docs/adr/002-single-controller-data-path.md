@@ -128,3 +128,24 @@ the three-process crash-recovery matrix (idempotent unit state machine under
 a death of any of the three processes — source agent mid-COPY, dest agent
 mid-verify, controller between journal writes) is tracked in the plan's
 Risks section and the T30 backlog.
+
+## Post-decision changes (verified against the code, 2026-11-19)
+
+- **`--topology` removed:** the two-agent data path is now the only one
+  (CHANGELOG.md: "Removed: `--topology` flag — the two-agent data path is
+  now the only one"; internal/manifest/manager.go: "P7: the data path is
+  ALWAYS two-agent"). The single-controller in-memory `FramedPipe` path
+  (`manager.framedPipe`, described in the Resolution above) no longer
+  exists in production code, so `--topology single` is not available as a
+  fallback.
+- **dry-run:** no topology check (PASS/WARN) exists anymore — the data
+  plane is always two-agent, so the check is a constant confirmation
+  (internal/dryrun/dryrun.go).
+- **Copy modes:** the current mode set is `coordinator` and `mesh`
+  (`--copy-mode coordinator|mesh`, internal/config/config.go): `direct`
+  (P5) was removed, and the P4 `on_segment` mode is now the `mesh` CopyMode
+  value (the name `on_segment` survives as the dry-run check name and flag
+  help). Row re-routing for the routed sub-path runs in
+  `gpstream-segreceiver` (RoutedSender, cdbhash + jump-consistent-hash,
+  internal/transfer/segstream/routed.go), not in a RowRouter in the source
+  agent.

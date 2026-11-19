@@ -74,7 +74,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Bumped `github.com/klauspost/compress` 1.20.1 -> 1.20.4 (PR #5).
 - Bumped `github.com/jackc/pgx/v5` 5.11.0 -> 5.13.0 (PR #6).
 
-## [v0.3.0] - 2026-10-10
+## [v0.3.0] - 2026-10-14
 
 ### Dependencies
 

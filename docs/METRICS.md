@@ -9,12 +9,16 @@ Everything below is grounded in the current implementation
 ## The `/metrics` endpoint
 
 Pass `--metrics-addr <addr>` to **`run`**. The run starts an HTTP server that
-exposes the live metrics for the operation (F-04). On a successful listen it
-prints:
+exposes the live metrics for the operation (F-04) and prints, right after
+launching the server goroutine:
 
 ```
-metrics:     http://127.0.0.1:9100/metrics (F-04)
+metrics:     127.0.0.1:9100/metrics
 ```
+
+The printed line is the bare address (no `http://` prefix, no suffix), and it
+is printed **before** the listen is known to have succeeded — a listen
+failure is reported later, on stderr, and is non-fatal (below).
 
 Behaviour of the metrics server (`cmd/gpstream/main.go`):
 
@@ -69,33 +73,33 @@ following series (exact `# HELP` / `# TYPE` lines from
 # TYPE gpstream_bytes_total counter
 # HELP gpstream_bytes_decoded_total Logical bytes after decompression.
 # TYPE gpstream_bytes_decoded_total counter
-# HELP gpstream_rows_total Rows copied (F-04).
+# HELP gpstream_rows_total Rows copied (FR-04).
 # TYPE gpstream_rows_total counter
 # HELP gpstream_errors_total Transfer errors.
 # TYPE gpstream_errors_total counter
 # HELP gpstream_frame_errors_total CRC/framing errors.
 # TYPE gpstream_frame_errors_total counter
-# HELP gpstream_checksum_errors_total Content-checksum mismatches in the verify phase (F-04).
+# HELP gpstream_checksum_errors_total Content-checksum mismatches in the verify phase (FR-04).
 # TYPE gpstream_checksum_errors_total counter
-# HELP gpstream_auto_recovery_total Auto-recovery actions (resume re-reads, retries) (F-04).
+# HELP gpstream_auto_recovery_total Auto-recovery actions (resume re-reads, retries) (FR-04).
 # TYPE gpstream_auto_recovery_total counter
-# HELP gpstream_rate_limit_gbits Current rate limit in Gbps (F-14).
+# HELP gpstream_rate_limit_gbits Current rate limit in Gbps (FR-14).
 # TYPE gpstream_rate_limit_gbits gauge
-# HELP gpstream_receive_write_latency_ms Average data-path write latency (ms) — destination receive-queue depth as the controller observes it (F-14).
+# HELP gpstream_receive_write_latency_ms Average data-path write latency (ms) — destination receive-queue depth as the controller observes it (FR-14).
 # TYPE gpstream_receive_write_latency_ms gauge
 # HELP gpstream_throughput_bytes Current throughput in bytes/sec.
 # TYPE gpstream_throughput_bytes gauge
-# HELP gpstream_eta_seconds Estimated remaining seconds at the recent throughput (F-04).
+# HELP gpstream_eta_seconds Estimated remaining seconds at the recent throughput (FR-04).
 # TYPE gpstream_eta_seconds gauge
-# HELP gpstream_compression_level Current compression level (F-12).
+# HELP gpstream_compression_level Current compression level (FR-12).
 # TYPE gpstream_compression_level gauge
-# HELP gpstream_compression_mode Current compression mode (F-12).
+# HELP gpstream_compression_mode Current compression mode (FR-12).
 # TYPE gpstream_compression_mode gauge
-# HELP gpstream_index_queue Background index builds pending (F-17).
+# HELP gpstream_index_queue Background index builds pending (FR-17).
 # TYPE gpstream_index_queue gauge
-# HELP gpstream_index_done_total Background index builds finished (F-17).
+# HELP gpstream_index_done_total Background index builds finished (FR-17).
 # TYPE gpstream_index_done_total counter
-# HELP gpstream_active_flows Units currently copying (F-04).
+# HELP gpstream_active_flows Units currently copying (FR-04 “number of active flows”).
 # TYPE gpstream_active_flows gauge
 # HELP gpstream_frames_retransmitted_total Frames retransmitted after loss/corruption (§4.6).
 # TYPE gpstream_frames_retransmitted_total counter
@@ -103,17 +107,17 @@ following series (exact `# HELP` / `# TYPE` lines from
 # TYPE gpstream_reconnects_total counter
 # HELP gpstream_ack_lag_max_seconds Worst observed ACK lag (§4.6).
 # TYPE gpstream_ack_lag_max_seconds gauge
-# HELP gpstream_tables_by_status Units by state (F-04).
+# HELP gpstream_tables_by_status Units by state (FR-04).
 # TYPE gpstream_tables_by_status gauge
-# HELP gpstream_table_rows Rows copied per table (F-04).
+# HELP gpstream_table_rows Rows copied per table (FR-04).
 # TYPE gpstream_table_rows counter
-# HELP gpstream_table_bytes_wire Wire bytes per table (F-04).
+# HELP gpstream_table_bytes_wire Wire bytes per table (FR-04).
 # TYPE gpstream_table_bytes_wire counter
-# HELP gpstream_table_bytes_logical Logical bytes per table (F-04).
+# HELP gpstream_table_bytes_logical Logical bytes per table (FR-04).
 # TYPE gpstream_table_bytes_logical counter
-# HELP gpstream_table_state Current unit state per table (1 = in this state) (F-04).
+# HELP gpstream_table_state Current unit state per table (1 = in this state) (FR-04).
 # TYPE gpstream_table_state gauge
-# HELP gpstream_pair_up Host pair of the running copy (1 = up) (F-04).
+# HELP gpstream_pair_up Host pair of the running copy (1 = up) (FR-04).
 # TYPE gpstream_pair_up gauge
 ```
 
@@ -165,19 +169,27 @@ Summary of the series:
   **Not populated in the two-agent data path yet** (the agent send loops do
   not feed the hook), so it reads 0 until the pacer work wires it in; it is
   then the reduce signal with reason `dest-receive-queue` (above 50 ms).
-- **`gpstream_compression_level` / `gpstream_compression_mode`** — set by
-  `SetCompression` on each compression-mode / level change (F-12/F-14
-  auto-degradation); the change is **counted and observable** (F-04).
+- **`gpstream_compression_level` / `gpstream_compression_mode`** — the
+  `SetCompression` hook exists in `internal/monitor/metrics.go` but is
+  **never called** in the shipped code, so the exposition is static:
+  `gpstream_compression_level 0` and `gpstream_compression_mode{mode=""} 1`.
+  Treat them as unpopulated until the compression-degradation work wires
+  the hook in (F-12).
 - **`gpstream_active_flows`** — number of units currently copying.
 - **`gpstream_ack_lag_max_seconds`** — worst observed ACK lag over the
   running window (§4.6 blackhole detection).
-- **`gpstream_pair_up`** — `1` while the host pair is up, `0` after a
-  disconnect (labelled by pair).
+- **`gpstream_pair_up`** — rendered as `gpstream_pair_up{pair="..."} 1`
+  once the run labels the host pair (`SetPair`, a single call at run
+  start). There is no disconnect path that clears or zeroes the label:
+  the series is either absent (pair not set yet) or `1` — `0` is never
+  rendered.
 
-Because the limiter and the compression degrade against the same collector
-(F-04/F-12/F-14), **a rate-limit change and a compression-level change
-are both observable as metrics** — a slowed or compressed data path is
-visible without re-running anything.
+The limiter and the compression share the same collector (F-04/F-12/F-14).
+**A rate-limit change is observable as a metric** (`gpstream_rate_limit_gbits`
+is set by the limiter on every change via `SetRateLimit`), but a
+compression-level change is **not** yet — the compression gauges are
+unpopulated (above). A slowed data path is visible without re-running
+anything; a compression change is not, yet.
 
 ## Scrape configuration (Prometheus)
 
@@ -211,14 +223,15 @@ human-readable files under its state directory
 
 | File | Content |
 |------|---------|
-| `events.jsonl` | the diagnostic event stream (F-04/F-14): one JSON line per rate-limit shift, conflict, small-table auto-disable, collation diff, retransmit, unit failure, and other notable transitions. |
+| `events.jsonl` | the diagnostic event stream (F-04/F-14): one JSON line per rate-limit shift, conflict, small-table auto-disable (`compression_off`), collation diff, unit failure, mesh route decision, and other notable transitions. Retransmits are **not** events — they are the `gpstream_frames_retransmitted_total` counter (and a `runstats.json` field). |
 | `audit.log` | the F-13 audit log of **operator actions** on the operation (`run`, `resume`, `cleanup`) — mode `0600`, recorded before the state dir is removed. |
-| `jobmeta.json` | the durable job metadata (snap-epoch, per-unit id/state/kind/`db.schema.table`/bytes/epoch) that `status` and `resume` read. |
+| `jobmeta.json` | the snapshot-epoch metadata only (`job_id`, `snap_epoch`, `snap_id`, `copy_mode`) — which generation of the source snapshot the job is on. |
 
-`gpstream status --operation-id <id>` renders the `jobmeta.json` as a
-compact per-unit state view; `tail -f events.jsonl` is the human view of the
-event stream. The `jobmeta.json` is the source of truth for resume/cleanup
-(FAILOVER.md).
+`gpstream status --operation-id <id>` renders the journal (with the
+snapshot-epoch line from `jobmeta.json`) as a compact per-unit state view;
+`tail -f events.jsonl` is the human view of the event stream. The
+**journal mirror** (`journal.jsonl`) — not `jobmeta.json` — is the source of
+truth for resume and cleanup (FAILOVER.md).
 
 ## Related observability commands
 

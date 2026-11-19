@@ -30,16 +30,14 @@ Which tables must be re-read, and which can be kept, is decided by the
   is conservative: it forces **one extra re-read**, never data loss.
 
 `gpstream status --operation-id <id>` prints the current `snap-epoch`
-and the re-read mode, so an operator can always see which epoch a run is
-in.
+and the copy mode (`copy-mode=coordinator` | `mesh`), so an operator can
+always see which epoch a run is in.
 
 ## 2. The re-read rules (DESIGN §2.2)
 
 At resume time, gpstream recomputes, per table, whether the table's units
 were all completed under the **fresh snapshot** or under an older one.
 The re-read rule is fixed: a table is kept only if it was verified under one snapshot epoch (DESIGN §2.2); otherwise the whole table is re-read.
-
-### `relaxed` (default)
 
 | Table state at resume | Decision |
 |---|---|
@@ -48,27 +46,17 @@ The re-read rule is fixed: a table is kept only if it was verified under one sna
 | Has any **non-terminal** unit | **re-read** the whole table under the fresh snapshot. |
 | Already **swapped** | **keep** — its point-in-time is the swap moment; re-swapping would change the timestamp, not the data. |
 
-**Invariant relaxed preserves: table integrity.** Every unit of a kept
+**Invariant the rule preserves: table integrity.** Every unit of a kept
 table was verified under one snapshot, so the table is internally
 consistent — even though different *tables* may be from different
-snapshots. This is the safe default: a 1 PB re-read on every failure is
-unacceptable, and most jobs only need per-table consistency.
-
-### `strict`
-
-| Table state at resume | Decision |
-|---|---|
-| Any table with journal records under the fresh snapshot | **re-read every such table** under the fresh snapshot — including already-swapped ones. |
-
-**strict gives: the whole database = one point in time.** At the cost of
-a full re-read of everything the operation touched. Sensible for
-cross-table consistency requirements (foreign-key-style invariants across
-tables), never the default.
+snapshots. A 1 PB re-read on every failure is unacceptable, and most jobs
+only need per-table consistency. There is no stricter (database-wide
+point-in-time) re-read mode in the shipped code.
 
 ### Within a single run (no failure)
 
-Both modes behave identically — there is only one snapshot, so nothing
-is re-read. The mode only matters when a job is interrupted and resumed.
+There is only one snapshot, so nothing is re-read. The rule only matters
+when a job is interrupted and resumed.
 
 Every re-read is also observable: the run appends a `unit_reread` event
 (`schema`, `table`, `reason`, `epoch`) to `events.jsonl` (see
@@ -108,10 +96,14 @@ A crashed or supervised (e.g. cron / process-manager) job must keep its
 `--operation-id` **stable across restarts**: without an explicit id, `run`
 generates a timestamp id, so a restart starts a *new* operation instead of
 resuming the old one. If the source has changed since the crash (table
-created/dropped, grown, relayout), the plan hash differs and the old journal
-is not found — the restart is a fresh job, and tables already swapped on the
-destination surface as conflicts (default action = stop; `DELETE` + `VACUUM`
-does not restore the hash — only `VACUUM FULL` / `CLUSTER` does).
+created/dropped, grown, relayout), the plan changes — but the journal is
+resolved by `--operation-id` alone
+(`<state-dir>/<operation-id>/journal.jsonl`); there is **no plan-hash-based
+journal invalidation** (`plan.json` is persisted next to the journal for
+audit, but is never read back). A restart with the same id therefore always
+continues the old operation. To force a fresh job instead, start a new
+`--operation-id` — tables already swapped on the destination then surface
+as conflicts (default action = stop).
 
 ## 4. Operator procedure
 
@@ -121,22 +113,25 @@ does not restore the hash — only `VACUUM FULL` / `CLUSTER` does).
 # 1. See where it stopped (snap-epoch + per-unit state).
 gpstream status --operation-id <id>
 
-# 2. Resume. It replays the journal, re-establishes the epoch (last+1),
-#    recomputes the re-read set, and re-runs only the non-terminal /
-#    re-read units. Swapped units are never re-copied.
+# 2. Re-queue the non-terminal units. `resume` loads the journal mirror
+#    and marks every non-terminal unit pending — it copies nothing itself.
 gpstream resume --operation-id <id>
 
-# 3. For cross-table point-in-time consistency, choose strict before
-#    resuming (it is a run-level flag):
-gpstream resume --operation-id <id>
+# 3. Re-run the operation with the SAME --operation-id (and the same
+#    flags). The run loads the journal mirror, establishes the fresh
+#    epoch (last+1), recomputes the re-read set, and re-copies only the
+#    re-queued / re-read units. Swapped units are never re-copied.
+gpstream run ... --operation-id <id>
 ```
 
 ### Auto-resume (no operator in the loop)
 
-`--auto-resume N` (F-07) makes `run` resume itself up to **N** times when
-any unit does not reach a terminal state, so a job can complete without a
-human re-invoking it. `N = 0` (the default) disables auto-resume — a
-failed run then waits for an explicit `resume`.
+`--auto-resume N` (F-07) makes `run` loop — re-queue the incomplete units
+and re-run the manager — up to **N** times, **but only when the run itself
+returned no error**. A run in which any unit *failed* returns that first
+unit error, so it does **not** enter the loop: a failed unit waits for an
+explicit `gpstream resume` plus a re-run with the same `--operation-id`
+(or a supervisor re-run). `N = 0` (the default) disables auto-resume.
 
 ### Cleanup after a finished (or abandoned) job
 
@@ -166,14 +161,14 @@ Mitigations (in order of preference):
 2. **Watch the source's age** — alert on the source's oldest-xact age /
    dead-tuple ratio while a long job runs (see METRICS.md for the job-side
    gauges; the source-side age is a Greenplum operator metric).
-3. **Prefer `relaxed`** — if a job must be resumable, relaxed re-reads
-   only the tables that actually need it, so a resume's *fresh* snapshot
-   is short-lived (it only has to cover the re-read set, not the whole DB).
+3. **Keep the re-read set small** — the re-read rule re-reads only the
+   tables that actually need it, so a resume's *fresh* snapshot is
+   short-lived (it only has to cover the re-read set, not the whole DB).
 4. **Stop the job if the source's age trends up** — a snapshot-age cap is a
    DESIGN §7 risk-mitigation (a job that exceeds it is stopped rather than
    allowed to bloat the source indefinitely); no such flag is implemented in
-   v0.1, so today the operator enforces the bound by watching the source age
-   and killing the run (resume re-queues the incomplete units).
+   v0.3.1, so today the operator enforces the bound by watching the source
+   age and killing the run (resume re-queues the incomplete units).
 
 The design point: the snapshot is **per-database and per-run**, and a
 resume's snapshot covers only the re-read set — so the vacuum pressure of
@@ -182,13 +177,14 @@ whole operation.
 
 ## 6. Honest notes
 
-- The re-read rules and epoch model are unit-tested (the §2.2 rule table,
-  fresh→resume epoch, keep-single-epoch, mixed-epochs re-read, strict
-  full re-read) and the crash-recovery path is **live-verified** on the
-  lab (E3). The 1 PB-scale vacuum-pressure figures are design
-  intent; validate on a live stand before quoting them.
-- `strict` is a cost trade (full re-read for full point-in-time), not a
-  correctness upgrade — `relaxed` is already table-consistent.
+- The re-read rule and epoch model are unit-tested (the §2.2 rule table,
+  fresh→resume epoch, keep-single-epoch, mixed-epochs re-read) and the
+  crash-recovery path is **live-verified** on the lab (E3). The 1 PB-scale
+  vacuum-pressure figures are design intent; validate on a live stand
+  before quoting them.
+- The rule is table-consistent by construction (a kept table was verified
+  under one snapshot); there is no stricter database-wide point-in-time
+  mode.
 - A resume re-reads under a **fresh** snapshot; it is not a
   "continue from the same snapshot" — the old snapshot is gone with the
   dead process.

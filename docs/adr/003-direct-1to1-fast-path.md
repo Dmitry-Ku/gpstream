@@ -5,12 +5,12 @@
 - **Part of:** ADR-001 (two-agent data path), ADR-002 (remediated debt)
 - **Supersedes:** none
 > SUPERSEDED (2026-10-04): the copy-mode surface is now TWO modes —
-`coordinator` and `on_segment`. The `direct` mode described here is removed
-as redundant; the `direct_1to1` fast-path survives as the per-table 1:1
-write sub-path of `on_segment` (auto-selected when S==D with equal hash
-keys), alongside the routed (S!=D) and merge (non-routable) sub-paths. See
-docs/plans/two-agent-transport.md (v2 note) and the target-architecture
-section of that plan.
+`coordinator` and `mesh` (renamed from `on_segment`). The `direct` mode
+described here is removed as redundant; the `direct_1to1` fast-path
+survives as the per-table 1:1 write sub-path of `mesh` (auto-selected when
+S==D with equal hash keys), alongside the routed (S!=D) and merge
+(non-routable) sub-paths. See docs/plans/two-agent-transport.md (v2 note)
+and the target-architecture section of that plan.
 
 ## Context
 
@@ -41,7 +41,8 @@ not use it.
 
 The "almost 1:1" variants (D divides S, congruence mod g) were **disproven**
 for the non-legacy GP jump-hash (a `JCH(h, S) mod D != JCH(h, D)` brute force
-over 2^32 in CI; see `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27`). Exact S==D
+over 2^32 in CI; see the `ANSWER-T4B-FASTPATH-DISPROVEN-2026-09-27` note
+cited in `internal/route/mode.go` and `internal/plan/route.go`). Exact S==D
 with equal keys is the only correct fast-path.
 
 Measured on GP6 (4 segments, 3.2 GB / 1.29 M rows): the coordinator read
@@ -66,13 +67,14 @@ glue. When the plan proves a table's route is `direct_1to1`:
   merging them (SliceMux) into one coordinator COPY. No merge, no destination
   re-distribution.
 - **Gate:** `plan.Table.RouteMode == direct_1to1` (carried onto the unit as
-  `Unit.RouteMode`). Only `direct_1to1` qualifies — never `router_full`,
-  `direct_fanin`, or `router_congruence`.
-- **Degradation:** a partitioned parent (utility-mode `COPY FROM` is rejected
-  on a partition-hierarchy root), or a live destination segment-count
-  mismatch (a primary down since planning), falls back to the `on_segment`
-  merge path. The copy is always correct; only the speed changes. The run
-  logs `direct_1to1_fastpath` to the event stream per qualifying table.
+  `Unit.RouteMode`). Only `direct_1to1` qualifies — never `router_full` or
+  `merge` (the resolver's full mode set; fan-in and congruence variants
+  were disproven and are not modes).
+- **Degradation:** a live destination segment-count mismatch (a primary down
+  since planning) falls back to the coordinator path (event
+  `mesh_coordinator_fallback`). The copy is always correct; only the speed
+  changes. The run logs `mesh_direct_write` to the event stream per
+  qualifying table (routed units log `mesh_routed_write`).
 
 This is the `on_segment` branch of the fast-path (its write side loses the
 most: the merge + re-distribution). The `direct` branch (ON SEGMENT read
@@ -97,3 +99,21 @@ same gate.
 - The per-segment write is a utility-mode COPY into the **staging** table
   only; the swap remains the controller's decision (runUnit step 9), exactly
   as in the other two-agent paths.
+
+## Post-decision changes (verified against the code, 2026-11-19)
+
+- **Copy-mode names:** the second copy mode is `mesh` in the code (renamed
+  from `on_segment`); `direct` was removed (noted above). Current set:
+  `coordinator` / `mesh`, with the per-table sub-paths `direct_1to1` /
+  `router_full` / `merge` (internal/config/config.go, internal/route/mode.go).
+- **Fallback:** implemented as the COORDINATOR path (event
+  `mesh_coordinator_fallback`, internal/manifest/manager.go). The mesh merge
+  serve (SliceMux, `serve-unit` kind=segments) is not available in
+  supervisor mode — the destination agent uses kind=mini
+  (internal/agent/destserver.go).
+- **Partitioned-parent gate:** not implemented for the direct_1to1 branch —
+  the planner does not exclude partition parents from direct_1to1
+  (internal/plan/route.go), and the branch gates only on the live
+  destination segment count (internal/manifest/manager.go). The partition
+  gate (`part.Spec == ""`) exists only for the router_full branch
+  (wantsRoutedWrite).

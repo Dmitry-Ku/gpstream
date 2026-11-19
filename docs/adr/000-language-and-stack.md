@@ -58,11 +58,14 @@ ADR records the choice so it can be revisited only via a new ADR.
 - Allowed external modules (all free-licensed):
   - `github.com/jackc/pgx/v5` (PostgreSQL protocol)
   - `github.com/klauspost/compress` (zstd, BSD)
+  - `github.com/BurntSushi/toml` (TOML config parsing, F-05)
+  - `gopkg.in/yaml.v3` (YAML config parsing, F-05)
   - stdlib only otherwise (`net`, `crypto/tls`, `compress/zlib`, `testing`,
     `crypto/sha256`).
 - `GOPROXY=https://proxy.golang.org,direct` — `proxy.golang.org` intermittently
   403s `klauspost/compress`; the `direct` (git clone) fallback resolves it.
 - `go test -cover ./...` gate: core packages >= 70% (FR-09/CR-8).
-- Build matrix: `GOOS=linux GOARCH=amd64 go build -o gpstream ./cmd/gpstream`
-  (amd64 only; arm64 dropped from the matrix on 01.10).
+- Build matrix: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags
+  "-s -w" -o bin/gpstream-linux-amd64 ./cmd/gpstream` (the CI static
+  artifact; amd64 only; arm64 dropped from the matrix on 01.10).
 - Secrets never appear in argv (FR-08): only 0600 files or `GPSTREAM_*` env.
