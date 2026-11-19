@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v0.3.1] - 2026-11-19
+
 ### Added
 
 - **Inc3.3b: the production mini path now routes RST-resume connections by
@@ -66,6 +68,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   "bind: address already in use" under the parallel suite). NewDestServer
   now accepts pre-bound listeners (DestServerOptions.DataListener /
   ControlListener); the tests pass theirs.
+
+### Dependencies
+
+- Bumped `github.com/klauspost/compress` 1.20.1 -> 1.20.4 (PR #5).
+- Bumped `github.com/jackc/pgx/v5` 5.11.0 -> 5.13.0 (PR #6).
 
 ## [v0.3.0] - 2026-10-10
 
