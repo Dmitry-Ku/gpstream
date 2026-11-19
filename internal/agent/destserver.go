@@ -219,7 +219,12 @@ type DestUnitDone struct {
 	Rows    int64  `json:"rows,omitempty"`
 	Logical uint64 `json:"logical,omitempty"`
 	Wire    uint64 `json:"wire,omitempty"`
-	Swapped bool   `json:"swapped,omitempty"`
+	// Retransmitted / Reconnects are the unit's frame-ack observability
+	// counters (DESIGN §4.6, the destination minis' receiver-side view):
+	// replayed frames deduplicated + resume re-dials routed to slots.
+	Retransmitted uint64 `json:"retransmitted,omitempty"`
+	Reconnects    uint64 `json:"reconnects,omitempty"`
+	Swapped       bool   `json:"swapped,omitempty"`
 	// Verified reports that the destination compared the SOURCE vs DEST
 	// content digests and they MATCHED (the --verify gate passed). The
 	// controller reads it to know the unit passed verification (the swap
@@ -261,6 +266,13 @@ type DestServerOptions struct {
 	// DataListen / ControlListen are the bind addresses ("host:0" = pick a
 	// free port; the real addresses are reported in the hello).
 	DataListen, ControlListen string
+	// DataListener / ControlListener, when set, are used VERBATIM instead of
+	// binding DataListen / ControlListen (the bound address is reported in
+	// the hello). Tests pass pre-bound listeners to avoid the bind-close-
+	// rebind TOCTOU (a :0 port can be taken between the close and the
+	// server's bind, which flaked the protocol test under the parallel
+	// suite).
+	DataListener, ControlListener net.Listener
 	// StatusFile (2D-C) is the path of the live status JSON this agent
 	// heartbeats on its OWN host (empty = disabled).
 	StatusFile string
@@ -474,19 +486,27 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 	// empty = the data listener is off (supervisor mode). Coordinator mode
 	// always binds it.
 	var dataL net.Listener
-	if o.DataListen != "" {
+	if o.DataListener != nil {
+		dataL = o.DataListener
+	} else if o.DataListen != "" {
 		var derr error
 		dataL, derr = o.bindListener(o.DataListen)
 		if derr != nil {
 			return nil, fmt.Errorf("dest server: data listen %s: %w", o.DataListen, derr)
 		}
 	}
-	ctrlL, err := o.bindListener(o.ControlListen)
-	if err != nil {
-		if dataL != nil {
-			_ = dataL.Close()
+	var ctrlL net.Listener
+	var err error
+	if o.ControlListener != nil {
+		ctrlL = o.ControlListener
+	} else {
+		ctrlL, err = o.bindListener(o.ControlListen)
+		if err != nil {
+			if dataL != nil {
+				_ = dataL.Close()
+			}
+			return nil, fmt.Errorf("dest server: control listen %s: %w", o.ControlListen, err)
 		}
-		return nil, fmt.Errorf("dest server: control listen %s: %w", o.ControlListen, err)
 	}
 	var persistL net.Listener
 	if o.PersistListen != "" {
@@ -1791,6 +1811,7 @@ func (s *DestServer) serveOne(ctx context.Context, req *DestServeReq) DestUnitDo
 			Overwrite:      req.Mini.Overwrite,
 		})
 		done.Rows, done.Logical, done.Wire = res.Rows, res.Logical, res.Wire
+		done.Retransmitted, done.Reconnects = res.Retransmitted, res.Reconnects
 		// The combined digests (XOR_D of the D per-segment accumulators) —
 		// the mesh analogue of the inline content digest. ALWAYS reported.
 		done.Digest = res.DstDigest

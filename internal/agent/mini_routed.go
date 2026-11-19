@@ -150,9 +150,10 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 
 	// 3. S×W sub-stream connections (bounded by the stream timeout).
 	type subOut struct {
-		res  *segstream.SliceResult
-		wire uint64
-		err  error
+		res   *segstream.SliceResult
+		wire  uint64
+		dedup uint64 // replayed frames the sub-stream receiver deduplicated (§4.6)
+		err   error
 	}
 	results := make(chan subOut, nTotal)
 	var logicalN atomic.Uint64
@@ -201,7 +202,7 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 					pipe = newIdlePipe(pipe, rp.Close, o.DataIdleTimeout)
 				}
 				derr := drainMiniSubStream(sctx, pipe, res, mode, mw, &logicalN)
-				results <- subOut{res: res, wire: 0, err: derr}
+				results <- subOut{res: res, wire: 0, dedup: rp.Stats().Deduped, err: derr}
 			}(slot)
 		}
 		// The sub-streams stream concurrently; step 4's collection is the
@@ -305,11 +306,13 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 		srcAcc   [32]byte
 		trailerN int64
 		wire     uint64
+		retrans  uint64
 		firstErr error
 	)
 	for i := 0; i < nTotal; i++ {
 		sub := <-results
 		wire += sub.wire
+		retrans += sub.dedup
 		if sub.err != nil && firstErr == nil {
 			firstErr = sub.err
 		}
@@ -330,6 +333,10 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 	// the per-sub-stream counting conns.
 	if frameAckRouter != nil {
 		wire = frameAckRouter.WireBytes()
+		resp.Retransmitted = retrans
+		if c := frameAckRouter.Conns(); c > uint64(nTotal) {
+			resp.Reconnects = c - uint64(nTotal)
+		}
 	}
 
 	// 5. End the merged stream (EOF marker), wait for the utility COPY.

@@ -2047,7 +2047,27 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			"segments", S,
 			"reason", "S==D + equal hash keys + same major: per-segment utility COPYs on the destination mini-agents, no coordinator in the data path")
 	}
-	return m.twoAgent.StreamMini(ctx, mreq)
+	rows, wire, logical, srcD, dstD, swapped, verified, events, err := m.twoAgent.StreamMini(ctx, mreq)
+	if err == nil {
+		// DESIGN §4.6: the destination minis report the unit's frame-ack
+		// observability (replayed frames + resume re-dials) with the
+		// unit-done; feed the run's counters so /metrics and runstats.json
+		// carry them after the run.
+		if fa, ok := m.twoAgent.(frameAckStatsProvider); ok {
+			if retrans, reconnects := fa.LastFrameAck(); retrans+reconnects > 0 {
+				m.monitor.RecordFrameAck(retrans, reconnects, 0)
+			}
+		}
+	}
+	return rows, wire, logical, srcD, dstD, swapped, verified, events, err
+}
+
+// frameAckStatsProvider is an optional TwoAgentRunner capability: the last
+// streamed unit's frame-ack observability counters (DESIGN §4.6). The
+// process runner implements it (the destination minis report them); the
+// in-proc runner does not (its StreamMini always fails).
+type frameAckStatsProvider interface {
+	LastFrameAck() (retransmitted, reconnects uint64)
 }
 
 // twoAgentCompressString renders the unit's compression mode the way the
@@ -2442,19 +2462,22 @@ func (m *Manager) startRunStatsWriter(ctx context.Context) func() {
 	write := func() {
 		m.mu_runstats.Lock()
 		defer m.mu_runstats.Unlock()
+		retrans, reconns, _ := m.monitor.FrameAck()
 		st := monitor.RunStats{
-			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
-			StartedAt:   m.monitor.StartedAt().UTC().Format(time.RFC3339),
-			ElapsedSec:  int(m.monitor.Latency().Seconds()),
-			Pair:        m.monitor.PairLabel(),
-			Bytes:       m.monitor.Bytes,
-			Decoded:     m.monitor.BytesDecoded,
-			Rows:        m.monitor.RowsTotal(),
-			Throughput:  m.monitor.Throughput(),
-			ETASeconds:  m.monitor.ETASeconds(),
-			ActiveFlows: m.monitor.ActiveFlowsCount(),
-			ByStatus:    m.monitor.TablesByStatus(),
-			PerTable:    m.monitor.PerTable(),
+			UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+			StartedAt:     m.monitor.StartedAt().UTC().Format(time.RFC3339),
+			ElapsedSec:    int(m.monitor.Latency().Seconds()),
+			Pair:          m.monitor.PairLabel(),
+			Bytes:         m.monitor.Bytes,
+			Decoded:       m.monitor.BytesDecoded,
+			Rows:          m.monitor.RowsTotal(),
+			Throughput:    m.monitor.Throughput(),
+			ETASeconds:    m.monitor.ETASeconds(),
+			ActiveFlows:   m.monitor.ActiveFlowsCount(),
+			ByStatus:      m.monitor.TablesByStatus(),
+			PerTable:      m.monitor.PerTable(),
+			Retransmitted: retrans,
+			Reconnects:    reconns,
 		}
 		b, err := json.MarshalIndent(st, "", "  ")
 		if err != nil {

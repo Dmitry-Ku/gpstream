@@ -509,7 +509,15 @@ config file. Recognised variables (all prefixed GPSTREAM_):
 .RI SEG_TLS_CA ,
 .RI CONTROL_TLS_CERT ,
 .RI CONTROL_TLS_KEY ,
-.RI CONTROL_TLS_CA .
+.RI CONTROL_TLS_CA ,
+.RI DATA_LOG .
+Data-path debug log:
+.B GPSTREAM_DATA_LOG=1
+(any non-empty value other than 0/off) turns on the frame-ack transport's
+event log (reconnect attempts, ring replay size, resume routing, duplicate
+frames) on stderr. Off by default (the data path is deliberately quiet);
+the agent's stderr is captured in the controller's run log, the
+segreceiver's stderr lands in the GPDB segment log.
 .SH SEE ALSO
 .BR gpstream(8) ,
 docs/ (QUICKSTART, CLI_REFERENCE, CONFIGURATION, METRICS, FAILOVER,
@@ -533,3 +541,14 @@ journal-driven:
 re-queues non-terminal units;
 .BR "gpstream cleanup"
 removes operation state.
+
+.RP
+.B rpm
+upgrades on EL7/8: rpm compares SNAPSHOT build hashes
+.B lexicographically
+(so a build whose hash string is smaller — e.g.
+.B 5f5bb38
+vs
+.B 083e517
+— is rejected as "older" even when it is newer), so install upgrades with
+.BR "rpm -Uvh --force" .

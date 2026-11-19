@@ -294,6 +294,12 @@ type processTwoAgentRunner struct {
 	// the supervisor's MiniMap: the segreceivers' --dest-addr D form (the
 	// source segreceiver dials mini d's endpoint for destination segment d).
 	miniAddrs string
+	// lastRetrans / lastReconnects hold the LAST streamed unit's frame-ack
+	// observability counters (DESIGN §4.6, the destination minis'
+	// receiver-side view): replayed frames deduplicated + resume re-dials
+	// routed to slots. Updated on StreamMini success, read via LastFrameAck.
+	lastRetrans    atomic.Uint64
+	lastReconnects atomic.Uint64
 	// streamMu serializes the WHOLE per-unit dest exchange
 	// (BeginServe -> source stream -> WaitUnitDone). The long-lived dest
 	// agent has ONE control socket and a SEQUENTIAL control loop (one
@@ -1071,7 +1077,17 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 	if !done.Ok {
 		return 0, 0, 0, "", "", false, false, done.Events, fmt.Errorf("two-agent: dest agent unit %d (mini): %s", o.UnitID, done.Error)
 	}
+	r.lastRetrans.Store(done.Retransmitted)
+	r.lastReconnects.Store(done.Reconnects)
 	return done.Rows, done.Wire, done.Logical, done.SrcDigest, done.Digest, done.Swapped, done.Verified, done.Events, nil
+}
+
+// LastFrameAck returns the last streamed unit's frame-ack observability
+// counters (DESIGN §4.6): the replayed frames the destination minis
+// deduplicated + the resume re-dials they routed to existing slots. Zeros
+// when no unit has streamed yet.
+func (r *processTwoAgentRunner) LastFrameAck() (retransmitted, reconnects uint64) {
+	return r.lastRetrans.Load(), r.lastReconnects.Load()
 }
 
 // MiniMap (P3 production-dispatch, mesh) polls the dest-agent (supervisor

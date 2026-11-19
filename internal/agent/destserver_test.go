@@ -14,26 +14,28 @@ import (
 // tests), which is exactly what the unit-done report must carry — the
 // protocol mechanics (ordering, ack-then-report) are what is under test.
 func TestDestServerProtocol(t *testing.T) {
-	// Bind free ports first so the agent's real addresses are known.
+	// Bind the listeners ONCE and hand them to the server (no bind-close-
+	// rebind TOCTOU: a :0 port can be taken between the close and the
+	// server's bind, which flaked this test under the parallel suite).
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	dataAddr := l.Addr().String()
-	l.Close()
 	l2, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	ctrlAddr := l2.Addr().String()
-	l2.Close()
 
 	srv, err := NewDestServer(DestServerOptions{
-		DataListen:    dataAddr,
-		ControlListen: ctrlAddr,
-		DestConn:      "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable", // unreachable on purpose
-		AcceptTimeout: 2 * time.Second,
-		StreamTimeout: 2 * time.Second,
+		DataListen:      dataAddr,
+		ControlListen:   ctrlAddr,
+		DataListener:    l,
+		ControlListener: l2,
+		DestConn:        "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable", // unreachable on purpose
+		AcceptTimeout:   2 * time.Second,
+		StreamTimeout:   2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("NewDestServer: %v", err)
@@ -144,15 +146,15 @@ func TestDestServerWildcardDataAddr(t *testing.T) {
 func TestDestServerBadKind(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	dataAddr := l.Addr().String()
-	l.Close()
 	l2, _ := net.Listen("tcp", "127.0.0.1:0")
 	ctrlAddr := l2.Addr().String()
-	l2.Close()
 
 	srv, err := NewDestServer(DestServerOptions{
-		DataListen:    dataAddr,
-		ControlListen: ctrlAddr,
-		DestConn:      "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable",
+		DataListen:      dataAddr,
+		ControlListen:   ctrlAddr,
+		DataListener:    l,
+		ControlListener: l2,
+		DestConn:        "postgresql://nouser@127.0.0.1:1/nodb?sslmode=disable",
 	})
 	if err != nil {
 		t.Fatalf("NewDestServer: %v", err)

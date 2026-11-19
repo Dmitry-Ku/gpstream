@@ -328,6 +328,19 @@ func TestTwoAgentMeshRoutedFrameAckResume(t *testing.T) {
 		t.Fatalf("untouched sender (1,1) reconnected %d times, want 0", got)
 	}
 
+	// Inc3.4 observability: the DESTINATION's receiver-side view of the same
+	// fault — the minis report the resume re-dials they routed to existing
+	// slots (one per severed sender's reconnect attempt) and the replayed
+	// frames they deduplicated (the rings were provably non-empty at the
+	// break; the 5 s ACK window keeps the replay behind the receiver's
+	// consumption, so the replayed frames land as duplicates).
+	if res.Reconnects < 2 {
+		t.Fatalf("combined reconnects = %d, want >= 2 (the two severed sub-streams' resume re-dials)", res.Reconnects)
+	}
+	if res.Retransmitted < 1 {
+		t.Fatalf("combined retransmitted = %d, want >= 1 (the replayed ring frames must be deduplicated at the destination)", res.Retransmitted)
+	}
+
 	// The unit completed with the full table, exactly once, digests intact.
 	if res.Rows != int64(rows) {
 		t.Fatalf("combined rows %d != seeded %d (perSeg=%v)", res.Rows, rows, res.PerSeg)

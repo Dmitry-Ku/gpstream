@@ -184,12 +184,15 @@ type Stats struct {
 	Retransmitted uint64
 	Reconnects    int
 	AckLag        time.Duration
-	RingBytes     int64
-	LastConsumed  uint64 // receiver
-	LastSent      uint64 // sender
-	LastAck       uint64 // sender
-	OutBufBytes   int64  // receiver
-	OutFrames     int    // receiver
+	// Deduped (receiver): replayed ring frames dropped as duplicates
+	// (the receiver's view of the sender's retransmits; DESIGN §4.6).
+	Deduped      uint64
+	RingBytes    int64
+	LastConsumed uint64 // receiver
+	LastSent     uint64 // sender
+	LastAck      uint64 // sender
+	OutBufBytes  int64  // receiver
+	OutFrames    int    // receiver
 }
 
 // ReliablePipe is one end of a frame-ACK'd transport. It exposes the same
@@ -273,7 +276,13 @@ type ReliablePipe struct {
 	// Shared.
 	reconnects    int
 	retransmitted uint64
-	dead          atomic.Bool
+	// duplicates (receiver) counts the replayed ring frames dropped as
+	// duplicates — the receiver's view of the sender's retransmits
+	// (DESIGN §4.6, runstats.json observability).
+	duplicates atomic.Uint64
+	// dupLogged throttles the duplicate debug log (first 5, then every 1000th).
+	dupLogged atomic.Uint64
+	dead      atomic.Bool
 	// finished (receiver) is set when a clean FIN arrives: every frame has
 	// been delivered in order, so Read may return io.EOF once the output
 	// buffer drains. Distinct from dead (abort/error), which must NOT yield a
@@ -868,7 +877,13 @@ func (rp *ReliablePipe) handleData(enc []byte) {
 	last := atomic.LoadUint64(&rp.lastCons)
 	any := atomic.LoadUint64(&rp.consumedAny)
 	if any == 1 && seq <= last {
-		return // duplicate (the replayed ring after a reconnect)
+		// Duplicate (the replayed ring after a reconnect): counted for
+		// observability — the receiver's view of the sender's retransmits.
+		rp.duplicates.Add(1)
+		if n := rp.dupLogged.Add(1); n <= 5 || n%1000 == 0 {
+			dataLogf("reliablepipe", "duplicate frame seq=%d dropped (lastCons=%d, dupes=%d)", seq, last, n)
+		}
+		return
 	}
 	// Verify the CRC at this layer so a corrupt in-flight frame is NACKed and
 	// retransmitted instead of killing the unit (§4.6.5).
@@ -1051,6 +1066,7 @@ func (rp *ReliablePipe) reconnect(failGen int) error {
 	}
 	rp.reconnects++
 	rp.ringMu.Unlock()
+	dataLogf("reliablepipe", "reconnect: attempt %d/%d (severing the failed transport)", rp.reconnects, rp.cfg.MaxReconnects)
 
 	// Sever the old transport (unblocks both ends' blocked IO).
 	old, _ := rp.currentConn()
@@ -1115,13 +1131,24 @@ func (rp *ReliablePipe) replayRing(c dupConn) error {
 	}
 	sortU64(seqs)
 	var payload [][]byte
+	var firstSeq uint64
 	for _, s := range seqs {
 		if s <= rp.lastAck {
 			continue
 		}
+		if len(payload) == 0 {
+			firstSeq = s
+		}
 		payload = append(payload, rp.ring[s])
 	}
 	rp.ringMu.Unlock()
+	if len(payload) > 0 {
+		b := 0
+		for _, p := range payload {
+			b += len(p)
+		}
+		dataLogf("reliablepipe", "ring replay: %d frames (%d bytes) from seq %d", len(payload), b, firstSeq)
+	}
 	for _, p := range payload {
 		rp.wmu.Lock()
 		_, err := writeFull(c, p)
@@ -1232,6 +1259,7 @@ func (rp *ReliablePipe) Stats() Stats {
 		rp.ringMu.Unlock()
 	} else {
 		st.LastConsumed = atomic.LoadUint64(&rp.lastCons)
+		st.Deduped = rp.duplicates.Load()
 		rp.outMu.Lock()
 		st.OutBufBytes = rp.outBytes
 		st.OutFrames = len(rp.outBuf)

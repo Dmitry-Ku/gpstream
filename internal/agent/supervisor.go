@@ -109,6 +109,11 @@ type CombinedUnitResult struct {
 	SrcDigest, DstDigest string
 	// Wire / Logical are the summed on-network / decompressed byte volumes.
 	Wire, Logical uint64
+	// Retransmitted / Reconnects are the summed frame-ack observability
+	// counters (DESIGN §4.6, the destination minis' receiver-side view):
+	// replayed frames the minis deduplicated + resume re-dials routed to
+	// existing slots.
+	Retransmitted, Reconnects uint64
 	// PerSeg is the per-segment row count (content 0..D-1) — the F-15 balance
 	// cross-check.
 	PerSeg []int64
@@ -406,12 +411,14 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 	}
 
 	var (
-		srcAcc [32]byte
-		dstAcc [32]byte
-		rows   int64
-		wire   uint64
-		logic  uint64
-		first  error
+		srcAcc  [32]byte
+		dstAcc  [32]byte
+		rows    int64
+		wire    uint64
+		logic   uint64
+		retrans uint64
+		reconns uint64
+		first   error
 	)
 	for i := 0; i < D; i++ {
 		r := <-results
@@ -432,6 +439,8 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 		rows += r.resp.Rows
 		wire += r.resp.Wire
 		logic += r.resp.Logical
+		retrans += r.resp.Retransmitted
+		reconns += r.resp.Reconnects
 		if r.seg >= 0 && r.seg < D {
 			out.PerSeg[r.seg] = r.resp.Rows
 		}
@@ -455,6 +464,8 @@ func (s *Supervisor) ServeUnit(ctx context.Context, req UnitReportReq) (Combined
 	out.Rows = rows
 	out.Wire = wire
 	out.Logical = logic
+	out.Retransmitted = retrans
+	out.Reconnects = reconns
 	if first != nil {
 		return out, fmt.Errorf("supervisor: unit %d: %w", req.UnitID, first)
 	}

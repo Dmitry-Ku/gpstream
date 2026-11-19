@@ -186,7 +186,15 @@ type MiniUnitResp struct {
 	TrailerRows int64  `json:"trailer_rows,omitempty"`
 	Wire        uint64 `json:"wire,omitempty"`
 	Logical     uint64 `json:"logical,omitempty"`
-	Error       string `json:"error,omitempty"`
+	// Retransmitted is the replayed (duplicate) frames this mini dropped on
+	// the data path — the receiver's view of the sender's ring replays
+	// (DESIGN §4.6). 0 on the raw (non-frame-ack) path.
+	Retransmitted uint64 `json:"retransmitted,omitempty"`
+	// Reconnects is the resume re-dials this mini routed to an existing
+	// sub-stream slot — the receiver's view of the sender's reconnects
+	// (DESIGN §4.6). 0 on the raw path.
+	Reconnects uint64 `json:"reconnects,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // MiniDoneReq tells the mini-agent to end the run (a clean exit).
@@ -381,6 +389,7 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	var slicePipe transfer.Pipe
 	var cc *countingConn
 	var frameAckRouter *transfer.ResumeRouter
+	var frameAckRP *transfer.ReliablePipe // the receiver pipe (frame-ack only)
 	if o.FrameAck {
 		// Inc3.3b: the slice rides the frame-ack transport (DESIGN §4.6); a
 		// ResumeRouter over the shared listener routes the initial AND resume
@@ -404,6 +413,7 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 		if rerr != nil {
 			return fail("accept slice: no connection within %v (segreceiver did not dial): %v", acceptTO, rerr)
 		}
+		frameAckRP = rp
 		slicePipe = rp
 		if o.DataIdleTimeout > 0 {
 			// L2 data-idle watchdog: no byte on the slice for DataIdleTimeout
@@ -514,6 +524,12 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 		// The raw network bytes are the router's total (it reads every
 		// routed connection, initial + resume; FR-04).
 		wire = frameAckRouter.WireBytes()
+		if frameAckRP != nil {
+			resp.Retransmitted = frameAckRP.Stats().Deduped
+			if c := frameAckRouter.Conns(); c > 1 {
+				resp.Reconnects = c - 1
+			}
+		}
 	} else {
 		wire = cc.Bytes()
 	}

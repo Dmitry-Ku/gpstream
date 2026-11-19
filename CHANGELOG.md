@@ -30,6 +30,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   replayed un-ACKed frames, and the untouched senders were not disturbed.
   Timing is deterministic by construction (paced source + 5 s ACK window on
   both ends -> the retransmit ring is provably non-empty at the break).
+- **Frame-ack observability in runstats.json (DESIGN §4.6):** the persisted
+  run snapshot now carries `retransmitted` (replayed frames the destination
+  minis deduplicated) and `reconnects` (resume re-dials routed to existing
+  slots) — the destination's receiver-side view of the transport's fault
+  handling. The counters were computed but never reported before
+  (RecordFrameAck had no callers); the live /metrics endpoints
+  (gpstream_frames_retransmitted_total / gpstream_reconnects_total) now
+  carry real data as well. The sender-side (segreceiver) counters stay out
+  of scope: the segreceivers run inside the GPDB kernel and their stderr
+  goes to the segment logs, not the agents.
+- **`GPSTREAM_DATA_LOG=1`:** opt-in data-path debug log (reconnect attempts,
+  ring replay size, resume routing, duplicate frames) on stderr — off by
+  default; the agent's stderr is captured in the controller's run log, the
+  segreceiver's stderr lands in the GPDB segment log.
 
 ### Changed
 
@@ -39,6 +53,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the raw (non-frame-ack) mini path now counts through the connection it
   actually reads.
 - Removed `wrapSliceConn` (dead after the mini paths moved to the router).
+- **Packaging docs:** scripts/package.sh prints an upgrade hint and the man
+  page notes that rpm on EL7/8 compares SNAPSHOT build hashes
+  lexicographically — installing a newer snapshot over an older one needs
+  `rpm -Uvh --force`.
+
+### Fixed
+
+- **TestDestServerProtocol / TestDestServerBadKind TOCTOU:** the tests
+  bound :0 ports, closed the listeners, and let the server rebind the same
+  addresses — a concurrent binder could take the port in between (flaky
+  "bind: address already in use" under the parallel suite). NewDestServer
+  now accepts pre-bound listeners (DestServerOptions.DataListener /
+  ControlListener); the tests pass theirs.
 
 ## [v0.3.0] - 2026-10-10
 

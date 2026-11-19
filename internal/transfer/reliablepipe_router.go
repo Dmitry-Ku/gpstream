@@ -118,6 +118,7 @@ type ResumeRouter struct {
 	slots      map[StreamID]chan dupConn // bound: StreamID -> handoff channel
 	free       []chan dupConn            // unbound pool slots (dynamic binding)
 	wire       atomic.Uint64             // raw network bytes read from every routed conn (FR-04)
+	conns      atomic.Uint64             // connections handed to slots: initial + resume re-dials (§4.6)
 	closed     bool
 	done       chan struct{}
 	stop       atomic.Bool // set by Stop: the Run accept loop exits on the next wake
@@ -224,6 +225,10 @@ func (r *ResumeRouter) Run() {
 // the authoritative "bytes read from the network" counter for the serve.
 func (r *ResumeRouter) WireBytes() uint64 { return r.wire.Load() }
 
+// Conns returns the connections handed to slots (initial + resume re-dials):
+// the destination's view of the sender's reconnects (DESIGN §4.6).
+func (r *ResumeRouter) Conns() uint64 { return r.conns.Load() }
+
 // route reads the first ctrl frame (the HELLO) of c and hands c to the slot
 // for its StreamID (or closes c if unregistered).
 func (r *ResumeRouter) route(c dupConn) {
@@ -256,7 +261,8 @@ func (r *ResumeRouter) route(c dupConn) {
 		return
 	}
 	r.mu.Lock()
-	ch, reg := r.slots[id]
+	ch, wasResumed := r.slots[id]
+	reg := wasResumed
 	if !reg && len(r.free) > 0 {
 		// First sight of this StreamID: bind it to a free pool slot. The
 		// resume re-dials for the same StreamID will find it in slots now.
@@ -282,6 +288,12 @@ func (r *ResumeRouter) route(c dupConn) {
 	binary.LittleEndian.PutUint32(full[9+len(body):], checksum(full[:9+len(body)]))
 	select {
 	case ch <- &prefixConn{prefix: full, inner: cc}:
+		r.conns.Add(1)
+		kind := "initial"
+		if wasResumed {
+			kind = "resume"
+		}
+		dataLogf("resumerouter", "route: %s stream=%v", kind, id)
 	case <-r.done:
 		_ = cc.Close()
 	}

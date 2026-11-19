@@ -270,6 +270,14 @@ func (m *Metrics) RecordFrameAck(retransmitted uint64, reconnects uint64, ackLag
 	}
 }
 
+// FrameAck returns the frame-ack observability counters (DESIGN §4.6):
+// retransmitted frames, transport reconnects, worst ACK lag.
+func (m *Metrics) FrameAck() (retransmitted, reconnects uint64, ackLag time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Retransmitted, m.Reconnects, m.AckLagMax
+}
+
 // RecordFrameError records a CRC/framing error (FR-01/§4.2).
 func (m *Metrics) RecordFrameError() {
 	m.mu.Lock()
@@ -648,6 +656,11 @@ type RunStats struct {
 	ActiveFlows int            `json:"active_flows"`
 	ByStatus    map[string]int `json:"by_status"`
 	PerTable    []TableRow     `json:"per_table"`
+	// Frame-ack observability (DESIGN §4.6), the destination minis'
+	// receiver-side view: replayed frames deduplicated + resume re-dials
+	// routed to existing slots. Always present (0 = no frame-ack activity).
+	Retransmitted uint64 `json:"retransmitted"`
+	Reconnects    uint64 `json:"reconnects"`
 }
 
 func joinLines(s []string) string {

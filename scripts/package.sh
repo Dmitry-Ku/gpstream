@@ -51,3 +51,7 @@ fi
 echo
 echo "artifacts in dist/:"
 ls -1 dist/ | sed 's/^/  /'
+echo
+echo "upgrade note (EL7/8): rpm compares SNAPSHOT build hashes lexicographically"
+echo "(e.g. 083e517 > 5f5bb38 by string compare), so a newer snapshot can be"
+echo "rejected as 'older' — install upgrades with: rpm -Uvh --force dist/gpstream-*.rpm"
