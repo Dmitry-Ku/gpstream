@@ -153,7 +153,10 @@ read the whole table twice, which is too expensive for large tables; the
 only content check is the post-copy
 .BR --verify );
 .B truncate
-= in-place after TRUNCATE.
+= in-place after TRUNCATE — unsupported in the current two-agent
+topology (the run rejects it at runtime; use
+.B overwrite
+= staging + swap).
 .TP
 .BR --overwrite | --truncate
 Shorthand opt-ins that set the matching policy.
@@ -170,7 +173,8 @@ zstd level 1-19 (default 3).
 .BR --rate-limit
 rate
 Baseline for the ETA estimate and the adaptive load diagnostics; accepts
-bps/mbit/gbit (default: none). It does \fBnot\fR cap the flow — the data path
+a bare number (Gbit/s) or a suffixed value, suffixes gbit/gbps/gb/mbit/mb
+(default: none). It does \fBnot\fR cap the flow — the data path
 is paced by backpressure only; an enforced ceiling (token-bucket pacer in the
 agents) is backlog work (see PERFORMANCE.md).
 .TP
@@ -280,23 +284,25 @@ coordinator; mesh = the source segments stream in parallel (ON SEGMENT
 dispatch) and pick per table:
 When the planner proves a table is direct_1to1 (same segment count, equal
 distribution keys, same GP major), mesh writes directly into the
-destination segments (no merge, no re-distribution) — logged as
-direct_1to1_fastpath. When the segment counts differ (or the keys
+destination segments (no merge, no re-distribution) — logged as mesh_direct_write. When the segment counts differ (or the keys
 differ), mesh uses the routed segment-to-segment path: each source
 segment routes its rows to the destination segments by the distribution
 key (S x D x --workers connections) and NEITHER cluster coordinator is in
-the data path — logged as routed_write.
+the data path — logged as mesh_routed_write.
 .TP
 .B --seg-listen
 HOST:PORT
-Base listen address the segreceivers dial, for
+Listen address of the destination agent's shared data listener in
+coordinator mode: the segreceivers on the source segment hosts dial it.
+Optional: when omitted it auto-resolves to the controller's primary
+non-loopback IP plus a free port; the host must be routable from the source
+segment hosts, so on a multi-homed controller set it explicitly. In
 .B --copy-mode
-mesh. Optional: when omitted it auto-resolves to the controller's
-primary non-loopback IP plus a free port. Each unit binds
-.BR base-port + unitID
-(units copy in parallel, so the ports must not collide); the segreceivers on
-the source segment hosts dial that address, so the host must be routable from
-them — on a multi-homed controller set it explicitly.
+mesh the per-segment mini-agents bind their own data listeners at launch
+(auto, or from
+.B --port-range
+when set) and the segreceivers dial the per-segment address book instead —
+the controller holds no data ports in mesh.
 .TP
 .B --port-range
 LO-HI|LO
@@ -305,17 +311,18 @@ strict firewalls (the operator opens exactly that range). Default: fully
 automatic — every long-lived agent binds
 .BR :0
 and reports its real address in the control handshake.
-A run needs exactly 3 ports in coordinator mode (source control + dest data +
-dest control — the mesh segreceivers dial the dest agent's shared data
-listener, so the segment count adds no ports); in mesh (direct_1to1) mode it
-needs 4+D (source control + dest control + dest report + dest data + D
-mini-agent data ports, one per destination segment). When set, same-host agents
+A run needs exactly 4 ports in coordinator mode (source control + dest
+control + dest data + dest PEER — the persistent source->dest channel,
+allocated in all modes; in coordinator the segreceivers dial the dest
+agent's shared data listener, so the segment count adds no ports); in mesh
+mode it needs 4+D (the same 4 + D mini-agent data ports, one per
+destination segment). When set, same-host agents
 get pre-bound ports from inside the range and remote (SSH-launched) agents
 receive
 .B --port-range
 and bind their auto-picked ports inside it;
 .B --dry-run
-verifies the range holds enough ports for the mode (3 in coordinator, 4+D in
+verifies the range holds enough ports for the mode (4 in coordinator, 4+D in
 mesh).
 .TP
 .B --seg-tls-cert
@@ -360,9 +367,10 @@ Content verification after the copy (default
 only disables the swap gate — unverified data is then never swapped in
 only on the row-count check). With
 .B on
-, after each unit lands the content checksum is re-derived on the source
-(same snapshot as the data COPY) and on the destination, and a mismatch sets
-the unit to
+, the content digest is computed inline on the data path (source: by the
+source agent during the COPY, or by the segreceivers riding the slice
+trailers in mesh; destination: by the destination agent as rows land) and
+compared after each unit; a mismatch sets the unit to
 .B failed
 (dropping the staging table) — no unverified data is ever swapped in. With
 .B off
@@ -371,8 +379,9 @@ check.
 .TP
 .BR --auto-resume
 N
-If units did not reach a terminal state after the run, resume and re-run up
-to N times automatically. Default 0 = manual: gpstream does not
+If the run ended without error and some units did not reach a terminal
+state, resume and re-run up to N times automatically (an errored run is not
+auto-resumed). Default 0 = manual: gpstream does not
 retry; the operator runs
 .BR "gpstream resume --operation-id"
  id
