@@ -37,6 +37,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
@@ -147,113 +148,154 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 		return fail("merged header: %v", err)
 	}
 
-	// 3. Accept the S×W sub-stream connections (bounded by the stream timeout).
+	// 3. S×W sub-stream connections (bounded by the stream timeout).
 	type subOut struct {
 		res  *segstream.SliceResult
 		wire uint64
 		err  error
 	}
 	results := make(chan subOut, nTotal)
-	acceptDone := make(chan error, 1)
 	var logicalN atomic.Uint64
-	// L2 accept-gap: each sub-stream connection must arrive within the
-	// accept timeout (a segreceiver that never dials must not hold the unit
-	// open for the whole 6-hour stream timeout). The budget is PER ACCEPT
-	// (a slow start of N connections does not consume the later ones).
-	acceptTO := o.AcceptTimeout
-	go func() {
-		for i := 0; i < nTotal; i++ {
-			acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
-			acc := make(chan net.Conn, 1)
-			accErr := make(chan error, 1)
-			go func() {
-				c, err := l.Accept()
-				if err != nil {
-					accErr <- err
-					return
-				}
-				acc <- c
-			}()
-			var c net.Conn
-			select {
-			case c = <-acc:
-				acceptCancel()
-			case e := <-accErr:
-				acceptCancel()
-				acceptDone <- e
-				return
-			case <-acceptCtx.Done():
-				acceptCancel()
-				// Do not steal the connection: if the late accept lands
-				// (a segreceiver dialing this timed-out unit), close it so
-				// the sender's stream fails fast and the NEXT unit's Accept
-				// is not consumed by this unit's orphaned accept goroutine.
-				go func() {
-					select {
-					case c := <-acc:
-						_ = c.Close()
-					case <-ctx.Done():
-					}
-				}()
-				acceptDone <- fmt.Errorf("accept sub-stream %d: no connection within %v (segreceiver did not dial): %w", i, acceptTO, acceptCtx.Err())
-				return
-			}
-			cc := &countingConn{c: c}
-			var slicePipe transfer.Pipe = cc
-			if o.FrameAck {
-				if rp, rerr := wrapSliceConn(o, l, c); rerr == nil {
-					slicePipe = rp
-				} else {
-					acceptDone <- fmt.Errorf("frame-ack transport: %w", rerr)
-					return
-				}
-			}
-			if o.DataIdleTimeout > 0 {
-				// L2 data-idle watchdog: per sub-stream (one dead source
-				// segment's sub-stream must fail the unit even while the
-				// others still flow). Frame-ack: ReliablePipe.Close (markDead:
-				// blocked Read EOF, no re-accept); raw: close the connection.
-				idleClose := func() error { return c.Close() }
-				if rp, ok := slicePipe.(*transfer.ReliablePipe); ok {
-					idleClose = rp.Close
-				}
-				slicePipe = newIdlePipe(slicePipe, idleClose, o.DataIdleTimeout)
-			}
-			res := &segstream.SliceResult{}
-			go func(cc *countingConn, pipe transfer.Pipe, res *segstream.SliceResult) {
-				defer cc.c.Close()
-				// One SliceStripper per sub-stream: it strips the
-				// sub-stream's own header/EOF and forwards complete rows to
-				// the merged pipe (a single locked Write per row, so
-				// concurrent sub-streams cannot interleave inside a row).
-				var (
-					stripOnce sync.Once
-					strip     *segstream.SliceStripper
-				)
-				writer := func(contentID int16, p []byte) error {
-					logicalN.Add(uint64(len(p)))
-					stripOnce.Do(func() { strip = segstream.NewSliceStripper(mw) })
-					return strip.Write(p)
-				}
-				derr := segstream.ReadStreamCompressed(sctx, pipe, res, mode, writer)
-				results <- subOut{res: res, wire: cc.Bytes(), err: derr}
-			}(cc, slicePipe, res)
-		}
-		close(acceptDone)
-	}()
+	var frameAckRouter *transfer.ResumeRouter
 
-	var accErr error
-	select {
-	case accErr = <-acceptDone:
-		if accErr != nil {
-			closePipe(accErr)
-			<-copyRes
-			return fail("accept sub-stream: %v", accErr)
+	if o.FrameAck {
+		// Inc3.3b: a ResumeRouter over the shared listener routes BOTH the
+		// initial connections and the RST-resume re-dials by the identity
+		// HELLO (StreamID: job/unit/src/dst/worker) to the sub-stream's own
+		// receiver pipe. ONE accept loop + identity routing — a concurrent
+		// break can no longer hand a re-dial to a sibling pipe's re-accept
+		// (the per-pipe re-accept race the coordinator-side paths left in
+		// b78d6fb/dde3a9e; the mini path follows). Each slot's initial wait
+		// is bounded by the accept timeout (L2 accept-gap: a segreceiver
+		// that never dials fails the unit after the timeout, as before).
+		// The router counts the raw network bytes (FR-04), so per-sub-stream
+		// wire is 0 and the unit's wire is the router total (taken after the
+		// step-4 collection).
+		acceptTO := o.AcceptTimeout
+		if acceptTO <= 0 {
+			acceptTO = 5 * time.Minute
 		}
-	case <-sctx.Done():
-		closePipe(sctx.Err())
-		<-copyRes
-		return fail("accept sub-streams: %v", sctx.Err())
+		router := transfer.NewResumeRouter(l)
+		go router.Run()
+		closer := router.Stop
+		if o.SharedListen == nil {
+			closer = router.Close
+		}
+		defer closer()
+		frameAckRouter = router
+		for i := 0; i < nTotal; i++ {
+			slot := router.NewPoolSlot()
+			go func(slot <-chan transfer.DupConn) {
+				res := &segstream.SliceResult{}
+				rp, err := transfer.NewReliablePipeReceiverOnSlot(o.ReliablePipe, slot, acceptTO)
+				if err != nil {
+					results <- subOut{res: res, wire: 0, err: err}
+					return
+				}
+				var pipe transfer.Pipe = rp
+				if o.DataIdleTimeout > 0 {
+					// L2 data-idle watchdog: per sub-stream (one dead source
+					// segment's sub-stream must fail the unit even while the
+					// others still flow). ReliablePipe.Close = markDead
+					// (blocked Read EOF; the unit is failing anyway).
+					pipe = newIdlePipe(pipe, rp.Close, o.DataIdleTimeout)
+				}
+				derr := drainMiniSubStream(sctx, pipe, res, mode, mw, &logicalN)
+				results <- subOut{res: res, wire: 0, err: derr}
+			}(slot)
+		}
+		// The sub-streams stream concurrently; step 4's collection is the
+		// wait point.
+	} else {
+		// Raw path (integration tests feed raw segstreams; there is nothing
+		// to resume on a raw conn): the plain sequential Accept loop.
+		acceptDone := make(chan error, 1)
+		// L2 accept-gap: each sub-stream connection must arrive within the
+		// accept timeout (a segreceiver that never dials must not hold the
+		// unit open for the whole 6-hour stream timeout). The budget is PER
+		// ACCEPT (a slow start of N connections does not consume the later
+		// ones).
+		acceptTO := o.AcceptTimeout
+		go func() {
+			for i := 0; i < nTotal; i++ {
+				acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
+				acc := make(chan net.Conn, 1)
+				accErr := make(chan error, 1)
+				go func() {
+					c, err := l.Accept()
+					if err != nil {
+						accErr <- err
+						return
+					}
+					acc <- c
+				}()
+				var c net.Conn
+				select {
+				case c = <-acc:
+					acceptCancel()
+				case e := <-accErr:
+					acceptCancel()
+					acceptDone <- e
+					return
+				case <-acceptCtx.Done():
+					acceptCancel()
+					// Do not steal the connection: if the late accept lands
+					// (a segreceiver dialing this timed-out unit), close it
+					// so the sender's stream fails fast and the NEXT unit's
+					// Accept is not consumed by this unit's orphaned accept
+					// goroutine.
+					go func() {
+						select {
+						case c := <-acc:
+							_ = c.Close()
+						case <-ctx.Done():
+						}
+					}()
+					acceptDone <- fmt.Errorf("accept sub-stream %d: no connection within %v (segreceiver did not dial): %w", i, acceptTO, acceptCtx.Err())
+					return
+				}
+				cc := &countingConn{c: c}
+				var slicePipe transfer.Pipe = cc
+				if o.DataIdleTimeout > 0 {
+					// L2 data-idle watchdog: per sub-stream (raw conn).
+					slicePipe = newIdlePipe(slicePipe, c.Close, o.DataIdleTimeout)
+				}
+				res := &segstream.SliceResult{}
+				go func(cc *countingConn, pipe transfer.Pipe, res *segstream.SliceResult) {
+					defer cc.c.Close()
+					// One SliceStripper per sub-stream: it strips the
+					// sub-stream's own header/EOF and forwards complete rows
+					// to the merged pipe (a single locked Write per row, so
+					// concurrent sub-streams cannot interleave inside a row).
+					var (
+						stripOnce sync.Once
+						strip     *segstream.SliceStripper
+					)
+					writer := func(contentID int16, p []byte) error {
+						logicalN.Add(uint64(len(p)))
+						stripOnce.Do(func() { strip = segstream.NewSliceStripper(mw) })
+						return strip.Write(p)
+					}
+					derr := segstream.ReadStreamCompressed(sctx, pipe, res, mode, writer)
+					results <- subOut{res: res, wire: cc.Bytes(), err: derr}
+				}(cc, slicePipe, res)
+			}
+			close(acceptDone)
+		}()
+
+		var accErr error
+		select {
+		case accErr = <-acceptDone:
+			if accErr != nil {
+				closePipe(accErr)
+				<-copyRes
+				return fail("accept sub-stream: %v", accErr)
+			}
+		case <-sctx.Done():
+			closePipe(sctx.Err())
+			<-copyRes
+			return fail("accept sub-streams: %v", sctx.Err())
+		}
 	}
 
 	// 4. Drain all S×W sub-streams, XORing their trailers' per-row
@@ -282,6 +324,12 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 		closePipe(firstErr)
 		<-copyRes
 		return fail("sub-stream: %v", firstErr)
+	}
+	// Frame-ack: the raw network bytes are the router's total (it reads
+	// every routed connection, initial + resume; FR-04). Raw: the sum of
+	// the per-sub-stream counting conns.
+	if frameAckRouter != nil {
+		wire = frameAckRouter.WireBytes()
 	}
 
 	// 5. End the merged stream (EOF marker), wait for the utility COPY.
@@ -317,4 +365,22 @@ func serveMiniUnitRouted(ctx context.Context, o MiniOptions, l net.Listener, req
 	resp.DstAcc = hexBytes(acc32)
 	resp.Ok = true
 	return resp
+}
+
+// drainMiniSubStream reads one sub-stream's compressed slice from pipe into
+// the merged binary-COPY pipe mw: one SliceStripper per sub-stream strips the
+// sub-stream's own header/EOF and forwards complete rows under the merge lock
+// (a single locked Write per row, so concurrent sub-streams cannot interleave
+// inside a row), teeing the decompressed volume into logicalN.
+func drainMiniSubStream(sctx context.Context, pipe transfer.Pipe, res *segstream.SliceResult, mode compress.Mode, mw *mutexWriter, logicalN *atomic.Uint64) error {
+	var (
+		stripOnce sync.Once
+		strip     *segstream.SliceStripper
+	)
+	writer := func(contentID int16, p []byte) error {
+		logicalN.Add(uint64(len(p)))
+		stripOnce.Do(func() { strip = segstream.NewSliceStripper(mw) })
+		return strip.Write(p)
+	}
+	return segstream.ReadStreamCompressed(sctx, pipe, res, mode, writer)
 }

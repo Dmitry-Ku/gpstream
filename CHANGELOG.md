@@ -5,6 +5,41 @@ All notable changes to gpstream are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Inc3.3b: the production mini path now routes RST-resume connections by
+  identity.** `serveMiniUnitRouted` (supervisor mode, the on_segment data
+  path) and `serveMiniUnit` (direct) put the frame-ack sub-streams through
+  the `ResumeRouter` over the shared data listener: the initial AND the
+  resume (re-dial) connections carry the identity HELLO (StreamID:
+  job/unit/src/dst/worker, HELLO v3) and are routed to the sub-stream's own
+  receiver pipe. Before this, every sub-stream pipe ran its OWN re-accept
+  loop on the shared listener, so 2+ simultaneous breaks within one
+  ResumeTimeout window could hand a re-dial to a SIBLING pipe's `Accept()`
+  (foreign HELLO -> pipe failure -> spurious unit FAIL + re-copy; the
+  digest/re-copy safety-net kept it corruption-free, but it was a
+  reliability gap under concurrent WAN breaks). The coordinator leg
+  (single sender per listener) and the raw (non-frame-ack) integration-test
+  paths are unchanged.
+- **`TestTwoAgentMeshRoutedFrameAckResume` (gp6lab):** 4 frame-ack pipes on
+  one mini listener (S=2 source segments x W=2 workers, D=1); severs 2 of
+  the 4 transports simultaneously, mid-stream, and proves the unit
+  completes with exact rows + digests, the severed senders reconnected AND
+  replayed un-ACKed frames, and the untouched senders were not disturbed.
+  Timing is deterministic by construction (paced source + 5 s ACK window on
+  both ends -> the retransmit ring is provably non-empty at the break).
+
+### Changed
+
+- **Mini frame-ack wire accounting (FR-04):** the on-wire volume reported
+  for frame-ack units is the router's raw network bytes (initial + resume
+  connections) instead of 0 (the per-pipe receiver counted no raw bytes);
+  the raw (non-frame-ack) mini path now counts through the connection it
+  actually reads.
+- Removed `wrapSliceConn` (dead after the mini paths moved to the router).
+
 ## [v0.3.0] - 2026-10-10
 
 ### Dependencies

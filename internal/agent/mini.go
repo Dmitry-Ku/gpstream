@@ -362,23 +362,6 @@ func ServeMini(ctx context.Context, o MiniOptions) (MiniResult, error) {
 // assumes the staging slice already exists (the supervisor created/truncated it
 // on the coordinator); the mini-agent only performs the utility COPY.
 
-// wrapSliceConn puts the slice onto the frame-ack transport when the
-// segreceiver sent it that way (DESIGN §4.6): the accepted connection
-// rides a ReliablePipe that re-dials the shared listener l on a break and
-// replays un-ACKed frames, so the in-flight COPY keeps reading in order
-// (the coordinator-dest pattern, dest.go:224). Returns the pipe to read
-// the slice from (raw conn when frame-ack is off).
-func wrapSliceConn(o MiniOptions, l net.Listener, conn net.Conn) (transfer.Pipe, error) {
-	if !o.FrameAck {
-		return conn, nil
-	}
-	rp, err := transfer.NewReliablePipeReceiverOnConn(o.ReliablePipe, conn, l)
-	if err != nil {
-		return nil, err
-	}
-	return rp, nil
-}
-
 func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniUnitReq) MiniUnitResp {
 	resp := MiniUnitResp{Op: "mini-unit-resp", ReqID: req.ReqID, UnitID: req.UnitID}
 	fail := func(format string, a ...any) MiniUnitResp {
@@ -394,68 +377,94 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	sctx, scancel := context.WithTimeout(ctx, sto)
 	defer scancel()
 
-	// 1. Accept the ONE slice connection, bounded by the accept timeout
-	// (L2 accept-gap: a segreceiver that never dials must not hold the unit
-	// open for the whole 6-hour stream timeout).
-	acceptTO := o.AcceptTimeout
-	acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
-	defer acceptCancel()
-	type acceptOut struct {
-		c   net.Conn
-		err error
-	}
-	acc := make(chan acceptOut, 1)
-	go func() {
-		c, err := l.Accept()
-		acc <- acceptOut{c: c, err: err}
-	}()
-	var conn net.Conn
-	select {
-	case a := <-acc:
-		if a.err != nil {
-			return fail("accept slice: %v", a.err)
-		}
-		conn = a.c
-	case <-acceptCtx.Done():
-		// Do not steal the connection: if the late accept lands (a
-		// segreceiver dialing this timed-out unit), close it so the sender's
-		// stream fails fast and the NEXT unit's Accept is not consumed by
-		// this unit's orphaned accept goroutine.
-		go func() {
-			select {
-			case a := <-acc:
-				if a.c != nil {
-					_ = a.c.Close()
-				}
-			case <-ctx.Done():
-			}
-		}()
-		return fail("accept slice: no connection within %v (segreceiver did not dial): %v", acceptTO, acceptCtx.Err())
-	case <-sctx.Done():
-		return fail("accept slice: %v", sctx.Err())
-	}
-	defer conn.Close()
-	var slicePipe transfer.Pipe = conn
+	// 1. Accept the ONE slice connection.
+	var slicePipe transfer.Pipe
+	var cc *countingConn
+	var frameAckRouter *transfer.ResumeRouter
 	if o.FrameAck {
-		rp, rerr := wrapSliceConn(o, l, conn)
+		// Inc3.3b: the slice rides the frame-ack transport (DESIGN §4.6); a
+		// ResumeRouter over the shared listener routes the initial AND resume
+		// connections by the identity HELLO (StreamID). The direct shape is
+		// one pipe per unit, so the router is the uniform path (and future-
+		// proofs against unit overlap); the slot's initial wait is bounded by
+		// the accept timeout (L2 accept-gap, same as the raw path). The
+		// router counts the raw network bytes (FR-04) — read after the
+		// stream ends.
+		acceptTO := o.AcceptTimeout
+		router := transfer.NewResumeRouter(l)
+		go router.Run()
+		closer := router.Stop
+		if o.SharedListen == nil {
+			closer = router.Close
+		}
+		defer closer()
+		frameAckRouter = router
+		slot := router.NewPoolSlot()
+		rp, rerr := transfer.NewReliablePipeReceiverOnSlot(o.ReliablePipe, slot, acceptTO)
 		if rerr != nil {
-			return fail("frame-ack transport: %v", rerr)
+			return fail("accept slice: no connection within %v (segreceiver did not dial): %v", acceptTO, rerr)
 		}
 		slicePipe = rp
-	}
-	cc := &countingConn{c: conn}
-	if o.DataIdleTimeout > 0 {
-		// L2 data-idle watchdog: no byte on the slice for DataIdleTimeout ->
-		// kill the stream and fail the unit instead of waiting out the 6-hour
-		// stream timeout. Frame-ack: ReliablePipe.Close (markDead: the blocked
-		// Read gets EOF, the receiver stops re-accepting so a resuming
-		// segreceiver is not swapped back in). Raw: close the connection (the
-		// blocked read unblocks).
-		idleClose := func() error { return conn.Close() }
-		if rp, ok := slicePipe.(*transfer.ReliablePipe); ok {
-			idleClose = rp.Close
+		if o.DataIdleTimeout > 0 {
+			// L2 data-idle watchdog: no byte on the slice for DataIdleTimeout
+			// -> kill the stream and fail the unit instead of waiting out the
+			// 6-hour stream timeout. ReliablePipe.Close = markDead (the
+			// blocked Read gets EOF and the receiver stops, so a resuming
+			// segreceiver is not swapped back in).
+			slicePipe = newIdlePipe(slicePipe, rp.Close, o.DataIdleTimeout)
 		}
-		slicePipe = newIdlePipe(slicePipe, idleClose, o.DataIdleTimeout)
+	} else {
+		// Raw (integration tests feed raw segstreams; there is nothing to
+		// resume on a raw conn): one bounded Accept (L2 accept-gap: a
+		// segreceiver that never dials must not hold the unit open for the
+		// whole 6-hour stream timeout).
+		acceptTO := o.AcceptTimeout
+		acceptCtx, acceptCancel := context.WithTimeout(ctx, acceptTO)
+		defer acceptCancel()
+		type acceptOut struct {
+			c   net.Conn
+			err error
+		}
+		acc := make(chan acceptOut, 1)
+		go func() {
+			c, err := l.Accept()
+			acc <- acceptOut{c: c, err: err}
+		}()
+		var conn net.Conn
+		select {
+		case a := <-acc:
+			if a.err != nil {
+				return fail("accept slice: %v", a.err)
+			}
+			conn = a.c
+		case <-acceptCtx.Done():
+			// Do not steal the connection: if the late accept lands (a
+			// segreceiver dialing this timed-out unit), close it so the
+			// sender's stream fails fast and the NEXT unit's Accept is not
+			// consumed by this unit's orphaned accept goroutine.
+			go func() {
+				select {
+				case a := <-acc:
+					if a.c != nil {
+						_ = a.c.Close()
+					}
+				case <-ctx.Done():
+				}
+			}()
+			return fail("accept slice: no connection within %v (segreceiver did not dial): %v", acceptTO, acceptCtx.Err())
+		case <-sctx.Done():
+			return fail("accept slice: %v", sctx.Err())
+		}
+		defer conn.Close()
+		// The counting conn IS the read path (wire accounting, FR-04 — the
+		// same as the raw routed path in mini_routed.go).
+		cc = &countingConn{c: conn}
+		slicePipe = cc
+		if o.DataIdleTimeout > 0 {
+			// L2 data-idle watchdog: close the connection (the blocked read
+			// unblocks).
+			slicePipe = newIdlePipe(slicePipe, conn.Close, o.DataIdleTimeout)
+		}
 	}
 
 	// 2. Single utility-COPY pipe + COPY goroutine. The staging slice exists
@@ -500,7 +509,14 @@ func serveMiniUnit(ctx context.Context, o MiniOptions, l net.Listener, req MiniU
 	w := &miniSliceWriter{pw: pw, dsum: dsum, logic: &logicalN}
 	res := &segstream.SliceResult{}
 	derr := segstream.ReadStreamCompressed(sctx, slicePipe, res, mode, w.Write)
-	wire := cc.Bytes()
+	var wire uint64
+	if frameAckRouter != nil {
+		// The raw network bytes are the router's total (it reads every
+		// routed connection, initial + resume; FR-04).
+		wire = frameAckRouter.WireBytes()
+	} else {
+		wire = cc.Bytes()
+	}
 
 	// 4. Close the pipe (EOF or error) so the COPY sees end-of-stream, then wait
 	// for the utility COPY and take its authoritative row count.
