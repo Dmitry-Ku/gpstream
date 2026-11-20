@@ -16,14 +16,14 @@
 package main
 
 import (
-	"strconv"
-	"net"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
