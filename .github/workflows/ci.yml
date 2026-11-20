@@ -139,31 +139,38 @@ jobs:
           ref: runner-heartbeat
           path: hb
           fetch-depth: 1
+        continue-on-error: true
       - id: check
         run: |
-          # bench.status = "<state> <unix-ts>" where state=online only while
-          # the bench's self-hosted runner is installed and running
-          # (/opt/gp6-runner/online marker). Missing file or age > 15 min =
-          # bench/runner offline -> skip (green) instead of queueing forever.
+          # This gate must NEVER fail the run: it only decides run-vs-skip
+          # for the lab job. Any problem (missing branch, bad file, bad
+          # timestamp) degrades to skip (online=false) with the detail in
+          # the log.
+          online=false
+          detail="checkout or parse problem"
           if [ -f hb/bench.status ]; then
             read -r state ts < hb/bench.status || true
-            age=$(( $(date -u +%s) - ${ts:-0} ))
-            echo "bench status: $state (age ${age}s)"
-            if [ "$state" = "online" ] && [ "$age" -ge 0 ] && [ "$age" -le 900 ]; then
-              online=true
-            else
-              online=false
-            fi
+            case "${ts:-}" in
+              ''|*[!0-9]*) detail="bad timestamp '${ts:-}'" ;;
+              *)
+                age=$(( $(date -u +%s) - ts ))
+                detail="state=$state age=${age}s"
+                if [ "$state" = "online" ] && [ "$age" -ge 0 ] && [ "$age" -le 900 ]; then
+                  online=true
+                fi
+                ;;
+            esac
           else
-            echo "no heartbeat file -> offline"
-            online=false
+            detail="no heartbeat file"
           fi
+          echo "gate: $detail -> online=$online"
+          echo "online=$online" >> "$GITHUB_OUTPUT" || true
           if [ "$online" = "true" ]; then
             echo "runner online -> integration job runs"
           else
             echo "bench/runner offline -> integration job skipped"
           fi
-          echo "online=$online" >> "$GITHUB_OUTPUT"
+          exit 0
   integration-gp6:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.integration-gate.outputs.runner_online == 'true'
     needs: integration-gate
