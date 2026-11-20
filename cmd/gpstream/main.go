@@ -437,6 +437,18 @@ func cmdDryRun(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
+	// Design 04.10 (coordinator): the port-range requirement (5) does not
+	// depend on the destination topology — verify it BEFORE the agents
+	// launch, so a too-narrow range fails validation here instead of at
+	// agent start ("connection refused"). Mesh is checked after the plan,
+	// when D is known.
+	// "" (no --copy-mode) is the coordinator default.
+	if cfg.CopyMode == config.CopyCoordinator || cfg.CopyMode == "" {
+		if err := cfg.CheckPortRange(0); err != nil {
+			return err
+		}
+	}
+
 	r := manifest.NewProcessTwoAgentRunner(&cfg)
 	if err := r.Start(ctx); err != nil {
 		return fmt.Errorf("dry-run: launch agents: %w", err)
@@ -510,19 +522,12 @@ func cmdDryRun(args []string) error {
 		return fmt.Errorf("dry-run: %w", err)
 	}
 
-	// Design 04.10: verify the --port-range size against the mode's
-	// requirement. Mesh: D is known only once the plan resolved the
-	// destination topology. Coordinator: the requirement (5) does not depend
-	// on D, so check unconditionally — otherwise a narrow range fails at
-	// agent launch ("connection refused") instead of validation.
-	if cfg.CopyMode == config.CopyMesh {
-		if p.Route.Resolved {
-			if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
-				return err
-			}
-		}
-	} else if cfg.CopyMode != "" {
-		if err := cfg.CheckPortRange(0); err != nil {
+	// Design 04.10 (mesh): verify the --port-range size against the mode's
+	// requirement (the plan resolved the destination topology, so D is known
+	// at dry-run time). The coordinator requirement (5) was already checked
+	// before the agents launch, above.
+	if cfg.CopyMode == config.CopyMesh && p.Route.Resolved {
+		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
 			return err
 		}
 	}
@@ -1553,6 +1558,17 @@ func cmdRun(args []string) error {
 	// delegated to the destination agent by the Manager (SetSink), its file
 	// mirror is the durable resume source. The controller holds no direct
 	// destination connection.
+	// Design 04.10 (coordinator): the port-range requirement (5) does not
+	// depend on the destination topology — verify it BEFORE the agents
+	// launch, so a too-narrow range fails validation here instead of at
+	// agent start. Mesh is checked after the plan, when D is known.
+	// "" (no --copy-mode) is the coordinator default.
+	if cfg.CopyMode == config.CopyCoordinator || cfg.CopyMode == "" {
+		if err := cfg.CheckPortRange(0); err != nil {
+			return err
+		}
+	}
+
 	j := manifest.NewJournal(nil, journalPath)
 	mgr := manifest.NewManager(&cfg, j)
 
@@ -1580,19 +1596,11 @@ func cmdRun(args []string) error {
 		mgr.ReleaseAgents()
 		return nil
 	}
-	// Design 04.10: verify the --port-range size against the mode's
-	// requirement (fail fast, before the copy starts). Mesh needs the
-	// resolved plan for D; the coordinator requirement (5) does not depend
-	// on D, so it is checked unconditionally.
-	if cfg.CopyMode == config.CopyMesh {
-		if p.Route.Resolved {
-			if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
-				mgr.ReleaseAgents()
-				return fmt.Errorf("run: %w", err)
-			}
-		}
-	} else if cfg.CopyMode != "" {
-		if err := cfg.CheckPortRange(0); err != nil {
+	// Design 04.10 (mesh): verify the --port-range size against the mode's
+	// requirement (fail fast, before the copy starts). The coordinator
+	// requirement (5) was already checked before the agents launch, above.
+	if cfg.CopyMode == config.CopyMesh && p.Route.Resolved {
+		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
 			mgr.ReleaseAgents()
 			return fmt.Errorf("run: %w", err)
 		}
