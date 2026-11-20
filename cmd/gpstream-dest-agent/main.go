@@ -16,6 +16,8 @@
 package main
 
 import (
+	"strconv"
+	"net"
 	"context"
 	"encoding/json"
 	"flag"
@@ -32,6 +34,28 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/version"
 )
+
+// excludeFixedPorts keeps the in-range auto-picks away from the explicit
+// listener ports the controller passes (its own allocation). Without this,
+// an auto bind can land on a fixed port: the allocator's busy-port skip then
+// pushes the auto pick into ANOTHER fixed port and the agent dies at start
+// (the 20.11 --port-range coordinator failure: persist auto 9001->9002 hit
+// the fixed peer 9002).
+func excludeFixedPorts(alloc *portalloc.Allocator, addrs ...string) {
+	for _, a := range addrs {
+		if a == "" {
+			continue
+		}
+		_, portStr, err := net.SplitHostPort(a)
+		if err != nil {
+			continue
+		}
+		p, aerr := strconv.Atoi(portStr)
+		if aerr == nil && p > 0 {
+			alloc.SetExclude(p)
+		}
+	}
+}
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "listen address host:port (required; the controller passes a bound port)")
@@ -198,6 +222,7 @@ func main() {
 		if perr != nil {
 			fail("invalid --port-range %q: %v", *portRange, perr)
 		}
+		excludeFixedPorts(portAlloc, *dataListen)
 		res, err := agent.ServeMini(ctx, agent.MiniOptions{
 			Seg:             *seg,
 			Version:         version.String(),
@@ -256,6 +281,7 @@ func main() {
 		if perr != nil {
 			fail("invalid --port-range %q: %v", *portRange, perr)
 		}
+		excludeFixedPorts(portAlloc, *ctrlListen, *peerListen, *reportListen)
 		// The per-segment hosts from the catalog's DstDSNs (the hello carries
 		// the data port only; the supervisor combines them). Empty = 127.0.0.1.
 		var hosts []string
@@ -397,6 +423,7 @@ func main() {
 		if perr != nil {
 			fail("invalid --port-range %q: %v", *portRange, perr)
 		}
+		excludeFixedPorts(portAlloc, *dataListen, *ctrlListen, *persistListen, *peerListen)
 		srv, err := agent.NewDestServer(agent.DestServerOptions{
 			DataListen:    *dataListen,
 			ControlListen: *ctrlListen,

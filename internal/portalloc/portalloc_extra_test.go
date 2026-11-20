@@ -124,3 +124,23 @@ func TestReleaseManyUnits(t *testing.T) {
 		a.Release(p)
 	}
 }
+func TestListenSkipsExcludedPorts(t *testing.T) {
+	a := New(9000, 9010)
+	a.SetExclude(9001, 9002)
+	l1, err := a.Listen("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l1.Close()
+	if l1.Addr().(*net.TCPAddr).Port != 9000 {
+		t.Fatalf("first pick = %d, want 9000", l1.Addr().(*net.TCPAddr).Port)
+	}
+	l2, err := a.Listen("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if p := l2.Addr().(*net.TCPAddr).Port; p != 9003 {
+		t.Fatalf("second pick = %d, want 9003 (9001/9002 excluded, 9000 reserved)", p)
+	}
+}
