@@ -1,5 +1,12 @@
 name: ci
 
+# Explicit token scope: the default workflow permission on the repo is
+# "read contents and packages", which does NOT include actions:read — the
+# integration-gate job needs it to query GET /actions/runners (403 without).
+permissions:
+  contents: read
+  actions: read
+
 on:
   push:
     branches: [main]
