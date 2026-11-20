@@ -136,9 +136,16 @@ jobs:
           # (and the whole run) red. On ANY failure we degrade to the legacy
           # behavior (optimistic: job may run / queue) — a green run that
           # sometimes queues beats a red run that skips real tests.
-          body=$(curl -fsS -H "Authorization: token $TOKEN" \
+          body=$(curl -sS -w '\n%{http_code}' -H "Authorization: token $TOKEN" \
             "https://api.github.com/repos/$REPO/actions/runners" 2>&1) || body="API error: $body"
-          echo "runners API response: ${body:0:400}"
+          http=$(printf '%s' "$body" | tail -n1)
+          body=$(printf '%s' "$body" | sed '$d')
+          echo "runners API http=$http response: ${body:0:400}"
+          if [ "$http" != "200" ]; then
+            echo "runners API unavailable (http=$http) -> optimistic (legacy behavior)"
+            echo "online=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           online=$(printf '%s' "$body" | python3 -c 'import json, sys
           try:
               rs = json.load(sys.stdin).get("runners") or []
