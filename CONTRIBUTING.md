@@ -16,7 +16,7 @@ for feature requirements (F-01…F-18) and non-functional constraints (§7).
    go build ./...
    go vet ./...
    go test ./...        # all packages green
-   go test ./... -cover # no package below 70% (see NFR §7)
+   go test ./... -cover # CI reports the aggregate coverage; no per-package floor is enforced (see NFR §7)
    ```
 4. Open a PR with: what changed, which F-/NFR item it serves, and how you
    verified it (test names, bench numbers for perf work).

@@ -165,8 +165,7 @@ swap, indexes) and holds **no data connections**. `gpstream_bytes_total` is
 the on-wire agent-to-agent volume, compression genuinely reduces
 inter-cluster bandwidth, and the
 controller is a control-plane trust root only. It requires
-the agent binaries resolve by convention (packaged install: all four in `/usr/bin`; override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` for dev builds) —
-hosts). See `docs/adr/002-single-controller-data-path.md`.
+the agent binaries resolve by convention (packaged install: all four in `/usr/bin`; override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` for dev builds). See `docs/adr/002-single-controller-data-path.md`.
 
 ---
 
@@ -327,9 +326,7 @@ whether a finished run actually **succeeded**:
 | `completed` | Data + checksum verified. |
 | **`swapped`** | Completed unit atomically renamed to its final name — **terminal success**. |
 | **`failed`** | Unit exhausted its retries — **terminal failure**. |
-| **`skipped`** | Unit deliberately not copied (a `--resolve-conflicts skip`, or an
-  — **terminal,
-  nothing to do**. |
+| **`skipped`** | Unit deliberately not copied (a `--resolve-conflicts skip`, or an `--overwrite` target whose data is already identical on the destination) — **terminal, nothing to do**. |
 
 There is **no `done` state**. A job's terminal outcomes are `swapped` (success),
 `failed` (failure), and `skipped` (deliberately not copied). This matters for

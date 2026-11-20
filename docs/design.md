@@ -39,8 +39,10 @@ runtime dependency; the binary is statically linked
 
 - **libpq / C drivers** — forbidden by FR-08 (C runtime dependency).
 - **stdlib `compress/zlib`** — insufficient throughput for the 100 GbE target
-  (see klauspost/compress above); kept as the documented degradation floor
-  (`--compress none` / auto-disable for small tables, FR-12).
+  (see klauspost/compress above); kept as an explicit selectable compression
+  mode (`--compress zlib`). The documented degradation floor is
+  `--compress none` (no compression), which is also what the small-table
+  auto-disable applies (FR-12).
 - **ORMs / query builders** — gpstream issues a small, stable set of catalog
   and COPY statements directly; a layer in between would obscure the exact
   SQL that must remain 9.4-compatible (GP6 kernel).

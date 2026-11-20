@@ -115,3 +115,12 @@ is done when all units are done plus a final report.
   (`cfg.WorkersPerPair`, internal/manifest/manager.go); the separate
   processes are the source/dest agents launched by the controller
   (internal/launch).
+- **Ratelimit:** diagnostic-only in the two-agent data path — the token-bucket
+  pacer is not wired in (backlog); the flow is paced by backpressure only
+  (internal/manifest/manager.go:151-158).
+- **Monitor outputs:** JSON only (events.jsonl, runstats.json) + optional
+  Prometheus /metrics; no CSV output in the code.
+- **Deployment:** the repo ships no systemd unit (host-side deployment,
+  operator-managed); the watchdogs live in code: the persistent-channel
+  Ping/Pong (internal/agent/persistent.go) and the L2 data-idle watchdog
+  (internal/agent/mini.go).

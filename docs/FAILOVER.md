@@ -10,9 +10,10 @@ gpstream has **no primary/standby role and no cluster switchover**. It is a
 streaming copy tool: source (PROD) → network → destination (PREPROD), with
 **no intermediate storage** (F-01). A "failover" in gpstream terms means
 **resuming an interrupted operation from its journal**, not promoting a
-standby. If a worker dies, the operation does not abort (F-06): the manager
-reassigns the dead worker's units to live workers, and every unit transition
-is journaled so the operation can be picked up later.
+standby. A worker never dies: a unit panic is recovered in place (the unit
+is journaled failed and the worker continues), so the operation does not
+abort (F-06), and every unit transition is journaled so the operation can be
+picked up later.
 
 ## The unit state machine
 
@@ -26,7 +27,7 @@ through the states in `internal/manifest/job.go`:
 | `verifying`   | awaiting checksum verification                 | no        |
 | `completed`   | data + checksum verified (ADR-001 §4.4)        | **yes**   |
 | `swapped`     | completed unit atomically renamed to final     | **yes**   |
-| `failed`      | exhausted retries / a genuine fault            | **yes**   |
+| `failed`      | failed at run time (a resume re-copies it) / a genuine fault (panic) | **yes**   |
 | `skipped`     | deliberately not copied (conflict skip / identical overwrite) | **yes** |
 
 There is **no `StateDone`**. A unit is "done" only once it reaches
@@ -158,8 +159,10 @@ Recovery is only safe because of two guarantees in `runUnit`
    source table exactly once. `--verify off` only disables the swap gate
    (the COPY row count becomes the landed-data check).
 2. **Swap failure is safe.** Data is written to a staging table
-   (`StagingName(jobID, unitID)`), verified, reindexed (F-17), and only then
-   **atomically renamed** to its final name. If the swap fails *after* a
+   (`StagingName(jobID, unitID)`), verified, and only then **atomically
+   renamed** to its final name; the index rebuilds (F-17) are enqueued to the
+   background pool AFTER the swap (the staging table has no indexes, so a
+   pre-swap reindex would be a no-op). If the swap fails *after* a
    verified copy, the staging table still holds the verified data — the run
    reports the error and a resume retries the swap, so no data is lost.
 
@@ -188,9 +191,11 @@ gpstream pins a read-only `REPEATABLE READ` transaction (the source read
 snapshot, owned by the source agent) **before** any unit is
 copied, so every `COPY ... TO STDOUT` of the database reads from the same
 point-in-time (F-02). The snapshot is released only after every unit has been
-copied. If a crash happens mid-snapshot, resume re-establishes it; a snapshot
-error is non-fatal (the copy proceeds) but is logged so the operator can see
-the consistency mode.
+copied. If a crash happens mid-snapshot, resume re-establishes a fresh one
+(the old one dies with the session). A snapshot-establishment error (pin
+failure, failed REPEATABLE READ begin, pin spread beyond
+`--max-snapshot-delta`) is **fatal**: the source agent does not start and the
+run aborts — there is no degraded no-snapshot mode.
 
 ## Recommended recovery recipe
 

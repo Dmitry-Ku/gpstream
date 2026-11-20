@@ -16,8 +16,8 @@ launching the server goroutine:
 metrics:     127.0.0.1:9100/metrics
 ```
 
-The printed line is the bare address (no `http://` prefix, no suffix), and it
-is printed **before** the listen is known to have succeeded — a listen
+The printed line is `<addr>/metrics` (no `http://` prefix), and it is
+printed **before** the listen is known to have succeeded — a listen
 failure is reported later, on stderr, and is non-fatal (below).
 
 Behaviour of the metrics server (`cmd/gpstream/main.go`):
@@ -148,7 +148,7 @@ Summary of the series:
 | `gpstream_table_rows` | counter | `{table}` | rows copied per table |
 | `gpstream_table_bytes_wire` | counter | `{table}` | wire bytes per table |
 | `gpstream_table_bytes_logical` | counter | `{table}` | logical bytes per table |
-| `gpstream_table_state` | gauge | `{table}`, `{state}` | current unit state per table (1 = in this state) |
+| `gpstream_table_state` | gauge | `{table}`, `{status}` | current unit state per table (1 = in this state) |
 | `gpstream_pair_up` | gauge | `{pair}` | host pair of the running copy (1 = up) |
 
 ### How the gauges are computed
@@ -157,8 +157,9 @@ Summary of the series:
   collector keeps cumulative byte samples and returns
   `(last.bytes − first.bytes) / (last.t − first.t)`; with fewer than two
   samples it returns `0`.
-- **`gpstream_eta_seconds`** — remaining volume divided by the recent
-  throughput; `0` until enough samples exist to be meaningful.
+- **`gpstream_eta_seconds`** — remaining volume divided by the average
+  throughput since run start (not the 60 s rolling window); `0` until bytes
+  flow.
 - **`gpstream_rate_limit_gbits`** — set by the limiter on every rate change
   via `SetRateLimit(to)` (F-14), so the AIMD movement is visible as a gauge
   movement. Diagnostic only until the pacer is wired in (see PERFORMANCE.md).
@@ -166,9 +167,9 @@ Summary of the series:
   as the controller observes it (F-14 "receive queue … COPY metrics"): the
   average time a source-side frame write takes to drain into the
   destination over the last second (the data path is an unbuffered pipe).
-  **Not populated in the two-agent data path yet** (the agent send loops do
-  not feed the hook), so it reads 0 until the pacer work wires it in; it is
-  then the reduce signal with reason `dest-receive-queue` (above 50 ms).
+  **Not populated yet** (the `SetReceiveWriteMs` hook is never called in the
+  shipped code), so it reads 0; it is the intended reduce signal with reason
+  `dest-receive-queue` (above 50 ms) once the data-path wiring lands.
 - **`gpstream_compression_level` / `gpstream_compression_mode`** — the
   `SetCompression` hook exists in `internal/monitor/metrics.go` but is
   **never called** in the shipped code, so the exposition is static:

@@ -252,10 +252,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   CONFIGURATION, OPERATOR_GUIDE, QUICKSTART, TROUBLESHOOTING, the `--help`
   text and `man gpstream.8`. `cleanup --mode drop` now documents the
   agent-executed drop (`--dest-agent-ssh`, `--dest-agent-binary`) and the
-  full flag list. The man ENVIRONMENT section now lists all recognised
-  `GPSTREAM_*` variables 1:1 with `config.ApplyEnv` (12 were missing:
-  MAX_SNAPSHOT_DELTA, SOURCE/DEST_AGENT_BINARY, SEG_BINARY, SEG_LISTEN,
-  PORT_RANGE, CONTROL_TLS_CERT/KEY/CA). Rendered with groff on the GP6
+  full flag list. The man ENVIRONMENT section was extended with the 9 then-missing
+  `GPSTREAM_*` variables (MAX_SNAPSHOT_DELTA, SOURCE_AGENT_BINARY,
+  DEST_AGENT_BINARY, SEG_BINARY, SEG_LISTEN, PORT_RANGE,
+  CONTROL_TLS_CERT/KEY/CA); `GPSTREAM_DATA_IDLE_TIMEOUT` was still missing
+  at that point (added 20.11). Rendered with groff on the GP6
   testbed to verify.
 - **English-only hygiene:** residual Cyrillic in code comments and one
   CHANGELOG line translated to English (check-english.sh green); repo-wide

@@ -19,12 +19,15 @@ monitor, and recover if needed.
 >
 > **Where it installs:** the `gpstream` package goes on the **controller
 > host** (the machine you run it from — it does not have to be a cluster
-> host). For `--copy-mode mesh` it also goes on **every source segment
-> host** (it supplies `gpstream-segreceiver`). By default the **destination**
-> runs no gpstream code; for a cross-host dest placement it runs
-> `gpstream-dest-agent`, and under `--copy-mode mesh` it additionally runs the
-> per-segment `gpstream-dest-agent --mini` agents (coordinated by the
-> dest-agent supervisor on the destination coordinator). Details:
+> host). The **source coordinator** host runs `gpstream-source-agent` and the
+> **destination coordinator** host runs `gpstream-dest-agent` (local launch when
+> the controller runs on that coordinator, otherwise
+> `--source-agent-ssh` / `--dest-agent-ssh` — the agents hard-check that they
+> run on their cluster's coordinator). For `--copy-mode mesh` the package also
+> goes on **every source segment host** (it supplies `gpstream-segreceiver`)
+> and the destination segment hosts additionally run the per-segment
+> `gpstream-dest-agent --mini` agents (launched by the dest-agent supervisor on
+> the destination coordinator itself). Details:
 > [INSTALL.md](INSTALL.md#63-deployment-model-what-goes-where).
 
 ---
@@ -200,8 +203,7 @@ It reports how many units were re-queued. If all units are already terminal it
 prints `resume: all units terminal — nothing to resume`. You can also set
 `--auto-resume N` on the copy itself, so the operation auto-resumes up to `N`
 times from the checkpoint if a unit does not reach a terminal state. Resume
-re-read behaviour is fixed (a table is kept only if it was verified under one snapshot epoch)
-(default `relaxed`).
+re-read behaviour is fixed (a table is kept only if it was verified under one snapshot epoch — the fixed "relaxed" rule; there is no mode flag).
 
 ### 7.2 Clean up
 

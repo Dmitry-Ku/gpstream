@@ -117,3 +117,11 @@ same gate.
   destination segment count (internal/manifest/manager.go). The partition
   gate (`part.Spec == ""`) exists only for the router_full branch
   (wantsRoutedWrite).
+- **Swap (mesh path):** the destination agent owns verify + swap for mesh
+  units — "runUnit step 9 moved to the agent" (architecture 08.10): MiniLaunch
+  carries Final/Verify and the dest agent performs the atomic swap itself
+  (internal/agent/destserver.go: swapMiniFinal). The controller's step-9
+  dstSwap runs only as a fallback for units the destination did not swap
+  (meshSwapped/coordSwapped, internal/manifest/manager.go:1729-1740). The
+  Consequences line "the swap remains the controller's decision (runUnit step
+  9)" is superseded — for both paths (the coordinator path since 2B-1).

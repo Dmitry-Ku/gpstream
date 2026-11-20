@@ -41,7 +41,7 @@ The re-read rule is fixed: a table is kept only if it was verified under one sna
 
 | Table state at resume | Decision |
 |---|---|
-| Completed in **one** epoch, all units terminal | **keep** — re-verify the aggregate, swap. No re-read. |
+| Completed in **one** epoch, all units terminal | **keep** — complete the pending swap (the data was verified at completion in the original run); no re-read, no re-verify. |
 | Completed across **different** epochs | **re-read** the whole table under the fresh snapshot. |
 | Has any **non-terminal** unit | **re-read** the whole table under the fresh snapshot. |
 | Already **swapped** | **keep** — its point-in-time is the swap moment; re-swapping would change the timestamp, not the data. |
@@ -77,7 +77,7 @@ This is the part that bites in practice, and it was live-verified (E3):
    staging table is **scratch for the in-flight copy**, it is
    **cleared (TRUNCATE) before the re-copy** — a re-copy on top of the
    partial rows would double the data and fail verification
-   ("want 10000, got 20000"). This fix is `a56be8b`.
+   ("want 10000, got 20000"). This fix is `db3b641`.
 4. The re-copied unit is then verified against the fresh snapshot's
    checksum; on success it is swapped. **No duplicates, no gaps.**
 
@@ -139,12 +139,13 @@ explicit `gpstream resume` plus a re-run with the same `--operation-id`
 gpstream cleanup --operation-id <id> --yes
 ```
 
-Removes the operation's state directory (journal, `jobmeta.json`,
-checksums). It is destructive — `--yes` is required. `cleanup` does **not**
+Removes the operation's state directory (journal.jsonl, jobmeta.json,
+plan.json, events.jsonl, audit.log, conflicts.jsonl, runstats.json). It is
+destructive — `--yes` is required. `cleanup` does **not**
 touch destination data; the destination staging objects of a fully
 swapped job are already renamed, and any leftover staging of an
-abandoned job must be dropped explicitly (the manager reports how many
-dest staging objects a journal recorded).
+abandoned job must be dropped explicitly (`cleanup --mode drop` derives the
+drop targets from the journal and reports how many objects it dropped).
 
 ## 5. Vacuum pressure (the real cost of a long snapshot)
 

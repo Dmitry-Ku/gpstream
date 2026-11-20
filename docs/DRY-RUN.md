@@ -10,8 +10,8 @@ The diagnostic (FR-05) runs a
 fixed set of checks against the source and destination clusters and prints
 each as `PASS` / `WARN` / `FAIL` with an actionable recommendation.
 
-Grounded in `internal/dryrun/dryrun.go` and
-`internal/transfer/segstream` (probe), live-verified on the lab.
+Grounded in `internal/dryrun/sides.go` (the check matrix) and
+`internal/agent/dryrun_checks.go` (the A+ segreceiver probe), live-verified on the lab.
 
 ---
 
@@ -33,10 +33,11 @@ Grounded in `internal/dryrun/dryrun.go` and
 | 12 | `encoding` | network | database `encoding` source vs dest | — | Database encodings differ — an encoding mismatch reinterprets string bytes on the destination (DATA DESTRUCTIVE); create the destination database with the source's encoding (F-16) |
 | 13 | `extensions` | network | `pg_extension` set: source vs dest | — | A source extension is missing in the destination (MADlib/PostGIS/orafce or any other) — install it in the receiver before the data load (FR-05/FR-11) |
 | 14 | `on_segment` | source (mesh mode) | the 3-prerequisite probe below (only when the segreceiver binary resolves and the source is Greenplum) | — (never fails the diagnostic) | Capability degraded — the job runs on the coordinator path instead |
-| 15 | `copy_to_program_guc` | source | `current_setting('ycmdb.yc_allow_copy_to_program')` (only when the GUC exists on the build) | GUC present and not `on` **in mesh mode** — the run cannot start (the segreceiver dispatch is rejected) | GUC present and not `on` (coordinator mode) — the mesh path would not work |
+| 15 | `copy_to_program_guc` | source | the GUC read from `pg_settings` (`ycmdb.yc_allow_copy_to_program`; a missing GUC is distinguishable from a present-but-off one) | GUC present and not `on` **in mesh mode** — the run cannot start (the segreceiver dispatch is rejected) | GUC present and not `on` (coordinator mode) — the mesh path would not work |
 | 16 | `name-resolution` | src→dst (mesh mode, Greenplum dest) | destination segment hostnames resolve from the source segment hosts | A destination segment hostname does not resolve from a source segment host — the mesh run as configured cannot succeed | The name checks were requested but no agent probed them (older agent version) — unverified |
 | 17 | `mini-ready` | dest | mini-agent readiness on the D segment hosts (when reported) | — | Mini agents not ready on every D segment host — the mesh mini path needs the `gpstream-dest-agent` binary (and its ports) on every D segment host |
 | 18 | `tls` | network | configured minimum TLS version | — | Always informational — provide `--ssl-ca` (CA bundle), and `--ssl-cert`/`--ssl-key` for mTLS (FR-13) |
+| 19 | `dest-dsn-form` | dest (mesh mode; only when `--dest` is given in keyword/value form) | `--dest` is a URL form (`postgres://user@host:port/db`) | — | `--dest "…"` is not URL-form — mesh segment-to-segment writes (routed, direct_1to1) need a URL-form `--dest` or the run degrades to the merge path |
 
 Overall health: the diagnostic is **healthy iff there is no FAIL**. WARNs do
 not block a run — they degrade an *option* (segment-direct, collation
@@ -47,8 +48,9 @@ review) and say so in the recommendation.
 The `collation` check (row 8) compares the **database-level** `LC_COLLATE`
 /`LC_CTYPE`. `column-collation` covers the **column level**: it lists the
 distinct explicit `COLLATE` names used by the source's public-schema tables
-and warns for any name the destination database does not have installed in
-`pg_collation`. This is the cheap pre-flight signal that an explicit
+and warns for any name that is not installed as a built-in collation on the
+destination (`pg_catalog` only, namespace 11 — user-created collations in other
+schemas of the destination database are not visible to the check). This is the cheap pre-flight signal that an explicit
 `COLLATE` would be lost; the per table×column detail lives in the dry-run
 plan (`plan.Collations`, `collation_diffs`) and in the run's final report
 and `events.jsonl` (`collation_diff` events). Columns on the database
@@ -62,8 +64,9 @@ mode is resolved by the plan, not by the diagnostic. On a GP6 pair it prints,
 e.g.:
 
 ```
-route  src->dst  PASS  route-mode: src=2 dst=2 segments, 2 eligible (s,d) pair(s) — direct_1to1 possible
+route: mesh — src=2 dst=2 segments, 2 eligible (s,d) pair(s) — direct_1to1 possible
 ```
+(in coordinator mode the line is instead `route: coordinator — one COPY via the destination coordinator (per-table route modes not used); layout: src=2 dst=2 segments`)
 
 - **S == D** → `direct_1to1 possible`: the hash fast path is available
   (same segment count, the GP jump-hash is identical on both sides,
@@ -85,9 +88,9 @@ PASSes, alphabetical within severity):
 ```
 gpstream dry-run — diagnostics
 =============================
-  [WARN] source      on_segment   segment-direct capability degraded: GUC ycmdb.yc_allow_copy_to_program = "off" (want "on"; set in postgresql.conf of EVERY data-dir, then gpstop -ar); ON SEGMENT dispatch: ok; gpstream-segreceiver present on all segment hosts
+  [WARN] source      on_segment   segment-direct capability degraded: vm1: segreceiver binary present+executable, listen base port 50000 free; vm2: segreceiver binary MISSING or not executable; kernel ON SEGMENT support: NOT checked in dry-run (no real dispatch; verified by the first real run)
            -> the job will fall back to the coordinator path; fix the items above to enable the 2.0x segment-direct fast path
-  [PASS] src->dst    route        route-mode: src=2 dst=2 segments, 2 eligible (s,d) pair(s) — direct_1to1 possible
+  [PASS] src->dst    route        route: mesh — src=2 dst=2 segments, 2 eligible (s,d) pair(s) — direct_1to1 possible
 ...
 overall: PASS (no FAIL)
 ```
@@ -109,24 +112,31 @@ back to it and why). The diagnostic probes the segment-direct read
 **only in mesh mode, only when the segreceiver binary resolves** (the
 binary path on the segment hosts), and **only on a Greenplum source**.
 
-It composes from **three prerequisites**, all reported in the check
+It composes from the **A+ probe**: the source agent SSHes to each source
+**primary** segment host and runs a no-op script, all reported in the check
 message:
 
-| Prerequisite | Probe | What a failure looks like |
-|--------------|-------|---------------------------|
-| **1. GUC** | `current_setting('ycmdb.yc_allow_copy_to_program')` == `on` | `forbidden to COPY to or from an external program` — set the GUC in `postgresql.conf` of **all** data dirs (master + segments) and restart the cluster (`gpstop -ar`). Required on the open-gpdb 6.x fork; it is a `PGC_POSTMASTER` superuser GUC. |
-| **2. Dispatch** | `COPY (SELECT 1) TO PROGRAM 'true <SEGID>' ON SEGMENT` (no-op program) | Any dispatch error — the kernel path `CdbDispatchUtilityStatement` → primary-only gang is broken (permissions, segment state). |
-| **3. Binary** | `COPY (SELECT 1) TO PROGRAM '<seg-binary> --check --content <SEGID>' ON SEGMENT` — `gpstream-segreceiver --check` must exit 0 on **every primary segment host** | The binary is missing/not executable on one or more segment hosts — install the `gpstream` package (recommended: same version as the controller, so `rpm -qa`/`dnf upgrade` keep hosts in lockstep) or copy the single static `gpstream-segreceiver` file to every host in the segment topology. |
+| Step | Probe | What a failure looks like |
+|------|-------|---------------------------|
+| **1. Binary** | `test -x <seg-binary>` + `<seg-binary> --version` (matched against the agent's version) on every primary segment host | The binary is missing/not executable on one or more segment hosts, or its version mismatches the agent — install the `gpstream` package (recommended: same version, so `rpm -qa`/`dnf upgrade` keep hosts in lockstep) or copy the single static `gpstream-segreceiver` file to every host in the segment topology. |
+| **2. Base port** | bash `/dev/tcp` connect probe of the `--seg-listen` base port (only when the flag is set explicitly) | the base port is already busy on the host |
+| **3. Dest names** (mesh) | `getent hosts` for the destination segment names from the source hosts | a destination name does not resolve from a source host — the mesh run as configured cannot succeed |
 
 All three OK → `on_segment` PASS and `--copy-mode mesh` is
 available (~2× throughput on the source side, T0-4). Any one missing →
 `on_segment` WARN with the precise fix; **the job still runs on the
 coordinator path** — that path always works and is the default.
 
-Live-verified on the lab: with the GUC off, the probe reports the
-`forbidden ... external program` error; with it on, the probe passes and
-the E2 e2e (`--copy-mode mesh`, 111 000 rows, trailer cross-check)
-is green.
+Two boundaries of this check:
+- **The kernel's ON SEGMENT dispatch is NOT exercised in dry-run** (no real
+dispatch) — the check's message says so explicitly, and the dispatch path is
+verified by the first real run (the E2 e2e, `--copy-mode mesh`, 111 000 rows,
+trailer cross-check, is green).
+- The GUC that gates the dispatch is checked **separately** by the
+`copy_to_program_guc` row (read from `pg_settings`). With the GUC off, that
+check FAILs in mesh mode; launching the segreceivers at runtime with the GUC
+off fails with `forbidden to COPY to or from an external program` (set it in
+`postgresql.conf` of **all** data dirs, `gpstop -ar`).
 
 ### Choosing `--copy-mode`
 
@@ -172,4 +182,5 @@ $ gpstream dry-run \
   provide `--ssl-ca` (CA bundle), and `--ssl-cert`/`--ssl-key` for mTLS
   (FR-13).
 - The diagnostic never mutates the clusters — every probe is a read or a
-  no-op program (`true`, `--check`).
+  remote no-op script (`test -x`, `--version`, `getent hosts`, a bash port
+  probe).

@@ -22,8 +22,7 @@ build.
   index rebuild**, **redistribution accounting**, and a **fully deterministic
   `--dry-run` plan**.
 
-The Go module is `github.com/gpstream/gpstream` (Go 1.27). It is not a git
-repository, so build directly from the source tree.
+The Go module is `github.com/gpstream/gpstream` (Go 1.27). The distributed source tarball carries no `.git` — build directly from the source tree.
 
 ---
 
@@ -91,7 +90,10 @@ The project ships a `Makefile` with the following targets:
 | `cover` | `go test -cover ./...`. |
 | `vet` | `go vet ./...`. |
 | `fmt` | Runs `gofmt -l .` then `gofmt -w .`. |
-| `clean` | Removes `bin/`. |
+| `man-pages` | `./scripts/gen-man-pages.sh` (the man family, `.so` aliases of `gpstream.8`). |
+| `package` | `./scripts/package.sh $(VERSION)` (goreleaser + nfpms into `dist/`). |
+| `dist` | Alias for `package`. |
+| `clean` | Removes `bin/` and `dist/`. |
 
 The Makefile exports `GOPROXY ?= https://proxy.golang.org,direct` and sets
 `GOFLAGS ?= -mod=mod`, so `make build` / `make cross` will use the correct proxy
@@ -111,7 +113,7 @@ make cross     # alias for amd64
 ```
 
 The resulting binary is static (CGO_ENABLED=0) and insensitive to the host's
-glibc / kernel version — proven on EL7/glibc 2.17 and EL8/glibc 2.28 (see §7).
+glibc / kernel version — proven on EL7/glibc 2.17 and EL8/glibc 2.28 (see §2).
 
 ---
 
@@ -148,36 +150,43 @@ dependencies and installs cleanly on a wide range of Debian/Ubuntu hosts
 
 gpstream ships **four** binaries: the `gpstream` controller CLI, the
 `gpstream-source-agent` / `gpstream-dest-agent` (the two-agent data path — the
-only data path), and `gpstream-segreceiver` (the `on_segment` kernel helper).
+only data path), and `gpstream-segreceiver` (the mesh-mode kernel helper;
+historically `on_segment`).
 Which of them a host needs depends on the `--copy-mode` you run:
 
 | Where | What | When |
 | --- | --- | --- |
-| **Controller host** (the machine the operator runs gpstream from — it does *not* have to be a cluster host; any host with network access to both clusters) | `gpstream` (main CLI) + `gpstream-source-agent` + `gpstream-dest-agent` | always (the package installs all four) |
+| **Source master** (the source cluster's coordinator) | `gpstream-source-agent` | always — the source agent must run on the source coordinator (`CheckOnCoordinator`); local subprocess when the controller is here, otherwise `--source-agent-ssh` |
 | **Source segment hosts** (every host in the source segment topology) | `gpstream-segreceiver` | only for `--copy-mode mesh` |
-| **Destination hosts** | *nothing* by default, or `gpstream-dest-agent` for a cross-host dest placement | cross-host: the dest agent runs the per-unit `COPY FROM` on the destination cluster |
+| **Destination coordinator** | `gpstream-dest-agent` | always — the dest agent must run on the destination coordinator (`CheckOnCoordinator`); local subprocess when the controller is here, otherwise `--dest-agent-ssh` |
+| **Destination segment hosts** | `gpstream-dest-agent --mini` (launched by the dest agent itself) | only for `--copy-mode mesh` |
+| **Controller host** (any host with network access to both clusters — it does *not* have to be a cluster host) | `gpstream` (main CLI) + the two agent binaries | always (the package installs all four); the agents launch here only when the controller itself sits on the respective coordinator |
 
 The data plane always runs in the agents (ADR-002 remediated; the
-single-controller in-memory data path is gone). The source agent runs on the
-controller host by default and reads the source cluster; the dest agent runs
-on the controller host and writes the destination cluster (or, for a true
-cross-host placement, on the destination cluster host). The controller is
-control plane only. The agent binaries are resolved by convention (the packaged install puts all four in `/usr/bin`, beside each other) — no flags to set.
-the agent paths (the package places both at `/usr/bin/gpstream-source-agent`
-and `/usr/bin/gpstream-dest-agent`), so a single package install on the
-controller host is enough for the default layout. The network carries the
-compressed agent-to-agent volume and the controller holds no data
-connections.
+single-controller in-memory data path is gone). The **source agent always runs
+on the source master** and the **dest agent always runs on the destination
+coordinator** (`CheckOnCoordinator` hard-checks this before the agent accepts a
+dial): when the controller runs on that coordinator the agent starts as a
+local subprocess, otherwise it is launched over SSH (`--source-agent-ssh` /
+`--dest-agent-ssh`). In `--copy-mode mesh` the dest agent (supervisor) adds the
+per-segment `--mini` agents on the destination segment hosts, launched by the
+dest agent itself. The controller is control plane only. The agent binaries are
+resolved by convention (the packaged install puts all four in `/usr/bin`, beside
+each other) — no flags to set. The network carries the compressed agent-to-agent
+volume and the controller holds no data connections.
 
-**Recommended:** install the full `gpstream` package on the controller host
-*and* on every source segment host (for `on_segment`). The package places all
-four binaries under `/usr/bin`, giving one canonical path for
-the agent/segment binaries by convention (all four land in `/usr/bin`) and one
-version-control surface (`rpm -qa gpstream` / `dnf upgrade gpstream` on every
-host) — today there is no version handshake between controller and agents, so
-the package is the only practical way to keep them in lockstep.
+**Recommended:** install the full `gpstream` package on the **source master**,
+the **destination coordinator**, the **controller host**, and — for
+`--copy-mode mesh` — every **source segment host** (segreceiver) and
+destination segment host (mini). The package places all four binaries under
+`/usr/bin`, giving one canonical path for the agent/segment binaries by
+convention (all four land in `/usr/bin`) and one version-control surface
+(`rpm -qa gpstream` / `dnf upgrade gpstream` on every host). The agents
+cross-check every binary version (agents ↔ agents, including minis and
+segreceivers) before the first data flows — a mismatch is a hard error; the
+controller does not gate on versions, so keep its package current as well.
 
-**Minimal-footprint alternative (on_segment):** copy the single static
+**Minimal-footprint alternative (mesh):** copy the single static
 `gpstream-segreceiver` file to every source segment host (one file,
 unprivileged, no root); set `GPSTREAM_SEG_BINARY` to that path. This is the
 F-15 "install = copy one file" mode; use it only if you deliberately want no
@@ -186,7 +195,9 @@ package on the segment hosts.
 ```bash
 # controller (installs all four binaries)
 rpm -i gpstream-<ver>-amd64.rpm            # or .deb
-# on_segment: also on every source segment host
+# source master + destination coordinator: the package there as well
+rpm -i gpstream-<ver>-amd64.rpm
+# mesh: also on every source segment host (segreceiver) and destination segment host (mini)
 rpm -i gpstream-<ver>-amd64.rpm
 gpstream dry-run --config /etc/gpstream/gpstream.toml
 # agents are placed by the --*-agent-ssh flags (P1e): the source agent on the
@@ -197,9 +208,12 @@ gpstream run --config /etc/gpstream/gpstream.toml \
   --dest-agent-ssh gp@<dest-coordinator-host>
 ```
 
-The `dry-run` diagnostic probes the segreceiver on **every** segment host
-(`--check` via `COPY ... TO PROGRAM ... ON SEGMENT`) and reports a WARN naming
-the hosts where it is missing.
+In `--copy-mode mesh` the `dry-run` diagnostic has the source agent SSH to each
+source **primary** segment host and verify the `gpstream-segreceiver` binary
+(present, executable, version match; plus base-port and name-resolution
+checks). The kernel's ON SEGMENT dispatch is **not** exercised in dry-run (no
+real dispatch — it is verified by the first real run); a missing binary is
+reported as a WARN naming the host.
 
 ---
 

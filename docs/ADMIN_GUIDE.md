@@ -1,7 +1,7 @@
 # gpstream — Administrator Guide
 
 This guide is for the person who deploys, configures, and maintains `gpstream`
-on the boxes that run the copy. It covers deployment, Linux 6.1+ compatibility,
+on the boxes that run the copy. It covers deployment, OS compatibility,
 log rotation, the security model, and the upgrade path.
 
 > Scope: administration and deployment. For the day-to-day operator, see
@@ -20,7 +20,8 @@ log rotation, the security model, and the upgrade path.
 | Running a copy, watching progress | Operator (`OPERATOR_GUIDE.md`) |
 | Recovering from a crash | Operator + Admin |
 
-`gpstream` is a single Go binary plus a small set of config/env inputs. It has
+`gpstream` is one package of four static Go binaries (controller CLI,
+source/dest agents, segreceiver) plus a small set of config/env inputs. It has
 **no daemon of its own** — a copy runs as a foreground process and exits when
 the job finishes. Unattended or periodic runs are supervised externally (your
 cron / scheduler / process manager of choice).
@@ -30,14 +31,15 @@ cron / scheduler / process manager of choice).
 ## 2. Prerequisites
 
 - **Go 1.27** to build from source.
-- **Linux 6.1+ kernel** (the v2 target; glibc-aware). See §3 for the
-  compatibility matrix.
+- **No kernel/glibc minimum:** the static Go binary (CGO_ENABLED=0) has no
+  runtime library dependency — proven on EL7 (glibc 2.17) and EL8 (glibc 2.28).
+  See §4 for the compatibility notes.
 - Module proxy note: `proxy.golang.org` intermittently 403s on
   `github.com/klauspost/compress`, so the build environment sets
   `GOPROXY=https://proxy.golang.org,direct`.
-- A **live Greenplum 6 cluster is required for `copy`**, but **not** for
-  `--help` without a cluster (`dry-run` needs a reachable one).
-  (See `INSTALL.md`.)
+- A **live Greenplum 6 cluster is required for `run`** (`dry-run` needs a
+  reachable one; `bench` needs only the source; `--help` works without a
+  cluster). (See `INSTALL.md`.)
 
 ---
 
@@ -60,7 +62,9 @@ The Makefile targets: `all build cross amd64 test cover vet fmt
 man-pages package clean`.
 
 ### 3.3 Linux package
-`packaging/` ships `deb/`, `rpm/`, and `logrotate.conf`. Install the deb/rpm
+`packaging/` holds the example config, `logrotate.conf` and the package
+lifecycle scripts; the deb/rpm are built with `make package` (goreleaser + nfpms)
+into `dist/`. Install the deb/rpm
 and run the CLI (or schedule it with your own cron / process manager).
 
 Verify after install:
@@ -73,12 +77,12 @@ and 0 up-segments is a **FAIL** (not a pass).
 
 ---
 
-## 4. Linux 6.1+ compatibility
+## 4. OS compatibility
 
 `gpstream` is a pure logical copy over `COPY` (binary) and is **insensitive to
 OS / kernel / glibc differences** between source and destination — the streams
-never touch the filesystem as data. Compatibility is checked by
-`compatibility-check` and surfaced in `dry-run`:
+never touch the filesystem as data. Compatibility is checked by the
+`dry-run` compatibility checks:
 
 | Check | Flag | What it looks at |
 |-------|------|------------------|
@@ -121,7 +125,7 @@ The pg data plane is encrypted by default (`sslmode=verify-full`, minimum
 **TLS 1.2** unless `--ssl-min-tls` is lowered). See `SECURITY.md` for the
 full model.
 
-Precedence for every setting: **CLI > env (GPSTREAM_*) > YAML (--config) >
+Precedence for every setting: **CLI > env (GPSTREAM_*) > config file (--config; TOML, YAML accepted) >
 defaults**.
 
 ---
@@ -131,7 +135,7 @@ defaults**.
 | Knob | Flag / env | Default | Notes |
 |------|-----------|---------|-------|
 | Rate limit | `--rate-limit <rate>` (`GPSTREAM_RATE_LIMIT`) | 0 (none) | ETA baseline + adaptive load diagnostics; does not cap throughput (backpressure paces the flow; enforced ceiling is backlog) |
-| Workers | `--workers N` (`GPSTREAM_WORKERS`) | 2 | parallel workers per host-pair |
+| Workers | `--workers N` (`GPSTREAM_WORKERS`) | 1 | parallel workers per host-pair (1 = strict single snapshot; N>1 = snapshot-epoch) |
 | Compression | `--compress` (`GPSTREAM_COMPRESS`) | `zstd` | `none`/`zlib`/`zstd[:level]` |
 | zstd level | `--zstd-level N` (or `--compress zstd:N`) | 3 | 1–19 |
 | Metrics | `--metrics-addr <A>` | off | Prometheus `/metrics` served during `run` |
@@ -163,8 +167,8 @@ Before upgrading a running deployment:
 
 - [ ] Built or packaged for the target arch (linux/amd64).
 - [ ] `gpstream dry-run` returns **PASS** against the real clusters.
-- [ ] `compatibility-check` (collation/locale/distribution) clean or
-      explained.
+- [ ] `gpstream dry-run` compatibility checks (collation/locale/distribution)
+      clean or explained.
 - [ ] Secrets supplied via env / EnvironmentFile, **not** argv.
 - [ ] TLS enabled; `--ssl-min-tls >= 1.2`.
 - [ ] logrotate installed; log level sane.

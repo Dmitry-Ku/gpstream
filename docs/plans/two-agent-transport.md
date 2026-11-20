@@ -1,6 +1,6 @@
 # Two-agent transport — remediation plan (ADR-002)
 
-- **Status:** Proposed
+- **Status:** Executed (phases P0–P6; see the v2 note and Post-decision changes)
 - **Date:** 2026-10-02
 - **Remediates:** ADR-002 (single-controller data path)
 - **Restores:** ADR-001 data path (source agent ↔ dest agent stream)
@@ -12,14 +12,17 @@ per-table AUTO sub-paths of `mesh` — 1:1 (S==D, equal hash keys), routed
 (S!=D, hash key), merge (non-routable fallback: non-hash distribution,
 non-GP destination, partitioned parents); (2) agents run on the CLUSTER HOSTS
 where their pg connections open — source agent on the source master
-(long-lived, FR-02 snapshot, ON SEGMENT dispatch), dest agent on the
-destination coordinator (coordinator mode) or destination segments
-(mesh sub-paths), launched by the controller — remotely over SSH
-(multi-host GP6 layout) or as a local subprocess (single-host / gp6lab
-layout; internal/launch); (3) ports: each long-lived agent
-binds one data + one control port (auto `:0`, real address reported to the
-controller in the control handshake and embedded in the ON SEGMENT
-ProgramCommand); units multiplex by unit_id frames on the listener —
+(long-lived, FR-02 snapshot, ON SEGMENT dispatch) and the dest agent
+(supervisor) on the destination coordinator — both launched by the
+controller (remotely over SSH (multi-host GP6 layout) or as a local
+subprocess (single-host / gp6lab layout); internal/launch); the D
+destination-segment mini-agents (mesh) are launched by the dest agent itself
+(cmd/gpstream-dest-agent/minilaunch.go, local or --mini-ssh-user) — the
+controller does not read the destination catalog and does not launch the
+minis (it does not know D); (3) ports: the dest agent binds one data + one control port (auto `:0`,
+real address reported to the controller in the control handshake and embedded
+in the ON SEGMENT ProgramCommand); the source agent binds the control port
+only — its data path is dial-out to the dest agent's listeners; units multiplex by unit_id frames on the listener —
 per-unit ports (base+unitID) are removed from the live path (the
 `segstream.UnitListen` helper remains in the code, unused by production
 paths). The WAN leg carries only the
@@ -206,3 +209,39 @@ agent↔agent stream reuse `--ssl-cert/--ssl-key/--ssl-ca` (mTLS).
 - The `--topology` flag referenced by P3 (historical phase) was removed:
   the two-agent data path is now the only one (CHANGELOG.md: "Removed:
   `--topology` flag — the two-agent data path is now the only one").
+- **Mini launch (mesh):** the D destination-segment mini-agents are launched
+  by the dest agent itself (cmd/gpstream-dest-agent/minilaunch.go: local
+  subprocess or SSH to the segment hosts via --mini-ssh-user); the controller
+  only allocates the report-listen port and waits for the D-entry address book
+  through the mini-map op. The "launched by the controller" wording for the
+  minis (v2 note) is superseded (architecture 08.10).
+- **Swap (both paths):** the destination agent performs the atomic swap for
+  both paths — mesh: digest compare + swapMiniFinal; coordinator: since 2B-1
+  ("the destination performs the atomic swap itself"). The controller's
+  runUnit step 9 remains only as a fallback/resume-recovery (dstSwap via the
+  dest agent's ddl op) for units the destination did not swap.
+- **Dial-direction rationale:** per-unit listen endpoints were removed from
+  the live path (v2 note): coordinator — the persistent-coordinator listener
+  with unit_id-frame multiplexing (P1c); mesh — the D-entry mini address book
+  embedded in the ON SEGMENT ProgramCommand (ProgramCommandMesh). The
+  `segstream.UnitListen` helper remains in the code, unused.
+- **Journal writer (full zero-DB, 08.10):** the dest agent is the writer of
+  record — it writes the gpstream_units rows itself (journalUnitRef /
+  journalMiniUnit) and the controller routes journal dest-DB writes through
+  the dest agent (journal op); the controller opens no destination connection
+  for the journal. The file mirror on the controller remains the durable
+  resume source.
+- **Mesh data path:** each source segreceiver streams its slice to its
+  destination segment's mini-agent (1:1 — segreceiver s → mini s; routed S≠D —
+  S×D×W sub-streams); the minis do per-segment utility COPY. Non-routable
+  tables (hash-mismatch / non-hash distribution, partitioned parent,
+  non-Greenplum side) take the COORDINATOR path (supervisor fallback);
+  SliceMux (kind=segments) is unavailable in supervisor mode.
+- **Staging truncate-on-resume:** lives in the dest agent (ensureMiniStaging
+  truncates a surviving staging before re-copy), not in runUnit — the
+  controller holds no data connections.
+- **Instruction fields:** `stream` (coordinator) carries {schema, table,
+  job_id, unit_id, dst_schema, dst_table, staging, compress, overwrite,
+  verify_digest}; `onsegment` (mesh) carries {schema, table, job_id, unit_id,
+  dest, segbin, compress, …} — the staging name reaches the dest agent/minis
+  via MiniLaunch, not the onsegment instruction.

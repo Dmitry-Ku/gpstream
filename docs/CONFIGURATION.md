@@ -75,7 +75,7 @@ from the flags or the file.
 
 The data path is always the two-agent transport: the data plane lives in the
 agents, the controller holds no data connections. The agent binaries are
-invoked **by name from `PATH`** (packaged install). Each agent verifies
+invoked by the **resolved path** (sibling of the `gpstream` binary first, then `PATH` — the packaged install). Each agent verifies
 before serving that it runs on the coordinator of exactly the cluster its
 DSN points to (P1e coordinator guard; a violation aborts the agent and the
 `run`/`bench` fails).
@@ -138,7 +138,7 @@ place.
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
 | `SegTLSKey` | string | `""` | `--seg-tls-key` / env / file | Controller serving key. |
 | `SegTLSCA` | string | `""` | `--seg-tls-ca` / env / file | CA for the segment data plane. |
-| `PortRange` | string | `""` → auto | `--port-range` / env / file | Restricts the auto data/control port allocation to a `LO-HI` range (or a single `LO` base) for strict-firewall environments. Empty = fully automatic (every long-lived agent binds `:0` and reports its address in the handshake). The range size is checked against the mode's requirement at run/dry-run time (coordinator: **4** ports; mesh: **4 + D**). |
+| `PortRange` | string | `""` → auto | `--port-range` / env / file | Restricts the auto data/control port allocation to a `LO-HI` range (or a single `LO` base) for strict-firewall environments. Empty = fully automatic (every long-lived agent binds `:0` and reports its address in the handshake). The range size is checked against the mode's requirement at run/dry-run time (coordinator: **5** ports — source control + dest control + dest data + dest persist + dest peer; mesh: **5 + D**). |
 | `NoRoutedWrite` | bool | `false` | `--no-routed-write` (CLI only) | P9: disables the routed segment-to-segment data path for S≠D topologies — on_segment then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers. |
 
 ### 1.13 Frame-ack / reliability (§4.6)
@@ -163,9 +163,11 @@ place.
 
 ### 1.16 Consistency (F-02)
 
-The source agent always reads under one run-wide REPEATABLE READ snapshot per
-database; every table's data COPY and checksum read share that single point in
-time (no configurable scope).
+At `--workers 1` (strict) the source agent reads under one run-wide
+REPEATABLE READ snapshot per database; every table's data COPY and checksum
+read share that single point in time. At `--workers N>1` the N REPEATABLE READ
+pins are taken in an ε-window bounded by `--max-snapshot-delta` (§1.6) — no
+other scope is configurable.
 
 ### 1.17 Operational / state (v4 §8)
 | Field | Type | Default | Source |
@@ -353,6 +355,11 @@ failed validation aborts the command.
 | copy-mode mesh | `--seg-listen` must be a valid `host:port` when given (auto-resolved when empty); the segreceiver binary must resolve | `--seg-listen must be host:port` / `on_segment: gpstream-segreceiver not found` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |
 | ack-timeout | must be `15s`/`30s`/`adaptive` or a valid duration | `invalid --ack-timeout "…" (want 15s\|30s\|adaptive)` |
+| max-snapshot-delta | must be **≥ 0 seconds** | `max-snapshot-delta must be >= 0 seconds…` |
+| data-idle-timeout | must be **≥ 0** | `data-idle-timeout must be >= 0…` |
+| index-priority | must be `size`/`fifo` | `unknown index-priority "…" (want size\|fifo)` |
+| copy mode | must be `coordinator`/`mesh` | `unknown copy mode "…" (want coordinator\|mesh)` |
+| port-range | must be a valid `LO-HI` (or `LO`) range | `invalid --port-range "…": …` |
 
 
 ---

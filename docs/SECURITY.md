@@ -40,7 +40,7 @@ captured log line.
 | TLS cert | `--ssl-cert <file>` / `GPSTREAM_SSL_CERT` | argv |
 | TLS key | `--ssl-key <file>` / `GPSTREAM_SSL_KEY` | argv |
 | TLS CA | `--ssl-ca <file>` / `GPSTREAM_SSL_CA` | argv |
-| Min TLS | `--ssl-min-tls <v>` (flag only — there is no `GPSTREAM_SSL_MIN_TLS` env) | — |
+| Min TLS | `--ssl-min-tls <v>` / file key `ssl_min_tls` (no env variant) | — |
 
 In practice, put these in a restricted-env wrapper (your cron / process
 manager / init unit of choice) and keep the connection strings out of any
@@ -54,7 +54,7 @@ command line; the env and file layers keep it off argv.
 
 ## 3. Transport encryption (TLS)
 
-Encryption has **two planes with different defaults**:
+Encryption has **three planes with different defaults**:
 
 - **PG legs (coordinator ↔ clusters):** encrypted **by default** —
   `sslmode=verify-full` is applied when the DSN sets no explicit `sslmode`
@@ -66,6 +66,12 @@ Encryption has **two planes with different defaults**:
   (`--seg-tls-cert` / `--seg-tls-key`, env `GPSTREAM_SEG_TLS_CERT` /
   `GPSTREAM_SEG_TLS_KEY`); `--seg-tls-ca` / `GPSTREAM_SEG_TLS_CA`
   additionally makes the hop mTLS (a client certificate is required).
+- **Control channel (controller ↔ agent control sockets):** **plaintext by
+  default**. Opt-in via `--control-tls-cert` / `--control-tls-key` /
+  `--control-tls-ca` (env `GPSTREAM_CONTROL_TLS_CERT` / `GPSTREAM_CONTROL_TLS_KEY`
+  / `GPSTREAM_CONTROL_TLS_CA`): the agents serve their control sockets with their
+  own certificate, and the controller verifies against `--control-tls-ca` while
+  presenting its `--control-tls-cert`/`--control-tls-key`.
 
 PG-plane TLS settings:
 
@@ -173,7 +179,7 @@ gpstream dry-run — diagnostics
 =============================
   [PASS] src->dst    route        route-mode: src=2 dst=2 segments ...
   [WARN] source      on_segment   segment-direct capability degraded: ...
-  [PASS] network     tls          min TLS 1.2 required (full cert validation in M2)
+  [WARN] network     tls          min TLS 1.2 required (full cert validation in M2)
 overall: PASS (no FAIL)
 ```
 
@@ -224,7 +230,7 @@ line: `{"ts", "action", ...fields}` (F-13 "audit log of actions").
 | `run` | `gpstream run` starts (before any copy) | operation-id, units, copy-mode, on-unit-failure, compression |
 | `run-finished` | `gpstream run` ends | units, rows, skipped, failed, error (if any) |
 | `resume` | `gpstream resume` | operation-id, requeued, attempt (or error) |
-| `cleanup` | `gpstream cleanup` (logged **before** the state dir is removed) | operation-id, mode, units |
+| `cleanup` | `gpstream cleanup` (logged **before** the state dir is removed) | operation-id, mode, units, dropped |
 
 `audit.log` records the operator's actions; `events.jsonl` records what the
 run itself did (rate shifts, conflicts, failures — see OPERATOR_GUIDE §8).

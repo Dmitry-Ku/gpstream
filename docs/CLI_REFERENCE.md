@@ -68,10 +68,12 @@ subset of flags (listed per-command below) and ignore the rest.
 ## Command reference
 
 - **`run`** — streams selected objects between clusters (F-01/02/03/07/17);
-  full contract. Opens **live** src/dest connections (pgxpool-backed, one
+  full contract. Launches the source/dest agents on the cluster coordinators
+  (local subprocess or SSH); the agents own the DB pools (pgxpool-backed, one
   connection per worker — a single `pgx.Conn` is not safe for concurrent
-  COPY, F-03), builds the plan (bounded by `--timeout`), runs the transfer
-  engine (src → stream → dest, no intermediate storage), verifies each unit,
+  COPY, F-03) and the data path. The controller builds the plan (bounded by
+  `--timeout`), runs the transfer engine (src → stream → dest, no intermediate
+  storage), verifies each unit,
   rebuilds indexes in the background (F-17), atomically swaps the staging
   table to its final name, records every transition to
   `<state-dir>/<operation-id>/`, appends the diagnostic event stream to
@@ -140,7 +142,8 @@ subset of flags (listed per-command below) and ignore the rest.
   derived conservatively from the manifest (a pre-existing, conflicted
   destination table is never touched), restoring the receiver to its
   pre-operation state (F-02). `--mode drop` requires `--dest <connstring>`
-  (`--ssl-ca` is honoured) and runs the drop on the destination coordinator
+  (the `--ssl-cert`/`--ssl-key`/`--ssl-ca`/`--ssl-min-tls` flags are honoured)
+  and runs the drop on the destination coordinator
   through the **dest agent** — `--dest-agent-ssh user@host[:port]` names that
   host (omitted = local), `--dest-agent-binary` overrides the agent path
   (default: convention resolution); the controller opens no direct
@@ -239,7 +242,7 @@ Conflict policy semantics:
 | `--rate-limit <rate>` | `RateLimit` | `0` (baseline for the ETA + adaptive load diagnostics; accepts `40`, `40gbps`, `400mbit`, … — suffixes gbit/gbps/gb/mbit/mb). Does **not** cap the flow — paced by backpressure; enforced ceiling is backlog (see PERFORMANCE.md) |
 | `--workers <N>` | `WorkersPerPair` | `1` (must be `>= 1`, validated; **1 = strict** — one pinned REPEATABLE READ connection, one exact snapshot point, serial data phases; **N>1 = snapshot-epoch** — N pinned connections in an ε-window, N parallel data streams, bounded by `--max-snapshot-delta`) |
 | `--max-snapshot-delta SEC` | `MaxSnapshotDelta` | `1` (seconds; the snapshot-epoch pin-spread limit for `--workers N>1`: the run's N REPEATABLE READ pins must be no more than this apart, else the run refuses to start with the actual Δ. `0` disables the check. The live pin spread is ~ms, so the default leaves ~three orders of magnitude of headroom. No effect at `--workers 1`) |
-| `--data-idle-timeout DUR` | `DataIdleTimeout` | `5m` (L2 data-plane watchdog: no data bytes on a unit's stream for this long -> the destination mini-agent fails the unit; idle-based, safe for large tables / narrow links. `0` disables the check) |
+| `--data-idle-timeout DUR` | `DataIdleTimeout` | `5m` (L2 data-plane watchdog: no data bytes on a unit's stream for this long -> the destination (dest agent; the mini-agents in mesh) fails the unit; idle-based, safe for large tables / narrow links. `0` disables the check) |
 
 ### Transport (two-agent, ADR-002)
 | Flag | Config field | Default |
@@ -298,7 +301,7 @@ the on-wire agent-to-agent volume.
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
 | `--frame-ack on\|off` | `FrameAck` | `on` (frame-level ACK + RST-resume; `off` falls back to the plain pipe) |
 | `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: mesh then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
-| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since the on_segment segreceivers dial the shared data port — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
+| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 5 ports in coordinator mode — source control + dest control + dest data + dest persist + dest peer (the persistent source→dest channel, allocated in all modes) — or **5+D** in mesh mode (source control + dest control + dest persist + dest report + dest peer + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
 | `--ack-timeout 15s\|30s\|adaptive` | `AckTimeout` | `30s` (`adaptive` = 3x median RTT, min 1s) |
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
@@ -313,7 +316,7 @@ value itself is `mesh`). When the planner proves a table's route is
 `direct_1to1` (S==D primaries, equal hash keys, same GP major, non-legacy
 hashops), `mesh` takes the **fast-path write** automatically: the destination
 loads the N content-tagged slices with N per-segment utility COPYs (no merge,
-no re-distribution) — the run logs `direct_1to1_fastpath` per such table. See
+no re-distribution) — the run logs `mesh_direct_write` per such table (`mesh_routed_write` for S≠D tables). See
 [PERFORMANCE.md](PERFORMANCE.md).
 
 ### Mesh (per-segment mini-agents, `--copy-mode mesh`)
@@ -393,10 +396,11 @@ summed row count — the per-row XOR accumulator is commutative/associative, so
 segment order is immaterial and the mesh verifies **without re-reading any
 table** (FR-02).
 
-**Port formula (mesh = 4+D).** A mesh run uses **4+D** ports: the 3 base
-ports (source control + dest control + dest data) **plus** the dest report
-listener **plus** D mini-agent data ports (one per destination segment).
-`--port-range` is validated against that count at `run`/`dry-run`.
+**Port formula (mesh = 5+D).** A mesh run uses **5+D** ports: the 4 base
+ports (source control + dest control + dest persist + dest peer — the shared
+data listener is OFF in mesh) **plus** the dest report listener **plus** D
+mini-agent data ports (one per destination segment). `--port-range` is
+validated against that count at `run`/`dry-run`.
 
 **Routed mesh (S≠D).** When the source and destination segment counts differ
 (or the distribution keys differ), the source segreceivers route each row to
@@ -424,9 +428,10 @@ default, `workers 2` / `size`). An advisory on stderr names the ignored flag(s).
 |------|--------------|---------|
 | `--no-constraints` | `NoConstraints` | `false` (disable the F-11 constraint-restore pass: FK/PK/unique are re-applied post-load by default) |
 
-Consistency (F-02): the source agent always reads under one run-wide
+Consistency (F-02): at `--workers 1` (strict) the source agent reads under one run-wide
 REPEATABLE READ snapshot per database; every table's data COPY and checksum
-read share that single point in time.
+read share that single point in time. At `--workers N>1` the N pins share an
+ε-window bounded by `--max-snapshot-delta`.
 
 ### Redistribution / checks (F-15/F-16)
 
@@ -451,7 +456,7 @@ operator reads the number and decides. The `--locale-check` flag was removed
 ### Dry-run / planning (F-10)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--dry-run` | `DryRun` | `false` (plan only, do not execute) |
+| `--dry-run` | `DryRun` | `false` (set unconditionally by the `dry-run` subcommand, which plans without executing; passing it to `run` does **not** prevent the copy) |
 | `--timeout <S>` | `Timeout` | `120s` (bounds the plan-formation phase; F-10 §6) |
 
 ### Operation identity / state (v4 §8 "State")
@@ -526,7 +531,7 @@ CLI > env > file > defaults). All are prefixed `GPSTREAM_`:
 `SEG_TLS_CA`, `CONTROL_TLS_CERT`, `CONTROL_TLS_KEY`, `CONTROL_TLS_CA`,
 `FRAME_ACK`, `ACK_TIMEOUT`, `MAX_RECONNECTS`, `RETRANSMIT_BUFFER_MAX`.
 
-Boolean env vars accept `true`/`1`. See
+See
 [CONFIGURATION.md](CONFIGURATION.md) for the full env/TOML/YAML/precedence
 reference.
 

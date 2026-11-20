@@ -15,7 +15,7 @@ Pre-1.0 releases are covered while the M0–M7 milestones are open; after the
 
 Do **not** open a public issue for a security concern.
 
-- Email: `security@<project-domain>` (see README contact table)
+- Report privately via GitHub Security Advisories: <https://github.com/Dmitry-Ku/gpstream/security/advisories/new>
 - Subject: `gpstream: <short description>`
 - Include: affected version, reproduction steps or proof-of-concept, and the
   impact you believe the issue has (data exposure, auth bypass, DoS, …).
@@ -39,10 +39,11 @@ boundaries that matter most:
   docs/CONFIGURATION.md). Credentials are never written to the manifest, logs,
   or `/metrics`.
 - **Integrity** — per-frame checksums, per-chunk manifest records, and
-  destination reconciliation after resume (F-17).
-- **Least privilege** — the streaming role needs only the privileges the
-  dry-run checks (CREATE/CONNECT on the target database plus COPY privileges
-  on the objects being copied); run it as a dedicated role.
+  destination reconciliation after resume (F-02/F-07).
+- **Least privilege** — the streaming role needs CREATE/CONNECT on the
+  target database (what the dry-run checks) plus SELECT on the source objects
+  and INSERT/CREATE on the destination (object privileges are NOT checked by
+  the dry-run); run it as a dedicated role.
 
 ## Disclosure
 

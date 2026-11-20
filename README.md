@@ -68,6 +68,8 @@ gpstream run
   [--small-table-threshold SIZE]                       # F-12, default 1MiB
   [--copy-mode coordinator|mesh]
   [--seg-listen HOST:PORT]
+  [--source-agent-ssh user@host[:port]] [--dest-agent-ssh user@host[:port]]   # agents on the cluster coordinators
+  [--port-range LO-HI]                                                        # strict firewall: bound the in-range ports
   [--seg-tls-cert F --seg-tls-key F --seg-tls-ca F]
   [--workers N] [--rate-limit <rate>]                 # e.g. 40, 40gbps, 400mbit
   [--auto-resume N]
@@ -116,8 +118,12 @@ go test -cover ./...
 
 ```
 gpstream/
-├── cmd/gpstream/            # main, subcommands, flag parsing, help
+├── cmd/gpstream/                  # controller CLI: subcommands, flag parsing, help
+├── cmd/gpstream-source-agent/     # source agent (runs on the source coordinator)
+├── cmd/gpstream-dest-agent/       # dest agent + supervisor + --mini (destination coordinator / segments)
+├── cmd/gpstream-segreceiver/      # segment-direct receiver (kernel helper, ON SEGMENT)
 ├── internal/
+│   ├── agent/               # agent runtime: control protocol, supervisor, minis, CheckOnCoordinator
 │   ├── plan/                # plan, volume estimate, routing, collation, conflicts
 │   ├── route/               # GPDB 6.x hash-distribution reproduction (T0-2)
 │   ├── topology/            # cluster/segment discovery
@@ -133,10 +139,15 @@ gpstream/
 │   ├── index/               # background index builder
 │   ├── dryrun/              # self-diagnostic (dry-run pre-flight)
 │   ├── config/              # config file + env + defaults
+│   ├── journaldb/           # destination service-DB journal (gpstream_units/jobs)
+│   ├── launch/              # agent launch: local subprocess / SSH
+│   ├── portalloc/           # --port-range allocation
+│   ├── statusfile/          # agent status file
+│   ├── version/             # build identity (version exchange)
 │   ├── pgtest/              # live-PG test harness
 ├── man/gpstream.8
 ├── docs/                    # CLI reference, metrics, quickstart, guides
-├── packaging/               # systemd, rpm/deb, logrotate, examples
+├── packaging/               # example config, logrotate, package lifecycle scripts
 ├── tests/                   # unit, integration, chaos, perf
 └── .github/workflows/       # CI
 ```

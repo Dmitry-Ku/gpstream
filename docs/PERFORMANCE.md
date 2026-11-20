@@ -40,8 +40,9 @@ source agent --(framed, compressed)--> FramedPipe --(framed, decompressed)--> de
   optionally TLS, FR-13). It is **back-pressure-respecting** and holds
   data **only in RAM** — there is no intermediate storage and **no full DB
   dump on disk** (FR-01).
-- Only small **service** temp files exist (metadata / journal / checksums
-  / status / checkpoints); the table bytes never touch local storage.
+- Only small **service** temp files exist (journal.jsonl / jobmeta.json /
+  plan.json / events.jsonl / audit.log / conflicts.jsonl / runstats.json);
+  the table bytes never touch local storage.
 
 ### Backpressure
 
@@ -151,8 +152,9 @@ Within a single run without a failure there is one snapshot per worker; the
 
 A higher `--workers` spreads more tables across the connection
 pool (useful for the "many small tables" case); a lower value limits
-concurrency on a constrained link. A dead worker's units are re-assigned
-to live workers (FR-06). The `max_connections` sizing check (dry-run, WARN)
+concurrency on a constrained link. A unit that panics is recovered in
+place: the worker journals it failed and continues with the next unit, so a
+single fault does not stop the run (FR-06). The `max_connections` sizing check (dry-run, WARN)
 ensures the source DB can supply the epoch's N pinned connections plus pool
 headroom (N+4).
 
@@ -185,14 +187,15 @@ feed the pipeline?" before committing to a full run.
 
 Data ports are allocated automatically: every long-lived agent binds `:0`
 and reports its real (routable) address in the control handshake, so the
-stream needs no pre-planned port. A run uses exactly 4 ports in coordinator
-mode (source control + dest control + dest data + dest PEER) — the peer
-listener is allocated in ALL modes: the source agent dials it for the
+stream needs no pre-planned port. A run uses exactly 5 ports in coordinator
+mode (source control + dest control + dest data + dest PERSIST + dest PEER) —
+the persist listener carries the persistent-coordinator connection and the
+peer listener is allocated in ALL modes: the source agent dials it for the
 persistent source→dest channel (the 1F version exchange + the read-only
-dst-query loop). The mesh segreceivers dial the dest agent's shared data
-listener, so the segment count adds no ports. In mesh (direct_1to1) mode a
-run uses **4+D** ports (source control + dest control + dest report + dest
-data + D mini-agent data ports, one per destination segment). For strict firewalls, restrict the
+dst-query loop). In mesh (direct_1to1) mode a run uses **5+D** ports (source
+control + dest control + dest persist + dest report + dest peer + D
+mini-agent data ports, one per destination segment; the shared data listener
+is OFF in mesh — the segreceivers dial the minis). For strict firewalls, restrict the
 auto-allocated
 ports with `--port-range <LO-HI>`: same-host agents get pre-bound
 ports from the range, remote (SSH-launched) agents bind their auto-picked
@@ -212,9 +215,11 @@ lives on as the per-table auto sub-paths of `mesh`):
   triggers the ON SEGMENT dispatch (`COPY ... TO PROGRAM ... ON SEGMENT`
   under the FR-02 run snapshot): the kernel launches `gpstream-segreceiver`
   on every up primary source segment, and each streams its compressed
-  content-tagged slice to the destination agent; the destination agent merges
-  the N slices (SliceMux) and loads the staging table via the dest
-  coordinator. Live-verified (E2: 111 000 rows, trailer cross-check OK);
+  content-tagged slice to the destination-segment mini-agent (the dest agent
+  in supervisor mode launches the D minis itself); the minis load their
+  slices locally with utility-mode COPY and report per-segment XOR digests
+  (supervisor XOR_D combine). The coordinator is used only as a per-table
+  fallback for tables that cannot be placed segment-to-segment. Live-verified (E2: 111 000 rows, trailer cross-check OK);
   measured **~2–3.5× on the source-read side** (the coordinator is the
   read bottleneck; grows with segment count). Requirements: the
   `gpstream-segreceiver` binary on the source segment hosts
@@ -324,25 +329,28 @@ segrecv s=0  segrecv s=1   ...  segrecv s=S-1  ──────data───�
   unit failure (orphan) → the unit fails → resume re-copies it. The
   kill-supervisor → mini orphan-exit scenario is e2e-covered
   (`two_agent_mesh_crash_test.go`); the kill-mini (unit-fail + resume) and
-  kill-segreceiver (mid-unit data-break re-dial) scenarios are the live
-  increment (they need a real multi-segment stand).
-- **Ports (4+D).** A mesh run uses **4+D** ports: the 3 base ports (source
-  control + dest control + dest data) + the dest **report** listener + D
-  mini-agent data ports (one in-range port per destination segment, each mini
-  binds its own). `--port-range` is validated against that count at
-  `run`/`dry-run`.
+  kill-segreceiver (mid-unit data-break re-dial) scenarios are e2e-covered as
+  well (`TestTwoAgentMeshKillMini` / `TestTwoAgentMeshKillSegreceiver`, gp6lab;
+  D=2 simulated multi-segment stand); live validation on a real multi-segment
+  GP6 stand is pending.
+- **Ports (5+D).** A mesh run uses **5+D** ports: the 4 base ports (source
+  control + dest control + dest persist + dest peer — the shared data
+  listener is OFF in mesh) + the dest **report** listener + D mini-agent data
+  ports (one in-range port per destination segment, each mini binds its
+  own). `--port-range` is validated against that count at `run`/`dry-run`.
 
-**Status (honest):** the mini-agent (`internal/agent/mini.go`), the routed
+**Status:** the mini-agent (`internal/agent/mini.go`), the routed
 merge (`mini_routed.go`), the supervisor + XOR_D combine (`supervisor.go`), and
 the address-book parse (`segstream/destaddr.go`) are implemented and e2e-
 verified (S=3, D=3, W=2, 30k rows, zstd, verify on: `srcDigest == dstDigest ==
-reference`, wire < logical). The **live** increment — SSH-launching the D
-mini-agents from the dest supervisor, wiring the `runUnit` dispatch to the
-mini path, and the kill-mini/kill-segreceiver crash scenarios — is gated on the
-multi-segment GP6 stand + the SVG-topology confirmation rule. Until then,
-`--copy-mode mesh` runs the segment-direct read with the destination served by
-the dest agent on the coordinator (the `ServeSegments` merge / `direct_1to1`
-fast-path write above).
+reference`, wire < logical), and the mini path is the production dispatch for
+`--copy-mode mesh`: the dest agent (supervisor) launches the D mini-agents
+itself (`cmd/gpstream-dest-agent/minilaunch.go`, local or `--mini-ssh-user`),
+`runUnit` routes mesh units to `streamTwoAgentMini`, and the legacy
+`kind=segments`/`direct`/`routed` serves are rejected in supervisor mode.
+Only live validation on a real multi-segment GP6 stand is pending; per-table
+degradation to the coordinator path (non-Greenplum side, non-direct route
+modes, live D≠S) is the documented fallback.
 
 ## Persistent connections
 
