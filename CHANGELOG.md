@@ -7,56 +7,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [v0.3.2] - 2026-11-20
-
-### Fixed
-
-- **`--port-range` validation undercounted the required ports by one in
-  both copy modes.** `RequiredDataPorts`/`CheckPortRange` did not count the
-  dest persist listener (allocated unconditionally, P1c): coordinator
-  reported 4 (real: 5 — source control + dest control/data/persist/peer),
-  mesh reported 4+D (real: 5+D). A run sized to the documented formula
-  passed validation and then died at runtime with `portalloc: no free port
-  in range` / the dest agent failing to start. The error messages now name
-  the exact per-mode composition.
-- **`--port-range` was not validated in coordinator mode at all** (the
-  check was gated on the mesh-only `p.Route.Resolved`, and it ran after the
-  plan — which launches the agents — so a narrow range failed at agent
-  start with `connection refused`). The coordinator requirement (5) is now
-  verified before the agents launch (covers the default empty `--copy-mode`
-  too); the post-plan check is mesh-only (it needs D).
-- **TestPortRangeCheck** updated to the 5 / 5+D expectations.
-
-### Changed
-
-- **Full documentation audit against the code** (5 waves over all 25
-  markdown files; 90 findings: 18 major / 43 minor / 29 nits, all fixed):
-  - INSTALL/QUICKSTART: agent placement rewritten — the source/dest agents
-    always run on their cluster coordinator (CheckOnCoordinator), the
-    package is installed on the dest coordinator (+ dest segment hosts for
-    mesh).
-  - PERFORMANCE/CONFIGURATION/CLI_REFERENCE: the in-range port formula is
-    5 (coordinator) / 5+D (mesh).
-  - FEATURE-AUDIT: F-14 pacer corrected (NOT wired into the two-agent data
-    path — `--rate-limit` is the ETA base + diagnostics; the flow is paced
-    by backpressure).
-  - FAILOVER: a snapshot-establishment error is FATAL (the source agent does
-    not start; the run aborts) — the old "non-fatal" wording came from a
-    stale comment.
-  - DRY-RUN/INSTALL: dry-run performs no kernel ON SEGMENT dispatch probe
-    (SSH binary check only); the example output is the real format.
-  - ADMIN_GUIDE: no 6.1+ kernel requirement (static binary, proven on EL7
-    3.10/glibc 2.17), 4 binaries, TOML precedence, workers default 1.
-  - CLI_REFERENCE: `run` launches the agents (the controller holds no DB
-    pools), the mesh write events are `mesh_direct_write`/
-    `mesh_routed_write`, `--truncate` is rejected at runtime in two-agent
-    mode.
-  - ADR-001/ADR-003 and the two-agent transport plan: corrections appended
-    as Post-decision changes only (verify+swap and mini launch are owned by
-    the dest agent; the transport plan status is now Executed).
-- **man page:** `GPSTREAM_DATA_IDLE_TIMEOUT` added to ENVIRONMENT; the
-  v0.3.0 man entry corrected (9 documented variables, not 12).
-
 ## [v0.3.1] - 2026-11-19
 
 ### Added
@@ -99,6 +49,35 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+
+- **Full documentation audit against the code** (5 waves over all 25
+  markdown files; 90 findings: 18 major / 43 minor / 29 nits, all fixed):
+  - INSTALL/QUICKSTART: agent placement rewritten — the source/dest agents
+    always run on their cluster coordinator (CheckOnCoordinator), the
+    package is installed on the dest coordinator (+ dest segment hosts for
+    mesh).
+  - PERFORMANCE/CONFIGURATION/CLI_REFERENCE: the in-range port formula is
+    5 (coordinator) / 5+D (mesh).
+  - FEATURE-AUDIT: F-14 pacer corrected (NOT wired into the two-agent data
+    path — `--rate-limit` is the ETA base + diagnostics; the flow is paced
+    by backpressure).
+  - FAILOVER: a snapshot-establishment error is FATAL (the source agent does
+    not start; the run aborts) — the old "non-fatal" wording came from a
+    stale comment.
+  - DRY-RUN/INSTALL: dry-run performs no kernel ON SEGMENT dispatch probe
+    (SSH binary check only); the example output is the real format.
+  - ADMIN_GUIDE: no 6.1+ kernel requirement (static binary, proven on EL7
+    3.10/glibc 2.17), 4 binaries, TOML precedence, workers default 1.
+  - CLI_REFERENCE: `run` launches the agents (the controller holds no DB
+    pools), the mesh write events are `mesh_direct_write`/
+    `mesh_routed_write`, `--truncate` is rejected at runtime in two-agent
+    mode.
+  - ADR-001/ADR-003 and the two-agent transport plan: corrections appended
+    as Post-decision changes only (verify+swap and mini launch are owned by
+    the dest agent; the transport plan status is now Executed).
+- **man page:** `GPSTREAM_DATA_IDLE_TIMEOUT` added to ENVIRONMENT; the
+  v0.3.0 man entry corrected (9 documented variables, not 12).
+
 - **Mini frame-ack wire accounting (FR-04):** the on-wire volume reported
   for frame-ack units is the router's raw network bytes (initial + resume
   connections) instead of 0 (the per-pipe receiver counted no raw bytes);
@@ -111,6 +90,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `rpm -Uvh --force`.
 
 ### Fixed
+
+
+- **`--port-range` validation undercounted the required ports by one in
+  both copy modes.** `RequiredDataPorts`/`CheckPortRange` did not count the
+  dest persist listener (allocated unconditionally, P1c): coordinator
+  reported 4 (real: 5 — source control + dest control/data/persist/peer),
+  mesh reported 4+D (real: 5+D). A run sized to the documented formula
+  passed validation and then died at runtime with `portalloc: no free port
+  in range` / the dest agent failing to start. The error messages now name
+  the exact per-mode composition.
+- **`--port-range` was not validated in coordinator mode at all** (the
+  check was gated on the mesh-only `p.Route.Resolved`, and it ran after the
+  plan — which launches the agents — so a narrow range failed at agent
+  start with `connection refused`). The coordinator requirement (5) is now
+  verified before the agents launch (covers the default empty `--copy-mode`
+  too); the post-plan check is mesh-only (it needs D).
+- **TestPortRangeCheck** updated to the 5 / 5+D expectations.
 
 - **TestDestServerProtocol / TestDestServerBadKind TOCTOU:** the tests
   bound :0 ports, closed the listeners, and let the server rebind the same
