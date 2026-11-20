@@ -106,6 +106,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
   start with `connection refused`). The coordinator requirement (5) is now
   verified before the agents launch (covers the default empty `--copy-mode`
   too); the post-plan check is mesh-only (it needs D).
+- **`--port-range`: an agent's auto-listener could land on a
+  controller-assigned port and crash the run at agent start.** The
+  controller passes some agent listeners as FIXED ports from its own
+  allocation (`--control-listen`, `--peer-listen`), while the agent's
+  auto-listeners (data, persist) drew from a FRESH in-range allocator that
+  did not know those picks. An auto bind landing on a fixed port hit
+  EADDRINUSE, and the allocator's busy-port skip then pushed the auto pick
+  into ANOTHER fixed port: coordinator + `--port-range` failed
+  deterministically at agent start (mesh survived because its data
+  listener is off). `excludeFixedPorts` now pre-excludes every explicit
+  listener port from the in-range picks in all three agent paths (mini,
+  supervisor, long-lived).
 - **TestPortRangeCheck** updated to the 5 / 5+D expectations.
 
 - **TestDestServerProtocol / TestDestServerBadKind TOCTOU:** the tests
