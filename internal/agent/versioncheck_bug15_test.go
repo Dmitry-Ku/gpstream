@@ -1,3 +1,5 @@
+//go:build gp6lab
+
 package agent
 
 import (

@@ -22,7 +22,7 @@ import (
 
 // DefaultBinDir is the PG 9.4.26 toolchain location on this build host.
 // Override with the GPTEST_PGBIN env var for other hosts.
-const DefaultBinDir = " /opt/toolchain/pg9426/bin"
+const DefaultBinDir = "/opt/toolchain/pg9426/bin"
 
 // BinDir resolves the toolchain directory.
 func BinDir() string {

@@ -17,6 +17,8 @@ package agent
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +51,13 @@ func freeListener(t *testing.T) net.Listener {
 // test-ordering artifact, not the watchdog behavior under test.
 func pgtestStagingDSN(t *testing.T, port uint32, db string) string {
 	t.Helper()
+	// Skip (not fail) when the PG 9.4.26 toolchain is absent — e.g. the stock
+	// CI runner without GPTEST_PGBIN. These routed tests need a real
+	// utility-COPY target; the pure-watchdog tests in this file stay runnable
+	// everywhere and are NOT skipped.
+	if _, err := os.Stat(filepath.Join(pgtest.BinDir(), "initdb")); err != nil {
+		t.Skipf("PG 9.4.26 toolchain not found (set GPTEST_PGBIN): %v", err)
+	}
 	cl, err := pgtest.Start(port, db)
 	if err != nil {
 		t.Fatalf("pgtest start: %v", err)
