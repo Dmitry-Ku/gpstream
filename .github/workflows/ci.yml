@@ -113,12 +113,33 @@ jobs:
 
   # Integration tests on the self-hosted lab runner (TASK-SPEC §9:
   # "integration on a self-hosted runner with test GP6 clusters"). The job
-  # is scheduled ONLY for runners labeled `gp6`; until such a runner exists
-  # the job stays queued (does not fail the build). Live tests need a real
-  # PG 9.4.26 toolchain (GPTEST_PGBIN) — on the testbed vm1 it is
-  # /opt/pg9426-vm/bin (see internal/pgtest).
-  integration-gp6:
+  # is scheduled ONLY for runners labeled `gp6`. The lab bench is NOT
+  # powered on permanently, so integration-gate (below) checks the runner's
+  # online state via the GitHub API first: bench off -> the job is SKIPPED
+  # (run stays green) instead of staying queued forever; bench on -> the
+  # job runs. Live tests need a real PG 9.4.26 toolchain (GPTEST_PGBIN) —
+  # on the testbed vm1 it is /opt/pg9426-vm/bin (see internal/pgtest).
+  integration-gate:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner_online: ${{ steps.check.outputs.online }}
+    steps:
+      - id: check
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ github.token }}
+        run: |
+          # Online = a runner carrying the gp6 label reports status=online.
+          online=$(curl -fsS -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/$REPO/actions/runners" \
+            | python3 -c "import json,sys; rs=json.load(sys.stdin).get('runners') or []; print('true' if any('gp6' in [l['name'] for l in r.get('labels',[])] and r.get('status')=='online' for r in rs) else 'false')")
+          echo "gp6 runner online: $online"
+          echo "online=$online" >> "$GITHUB_OUTPUT"
+  integration-gp6:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.integration-gate.outputs.runner_online == 'true'
+    needs: integration-gate
     runs-on: [self-hosted, gp6]
     timeout-minutes: 120
     steps:
