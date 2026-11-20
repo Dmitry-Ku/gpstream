@@ -228,7 +228,7 @@ Conflict policy semantics:
   table), the dependent FK constraints are dropped before the swap (equivalent
   to `DROP ... CASCADE` for the constraints — the source FK set is re-applied
   in the post-load restore pass, F-11).
-- **`truncate`** — copy in-place into the final table after `TRUNCATE`, verify.
+- **`truncate`** — copy in-place into the final table after `TRUNCATE`, verify. **Unsupported in two-agent (the only data path): the CLI accepts the flag, but every unit fails at runtime** — use `overwrite` (staging+swap).
 
 ### Performance (F-01/F-12/F-14)
 | Flag | Config field | Default |
@@ -496,8 +496,7 @@ gpstream is deliberately conservative about overwriting destination data:
   collision; nothing is clobbered and nothing is silently skipped unless the
   operator explicitly chooses `skip`, `overwrite`, or `truncate`.
 - **Data is never overwritten** unless the operator passes
-  `--resolve-conflicts overwrite` (or the `--overwrite` shorthand) or
-  `--resolve-conflicts truncate` (or the `--truncate` shorthand).
+  `--resolve-conflicts overwrite` (or the `--overwrite` shorthand). The `truncate` policy is accepted by the CLI but rejected at runtime in two-agent (see the conflict semantics above).
 - **Secrets (`--ssl-cert`/`--ssl-key`/`--ssl-ca`) come from env or a `0600`
   file, never argv (F-08).** Although the parser accepts them as flags,
   supply them via `GPSTREAM_SSL_CERT` / `GPSTREAM_SSL_KEY` / `GPSTREAM_SSL_CA`

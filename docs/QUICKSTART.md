@@ -230,7 +230,7 @@ skipped**. You opt in to a policy with `--resolve-conflicts`:
 | `stop` (default) | **A conflict stops the run.** Nothing is overwritten, nothing is skipped. |
 | `skip` | Skip conflicting units and continue. |
 | `overwrite` | Replace existing data (staging + atomic swap; verified before the swap). |
-| `truncate` | Truncate the target, then load into it (in-place). |
+| `truncate` | Truncate the target, then load into it (in-place). **Rejected at runtime in two-agent — use `overwrite`.** |
 
 `--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
 policy. The dry-run lists any conflicts and the **verdict that would apply**

@@ -104,7 +104,7 @@ operator decides deliberately.
 | `stop` | **default** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
 | `skip` | — | Skip conflicting objects and continue; they are reported in `conflicts.jsonl`. |
 | `overwrite` | — | Replace the destination object (staging + atomic swap). Always rewrites — an existing destination is re-copied even when its data already matches the source; there is no pre-copy content comparison (it would read the whole table twice). Dependent foreign keys on other destination tables are dropped before the swap and re-applied from the source after the load (F-11). |
-| `truncate` | — | Truncate then reload (in-place). |
+| `truncate` | — | Truncate then reload (in-place). **Rejected at runtime in two-agent — use `overwrite` (staging+swap).** |
 
 `--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
 policy. The **default is `stop`**, so a bare `gpstream run` **stops on the
