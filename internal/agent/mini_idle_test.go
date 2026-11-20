@@ -1,7 +1,7 @@
 package agent
 
 // mini_idle_test.go — L2 data-plane watchdog regressions (DESIGN:
-// "таймаут передачи данных", default 5m, flag --data-idle-timeout).
+// "data transfer timeout", default 5m, flag --data-idle-timeout).
 //
 // The watchdog is idle-based: a unit's data (sub-)stream that receives NO
 // byte for DataIdleTimeout is declared dead (the mini kills the stream, the

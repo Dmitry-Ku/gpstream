@@ -1,6 +1,6 @@
 package agent
 
-// mini_idle.go — the L2 data-idle watchdog (DESIGN: "таймаут передачи данных").
+// mini_idle.go — the L2 data-idle watchdog (DESIGN: "data transfer timeout").
 //
 // A unit's data (sub-)stream that receives NO byte for `--data-idle-timeout`
 // (default 5m) is declared dead: the mini closes the slice connection, the

@@ -1,6 +1,6 @@
 module github.com/gpstream/gpstream
 
-go 1.27.1
+go 1.27.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
