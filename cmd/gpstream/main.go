@@ -511,10 +511,18 @@ func cmdDryRun(args []string) error {
 	}
 
 	// Design 04.10: verify the --port-range size against the mode's
-	// requirement (the plan resolved the destination topology, so D is known
-	// at dry-run time).
-	if cfg.CopyMode != "" && p.Route.Resolved {
-		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
+	// requirement. Mesh: D is known only once the plan resolved the
+	// destination topology. Coordinator: the requirement (5) does not depend
+	// on D, so check unconditionally — otherwise a narrow range fails at
+	// agent launch ("connection refused") instead of validation.
+	if cfg.CopyMode == config.CopyMesh {
+		if p.Route.Resolved {
+			if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
+				return err
+			}
+		}
+	} else if cfg.CopyMode != "" {
+		if err := cfg.CheckPortRange(0); err != nil {
 			return err
 		}
 	}
@@ -1573,9 +1581,18 @@ func cmdRun(args []string) error {
 		return nil
 	}
 	// Design 04.10: verify the --port-range size against the mode's
-	// requirement (fail fast, before the copy starts).
-	if cfg.CopyMode != "" && p.Route.Resolved {
-		if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
+	// requirement (fail fast, before the copy starts). Mesh needs the
+	// resolved plan for D; the coordinator requirement (5) does not depend
+	// on D, so it is checked unconditionally.
+	if cfg.CopyMode == config.CopyMesh {
+		if p.Route.Resolved {
+			if err := cfg.CheckPortRange(int(p.Route.DstSegments)); err != nil {
+				mgr.ReleaseAgents()
+				return fmt.Errorf("run: %w", err)
+			}
+		}
+	} else if cfg.CopyMode != "" {
+		if err := cfg.CheckPortRange(0); err != nil {
 			mgr.ReleaseAgents()
 			return fmt.Errorf("run: %w", err)
 		}
