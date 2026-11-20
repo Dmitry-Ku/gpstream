@@ -454,26 +454,33 @@ func (c *Config) PortRangeSize() int {
 // from the --port-range (the in-range allocation the agents bind on).
 //
 //   - coordinator (and the mesh coordinator-fallback for small/replicated
-//     tables): exactly **3** — source control + dest data + dest control. The
-//     per-segment segreceivers are dialers that all funnel into the dest
-//     agent's single shared data listener, so the destination segment count
-//     adds no ports (the pre-04.10 "one dest agent per segment" 2D+1 design
-//     was removed with the port-economy redesign).
+//     tables): exactly **5** — source control + dest control + dest data +
+//     dest persist + dest peer. The persist listener carries the
+//     persistent-coordinator connection (P1c, allocated unconditionally) and
+//     the peer listener the persistent source->dest channel (1F, allocated in
+//     ALL modes). The per-segment segreceivers are dialers that all funnel
+//     into the dest agent's single shared data listener, so the destination
+//     segment count adds no ports (the pre-04.10 "one dest agent per segment"
+//     2D+1 design was removed with the port-economy redesign).
 //
-//   - mesh (P2, direct_1to1): **4 + D** — source control + dest control +
-//     dest report + dest data + D mini-agent data ports (one in-range data
-//     port per destination segment, each mini-agent binds its own). The
-//     source report-listener was removed (its digest rides the slice trailer),
-//     so it is not counted. PG ports on the segments are NOT in the range.
+//   - mesh (P2, direct_1to1): **5 + D** — source control + dest control +
+//     dest persist + dest report + dest peer + D mini-agent data ports (one
+//     in-range data port per destination segment, each mini-agent binds its
+//     own). The shared data listener is OFF in mesh (the mini path uses the
+//     minis' own data listeners; the coordinator fallback rides the persist
+//     listener). The source report-listener was removed (its digest rides the
+//     slice trailer), so it is not counted. PG ports on the segments are NOT
+//     in the range.
 func (c *Config) RequiredDataPorts(dstSegments int) int {
 	if c.CopyMode == CopyMesh {
-		return 4 + dstSegments
+		return 5 + dstSegments
 	}
-	// Coordinator: source control + dest control + dest data + dest PEER
-	// (1F/Phase 2: the peer listener is allocated in ALL modes — the source
-	// agent dials it for the persistent source->dest channel: the 1F version
+	// Coordinator: source control + dest control + dest data + dest PERSIST +
+	// dest PEER (the persist listener is allocated unconditionally — P1c; the
+	// peer listener is allocated in ALL modes — 1F/Phase 2: the source agent
+	// dials it for the persistent source->dest channel: the 1F version
 	// exchange + the read-only dst-query loop for plan/resume/dry-run).
-	return 4
+	return 5
 }
 
 // CheckPortRange verifies the configured range (if any) is large enough
@@ -488,10 +495,10 @@ func (c *Config) CheckPortRange(dstSegments int) error {
 	have := c.PortRangeSize()
 	if have < need {
 		if c.CopyMode == CopyMesh {
-			return fmt.Errorf("--port-range %s has %d port(s) but this mesh run needs %d (4 + D: source control + dest control + dest report + dest data + %d mini-agent data ports, one per destination segment); widen the range",
+			return fmt.Errorf("--port-range %s has %d port(s) but this mesh run needs %d (5 + D: source control + dest control + dest persist + dest report + dest peer + %d mini-agent data ports, one per destination segment); widen the range",
 				c.PortRange, have, need, dstSegments)
 		}
-		return fmt.Errorf("--port-range %s has %d port(s) but this run needs %d (source control + dest data + dest control — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
+		return fmt.Errorf("--port-range %s has %d port(s) but this run needs %d (source control + dest control + dest data + dest persist + dest peer — the on_segment segreceivers dial the shared data port, so the segment count adds no ports); widen the range",
 			c.PortRange, have, need)
 	}
 	return nil

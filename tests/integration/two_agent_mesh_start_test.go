@@ -25,7 +25,7 @@ import (
 // local segment (D=1). Start() must therefore:
 //
 //  1. launch the destination agent in SUPERVISOR mode (control + persist +
-//     report listeners; the shared data listener off — the 4+D formula),
+//     report listeners; the shared data listener off — the 5+D formula),
 //  2. launch the D=1 destination-segment mini-agent (gpstream-dest-agent
 //     --mini) as a local subprocess, which dials the supervisor's report
 //     listener and sends its hello,

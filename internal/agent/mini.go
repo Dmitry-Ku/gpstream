@@ -74,8 +74,8 @@ type MiniOptions struct {
 	DataListen string
 	// PortAlloc restricts the auto-picked (port 0) data listener to an allowed
 	// range (nil or disabled = fully automatic). The data port is one of the
-	// run's in-range ports (the P1 item 4 "4+D" formula: 3 base ports + D
-	// mini-agent data ports, one per destination segment).
+	// run's in-range ports (the 5+D formula: 5 base ports + D mini-agent data
+	// ports, one per destination segment).
 	PortAlloc *portalloc.Allocator
 	// PrimaryDSN is the utility-mode connection string to THIS segment
 	// (gp_session_role=utility). The mini-agent connects to it LOCALLY — it

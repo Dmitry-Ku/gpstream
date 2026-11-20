@@ -601,10 +601,11 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 			"reason", "source column types depend on extensions not installed in the destination (F-11 metadata phase); CREATE EXTENSION in the receiver before the DDL of those columns")
 	}
 
-	// FR-02 consistency: establish the source read snapshot BEFORE any unit is
-	// copied so every COPY of the database reads from the same point-in-time
-	// (see establishSnapshot). A snapshot error is non-fatal (the copy still
-	// proceeds) but is logged so the operator can see the consistency mode.
+	// FR-02 consistency: the source read snapshot is established by the
+	// source agent BEFORE any unit is copied so every COPY of the database
+	// reads from the same point-in-time. A snapshot-establishment error is
+	// FATAL — the source agent does not start and the run aborts; there is
+	// no degraded no-snapshot mode.
 	//
 	// P7: the data path is ALWAYS two-agent. Launch the long-lived source
 	// agent (owns the source pg pool + the run-wide FR-02 snapshot) and

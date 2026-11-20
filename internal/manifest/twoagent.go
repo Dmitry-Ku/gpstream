@@ -508,7 +508,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	// Coordinator mode: the shared data listener (the source agent / the
 	// segreceivers dial it). Mesh mode: OFF (the mini path uses the minis'
 	// own data listeners; the fallback coordinator path uses the persist
-	// listener) — 4+D port formula.
+	// listener) — 5+D port formula.
 	var dataAddr string
 	if !mesh {
 		dataAddr, err = r.dataListen(r.agentHost(r.cfg.DestAgentSSH))
@@ -560,7 +560,7 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		// mini-agents itself (architecture 08.10); --mini-ssh-user (the
 		// "user@" prefix of the dest-agent SSH target — the agent reaches
 		// each segment host as user@<seg-host>) + --port-range let it reach
-		// the segment hosts and bound their data ports (the 4+D formula).
+		// the segment hosts and bound their data ports (the 5+D formula).
 		dargs = append(dargs,
 			"--supervisor",
 			"--report-listen", reportListen,
@@ -726,8 +726,8 @@ func (r *processTwoAgentRunner) dataListen(host string) (string, error) {
 
 // prebindLocal learns a free loopback port for a local (same-host) agent and
 // returns it as "127.0.0.1:port", honoring --port-range when set (the
-// allocator reserves it so the three prebinds — source control, dest control,
-// dest data — never collide). With no range it is the legacy kernel-pick.
+// allocator reserves it so the five prebinds — source control, dest control,
+// dest data, dest persist, dest peer — never collide). With no range it is the legacy kernel-pick.
 func (r *processTwoAgentRunner) prebindLocal() (string, error) {
 	if r.portAlloc == nil {
 		return prebindLoopback()

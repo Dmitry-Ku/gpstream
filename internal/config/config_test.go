@@ -148,50 +148,53 @@ func TestPortRangeValidation(t *testing.T) {
 }
 
 func TestPortRangeCheck(t *testing.T) {
-	// coordinator: needs 4 ports (source control + dest control + dest data
-	// + dest peer — the peer listener is allocated in ALL modes, 1F/Phase 2:
-	// the source agent dials it for the persistent source->dest channel).
+	// coordinator: needs 5 ports (source control + dest control + dest data
+	// + dest persist + dest peer — the persist listener is allocated
+	// unconditionally, P1c; the peer listener is allocated in ALL modes,
+	// 1F/Phase 2: the source agent dials it for the persistent source->dest
+	// channel).
 	cfg := Default()
 	cfg.CopyMode = CopyCoordinator
-	cfg.PortRange = "9000-9003"
+	cfg.PortRange = "9000-9004"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckPortRange(3); err != nil {
-		t.Fatalf("coordinator 4-port range should pass: %v", err)
+		t.Fatalf("coordinator 5-port range should pass: %v", err)
 	}
 	small := Default()
 	small.CopyMode = CopyCoordinator
-	small.PortRange = "9000-9002"
+	small.PortRange = "9000-9003"
 	if err := small.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := small.CheckPortRange(3); err == nil {
-		t.Fatal("coordinator 3-port range should fail (needs 4: + the peer listener)")
+	if err := small.CheckPortRange(4); err == nil {
+		t.Fatal("coordinator 4-port range should fail (needs 5: + the persist listener)")
 	}
-	// mesh (P2, direct_1to1): needs 4 + D (source control + dest control +
-	// dest report + dest data + D mini-agent data ports). D=3 -> 7, D=4 -> 8.
+	// mesh (P2, direct_1to1): needs 5 + D (source control + dest control +
+	// dest persist + dest report + dest peer + D mini-agent data ports).
+	// D=3 -> 8, D=4 -> 9.
 	cfg = Default()
 	cfg.CopyMode = CopyMesh
-	cfg.PortRange = "9000-9007"
+	cfg.PortRange = "9000-9008"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckPortRange(3); err != nil {
-		t.Fatalf("mesh D=3 needs 4+3=7, range 8 should pass: %v", err)
+		t.Fatalf("mesh D=3 needs 5+3=8, range 9 should pass: %v", err)
 	}
 	if err := cfg.CheckPortRange(4); err != nil {
-		t.Fatalf("mesh D=4 needs 4+4=8, range 8 should pass: %v", err)
+		t.Fatalf("mesh D=4 needs 5+4=9, range 9 should pass: %v", err)
 	}
-	// mesh boundary: D=4 needs exactly 8 ports, so a 7-port range must fail.
+	// mesh boundary: D=4 needs exactly 9 ports, so an 8-port range must fail.
 	edge := Default()
 	edge.CopyMode = CopyMesh
-	edge.PortRange = "9000-9006"
+	edge.PortRange = "9000-9007"
 	if err := edge.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := edge.CheckPortRange(4); err == nil {
-		t.Fatal("mesh D=4 needs 8 ports, a 7-port range should fail")
+		t.Fatal("mesh D=4 needs 9 ports, an 8-port range should fail")
 	}
 	smallSeg := Default()
 	smallSeg.CopyMode = CopyMesh
@@ -200,7 +203,7 @@ func TestPortRangeCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := smallSeg.CheckPortRange(4); err == nil {
-		t.Fatal("mesh 2-port range should fail (needs 4+4=8)")
+		t.Fatal("mesh 2-port range should fail (needs 5+4=9)")
 	}
 	// auto (no range): always passes
 	auto := Default()
