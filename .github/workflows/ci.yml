@@ -131,11 +131,31 @@ jobs:
           REPO: ${{ github.repository }}
           TOKEN: ${{ github.token }}
         run: |
-          # Online = a runner carrying the gp6 label reports status=online.
-          online=$(curl -fsS -H "Authorization: token $TOKEN" \
-            "https://api.github.com/repos/$REPO/actions/runners" \
-            | python3 -c "import json,sys; rs=json.load(sys.stdin).get('runners') or []; print('true' if any('gp6' in [l['name'] for l in r.get('labels',[])] and r.get('status')=='online' for r in rs) else 'false')")
-          echo "gp6 runner online: $online"
+          # Defensive: the runners endpoint needs the repo token, and under
+          # set -euo pipefail any API hiccup would otherwise turn this step
+          # (and the whole run) red. On ANY failure we degrade to the legacy
+          # behavior (optimistic: job may run / queue) — a green run that
+          # sometimes queues beats a red run that skips real tests.
+          body=$(curl -fsS -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/$REPO/actions/runners" 2>&1) || body="API error: $body"
+          echo "runners API response: ${body:0:400}"
+          online=$(printf '%s' "$body" | python3 -c 'import json, sys
+          try:
+              rs = json.load(sys.stdin).get("runners") or []
+          except Exception:
+              rs = None
+          if rs is None:
+              print("unknown")
+          elif any("gp6" in [l["name"] for l in r.get("labels", [])] and r.get("status") == "online" for r in rs):
+              print("true")
+          else:
+              print("false")') || online="unknown"
+          case "$online" in
+            true)  echo "gp6 runner online -> integration job runs" ;;
+            false) echo "gp6 runner offline -> integration job skipped (bench off)" ;;
+            *)     echo "runner state unknown -> integration job may queue (legacy behavior)" ;;
+          esac
+          if [ "$online" != "false" ]; then online=true; fi
           echo "online=$online" >> "$GITHUB_OUTPUT"
   integration-gp6:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.integration-gate.outputs.runner_online == 'true'
