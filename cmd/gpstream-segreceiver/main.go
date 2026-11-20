@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -89,6 +90,11 @@ func main() {
 	ackTimeout := flag.String("ack-timeout", "30s", "ACK timeout: 15s|30s|adaptive")
 	maxReconnects := flag.Int("max-reconnects", 20, "reconnect budget per slice")
 	retransmitMax := flag.Int64("retransmit-buffer-max", 1<<30, "in-flight retransmit window (bytes)")
+	// Sender-side frame-ack stats: the cumulative replay/reconnect counters
+	// of this slice's sub-stream pipes, written as JSON on a clean stream
+	// exit. The receiver-side mirror (deduped frames) already lands in
+	// runstats.json; this file is the sender's own view. Empty = off.
+	statsFile := flag.String("stats-file", "", "sender-side stats JSON path (written on a clean exit; empty = off)")
 	// The slice's end-of-stream Trailer ALWAYS carries the raw per-row
 	// content-digest accumulator (the mesh srcDigest building block, P0). The
 	// destination uses it to verify on the data path without a re-read, so it
@@ -172,7 +178,7 @@ func main() {
 	defer cancel()
 
 	if routed {
-		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), true)
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), true, *statsFile)
 		return
 	}
 
@@ -236,7 +242,59 @@ func main() {
 	if err != nil {
 		fail("stream: %v", err)
 	}
+	writeSenderStats(*statsFile, uint32(jobID), uint32(unitID), contentID, rows, dataConn)
 	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: content=%d rows=%d ok\n", contentID, rows)
+}
+
+// statsFileReport is one slice's sender-side frame-ack statistics: the
+// cumulative counters of the slice's sub-stream pipes (S x D x W in routed
+// mode, a single pipe otherwise). The receiver-side mirror of these numbers
+// (deduped frames) already lands in runstats.json; this file is the sender's
+// own view -- how many frames it had to replay and how often a sub-stream
+// reconnected mid-stream.
+type statsFileReport struct {
+	Job           int64  `json:"job"`
+	Unit          int64  `json:"unit"`
+	Content       int64  `json:"content"`
+	Rows          int64  `json:"rows"`
+	Retransmitted uint64 `json:"retransmitted"`
+	Reconnects    int    `json:"reconnects"`
+	AckLagMaxMs   int64  `json:"ack_lag_max_ms"`
+}
+
+// writeSenderStats aggregates the sender-side frame-ack counters across the
+// slice's pipes and writes the JSON report at path. Pipes without a Stats()
+// accessor (plain TCP when frame-ack is off) contribute nothing. A write
+// failure warns on stderr but never fails the stream: the stats are an
+// observability side-channel, not part of the transfer contract.
+func writeSenderStats(path string, jobID, unitID uint32, contentID, rows int64, pipes ...transfer.Pipe) {
+	if path == "" {
+		return
+	}
+	var rep statsFileReport
+	rep.Job, rep.Unit, rep.Content, rep.Rows = int64(jobID), int64(unitID), contentID, rows
+	var ackLagMax time.Duration
+	for _, p := range pipes {
+		st, ok := p.(interface{ Stats() transfer.Stats })
+		if !ok {
+			continue
+		}
+		s := st.Stats()
+		rep.Retransmitted += s.Retransmitted
+		rep.Reconnects += s.Reconnects
+		if s.AckLag > ackLagMax {
+			ackLagMax = s.AckLag
+		}
+	}
+	rep.AckLagMaxMs = int64(ackLagMax.Round(time.Millisecond).Milliseconds())
+	b, err := json.Marshal(rep)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: marshal: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: write %s: %v\n", path, err)
+	}
 }
 
 // frameAckOn reports whether the frame-ack transport is in effect.
@@ -305,7 +363,7 @@ func hostOf(listen string) (string, error) {
 // connection grid to the RoutedSender. Exit 0 on a clean stream; exit 1
 // otherwise (a non-zero exit fails the kernel's COPY, so there is no silent
 // partial stream).
-func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA, ackTimeout string, maxReconnects int, retransmitMax int64, on, digest bool) {
+func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, jobID, unitID uint64, destAddr, routeKey string, routeD, routeWorkers int, compressMode, sslCert, sslKey, sslCA, ackTimeout string, maxReconnects int, retransmitMax int64, on, digest bool, statsFile string) {
 	D := routeD
 	W := routeWorkers
 	// The routing key is embedded by the controller as "oid:pos,oid:pos" —
@@ -439,5 +497,14 @@ func runRouted(ctx context.Context, fail func(string, ...any), contentID int64, 
 	if err != nil {
 		fail("route: %v", err)
 	}
+	writeSenderStats(statsFile, uint32(jobID), uint32(unitID), contentID, rows, func() []transfer.Pipe {
+		all := make([]transfer.Pipe, 0, D*W)
+		for d := 0; d < D; d++ {
+			for w := 0; w < W; w++ {
+				all = append(all, dataConns[d][w])
+			}
+		}
+		return all
+	}()...)
 	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: routed content=%d rows=%d dest=%d workers=%d ok\n", contentID, rows, D, W)
 }

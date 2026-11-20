@@ -63,4 +63,4 @@ r5probe2
 
 # stray TLS fixtures (tests must use t.TempDir())
 internal/agent/ca.pem
-gpstream-segreceiver
+/gpstream-segreceiver
