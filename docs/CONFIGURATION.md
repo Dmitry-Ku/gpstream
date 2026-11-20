@@ -133,7 +133,7 @@ place.
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
 | `CopyMode` | `CopyMode` | `""` → `coordinator` | `--copy-mode` | `coordinator` \| `mesh`. |
-| `SegListen` | string | `""` → auto | `--seg-listen` / `seg_listen` / `GPSTREAM_SEG_LISTEN` | Base listen address for `on_segment`: each unit binds `base+unitID`. When empty, auto-resolved to the controller's primary non-loopback IP + a free port (must be routable from the source segment hosts). |
+| `SegListen` | string | `""` → auto | `--seg-listen` / `seg_listen` / `GPSTREAM_SEG_LISTEN` | Base listen address for `on_segment`: the dry-run probes that the base port is free on the source segment hosts; in mesh the per-segment mini-agents bind their own data listeners at launch (auto, or `--port-range`) and the segreceivers dial the per-segment address book. When empty, auto-resolved to the controller's primary non-loopback IP + a free port (must be routable from the source segment hosts). |
 | `SegBinary` | string | `""` → resolved | `seg_binary` / `GPSTREAM_SEG_BINARY` | gpstream-segreceiver path on the SOURCE segment hosts. Not a CLI flag: resolved by convention (sibling of the `gpstream` binary, then `PATH`) before `on_segment` runs. |
 | `SegTLSCert` | string | `""` | `--seg-tls-cert` / env / file | Controller serving cert (segment data plane). |
 | `SegTLSKey` | string | `""` | `--seg-tls-key` / env / file | Controller serving key. |

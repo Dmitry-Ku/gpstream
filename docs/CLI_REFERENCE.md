@@ -256,19 +256,23 @@ named by these flags: `--source-agent-ssh` = the source cluster's master
 on a coordinator). A remote host is launched over **SSH** (key-based auth,
 `~/.ssh` defaults — the administrator provisions the keys; no key/runas
 flags). The transport is selected by the host in the flag: local = subprocess,
-remote = SSH. The agent binary is invoked **by name from `PATH`** (packaged
-install) — never by an absolute path.
+remote = SSH. The agent binary is invoked **by name from `PATH`** by default
+(packaged install); the `GPSTREAM_*_AGENT_BINARY` override may name an explicit
+path.
 
 **Coordinator guard (P1e).** Before an agent binds its control listener it
 verifies it runs on the coordinator of **exactly the cluster its DSN points
 to** (source agent — the source cluster, dest agent — the destination
 cluster): the DSN host must be local, the local master must be responding,
-and — for Greenplum — the coordinator row (`content = -1`) in the DSN
-cluster's own `gp_segment_configuration` must name this host. A violation
+and — for Greenplum — (a) the coordinator row (`content = -1`) in the DSN
+cluster's own `gp_segment_configuration` must name this host, and (b) the node
+the agent actually connected to must itself be the coordinator (the catalog row
+for this backend's port has `content = -1`; a segment, `content >= 0`, is a hard
+error). A violation
 aborts the agent, and `run`/`bench` fail with the verdict from the agent
 log. A non-Greenplum (single-node) database always passes.
 
-There are no `--source-agent-binary` / `--dest-agent-binary` flags: a packaged install always lays all four binaries in the same directory, so the controller resolves the agent binaries by convention (sibling of the `gpstream` binary, then `PATH`). Override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` (or config keys `source_agent_binary` / `dest_agent_binary`) for dev builds where the binaries are not beside each other.
+The shared contract has no agent-binary flags (`--dest-agent-binary` exists for `cleanup` only): a packaged install always lays all four binaries in the same directory, so the controller resolves the agent binaries by convention (sibling of the `gpstream` binary, then `PATH`). Override via `GPSTREAM_SOURCE_AGENT_BINARY` / `GPSTREAM_DEST_AGENT_BINARY` (or config keys `source_agent_binary` / `dest_agent_binary`) for dev builds where the binaries are not beside each other.
 
 The data path is always the two-agent transport: the source agent reads the
 table and pushes a compressed (optionally TLS) stream over a real socket to
@@ -288,13 +292,13 @@ the on-wire agent-to-agent volume.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--copy-mode coordinator\|mesh` | `CopyMode` | `""` → coordinator (one COPY through each coordinator) |
-| `--seg-listen <addr>` | `SegListen` | `""` (auto: controller primary non-loopback IP + a free port; each unit binds `base+unitID`) |
+| `--seg-listen <addr>` | `SegListen` | `""` (auto: controller primary non-loopback IP + a free port — the dry-run base-port probe; in mesh the per-segment mini-agents bind their own data listeners at launch, auto or `--port-range`, and the segreceivers dial the per-segment address book) |
 | `--seg-tls-cert <F>` | `SegTLSCert` | `""` (controller serving cert for the segment data plane) |
 | `--seg-tls-key <F>` | `SegTLSKey` | `""` (controller serving key) |
 | `--seg-tls-ca <F>` | `SegTLSCA` | `""` (CA for the segment data plane) |
 | `--frame-ack on\|off` | `FrameAck` | `on` (frame-level ACK + RST-resume; `off` falls back to the plain pipe) |
 | `--no-routed-write` | `NoRoutedWrite` | `false` (disables the routed segment-to-segment data path for S≠D: mesh then always merges through the destination coordinator (SliceMux) instead of routing in the segreceivers; use for firewall/NAT fallbacks and A/B comparisons) |
-| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since mesh segreceivers dial the shared data listener — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
+| `--port-range <LO-HI\|LO>` | `PortRange` | `""` (restrict auto data/control port allocation to a fixed range for strict firewalls; empty = fully automatic: agents bind `:0` and report their real address in the control handshake; a run needs 3 ports in coordinator mode — source control + dest data + dest control, since the on_segment segreceivers dial the shared data port — or **4+D** in mesh mode (+ dest report + D mini-agent data ports, one per destination segment); `dry-run` verifies the range holds that many) |
 | `--ack-timeout 15s\|30s\|adaptive` | `AckTimeout` | `30s` (`adaptive` = 3x median RTT, min 1s) |
 | `--max-reconnects <N>` | `MaxReconnects` | `20` (reconnect budget; exhausted = unit failed) |
 | `--retransmit-buffer-max <size>` | `RetransmitBufferMax` | `64MiB` (in-flight window per stream; raise for long-haul WAN) |
@@ -368,9 +372,14 @@ table, broadcasts `mini-unit` to the D minis, and combines their reports
 | `--report-listen <addr>` | `"0.0.0.0:0"` | the report listener the D minis dial (0 = pick a free port, restricted by `--port-range`; the real address is in the hello) |
 | `--mini-hosts <h0,h1,...>` | `""` | the D segment hosts in seg order (the catalog's DstDSN hosts; the hello carries the data port only). Empty = `127.0.0.1` for all (single-host layout) |
 
-The controller (the `run` process) launches the D mini-agents itself (SSH, one
-per destination segment host) and reads the D-entry address book through the
-dest-agent's `mini-map` control op before dispatching the ON SEGMENT read.
+The DEST-AGENT (in supervisor mode, on the destination coordinator) launches
+the D mini-agents itself — one `gpstream-dest-agent --mini` per destination
+segment host, local subprocess or SSH (`--mini-ssh-user`, the `user@` prefix of
+`--dest-agent-ssh`) — reading its OWN segment catalog for D, the segment hosts
+and the utility DSNs; the controller does not read the destination catalog and
+does not launch the minis (it does not know D). The controller reads the
+D-entry address book through the dest-agent's `mini-map` control op before
+dispatching the ON SEGMENT read.
 
 Per unit the mini accepts one compressed slice on its data listener,
 decompresses it (teeing the content digest when `--verify` is on), loads it
@@ -402,7 +411,7 @@ destination segment's mini-agent data endpoint, the mesh path). See
 ### Indexes (F-17)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--index-workers <N>` | `IndexWorkers` | `0` (background index rebuild parallelism) |
+| `--index-workers <N>` | `IndexWorkers` | `0` (background index rebuild parallelism; effective default `2` — the pool normalizes `0` to `2`) |
 | `--no-indexes` | `NoIndexes` | `false` (set to `true`) |
 | `--index-priority size\|fifo` | `IndexPriority` | `size` |
 
