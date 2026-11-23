@@ -1959,6 +1959,7 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 			AckTimeout:    m.cfg.AckTimeout,
 			MaxReconnects: m.cfg.MaxReconnects,
 			RetransmitMax: m.cfg.RetransmitBufferMax,
+			StatsDir:      m.senderStatsDir(),
 		},
 		Launch: agent.MiniLaunch{
 			Schema:         ds,
@@ -2059,8 +2060,42 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 				m.monitor.RecordFrameAck(retrans, reconnects, 0)
 			}
 		}
+		// Relay (increment 2): the sender-side mirror — the per-segment
+		// reports the source agent pulled from the segreceivers.
+		if sp, ok := m.twoAgent.(senderStatsProvider); ok {
+			if stats := sp.LastSenderStats(); len(stats) > 0 {
+				m.monitor.RecordSenderStats(stats)
+			}
+		}
 	}
 	return rows, wire, logical, srcD, dstD, swapped, verified, events, err
+}
+
+// senderStatsDir (relay increment 2): the operation-scoped stats directory
+// the segreceivers write their per-unit sender-stats files into, or "" when
+// --sender-stats is off. The operation id is operator input and lands in a
+// kernel-executed program string, so it is restricted to a safe character
+// set here; the source agent re-validates the full path (segstream.
+// validStatsDir) — defense in depth. An unsafe id degrades to OFF with a
+// note in the events log, never a failed run.
+func (m *Manager) senderStatsDir() string {
+	if !m.cfg.SenderStats {
+		return ""
+	}
+	op := m.cfg.OperationID
+	if op == "" || len(op) > 200 {
+		return ""
+	}
+	for i := 0; i < len(op); i++ {
+		c := op[i]
+		if !(c == '-' || c == '_' || c == '.' ||
+			(c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			m.events.Log("sender_stats_off",
+				"reason", "operation id has characters unsafe for the stats directory path (want [A-Za-z0-9._-])")
+			return ""
+		}
+	}
+	return "/tmp/gpstream-stats-" + op
 }
 
 // frameAckStatsProvider is an optional TwoAgentRunner capability: the last
@@ -2069,6 +2104,14 @@ func (m *Manager) streamTwoAgentMini(ctx context.Context, t plan.Table, u *Unit,
 // in-proc runner does not (its StreamMini always fails).
 type frameAckStatsProvider interface {
 	LastFrameAck() (retransmitted, reconnects uint64)
+}
+
+// senderStatsProvider is an optional TwoAgentRunner capability (relay
+// increment 2): the per-segment sender-side reports of the last streamed
+// unit. The process runner implements it; the in-proc runner does not
+// (its StreamMini always fails).
+type senderStatsProvider interface {
+	LastSenderStats() []agent.SenderStat
 }
 
 // twoAgentCompressString renders the unit's compression mode the way the
@@ -2464,21 +2507,25 @@ func (m *Manager) startRunStatsWriter(ctx context.Context) func() {
 		m.mu_runstats.Lock()
 		defer m.mu_runstats.Unlock()
 		retrans, reconns, _ := m.monitor.FrameAck()
+		srtrans, sreconns, sseg := m.monitor.SenderFrameAck()
 		st := monitor.RunStats{
-			UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
-			StartedAt:     m.monitor.StartedAt().UTC().Format(time.RFC3339),
-			ElapsedSec:    int(m.monitor.Latency().Seconds()),
-			Pair:          m.monitor.PairLabel(),
-			Bytes:         m.monitor.Bytes,
-			Decoded:       m.monitor.BytesDecoded,
-			Rows:          m.monitor.RowsTotal(),
-			Throughput:    m.monitor.Throughput(),
-			ETASeconds:    m.monitor.ETASeconds(),
-			ActiveFlows:   m.monitor.ActiveFlowsCount(),
-			ByStatus:      m.monitor.TablesByStatus(),
-			PerTable:      m.monitor.PerTable(),
-			Retransmitted: retrans,
-			Reconnects:    reconns,
+			UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
+			StartedAt:           m.monitor.StartedAt().UTC().Format(time.RFC3339),
+			ElapsedSec:          int(m.monitor.Latency().Seconds()),
+			Pair:                m.monitor.PairLabel(),
+			Bytes:               m.monitor.Bytes,
+			Decoded:             m.monitor.BytesDecoded,
+			Rows:                m.monitor.RowsTotal(),
+			Throughput:          m.monitor.Throughput(),
+			ETASeconds:          m.monitor.ETASeconds(),
+			ActiveFlows:         m.monitor.ActiveFlowsCount(),
+			ByStatus:            m.monitor.TablesByStatus(),
+			PerTable:            m.monitor.PerTable(),
+			Retransmitted:       retrans,
+			Reconnects:          reconns,
+			SenderRetransmitted: srtrans,
+			SenderReconnects:    sreconns,
+			SenderSegStats:      sseg,
 		}
 		b, err := json.MarshalIndent(st, "", "  ")
 		if err != nil {

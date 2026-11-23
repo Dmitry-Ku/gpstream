@@ -326,4 +326,46 @@ or redirect the agent. Three layers enforce that.
   credentials** (host:port pairs only).
 - Manifest/journal files are created `0600`; operational status/stats files
   carry no secrets. No hardcoded secrets in the code base; protocol
-  randomness uses `crypto/rand` (no `math/rand` in the module).
+  randomness uses `crypto/rand` (no `math/rand` in non-test code; test
+  files use a seeded `math/rand` only for deterministic fixtures — §14).
+
+## 13. The sender-stats directory: an injection surface (relay increment 2)
+
+`--sender-stats` makes the segreceivers write per-unit stats files into a
+directory whose path lands in the program string the source agent builds
+for `gpstream-segreceiver` (executed by the database kernel) and in the
+per-host `cat` command the agent runs over SSH after each unit. The value
+is operator input, so it is defended in two layers:
+
+1. **Controller** — the directory is not a flag: it is always
+   `/tmp/gpstream-stats-<operation-id>`, and the operation id is
+   restricted to `[A-Za-z0-9._-]` (≤ 200 chars); an unsafe id degrades the
+   feature to OFF (an event is logged), it never fails the run.
+2. **Agent** — the full path is re-validated before use (`segstream.
+   validStatsDir`): fixed prefix `/tmp/gpstream-stats-`, a non-empty id,
+   the same character set, ≤ 255 bytes (the PATH_MAX budget). The
+   validation is allowlist-style (reject on any non-matching byte), so a
+   value that could break out of the program string cannot reach it.
+
+The per-host pull runs a fixed `cat <dir>/<pattern>` over the same SSH
+used for the version exchange (exec with a validated constant, no shell
+interpolation of external input). Any pull failure (unreachable host,
+missing file) is a warning on stderr — the stats never fail an already-
+completed unit (increment-1 semantics).
+
+## 14. gosec static analysis triage (2026-11-23)
+
+A full-repo `gosec` pass (via golangci-lint v2.15.0) found **50 issues,
+0 critical, 0 high-severity exploitable paths**:
+
+- **fixed** — `statusfile` now creates its directories `0o750` and its
+  files `0o640` (G301/G306); the status tree is operator-owned and does
+  not need world-readability.
+- **accepted, documented** — 48 findings, all in one of: bounded
+  wire-format integer conversions (G115: GP content/worker ids, row
+  counts, OID decoding, hash arithmetic where wraparound is the correct
+  semantics); deterministic test fixtures (G404/G101/G306 in `_test.go`);
+  operator-controlled local paths in the test harness and `--config`
+  (G204/G304/G104, best-effort cleanup); and one false positive (G602 on
+  a bit shift). Full triage: internal report
+  `gpstream-gosec-triage-2026-11-23`.

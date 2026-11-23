@@ -225,6 +225,7 @@ human-readable files under its state directory
 | File | Content |
 |------|---------|
 | `events.jsonl` | the diagnostic event stream (F-04/F-14): one JSON line per rate-limit shift, conflict, small-table auto-disable (`compression_off`), collation diff, unit failure, mesh route decision, and other notable transitions. Retransmits are **not** events — they are the `gpstream_frames_retransmitted_total` counter (and a `runstats.json` field). |
+| `runstats.json` | the cumulative counters written at unit/run completion: rows / wire / logical / bytes, the frame-ack observability (`retransmitted`, `reconnects`) and, with `--sender-stats` on, the sender-side mirror (`sender_retransmitted`, `sender_reconnects`, plus the last unit's per-segment detail in `sender_seg_stats`). |
 | `audit.log` | the F-13 audit log of **operator actions** on the operation (`run`, `resume`, `cleanup`) — mode `0600`, recorded before the state dir is removed. |
 | `jobmeta.json` | the snapshot-epoch metadata only (`job_id`, `snap_epoch`, `snap_id`, `copy_mode`) — which generation of the source snapshot the job is on. |
 

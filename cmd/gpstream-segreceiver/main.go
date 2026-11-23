@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,15 @@ func main() {
 	// exit. The receiver-side mirror (deduped frames) already lands in
 	// runstats.json; this file is the sender's own view. Empty = off.
 	statsFile := flag.String("stats-file", "", "sender-side stats JSON path (written on a clean exit; empty = off)")
+	// Relay (increment 2): the controller requests the sender's frame-ack
+	// counters for runstats.json. The kernel runs ONE of us per source
+	// segment, so a fixed --stats-file path would collide between segments;
+	// --stats-dir instead gives each segment its own file,
+	// <dir>/sender-<job>-<unit>-seg<content>.json (content = our own
+	// --content, the kernel's <SEGID> expansion). The source agent later
+	// pulls the per-segment files back over SSH. --stats-dir wins when both
+	// are set.
+	statsDir := flag.String("stats-dir", "", "sender-side stats directory (per-segment files, see --stats-file; empty = off)")
 	// The slice's end-of-stream Trailer ALWAYS carries the raw per-row
 	// content-digest accumulator (the mesh srcDigest building block, P0). The
 	// destination uses it to verify on the data path without a re-read, so it
@@ -177,8 +187,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
+	// Resolve the sender-stats path once: --stats-dir expands to the
+	// per-segment filename (one of us runs per source segment, so the
+	// filename carries our own content), --stats-file stays as given.
+	statsPath := *statsFile
+	if *statsDir != "" {
+		statsPath = filepath.Join(*statsDir, fmt.Sprintf("sender-%d-%d-seg%d.json", jobID, unitID, contentID))
+	}
+
 	if routed {
-		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), true, *statsFile)
+		runRouted(ctx, fail, contentID, jobID, unitID, *destAddr, *routeKey, *routeD, *routeWorkers, *compressMode, *sslCert, *sslKey, *sslCA, *ackTimeout, *maxReconnects, *retransmitMax, frameAckOn(*frameAck), true, statsPath)
 		return
 	}
 
@@ -242,7 +260,7 @@ func main() {
 	if err != nil {
 		fail("stream: %v", err)
 	}
-	writeSenderStats(*statsFile, uint32(jobID), uint32(unitID), contentID, rows, dataConn)
+	writeSenderStats(statsPath, uint32(jobID), uint32(unitID), contentID, rows, dataConn)
 	fmt.Fprintf(os.Stderr, "gpstream-segreceiver: content=%d rows=%d ok\n", contentID, rows)
 }
 
@@ -291,6 +309,16 @@ func writeSenderStats(path string, jobID, unitID uint32, contentID, rows int64, 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: marshal: %v\n", err)
 		return
+	}
+	// --stats-dir: create the per-operation directory ourselves (we run as
+	// the database user the kernel launched us with; the directory ends up
+	// owned by that user, so the write below is guaranteed to have
+	// permission without any cross-user setup).
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: mkdir %s: %v\n", dir, err)
+			return
+		}
 	}
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: write %s: %v\n", path, err)

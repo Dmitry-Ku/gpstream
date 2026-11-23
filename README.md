@@ -76,6 +76,7 @@ gpstream run
   [--on-unit-failure continue|abort]
   [--frame-ack on|off] [--ack-timeout 15s|30s|adaptive]
   [--max-reconnects N] [--retransmit-buffer-max SIZE]
+  [--sender-stats]                                   # relay the sender-side frame-ack counters (per segment) into runstats.json
   [--verify on|off]                                    # post-copy verification; default: on
   [--index-workers N | --no-indexes] [--index-priority size|fifo]    # default: size
   [--ssl-ca F]                                         # pg plane TLS (connstring sslmode=verify-full default)

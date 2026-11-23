@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Sender-side counters, 2nd increment (relay): `--sender-stats`.** The
+  segreceivers now write per-segment sender-stats files
+  (`--stats-dir` / one `sender-<job>-<unit>-seg<content>.json` each); the
+  source agent pulls them from the source segment hosts after each unit
+  (SSH `cat` / local read) and the controller relays them into
+  `runstats.json` (`sender_retransmitted`, `sender_reconnects`, plus the
+  last unit's per-segment detail `sender_seg_stats`) and `gpstream status`.
+  Off by default; mesh ON-SEGMENT units only; any pull failure is a
+  warning, never a failed run. The stats directory is fixed to
+  `/tmp/gpstream-stats-<operation-id>` and the full path is re-validated
+  on the agent side (character set + prefix) — the value never reaches a
+  shell.
+
 ## [v0.3.1] - 2026-11-19
 
 ### Added

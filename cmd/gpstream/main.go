@@ -224,6 +224,10 @@ func parseConfig(args []string) (config.Config, error) {
 		case "--retransmit-buffer-max":
 			i++
 			cfg.RetransmitBufferMax = parseBytes(args[i])
+		// Sender-side frame-ack counters relay (increment 2): per-segment
+		// replay/reconnect view of the segreceivers into runstats.json.
+		case "--sender-stats":
+			cfg.SenderStats = true
 
 		// Transport (T-B, DESIGN §1.3). --copy-mode selects the source data
 		// path; on_segment needs the segreceiver binary path (on the segment
@@ -1060,6 +1064,16 @@ func cmdStatus(args []string) error {
 					r.Table, r.Rows, humanBytesU(r.Wire), humanBytesU(r.Logical), orDash(r.State))
 			}
 		}
+		// Relay (increment 2): the sender-side frame-ack view (only present
+		// when --sender-stats is on and a mesh unit has streamed).
+		if rs.SenderRetransmitted+rs.SenderReconnects > 0 || len(rs.SenderSegStats) > 0 {
+			fmt.Printf("  sender-ack:   retransmitted=%d reconnects=%d (cumulative; detail = last unit)\n",
+				rs.SenderRetransmitted, rs.SenderReconnects)
+			for _, e := range rs.SenderSegStats {
+				fmt.Printf("    seg %-4d rows=%-10d retransmitted=%-8d reconnects=%-3d ack-lag-max=%dms\n",
+					e.Content, e.Rows, e.Retransmitted, e.Reconnects, e.AckLagMaxMs)
+			}
+		}
 	}
 	fmt.Printf("%d/%d units terminal\n", terminal, len(units))
 	return nil
@@ -1853,6 +1867,9 @@ Transport / resilience:
   --seg-tls-key F                  TLS serving key for --seg-tls-cert
   --seg-tls-ca F                   trusted CA; also enables mTLS for the hop
   --frame-ack on|off               frame-level ACK + RST-resume (default on)
+  --sender-stats                   relay the segreceivers' sender-side frame-ack
+                                   counters (per segment) into runstats.json (default off;
+                                   mesh ON SEGMENT units only)
   --ack-timeout 15s|30s|adaptive   ACK timeout (default 30s)
   --max-reconnects N               reconnect budget (default 20)
   --retransmit-buffer-max size     in-flight window per stream (default 64MiB)

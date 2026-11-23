@@ -300,6 +300,12 @@ type processTwoAgentRunner struct {
 	// routed to slots. Updated on StreamMini success, read via LastFrameAck.
 	lastRetrans    atomic.Uint64
 	lastReconnects atomic.Uint64
+	// Relay (increment 2): the last streamed unit's per-segment sender-side
+	// reports (the source agent pulls them from the segreceivers' stats
+	// directory). Guarded by lastSenderMu (a slice cannot be atomic; the
+	// read races the next unit's write across worker goroutines).
+	lastSenderMu    sync.Mutex
+	lastSenderStats []agent.SenderStat
 	// streamMu serializes the WHOLE per-unit dest exchange
 	// (BeginServe -> source stream -> WaitUnitDone). The long-lived dest
 	// agent has ONE control socket and a SEQUENTIAL control loop (one
@@ -1079,6 +1085,9 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 	}
 	r.lastRetrans.Store(done.Retransmitted)
 	r.lastReconnects.Store(done.Reconnects)
+	r.lastSenderMu.Lock()
+	r.lastSenderStats = oresp.SenderStats
+	r.lastSenderMu.Unlock()
 	return done.Rows, done.Wire, done.Logical, done.SrcDigest, done.Digest, done.Swapped, done.Verified, done.Events, nil
 }
 
@@ -1088,6 +1097,15 @@ func (r *processTwoAgentRunner) StreamMini(ctx context.Context, req unitMiniRequ
 // when no unit has streamed yet.
 func (r *processTwoAgentRunner) LastFrameAck() (retransmitted, reconnects uint64) {
 	return r.lastRetrans.Load(), r.lastReconnects.Load()
+}
+
+// LastSenderStats (relay increment 2) returns the last streamed unit's
+// per-segment sender-side frame-ack reports (empty until a mesh unit with
+// sender stats on has streamed; the in-proc runner never fills it).
+func (r *processTwoAgentRunner) LastSenderStats() []agent.SenderStat {
+	r.lastSenderMu.Lock()
+	defer r.lastSenderMu.Unlock()
+	return r.lastSenderStats
 }
 
 // MiniMap (P3 production-dispatch, mesh) polls the dest-agent (supervisor

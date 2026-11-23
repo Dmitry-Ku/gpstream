@@ -95,3 +95,44 @@ func TestWriteSenderStatsBadDirNeverPanic(t *testing.T) {
 	// stream (observability side-channel only).
 	writeSenderStats(filepath.Join(t.TempDir(), "no", "such", "dir", "s.json"), 1, 1, 0, 1)
 }
+
+// --stats-dir (relay increment 2): the per-segment filename is built from
+// this segreceiver's own --content, so parallel segments never collide.
+func TestStatsDirPerSegmentFileName(t *testing.T) {
+	dir := t.TempDir()
+	p0 := filepath.Join(dir, "sender-7-8-seg0.json")
+	p1 := filepath.Join(dir, "sender-7-8-seg1.json")
+	writeSenderStats(p0, 7, 8, 0, 11)
+	writeSenderStats(p1, 7, 8, 1, 22)
+	var r0, r1 statsFileReport
+	for _, p := range []struct {
+		path string
+		rep  *statsFileReport
+	}{
+		{p0, &r0}, {p1, &r1},
+	} {
+		b, err := os.ReadFile(p.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", p.path, err)
+		}
+		if err := json.Unmarshal(b, p.rep); err != nil {
+			t.Fatalf("parse %s: %v", p.path, err)
+		}
+	}
+	if r0.Content != 0 || r0.Rows != 11 || r0.Job != 7 || r0.Unit != 8 {
+		t.Errorf("seg0 report = %+v", r0)
+	}
+	if r1.Content != 1 || r1.Rows != 22 {
+		t.Errorf("seg1 report = %+v", r1)
+	}
+}
+
+// --stats-dir creates its own directory (the segreceiver runs as the
+// database user; no cross-user setup needed).
+func TestStatsDirMkdirAll(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "dir")
+	writeSenderStats(filepath.Join(dir, "sender-1-1-seg0.json"), 1, 1, 0, 3)
+	if b, err := os.ReadFile(filepath.Join(dir, "sender-1-1-seg0.json")); err != nil || len(b) == 0 {
+		t.Errorf("file after MkdirAll: %v (len %d)", err, len(b))
+	}
+}

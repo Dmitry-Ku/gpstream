@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"github.com/gpstream/gpstream/internal/agent"
 	"strings"
 	"testing"
 	"time"
@@ -90,5 +91,33 @@ func TestIndexProgressMetrics(t *testing.T) {
 	out = m.Prometheus()
 	if !strings.Contains(out, "gpstream_index_queue 0") || !strings.Contains(out, "gpstream_index_done_total 7") {
 		t.Fatalf("index metrics not updated:\n%s", out)
+	}
+}
+
+// RecordSenderStats (relay increment 2): cumulative totals across units +
+// the LAST unit's per-segment detail.
+func TestRecordSenderStats(t *testing.T) {
+	m := New()
+	m.RecordSenderStats([]agent.SenderStat{
+		{Job: 1, Unit: 1, Content: 0, Rows: 100, Retransmitted: 2, Reconnects: 1, AckLagMaxMs: 5},
+		{Job: 1, Unit: 1, Content: 1, Rows: 100, Retransmitted: 3, Reconnects: 0, AckLagMaxMs: 9},
+	})
+	m.RecordSenderStats([]agent.SenderStat{
+		{Job: 1, Unit: 2, Content: 0, Rows: 50, Retransmitted: 4, Reconnects: 2, AckLagMaxMs: 1},
+	})
+	retrans, reconns, seg := m.SenderFrameAck()
+	if retrans != 9 || reconns != 3 {
+		t.Errorf("cumulative = %d/%d, want 9/3", retrans, reconns)
+	}
+	if len(seg) != 1 || seg[0].Unit != 2 {
+		t.Errorf("last-unit detail = %+v, want unit 2 only", seg)
+	}
+	// The caller's copy must not be the internal slice.
+	if len(seg) > 0 {
+		seg[0].Rows = -1
+		_, _, again := m.SenderFrameAck()
+		if again[0].Rows == -1 {
+			t.Error("SenderFrameAck returned the internal slice (mutated)")
+		}
 	}
 }

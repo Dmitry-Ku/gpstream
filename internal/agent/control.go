@@ -130,6 +130,17 @@ type OnSegmentReq struct {
 	// same parameters by the controller.
 	// ReqID (P1d) is the controller's per-request correlation id, echoed
 	// in OnSegmentResp (concurrent ops on one control connection).
+	// StatsDir (relay increment 2): when non-empty, the segreceivers write
+	// their per-segment sender-stats file into this directory (the kernel
+	// runs one per source segment, so the filename carries each segment's
+	// own content: sender-<job>-<unit>-seg<content>.json). The source agent
+	// pulls the files back over SSH after the dispatch and reports them in
+	// OnSegmentResp.SenderStats. Must satisfy segstream.validStatsDir
+	// (/tmp/gpstream-stats-<operation-id>; the operation id is operator
+	// input, so the allowlist is the injection guard).
+	StatsDir string `json:"stats_dir,omitempty"`
+	// ReqID (P1d) is the controller's per-request correlation id, echoed
+	// in OnSegmentResp (concurrent ops on one control connection).
 	ReqID         uint64 `json:"req_id,omitempty"`
 	FrameAck      string `json:"frame_ack,omitempty"`   // on|off
 	AckTimeout    string `json:"ack_timeout,omitempty"` // 15s|30s|adaptive
@@ -141,12 +152,38 @@ type OnSegmentReq struct {
 // returned (all segreceivers have finished streaming). Rows is the kernel's
 // COPY row count (a cross-check; the authoritative count is the destination
 // agent's).
+// SenderStat is one source segment's sender-side frame-ack report (the
+// segreceiver's --stats-dir JSON line, relayed back by the source agent
+// after the ON SEGMENT dispatch — relay increment 2). The sender's mirror
+// of the destination minis' receiver view (UnitDoneResp's
+// retransmitted/reconnects): how many frames THIS slice had to replay and
+// how often a sub-stream reconnected mid-stream.
+type SenderStat struct {
+	Job           int64  `json:"job"`
+	Unit          int64  `json:"unit"`
+	Content       int64  `json:"content"`
+	Rows          int64  `json:"rows"`
+	Retransmitted uint64 `json:"retransmitted"`
+	Reconnects    int    `json:"reconnects"`
+	AckLagMaxMs   int64  `json:"ack_lag_max_ms"`
+}
+
+// OnSegmentResp is the source agent's report after the ON SEGMENT COPY
+// returned (all segreceivers have finished streaming). Rows is the kernel's
+// COPY row count (a cross-check; the authoritative count is the destination
+// agent's).
 type OnSegmentResp struct {
 	Ok     bool   `json:"ok"`
 	UnitID uint32 `json:"unit_id,omitempty"` // P1d: echoes OnSegmentReq.UnitID
 	ReqID  uint64 `json:"req_id,omitempty"`  // P1d: echoes OnSegmentReq.ReqID
 	Rows   int64  `json:"rows,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// SenderStats (relay increment 2): the per-segment sender-side reports
+	// pulled from StatsDir after the dispatch. Only present when the
+	// controller opted in (--sender-stats); a segment whose file is missing
+	// or whose host is unreachable simply has no entry (stats are an
+	// observability side channel, never a transfer-contract input).
+	SenderStats []SenderStat `json:"sender_stats,omitempty"`
+	Error       string       `json:"error,omitempty"`
 }
 
 // DirectReq is the controller's per-unit instruction for the P5 direct data

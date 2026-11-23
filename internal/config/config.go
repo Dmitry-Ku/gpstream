@@ -271,6 +271,11 @@ type Config struct {
 	AckTimeout          string // 15s | 30s | adaptive (default 30s)
 	MaxReconnects       int    // default 20
 	RetransmitBufferMax int64  // default 64 MiB (in-flight window; raise for long-haul WAN)
+	// SenderStats (relay increment 2): relay the segreceivers' sender-side
+	// frame-ack counters (per segment, per unit) into runstats.json. Mesh
+	// ON SEGMENT units only (the coordinator path has no segreceivers);
+	// off by default.
+	SenderStats bool
 
 	// v4 §8: operation identity. The operation-id is the v4 handle for a job;
 	// the state (journal mirror, staging, reports) lives under

@@ -705,6 +705,47 @@ func validCompressMode(s string) bool {
 
 // listenBinChars rejects anything with shell/quote metacharacters in the
 // binary path (defense in depth: the path lands in a shell one-liner).
+// statsDirPrefix is the fixed /tmp namespace the controller scopes sender
+// stats directories into (one directory per operation: the segreceivers of
+// every source segment of one operation write their per-unit files there).
+const statsDirPrefix = "/tmp/gpstream-stats-"
+
+// validStatsDir reports whether dir is a safe --stats-dir value for the
+// segreceiver program string: it must stay inside the fixed /tmp namespace
+// and carry no character outside the listenBinChars allowlist. The suffix
+// after the prefix is the OPERATOR's operation id (operator input), so the
+// character set is the command-injection guard — the same allowlist the
+// binary path already gets (defense in depth, the controller never echoes
+// arbitrary strings into a kernel-executed program).
+func validStatsDir(dir string) bool {
+	if !strings.HasPrefix(dir, statsDirPrefix) {
+		return false
+	}
+	// The operation id is MANDATORY: the bare prefix would be a shared
+	// directory for every operation (cross-run collisions).
+	if len(dir) <= len(statsDirPrefix) {
+		return false
+	}
+	if len(dir) > 255 {
+		return false
+	}
+	return !listenBinChars(dir)
+}
+
+// StatsDirSuffix renders the segreceiver's --stats-dir flag (relay
+// increment 2): the per-segment sender-stats location appended to EVERY
+// program-command variant by the single ON SEGMENT choke point in the
+// source agent. Empty dir = no suffix (off).
+func StatsDirSuffix(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	if !validStatsDir(dir) {
+		return "", fmt.Errorf("segstream: bad stats dir %q (want %s<operation-id>)", dir, statsDirPrefix)
+	}
+	return " --stats-dir " + dir, nil
+}
+
 func listenBinChars(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

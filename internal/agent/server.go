@@ -9,7 +9,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -546,6 +548,18 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	if err != nil {
 		return OnSegmentResp{ReqID: reqID, Ok: false, Error: fmt.Sprintf("build program: %v", err)}
 	}
+	// Relay (increment 2): the sender-stats directory is appended at this
+	// SINGLE choke point, after all eight ProgramCommand* variants — one
+	// validation site instead of nine. The directory must survive the
+	// kernel's shell (fixed /tmp namespace + allowlist, fail loud otherwise:
+	// a bad value is a configuration error, not a silent stats drop).
+	if req.StatsDir != "" {
+		suffix, serr := segstream.StatsDirSuffix(req.StatsDir)
+		if serr != nil {
+			return OnSegmentResp{ReqID: reqID, Ok: false, Error: serr.Error()}
+		}
+		prog += suffix
+	}
 	sql := segstream.CopyOnSegmentSQL(req.Schema, req.Table, prog)
 	// The ON SEGMENT dispatch must run on the unit's FR-02 snapshot
 	// connection (the kernel dispatches with DF_WITH_SNAPSHOT): the
@@ -563,7 +577,140 @@ func (s *SourceServer) handleOnSegment(req OnSegmentReq) OnSegmentResp {
 	// 2D-C: the on_segment dispatch is one unit too (its rows = the unit).
 	s.unitsServed.Add(1)
 	s.rowsCopied.Add(rows)
-	return OnSegmentResp{ReqID: reqID, Ok: true, Rows: rows}
+	resp := OnSegmentResp{ReqID: reqID, Ok: true, Rows: rows}
+	// Relay (increment 2): the segreceivers are all exited (the COPY
+	// returned), so their per-segment sender-stats files are final. Pull
+	// them back and report them. A pull failure is logged, never fatal —
+	// the data already landed; the stats are a side channel.
+	if req.StatsDir != "" {
+		resp.SenderStats = s.pullSenderStats(ctx, req)
+	}
+	return resp
+}
+
+// pullSenderStats (relay increment 2) reads the per-segment sender-stats
+// files the segreceivers wrote into req.StatsDir (one JSON line each,
+// sender-<job>-<unit>-seg<content>.json) and returns them as SenderStats,
+// sorted by content. Multi-host: one fetch per source segment host (the
+// same SSH the 1F version exchange uses, req.SegSSH), in parallel;
+// single-host layout (SegSSH == "") reads the files locally. Any host that
+// is unreachable or has no file for the unit simply contributes nothing (a
+// missing entry is visible to the operator as len(SenderStats) < S) — the
+// stats must never fail an already-completed unit.
+func (s *SourceServer) pullSenderStats(ctx context.Context, req OnSegmentReq) []SenderStat {
+	hosts, err := s.segmentHosts(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gpstream-source-agent: sender stats: segment catalog: %v\n", err)
+		return nil
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	// The glob is per (job, unit) — stale files of other units (or of an
+	// earlier resume attempt) cannot match. The segreceiver of THIS unit
+	// rewrote its own file before the COPY returned, so what we read is
+	// the just-finished stream.
+	pattern := fmt.Sprintf("sender-%d-%d-seg*.json", req.JobID, req.UnitID)
+	var fetch func(host string) (string, error)
+	if req.SegSSH == "" {
+		fetch = localStatsFetch(req.StatsDir, pattern)
+	} else {
+		fetch = func(host string) (string, error) {
+			cmd := fmt.Sprintf("cat %s/%s 2>/dev/null", req.StatsDir, pattern)
+			return RunRemoteOutput(ctx, req.SegSSH+host, cmd)
+		}
+	}
+	return pullStatsFiles(ctx, hosts, fetch)
+}
+
+// localStatsFetch returns the fetch for the single-host layout (SegSSH ==
+// ""): the source host IS the segment host, so the unit's stats files are
+// read straight from disk (the per-(job,unit) glob matches this unit only).
+func localStatsFetch(dir, pattern string) func(host string) (string, error) {
+	return func(host string) (string, error) {
+		var b []byte
+		matches, gerr := filepath.Glob(filepath.Join(dir, pattern))
+		if gerr != nil {
+			return "", gerr
+		}
+		for _, m := range matches {
+			if d, e := os.ReadFile(m); e == nil {
+				b = append(b, d...)
+			}
+		}
+		return string(b), nil
+	}
+}
+
+// segmentHosts lists the source's primary segment hosts in catalog order
+// (deduplicated: one host can carry several segments).
+func (s *SourceServer) segmentHosts(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, "SELECT hostname FROM gp_segment_configuration WHERE role = 'p' ORDER BY content")
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if len(row) == 0 || row[0] == nil {
+			continue
+		}
+		h := fmt.Sprint(row[0])
+		if h != "" && !seen[h] {
+			seen[h] = true
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts, nil
+}
+
+// pullStatsFiles fetches the per-host concatenated stats output in parallel
+// and parses each line (one JSON report per source segment). fetch(host)
+// returns the raw per-host file contents (the cat output) or an error (the
+// host is unreachable / has no file: it contributes nothing). A corrupt
+// line is dropped, the rest kept. The result is sorted by content, so the
+// order is deterministic despite the parallel fetch.
+func pullStatsFiles(ctx context.Context, hosts []string, fetch func(host string) (string, error)) []SenderStat {
+	var (
+		mu    sync.Mutex
+		out   []SenderStat
+		warns []string
+		wg    sync.WaitGroup
+	)
+	for _, h := range hosts {
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+			data, err := fetch(host)
+			if err != nil {
+				mu.Lock()
+				warns = append(warns, host)
+				mu.Unlock()
+				return
+			}
+			var got []SenderStat
+			for _, line := range strings.Split(data, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var st SenderStat
+				if json.Unmarshal([]byte(line), &st) != nil {
+					continue // a partial/corrupt line: drop it, keep the rest
+				}
+				got = append(got, st)
+			}
+			mu.Lock()
+			out = append(out, got...)
+			mu.Unlock()
+		}(h)
+	}
+	wg.Wait()
+	if len(warns) > 0 {
+		fmt.Fprintf(os.Stderr, "gpstream-source-agent: sender stats: no pull from: %s\n", strings.Join(warns, ", "))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Content < out[j].Content })
+	return out
 }
 
 // countingWriteConn wraps a net.Conn and counts every byte written to it (the

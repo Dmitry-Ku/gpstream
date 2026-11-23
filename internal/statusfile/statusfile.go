@@ -106,12 +106,16 @@ func Write(path string, st Status) error {
 		return err
 	}
 	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0o750: the status tree is operator-owned; group-readable so a
+		// monitoring account of the same group can poll it (gosec G301).
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// 0o640: counters are not secret, but world-readability buys nothing
+	// (gosec G306).
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

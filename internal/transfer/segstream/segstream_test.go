@@ -434,3 +434,25 @@ func TestUnitListen(t *testing.T) {
 		t.Error("UnitListen(h:65535, 1): expected out-of-range error")
 	}
 }
+
+// validStatsDir / StatsDirSuffix (relay increment 2): the --stats-dir value
+// lands in a kernel-executed program string, so the character set is the
+// injection guard.
+func TestValidStatsDir(t *testing.T) {
+	if !validStatsDir("/tmp/gpstream-stats-20261123T090000Z") {
+		t.Error("timestamp operation id rejected")
+	}
+	if !validStatsDir("/tmp/gpstream-stats-op_1.x") {
+		t.Error("underscore/dot operation id rejected")
+	}
+	for _, bad := range []string{
+		"",
+		"/tmp/gpstream-stats-", // empty id
+		"/tmp/gpstream-stats-x;rm",
+		"/var/tmp/gpstream-stats-x",
+	} {
+		if validStatsDir(bad) {
+			t.Errorf("validStatsDir(%q) = true, want false", bad)
+		}
+	}
+}

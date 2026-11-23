@@ -299,3 +299,20 @@ func TestParseConfigRateLimitUnits(t *testing.T) {
 		}
 	}
 }
+
+func TestParseConfigSenderStats(t *testing.T) {
+	c, err := parseConfig([]string{"--sender-stats"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.SenderStats {
+		t.Error("--sender-stats not bound")
+	}
+	c2, err := parseConfig([]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.SenderStats {
+		t.Error("default must be off")
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/gpstream/gpstream/internal/agent"
 )
 
 // Metrics is the in-memory state of a running manifest.
@@ -56,8 +58,16 @@ type Metrics struct {
 	Retransmitted uint64
 	Reconnects    uint64
 	AckLagMax     time.Duration
-	compressHits  map[string]uint64
-	rateHistory   []sample // for throughput window
+	// Sender-side frame-ack observability (relay increment 2, --sender-stats):
+	// the segreceivers' per-unit reports relayed back by the source agent.
+	// SenderRetransmitted/SenderReconnects accumulate across all units (the
+	// sender's mirror of Retransmitted/Reconnects); SenderSegStats keeps the
+	// LAST unit's per-segment detail for runstats.json.
+	SenderRetransmitted uint64
+	SenderReconnects    uint64
+	SenderSegStats      []agent.SenderStat
+	compressHits        map[string]uint64
+	rateHistory         []sample // for throughput window
 }
 
 // tableMetric is one row of the per-table breakdown (FR-04 "per table").
@@ -276,6 +286,31 @@ func (m *Metrics) FrameAck() (retransmitted, reconnects uint64, ackLag time.Dura
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.Retransmitted, m.Reconnects, m.AckLagMax
+}
+
+// RecordSenderStats (relay increment 2) accumulates one unit's per-segment
+// sender-side reports (the segreceivers' own replay/reconnect view, relayed
+// back by the source agent): the totals roll into SenderRetransmitted /
+// SenderReconnects, the per-segment slice becomes the LAST unit's detail.
+func (m *Metrics) RecordSenderStats(entries []agent.SenderStat) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	last := make([]agent.SenderStat, 0, len(entries))
+	for _, e := range entries {
+		m.SenderRetransmitted += e.Retransmitted
+		m.SenderReconnects += uint64(e.Reconnects)
+		last = append(last, e)
+	}
+	m.SenderSegStats = last
+}
+
+// SenderFrameAck returns the sender-side frame-ack observability (relay
+// increment 2): cumulative retransmits/reconnects + the last unit's
+// per-segment detail (a copy — the caller may retain it).
+func (m *Metrics) SenderFrameAck() (retransmitted, reconnects uint64, segStats []agent.SenderStat) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.SenderRetransmitted, m.SenderReconnects, append([]agent.SenderStat(nil), m.SenderSegStats...)
 }
 
 // RecordFrameError records a CRC/framing error (FR-01/§4.2).
@@ -661,6 +696,14 @@ type RunStats struct {
 	// routed to existing slots. Always present (0 = no frame-ack activity).
 	Retransmitted uint64 `json:"retransmitted"`
 	Reconnects    uint64 `json:"reconnects"`
+	// Sender-side frame-ack observability (relay increment 2, --sender-stats):
+	// the segreceivers' own view relayed back by the source agent — the
+	// cumulative replay/reconnect totals + the last unit's per-segment
+	// detail. Absent (omitted) when the feature is off or no mesh unit has
+	// streamed yet.
+	SenderRetransmitted uint64             `json:"sender_retransmitted,omitempty"`
+	SenderReconnects    uint64             `json:"sender_reconnects,omitempty"`
+	SenderSegStats      []agent.SenderStat `json:"sender_seg_stats,omitempty"`
 }
 
 func joinLines(s []string) string {
