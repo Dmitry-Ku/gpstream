@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -134,5 +135,26 @@ func TestStatsDirMkdirAll(t *testing.T) {
 	writeSenderStats(filepath.Join(dir, "sender-1-1-seg0.json"), 1, 1, 0, 3)
 	if b, err := os.ReadFile(filepath.Join(dir, "sender-1-1-seg0.json")); err != nil || len(b) == 0 {
 		t.Errorf("file after MkdirAll: %v (len %d)", err, len(b))
+	}
+}
+
+// The kernel launches the segreceiver with umask 077: the created stats
+// directory and file must still land 0755/0644 — the relay reader (the
+// source agent) runs as a DIFFERENT user.
+func TestStatsDirUmask077(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "sub", "sender-1-1-seg0.json")
+	writeSenderStats(p, 1, 1, 0, 5)
+	if fi, err := os.Stat(filepath.Join(dir, "sub")); err != nil {
+		t.Fatalf("dir: %v", err)
+	} else if fi.Mode().Perm() != 0o755 {
+		t.Errorf("dir mode = %o, want 755 (umask 077 must not win)", fi.Mode().Perm())
+	}
+	if fi, err := os.Stat(p); err != nil {
+		t.Fatalf("file: %v", err)
+	} else if fi.Mode().Perm() != 0o644 {
+		t.Errorf("file mode = %o, want 644", fi.Mode().Perm())
 	}
 }

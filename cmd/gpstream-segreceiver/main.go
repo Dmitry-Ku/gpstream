@@ -319,9 +319,24 @@ func writeSenderStats(path string, jobID, unitID uint32, contentID, rows int64, 
 			fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: mkdir %s: %v\n", dir, err)
 			return
 		}
+		// The kernel launches the segreceiver with umask 077, so the
+		// MkdirAll mode above lands as 0700; the RELAY (increment 2)
+		// reader is the source agent under a DIFFERENT user, so the
+		// directory must be made group/other-readable explicitly.
+		if err := os.Chmod(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: chmod %s: %v\n", dir, err)
+			return
+		}
 	}
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: write %s: %v\n", path, err)
+		return
+	}
+	// Same umask 077: the file lands 0600 without an explicit Chmod, and
+	// the relay reader (the agent, another user) must be able to read it.
+	// The file carries counters only — no credentials.
+	if err := os.Chmod(path, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "gpstream-segreceiver: stats: chmod %s: %v\n", path, err)
 	}
 }
 
