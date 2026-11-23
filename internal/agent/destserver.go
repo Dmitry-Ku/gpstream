@@ -1248,7 +1248,7 @@ func (s *DestServer) serveControl(l net.Listener) {
 	}
 	r := bufio.NewReader(conn)
 	for {
-		line, rerr := r.ReadBytes('\n')
+		line, rerr := readCappedLine(r)
 		if len(line) == 0 && rerr != nil {
 			// Controller closed the control conn (run end / kill -9). WAIT
 			// for the in-flight ops before exiting: the data path is

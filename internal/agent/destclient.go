@@ -163,7 +163,7 @@ func (c *DestControlClient) markDead() {
 func (c *DestControlClient) readLoop() {
 	defer c.markDead()
 	for {
-		line, err := c.r.ReadBytes('\n')
+		line, err := readCappedLine(c.r)
 		if len(line) > 0 {
 			var env struct {
 				Op    string `json:"op"`

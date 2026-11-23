@@ -294,7 +294,7 @@ func (s *SourceServer) serveControl(l net.Listener) {
 			return
 		default:
 		}
-		line, rerr := r.ReadBytes('\n')
+		line, rerr := readCappedLine(r)
 		if rerr != nil {
 			// Controller closed the control conn (run end) or was killed.
 			// WAIT for the in-flight ops before exiting: the data path is

@@ -451,10 +451,60 @@ func SendLine(w io.Writer, msg any) error {
 	return nil
 }
 
+// maxControlLine bounds a single control message. The largest legitimate
+// message (an onsegment request with TLS paths) is well under 10 KiB; the
+// 1 MiB cap is 100x headroom. Without the bound, bufio.ReadBytes grows to
+// the full line length, so a peer streaming bytes without a newline could
+// exhaust the agent's memory (fuzz-audit finding 2026-11).
+const maxControlLine = 1 << 20
+
+// readCappedLine is bufio's ReadBytes('\n') with a hard bound. It returns
+// the same (bytes, error) pairs ReadBytes does for in-bounds input:
+//
+//   - the line up to and including the newline, err = nil;
+//   - the stream remainder (no newline before EOF), err = io.EOF;
+//   - the partial line + the transport error when the stream dies mid-line;
+//
+// and adds one new case: a line longer than maxControlLine returns an error
+// (the peer is rejected, not absorbed). At most ~1 MiB + one bufio buffer is
+// ever accumulated per line.
+func readCappedLine(r *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		// ReadSlice consumes the buffer and returns it with ErrBufferFull
+		// when no delimiter is in it (go1.27 semantics), so accumulation
+		// below counts each byte exactly once.
+		slice, err := r.ReadSlice('\n')
+		line = append(line, slice...)
+		switch {
+		case err == nil:
+			// Complete line (through the newline).
+			return line, nil
+		case err == bufio.ErrBufferFull:
+			if len(line) > maxControlLine {
+				return nil, fmt.Errorf("agent control: line exceeds %d bytes", maxControlLine)
+			}
+			// No newline yet and the stream is still open: keep going.
+		case err == io.EOF:
+			// Stream ended: a buffered remainder is a truncated final line
+			// (the original ReadBytes semantics recvLine relies on); none
+			// is a clean end of stream. Both are within the cap or not.
+			if len(line) > maxControlLine {
+				return nil, fmt.Errorf("agent control: line exceeds %d bytes", maxControlLine)
+			}
+			return line, io.EOF
+		default:
+			// Transport error: hand back what was accumulated with the
+			// error, the way ReadBytes would.
+			return line, err
+		}
+	}
+}
+
 // recvLine reads one newline-terminated control message from r and unmarshals
 // it into out. It returns io.EOF at a clean end of the control stream.
 func recvLine(r *bufio.Reader, out any) error {
-	b, err := r.ReadBytes('\n')
+	b, err := readCappedLine(r)
 	if len(b) > 0 {
 		// Tolerate a trailing newline (json.Unmarshal ignores it).
 		if uerr := json.Unmarshal(b, out); uerr != nil {
@@ -534,7 +584,7 @@ func (c *ControlClient) StartReader() {
 func (c *ControlClient) readLoop() {
 	defer c.markDead()
 	for {
-		line, err := c.r.ReadBytes('\n')
+		line, err := readCappedLine(c.r)
 		if len(line) > 0 {
 			var env struct {
 				ReqID uint64 `json:"req_id"`

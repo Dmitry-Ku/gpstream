@@ -138,7 +138,7 @@ func dialPeer(ctx context.Context, peerAddr string, sv SourceVersion, dataCert, 
 func (pc *peerChannel) readLoop() {
 	defer pc.markDead()
 	for {
-		line, err := pc.r.ReadBytes('\n')
+		line, err := readCappedLine(pc.r)
 		if len(line) > 0 {
 			var env struct {
 				ReqID uint64 `json:"req_id"`

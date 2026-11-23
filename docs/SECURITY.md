@@ -24,6 +24,7 @@ not a file on disk. The security concerns are therefore:
 | Destructive action without intent | `--yes` guard on `cleanup` (§6) |
 | Wrong cluster / wrong target | `dry-run` (§7) |
 | Undocumented operator action | **Audit log** (`audit.log`, §10) |
+| Malicious / compromised peer (DoS, redirect) | **Peer-input bounds + frame CRC + fuzzing** (§12) |
 
 ---
 
@@ -245,3 +246,84 @@ never fails the action.
 - `ADMIN_GUIDE.md` — deployment, logrotate, upgrade.
 - `METRICS.md` — the counters (including `Errors`/`FrameErrors`).
 - `TROUBLESHOOTING.md` — diagnosing a failed `dry-run` run.
+
+---
+
+## 12. Peer-input bounds and wire trust (DoS)
+
+Every byte from a peer agent (data or control channel) is **attacker-shaped
+input** — a compromised or malicious peer must not be able to crash, exhaust,
+or redirect the agent. Three layers enforce that.
+
+### 12.1 Frame size bound (data channel)
+
+- `transfer.MaxFramePayload` = **1 MiB** (4x the 256 KiB production chunk
+  size) bounds a single frame's payload.
+- It is enforced in `checkFrameLen` (every `Decode`/`decodeV1`/`decodeV2`
+  path) **and** in `ReadFrame` *before* the payload buffer is allocated.
+- The frame length field is peer-controlled: without the bound, one forged
+  header claiming a multi-giB payload made `ReadFrame` allocate ~4 GiB
+  before the short read could fail — an OOM vector against the dest agent.
+  Found by fuzzing (`FuzzReadFrame`, 2026-11); rejected with an error, no
+  allocation, when a frame exceeds the cap.
+- A legitimate frame is at most 256 KiB of rows (`segstream chunkSize`), so
+  the 1 MiB cap leaves 4x headroom; a frame above the cap is malformed and
+  refused.
+
+### 12.2 Control-line size bound (control / peer channel)
+
+- Every newline-delimited control and peer message is read through
+  `readCappedLine` (cap `maxControlLine` = **1 MiB**, ~100x the largest
+  legitimate onsegment request).
+- `bufio.ReadBytes('\n')` grows to the full line length, so a peer streaming
+  bytes without a newline could exhaust the agent's memory. `readCappedLine`
+  bounds the accumulation: a line longer than the cap is rejected with an
+  error (the peer is rejected, not absorbed), and in-bounds lines, a
+  truncated final line at EOF, and a clean EOF keep the original semantics.
+- Applies to all six receiver sites (control request loops, control/peer
+  response readLoops, destination serve loop, source serve loop).
+
+### 12.3 Control channel is the trust root
+
+- The agent **executes what the control peer asks**: the onsegment dispatch
+  runs `COPY ... TO PROGRAM` on the source PostgreSQL, and the request's
+  `dest` field is the listen address the segreceivers dial — i.e. the
+  control peer decides where the table data goes. There is **no
+  per-message authentication** on the control channel of its own.
+- **Default (lab layout):** plain TCP, no authentication. Acceptable only
+  when the control port is reachable exclusively by the trusted controller
+  (localhost bind, or a network segment the controller alone occupies).
+- **Production / untrusted networks:** enable control-channel TLS with mTLS
+  (agent `--control-tls-ca` requires and verifies the controller's client
+  certificate; controller `--control-tls-cert/--control-tls-key`). With mTLS,
+  merely reaching the control port is not enough to drive an agent.
+- **Do not expose the control port to untrusted networks without mTLS.** A
+  peer on the control channel can redirect an in-flight copy's destination
+  (data exfiltration to an attacker-listener) and start onsegment dispatches.
+
+### 12.4 Wire integrity and fuzzing
+
+- **Frame CRC:** every data frame carries a 4-byte FNV-1a CRC over
+  header+payload; a corrupted or truncated frame is rejected (`ErrCorrupt` /
+  truncation error), never partially applied.
+- **Fuzz targets** (native `testing.F`, go-fuzz compatible) cover the
+  attacker-facing parse surfaces — `FuzzFrameDecode`, `FuzzReadFrame`,
+  `FuzzFrameRoundTrip`, `FuzzHelloID` (internal/transfer) and
+  `FuzzParseDestAddrs` (internal/transfer/segstream). The CI `fuzz` job runs
+  60s per target on every push; a found failure persists as a corpus entry in
+  `testdata/<target>/crashers`.
+- **SSH probes** use `StrictHostKeyChecking=no` for compatibility with the
+  lab controllers' OpenSSH 7.4 (predates `accept-new`). Key-based auth +
+  `BatchMode=yes` limits the exposure (a MITM can forge a probe's *output*
+  — e.g. a version string — but not inject commands or steal keys).
+  Production hardening: pre-populate `known_hosts` and switch to
+  `StrictHostKeyChecking=yes`.
+
+### 12.5 Credentials and files (recap of the bounds that matter here)
+
+- DSNs with passwords live only in the operator's config and in-memory agent
+  state (see §2). The written `plan.json` deliberately carries **no
+  credentials** (host:port pairs only).
+- Manifest/journal files are created `0600`; operational status/stats files
+  carry no secrets. No hardcoded secrets in the code base; protocol
+  randomness uses `crypto/rand` (no `math/rand` in the module).
