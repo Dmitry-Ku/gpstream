@@ -183,6 +183,13 @@ listener per source content in mesh and serves the slices concurrently
 bounds the benchmark wall-time. Use it to answer "how fast can the source
 feed the pipeline?" before committing to a full run.
 
+**Measured (F-14, GP6 lab, 23.11):** `t_soak`, 10M rows / 2.4 GB, cluster A
+(3 source segments on one host), 1 worker, zstd, no rate limit —
+input-stream rate: **coordinator 38 MB/s (68.8 s)** vs **mesh 79 MB/s
+(33.0 s)**: per-segment streaming is ~2x the coordinator's single stream on
+this hardware (one GP scan + coordinator aggregation vs three parallel
+segment slices). Virtualized-lab numbers, not a 100 Gbps figure.
+
 ## Data ports
 
 Data ports are allocated automatically: every long-lived agent binds `:0`
