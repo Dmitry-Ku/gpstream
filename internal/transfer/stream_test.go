@@ -1,7 +1,9 @@
 package transfer
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"testing"
 	"time"
@@ -120,4 +122,46 @@ func (p *pipeAdapter) Close() error {
 	_ = p.w.Close()
 	_ = p.r.Close()
 	return nil
+}
+
+// TestFrameOversizedLengthRejected guards the allocation bound found by
+// FuzzReadFrame: the length field is peer-controlled, so a frame claiming a
+// multi-gigabyte payload must be rejected with an error *before* ReadFrame
+// (or the codec) allocates it. Without the cap this was a ~4 GiB malloc on
+// a single forged header (an OOM vector against a dest agent).
+func TestFrameOversizedLengthRejected(t *testing.T) {
+	// Forge a v2 header whose length field is the maximum uint32. The body
+	// is short on purpose: the correct behavior is to reject the length,
+	// not to try to read (and allocate) the claimed payload.
+	var hdr [28]byte
+	binary.LittleEndian.PutUint32(hdr[0:4], magicV2)
+	binary.LittleEndian.PutUint32(hdr[4:8], 0xFFFFFFFF)
+	hdr[8] = frameVer2
+	body := append([]byte{}, hdr[:]...)
+	body = append(body, make([]byte, 64)...)
+
+	if _, err := ReadFrame(context.Background(), &fuzzPipe{r: bytes.NewReader(body)}); err == nil {
+		t.Fatal("ReadFrame accepted a frame claiming a 4 GiB payload")
+	}
+	if _, err := Decode(body); err == nil {
+		t.Fatal("Decode accepted a frame claiming a 4 GiB payload")
+	}
+}
+
+// TestFrameMaxPayloadAccepted confirms the cap has headroom: a frame at the
+// maximum allowed payload must still round-trip, so legitimate (if large)
+// frames are not collateral of the OOM guard.
+func TestFrameMaxPayloadAccepted(t *testing.T) {
+	payload := make([]byte, MaxFramePayload)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	f := &Frame{JobID: 1, UnitID: 7, Seq: 42, Data: payload}
+	got, err := Decode(f.Encode())
+	if err != nil {
+		t.Fatalf("Decode of a max-size frame failed: %v", err)
+	}
+	if !bytes.Equal(got.Data, payload) {
+		t.Fatal("max-size payload did not round-trip")
+	}
 }

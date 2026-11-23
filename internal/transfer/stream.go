@@ -189,6 +189,14 @@ const (
 	// fixedHdrV2 adds ver(1)+flags(1)+content_id(2) after len:
 	// magic(4)|len(4)|ver(1)|flags(1)|content_id(2)|jobid(4)|unitid(4)|seq(8)
 	fixedHdrV2 = 4 + 4 + 1 + 1 + 2 + 4 + 4 + 8 // = 28
+
+	// MaxFramePayload bounds a single frame's payload. Production frames are
+	// at most 256 KiB (segstream chunkSize); the 1 MiB cap leaves 4x headroom,
+	// so any larger frame is malformed. It is enforced before allocation: the
+	// length field is attacker-controlled (peer bytes over the wire), and
+	// without the cap a forged 4 GiB length makes ReadFrame allocate ~4 GiB
+	// (OOM) before the short read can fail. Found by FuzzReadFrame.
+	MaxFramePayload = 1 << 20
 )
 
 // Wire layouts (length-prefixed so a reader can delimit frames; trailing 4-byte
@@ -302,6 +310,9 @@ func checkFrameLen(b []byte, hdrLen int) (int, int, error) {
 	if payloadLen < 0 {
 		return 0, 0, fmt.Errorf("frame: bad length %d", payloadLen)
 	}
+	if payloadLen > MaxFramePayload {
+		return 0, 0, fmt.Errorf("frame: payload %d exceeds max %d", payloadLen, MaxFramePayload)
+	}
 	bodyEnd := hdrLen + payloadLen
 	if len(b) < bodyEnd+4 {
 		return 0, 0, fmt.Errorf("frame: truncated (want %d, got %d)", bodyEnd+4, len(b))
@@ -396,6 +407,12 @@ func ReadFrame(ctx context.Context, r Pipe) (*Frame, error) {
 		payloadLen := int(binary.LittleEndian.Uint32(hdr[4:8])) - hdrLen
 		if payloadLen < 0 {
 			return nil, fmt.Errorf("stream: bad length %d", payloadLen)
+		}
+		// Enforce the payload cap before the allocation below: the length is
+		// peer-controlled, and ReadFrame must not allocate it unchecked
+		// (a forged 4 GiB length is a ~4 GiB allocation, i.e. an OOM).
+		if payloadLen > MaxFramePayload {
+			return nil, fmt.Errorf("stream: payload %d exceeds max %d", payloadLen, MaxFramePayload)
 		}
 		body := make([]byte, hdrLen+payloadLen+4)
 		copy(body[:8], hdr[:8])
