@@ -86,6 +86,29 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  # Timeboxed fuzzing of the attacker-facing wire surfaces: the Frame v2
+  # codec (bytes from a peer agent), the stream-level frame reader, the
+  # StreamID identity handshake body, and the destination address-book
+  # parser. Each target runs 60s per push: long enough to shake out a
+  # regression in the parse paths, short enough to keep CI responsive.
+  # A corpus entry is added automatically for every found failure (Go
+  # fuzzing keeps it in testdata/<target>/crashers).
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+      - name: fuzz the frame codec + handshake (4 x 60s)
+        run: |
+          for T in FuzzFrameDecode FuzzReadFrame FuzzFrameRoundTrip FuzzHelloID; do
+            go test -run '^$' -fuzz "$T" -fuzztime 60s ./internal/transfer/
+          done
+      - name: fuzz the segment address book (60s)
+        run: go test -run '^$' -fuzz FuzzParseDestAddrs -fuzztime 60s ./internal/transfer/segstream/
+
   # Smoke: the binary must run without a cluster (CR-7 / FR-05).
   # (dry-run without a cluster is a reachability FAIL by design, so it is
   # not a smoke).
