@@ -306,7 +306,10 @@ worker's units to a live one.
 What happens to the REST of the job when a unit fails is `--on-unit-failure`
 (spec F-06): the default `continue` records the failed unit (journal +
 `events.jsonl`) and keeps copying everything else, so the run ends with a full
-summary and `gpstream resume --operation-id <id>` re-queues the failed units.
+summary. A failed unit is **terminal**: `gpstream resume` skips it (resume
+re-queues only non-terminal units, the FR-07 crash-recovery path); recover a
+failed unit with a re-run using the same `--operation-id`, which re-copies the
+planned units (see FAILOVER.md).
 `--on-unit-failure=abort` stops the run at the first failure instead (in-flight
 units finish; no new unit starts) — use it when a failed unit usually means
 the environment is broken and copying on would only make it worse.
