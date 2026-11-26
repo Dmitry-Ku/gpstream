@@ -30,6 +30,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
   local connection (GatherSide) and the controller computes the report in
   memory (FromSides). The operator-facing report is unchanged.
 
+### Fixed
+
+- **Two-agent recovery: the remote agent's control port is no longer
+  allocated on the controller host.** `controlListen` probed the controller's
+  own loopback (`127.0.0.1:0`) and handed the "free" port to the remote agent,
+  which bound `0.0.0.0:<port>` on its own host. The two port spaces are
+  independent: a port free on the controller can be held on the agent host
+  (a TIME_WAIT socket of a just-killed previous agent is the observed case),
+  so the agent died at startup with `peer listen …: bind: address already in
+  use` and the controller then timed out on the control dial after the full
+  90s deadline — `gpstream run --operation-id <id>` after a fault (re-run of
+  the same operation, the documented recovery path) failed non-deterministically
+  (26.11 r4_fail: RERUN#1 `connection refused`, RERUN#2 passed only because
+  the socket happened to be free by then). Remote agents now pick their
+  control port themselves (`0.0.0.0:0`, kernel pick, still restricted by
+  `--port-range` inside the agent) and report the bound address in the status
+  file they already heartbeat (`Status.Control`, written by both agents);
+  the controller discovers it there (`pollAgentControlAddr`, 250ms poll up to
+  the existing dial deadline) and dials the real address — the same
+  agent-picks / real-address-reported pattern the data, persist and peer
+  listeners already use via the hello. Local (same-host) agents keep the
+  pre-bound ports, so the single-host layout is byte-identical.
+- **pgtest: a failed `pg_ctl start` no longer hides the cause and no longer
+  leaves the port occupied.** The startup log was read AFTER the data dir was
+  removed, so the real FATAL was hidden behind `log: <no log>`; and a
+  postmaster that survived a reported-failure held its port forever, turning
+  one flaky start into a permanent `Address already in use` for every later
+  start on that port (the 26.11 t7 test-infra incident). The log is now
+  captured before cleanup and included in the error, and a stray postmaster
+  found in the data dir is stopped (TERM, then KILL) before removal.
+
 ## [v0.3.1] - 2026-11-23
 
 ### Added

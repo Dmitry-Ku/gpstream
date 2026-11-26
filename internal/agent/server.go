@@ -21,6 +21,7 @@ import (
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/dryrun"
 	"github.com/gpstream/gpstream/internal/plan"
+	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/statusfile"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/transfer/compress"
@@ -140,6 +141,10 @@ type ServerOptions struct {
 	// after a break (the run's --max-reconnects; 0 = default 20). A break
 	// that exhausts the budget fails the unit (run-level resume, FR-06).
 	MaxReconnects int
+	// PortAlloc (optional) bounds the auto-picked (":0") control port to
+	// the run's --port-range (strict firewall: every auto-picked listener
+	// port stays inside the range). nil / disabled = kernel picks.
+	PortAlloc *portalloc.Allocator
 	// Workers (P1d) is the run's --workers. 1 (the default) = strict: one
 	// pinned REPEATABLE READ connection, one exact snapshot point. >1 =
 	// snapshot-epoch: N pinned connections in an ε-window, each data COPY
@@ -236,6 +241,7 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 			Units:     s.unitsServed.Load(),
 			Rows:      s.rowsCopied.Load(),
 			Version:   version.String(),
+			Control:   s.ctrlAddr,
 			StartedAt: s.startedAt,
 		}
 	})
@@ -243,9 +249,21 @@ func (s *SourceServer) Start(ctx context.Context) (string, error) {
 	return s.startControl()
 }
 
+// bindControl binds the control listener. An auto port (":0") is resolved
+// through the run's --port-range allocator when one is set (strict firewall:
+// the agent self-picks its control port in the two-agent remote layout, so
+// the range is enforced on the agent host); a pinned address or no range is
+// bound verbatim.
+func (s *SourceServer) bindControl() (net.Listener, error) {
+	if s.opts.PortAlloc != nil {
+		return s.opts.PortAlloc.ListenAddr(s.opts.Listen)
+	}
+	return net.Listen("tcp", s.opts.Listen)
+}
+
 // startControl begins the control listener and returns its address.
 func (s *SourceServer) startControl() (string, error) {
-	l, err := net.Listen("tcp", s.opts.Listen)
+	l, err := s.bindControl()
 	if err != nil {
 		if s.pool != nil {
 			s.pool.Close()

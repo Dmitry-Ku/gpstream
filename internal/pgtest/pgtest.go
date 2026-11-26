@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // DefaultBinDir is the PG 9.4.26 toolchain location on this build host.
@@ -205,8 +207,10 @@ func startCluster(port uint32, db, lcCollate, lcCtype string) (*Cluster, error) 
 		"start", "-w", "-t", "60",
 	).CombinedOutput()
 	if err != nil {
+		log := readFile(logPath) // capture BEFORE cleanup: the log holds the bind FATAL
+		stopStrayPostmaster(dataDir)
 		os.RemoveAll(dataDir)
-		return nil, fmt.Errorf("pgtest: pg_ctl start: %w\n%s\nlog:\n%s", err, out, readFile(logPath))
+		return nil, fmt.Errorf("pgtest: pg_ctl start: %w\n%s\nlog:\n%s", err, out, log)
 	}
 
 	// Create the database on the initial "postgres" db (user gp, trust
@@ -254,6 +258,38 @@ func (c *Cluster) Stop() {
 		exec.Command(pgctl, "-D", c.DataDir, "-m", "fast", "stop").Run()
 	}
 	os.RemoveAll(c.DataDir)
+}
+
+// stopStrayPostmaster stops a postmaster that may still be running in
+// dataDir after a FAILED pg_ctl start (the wait probe can give up while the
+// server actually came up). Left alone, the stray holds its port forever
+// and turns one flaky start into a permanent EADDRINUSE for every later
+// start on that port (the 26.11 t7 incident). Best-effort, silent when
+// nothing is running.
+func stopStrayPostmaster(dataDir string) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "postmaster.pid"))
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 {
+		return
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if perr != nil || pid <= 1 {
+		return
+	}
+	if syscall.Kill(pid, 0) != nil { // not running
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	for i := 0; i < 100; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 func readFile(p string) string {

@@ -18,6 +18,7 @@ import (
 	"github.com/gpstream/gpstream/internal/launch"
 	"github.com/gpstream/gpstream/internal/plan"
 	"github.com/gpstream/gpstream/internal/portalloc"
+	"github.com/gpstream/gpstream/internal/statusfile"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
 )
 
@@ -268,6 +269,11 @@ type processTwoAgentRunner struct {
 	// --port-range (local / single-host layout); nil = auto. The remote
 	// (SSH) layout passes the range to the agents instead (--port-range).
 	portAlloc *portalloc.Allocator
+	// statusRead reads one agent's status file (the discovery channel for a
+	// remote agent's self-picked control port). nil = production default
+	// (local read / SSH cat, the same readback `gpstream status` uses);
+	// tests inject a fake.
+	statusRead func(ctx context.Context, sshHost, file string) (*statusfile.Status, error)
 	// Source agent (long-lived; owns the FR-02 snapshot).
 	ctrl      *agent.ControlClient
 	srcHandle *launch.Handle
@@ -459,8 +465,14 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		"--workers", strconv.Itoa(r.cfg.WorkersPerPair),
 		"--max-snapshot-delta", strconv.FormatInt(int64(r.cfg.MaxSnapshotDelta.Seconds()), 10),
 	}
-	// 2D-C: the live status heartbeat file (the agent's own host).
-	if sf := r.statusFileFor("source"); sf != "" {
+	// Strict firewall: bound the agent's auto-picked (":0") ports, the same
+	// the dest agent gets.
+	if r.cfg.PortRange != "" {
+		srcArgs = append(srcArgs, "--port-range", r.cfg.PortRange)
+	}
+	// 2D-C: the live status heartbeat file (the agent's own host; for a
+	// remote agent this also carries the self-picked control address).
+	if sf := r.agentStatusFileFor("source", r.cfg.SourceAgentSSH); sf != "" {
 		srcArgs = append(srcArgs, "--status-file", sf)
 	}
 	if r.cfg.SSLCert != "" {
@@ -481,11 +493,20 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		return fmt.Errorf("two-agent: launch source agent: %w", err)
 	}
 	r.srcHandle = h
-	client, err := dialControlRetry(ctx, srcCtrlDial, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
+	srcDial := srcCtrlDial
+	if srcDial == "" { // remote agent: self-picked control port - discover it
+		srcDial, err = r.pollAgentControlAddr(ctx, r.cfg.SourceAgentSSH, r.agentStatusFileFor("source", r.cfg.SourceAgentSSH), controlDialDeadline(r.cfg.SourceAgentSSH))
+		if err != nil {
+			h.Stop()
+			r.srcHandle = nil
+			return fmt.Errorf("two-agent: source control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
+		}
+	}
+	client, err := dialControlRetry(ctx, srcDial, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.srcHandle = nil
-		return fmt.Errorf("two-agent: source control dial %s: %w (agent log: %s)\n%s", srcCtrlDial, err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
+		return fmt.Errorf("two-agent: source control dial %s: %w (agent log: %s)\n%s", srcDial, err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
 	}
 	r.ctrl = client
 	return nil
@@ -619,8 +640,9 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 	if r.cfg.SegTLSCA != "" {
 		dargs = append(dargs, "--data-tls-ca", r.cfg.SegTLSCA)
 	}
-	// 2D-C: the live status heartbeat file (the agent's own host).
-	if sf := r.statusFileFor("dest"); sf != "" {
+	// 2D-C: the live status heartbeat file (the agent's own host; for a
+	// remote agent this also carries the self-picked control address).
+	if sf := r.agentStatusFileFor("dest", r.cfg.DestAgentSSH); sf != "" {
 		dargs = append(dargs, "--status-file", sf)
 	}
 	h, err := launch.Ensure(ctx, r.target("gpstream-dest-agent", dargs, destCtrlDial, r.cfg.DestAgentSSH))
@@ -628,11 +650,20 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		return fmt.Errorf("two-agent: launch dest agent: %w", err)
 	}
 	r.destHandle = h
-	client, err := dialDestControlRetry(ctx, destCtrlDial, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
+	destDial := destCtrlDial
+	if destDial == "" { // remote agent: self-picked control port - discover it
+		destDial, err = r.pollAgentControlAddr(ctx, r.cfg.DestAgentSSH, r.agentStatusFileFor("dest", r.cfg.DestAgentSSH), controlDialDeadline(r.cfg.DestAgentSSH))
+		if err != nil {
+			h.Stop()
+			r.destHandle = nil
+			return fmt.Errorf("two-agent: dest control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
+		}
+	}
+	client, err := dialDestControlRetry(ctx, destDial, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.destHandle = nil
-		return fmt.Errorf("two-agent: dest control dial %s: %w (agent log: %s)\n%s", destCtrlDial, err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
+		return fmt.Errorf("two-agent: dest control dial %s: %w (agent log: %s)\n%s", destDial, err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
 	}
 	r.destCtrl = client
 	// The hello reports the real bound data address (auto :0 mode). It is the
@@ -707,11 +738,77 @@ func (r *processTwoAgentRunner) controlListen(host string) (listenAddr, dialAddr
 		addr, e := r.prebindLocal()
 		return addr, addr, e
 	}
-	port, e := r.allocRemoteControlPort(host)
-	if e != nil {
-		return "", "", fmt.Errorf("two-agent: allocate remote control port on %s: %w", host, e)
+	// Remote agent: the port must be picked ON THE AGENT HOST. Probing the
+	// controller's own loopback samples a different port space: the "free"
+	// port can be held on the agent host (e.g. a TIME_WAIT socket of a
+	// just-killed previous agent) and the agent's bind dies with
+	// EADDRINUSE, then the control dial times out after the full deadline
+	// (the 26.11 r4_fail incident). Pass "0.0.0.0:0" (kernel pick,
+	// restricted by --port-range inside the agent, like the data / persist
+	// / peer listeners) and discover the real bound address from the
+	// agent's status file before dialing (pollAgentControlAddr).
+	return "0.0.0.0:0", "", nil
+}
+
+// agentStatusFileFor returns the status-file path the agent at sshTarget
+// heartbeats on its OWN host. Unlike statusFileFor it always yields a path
+// for a REMOTE agent - the controller needs it to discover the agent's
+// self-picked control port even when no operation-id / state-dir is set:
+// it falls back to a per-controller-process file in the OS temp dir (the
+// path is identical on both hosts, as with statusFileFor; the agent writes
+// on its own host). Local agents get pre-bound ports and need no discovery
+// ("" keeps their old behavior).
+func (r *processTwoAgentRunner) agentStatusFileFor(side, sshTarget string) string {
+	if sf := r.statusFileFor(side); sf != "" {
+		return sf
 	}
-	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), net.JoinHostPort(host, strconv.Itoa(port)), nil
+	host := r.agentHost(sshTarget)
+	if host == "" || agent.IsLocalHost(host) {
+		return ""
+	}
+	op := r.cfg.OperationID
+	if op == "" {
+		op = "run"
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("gpstream-%s-%s-agent-%d.json", op, side, os.Getpid()))
+}
+
+// pollAgentControlAddr waits until the agent's status file reports its
+// bound control listen address (remote agents self-pick, "0.0.0.0:0"), and
+// returns it rewritten to a dial address from the controller (a remote
+// agent binds 0.0.0.0, so the status holds a loopback/any alias; the same
+// host rewrite the peer address gets). The statusRead seam is nil in
+// production: local read / SSH cat, the readback `gpstream status` uses.
+func (r *processTwoAgentRunner) pollAgentControlAddr(ctx context.Context, sshTarget, file string, deadline time.Duration) (string, error) {
+	if r.statusRead == nil {
+		sshHost := r.agentHost(sshTarget)
+		local := sshHost == "" || agent.IsLocalHost(sshHost)
+		r.statusRead = func(ctx context.Context, _, file string) (*statusfile.Status, error) {
+			if local {
+				return statusfile.ReadLocal(file)
+			}
+			out, err := agent.RunRemoteOutput(ctx, sshHost, "cat "+agent.ShellQuote(file))
+			if err != nil {
+				return nil, err
+			}
+			return statusfile.Parse([]byte(out))
+		}
+	}
+	deadlineAt := time.Now().Add(deadline)
+	for {
+		st, _ := r.statusRead(ctx, sshTarget, file)
+		if st != nil && st.Control != "" {
+			return rewritePeerAddr(st.Control, sshTarget), nil
+		}
+		if time.Now().After(deadlineAt) {
+			return "", fmt.Errorf("agent control address not reported in %s within %s", file, deadline)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // dataListen returns the data address for the dest agent. A local agent gets a
@@ -803,28 +900,6 @@ func (r *processTwoAgentRunner) sshUserPrefix(sshTarget string) string {
 		return sshTarget[:i+1]
 	}
 	return ""
-}
-
-// allocRemoteControlPort picks a control port on a REMOTE agent host: within
-// --port-range when set (the allocator probes via loopback, which is a
-// local hint, not a remote probe — a remote collision is caught by the
-// bounded control dial), else a kernel-picked loopback port as a fresh-port
-// candidate.
-func (r *processTwoAgentRunner) allocRemoteControlPort(host string) (int, error) {
-	if r.portAlloc == nil {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return 0, err
-		}
-		port := l.Addr().(*net.TCPAddr).Port
-		_ = l.Close()
-		return port, nil
-	}
-	port, err := r.portAlloc.Next("127.0.0.1")
-	if err != nil {
-		return 0, err
-	}
-	return port, nil
 }
 
 // tailLog returns the last ~10 non-empty lines of a log file ("" when absent

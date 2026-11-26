@@ -665,6 +665,7 @@ func NewDestServer(o DestServerOptions) (*DestServer, error) {
 			Units:     s.unitsServed.Load(),
 			Rows:      s.rowsCopied.Load(),
 			Version:   version.String(),
+			Control:   s.ControlAddr(),
 			StartedAt: s.startedAt,
 		}
 	})

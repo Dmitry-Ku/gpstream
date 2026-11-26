@@ -3,6 +3,7 @@ package statusfile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,4 +89,35 @@ func TestWriterStartStop(t *testing.T) {
 	off := NewWriter("", 0, func() Status { return Status{} })
 	off.Start()
 	off.Stop()
+}
+
+// Control carries the bound control listen address (remote agents self-pick
+// their port; the controller discovers it from this field).
+func TestControlFieldRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-dest.json")
+	st := Status{Side: "dest", State: "serving", Control: "[::]:43879"}
+	if err := Write(path, st); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := ReadLocal(path)
+	if err != nil {
+		t.Fatalf("ReadLocal: %v", err)
+	}
+	if got.Control != "[::]:43879" {
+		t.Fatalf("Control = %q, want [::]:43879", got.Control)
+	}
+	// omitempty: an agent without a control address must not emit the key,
+	// so pre-fix files and local agents stay parseable either way.
+	st2 := Status{Side: "source", State: "serving"}
+	if err := Write(path, st2); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if strings.Contains(string(raw), `"control"`) {
+		t.Fatalf("empty Control must be omitted from JSON, got: %s", raw)
+	}
 }

@@ -37,6 +37,7 @@ type Status struct {
 	Units      int64     `json:"units,omitempty"`
 	Rows       int64     `json:"rows,omitempty"`
 	Version    string    `json:"version,omitempty"`
+	Control    string    `json:"control,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	LastUpdate time.Time `json:"last_update"`
 }

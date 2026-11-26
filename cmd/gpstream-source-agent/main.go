@@ -27,6 +27,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -34,6 +35,7 @@ import (
 	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
+	"github.com/gpstream/gpstream/internal/portalloc"
 	"github.com/gpstream/gpstream/internal/transfer"
 	"github.com/gpstream/gpstream/internal/version"
 )
@@ -57,6 +59,7 @@ func main() {
 	dest := flag.String("dest", "", "destination agent listen address host:port (one-shot mode, required)")
 	compress := flag.String("compress", "zstd", "stream compression none|zlib|zstd[:level]")
 	snapshot := flag.String("snapshot", "db", "FR-02 snapshot scope: none|db")
+	portRange := flag.String("port-range", "", "restrict auto-picked (port 0) listener ports to LO-HI (strict firewall); empty = no range (kernel picks)")
 	// Data-plane TLS for the agent<->agent socket (source = client).
 	dataCert := flag.String("data-tls-cert", "", "agent-stream client certificate PEM")
 	dataKey := flag.String("data-tls-key", "", "agent-stream client key PEM")
@@ -120,6 +123,23 @@ func main() {
 		if cerr := agent.CheckOnCoordinator(ctx, *src, *sslCert, *sslKey, *sslCA, *sslMinTLS); cerr != nil {
 			fail("coordinator check: %v", cerr)
 		}
+		var portAlloc *portalloc.Allocator
+		if *portRange != "" {
+			var perr error
+			portAlloc, perr = portalloc.ParseRange(*portRange)
+			if perr != nil {
+				fail("invalid --port-range %q: %v", *portRange, perr)
+			}
+			// Pinned (non-zero) listen ports are reserved out of the range
+			// so the auto listeners never collide with them.
+			for _, a := range []string{*serve} {
+				if _, pstr, e := net.SplitHostPort(a); e == nil {
+					if p, e2 := strconv.Atoi(pstr); e2 == nil && p > 0 {
+						portAlloc.SetExclude(p)
+					}
+				}
+			}
+		}
 		srv := agent.NewSourceServer(agent.ServerOptions{
 			SrcConn:          *src,
 			SSLCert:          *sslCert,
@@ -128,6 +148,7 @@ func main() {
 			SSLMinTLS:        *sslMinTLS,
 			Snapshot:         agent.SnapshotMode(*snapshot),
 			Listen:           *serve,
+			PortAlloc:        portAlloc,
 			DataTLSCert:      *dataCert,
 			DataTLSKey:       *dataKey,
 			DataTLSCA:        *dataCA,
