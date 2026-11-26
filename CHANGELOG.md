@@ -60,6 +60,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   start on that port (the 26.11 t7 test-infra incident). The log is now
   captured before cleanup and included in the error, and a stray postmaster
   found in the data dir is stopped (TERM, then KILL) before removal.
+- **Remote agents' status files now live in the OS temp dir, not the state
+  dir.** The heartbeat file carries the agent's self-picked control address,
+  so it is now on the critical path of control-port discovery — but it is
+  written on the AGENT host, where the state dir may not exist and its
+  parent may not be writable by the SSH user (e.g. root-owned `/var/lib` on
+  a fresh host). The heartbeat failed silently (write errors were dropped),
+  the address never appeared, and EVERY cross-host pair timed out at the
+  90s control-dial deadline with no trace of the cause (26.11 r5: all 12
+  matrix pairs failed). The file is now in the OS temp dir — writable by any
+  user, and the path is identical on both hosts so the controller reads it
+  over SSH — and its name embeds a per-launch token so a fault-recovery
+  re-run of the same operation-id can never read a stale file left by the
+  previous launch. Supporting fixes: the status writer reports a
+  persistently failing path once (to the agent log) instead of swallowing
+  every heartbeat; the `agents.json` registry records the path the agent
+  actually writes (so `gpstream status` readback hits the same file); and
+  control-discovery/dial errors now tail the agent log FROM THE AGENT HOST
+  (before, they tailed the controller's own empty local copy).
 
 ## [v0.3.1] - 2026-11-23
 

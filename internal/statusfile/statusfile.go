@@ -52,6 +52,13 @@ type Writer struct {
 	snap     Snapshot
 	done     chan struct{}
 	once     sync.Once
+	// ErrLog, when set, receives status-write errors (an agent can wire in
+	// its own logger). nil = one line to stderr (the agent's log). A
+	// persistently failing path (e.g. the status dir not writable by the
+	// agent user — the 26.11 r5 incident) is reported ONCE per process, not
+	// every heartbeat.
+	ErrLog    func(err error)
+	errLogged bool
 }
 
 // NewWriter returns a writer for path (empty path = disabled: every method
@@ -72,7 +79,18 @@ func (w *Writer) Start() {
 		return
 	}
 	go func() {
-		_ = Write(w.path, w.snap())
+		fail := func(err error) {
+			if err == nil || w.errLogged {
+				return
+			}
+			w.errLogged = true
+			if w.ErrLog != nil {
+				w.ErrLog(err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "gpstream-agent: status file: %s\n", err)
+		}
+		fail(Write(w.path, w.snap()))
 		t := time.NewTicker(w.interval)
 		defer t.Stop()
 		for {
@@ -80,7 +98,7 @@ func (w *Writer) Start() {
 			case <-w.done:
 				return
 			case <-t.C:
-				_ = Write(w.path, w.snap())
+				fail(Write(w.path, w.snap()))
 			}
 		}
 	}()

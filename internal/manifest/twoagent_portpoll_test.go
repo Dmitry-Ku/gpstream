@@ -2,8 +2,10 @@ package manifest
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,25 +100,81 @@ func TestPollAgentControlAddrRealLocalFile(t *testing.T) {
 }
 
 // agentStatusFileFor: remote agents ALWAYS get a status file (control-port
-// discovery needs it even when no operation-id / state-dir is set); local
-// agents keep the old ("" when unresolvable) behavior.
+// discovery needs it even when no operation-id / state-dir is set), and it
+// must live in the OS temp dir — NOT under the state dir: the file is
+// written on the AGENT host, where the state dir may not exist and its
+// parent may not be writable by the SSH user (root-owned /var/lib — the
+// 26.11 r5 incident: silent heartbeat failure, every remote pair timed out
+// at the control-dial deadline). Local agents keep the state-dir path
+// ("" when unresolvable) so `gpstream status` readback works.
 func TestAgentStatusFileFor(t *testing.T) {
-	withOp := &processTwoAgentRunner{cfg: &config.Config{StateDir: "/var/lib/gpstream", OperationID: "op1"}}
-	if got := withOp.agentStatusFileFor("dest", "gp@vm4"); got != "/var/lib/gpstream/op1/agent-dest.json" {
-		t.Fatalf("with op-id = %q, want /var/lib/gpstream/op1/agent-dest.json", got)
+	withOp := NewProcessTwoAgentRunner(&config.Config{StateDir: "/var/lib/gpstream", OperationID: "op1"})
+	remote := withOp.agentStatusFileFor("dest", "gp@vm4")
+	if !strings.HasPrefix(remote, os.TempDir()+string(filepath.Separator)) {
+		t.Fatalf("remote status file %q must live in the OS temp dir (writable by the SSH user), not the state dir", remote)
 	}
+	if !strings.Contains(remote, "op1") || !strings.Contains(remote, "dest") {
+		t.Fatalf("remote status file must embed op-id and side for diagnostics: %q", remote)
+	}
+	// Stable within one launch (the flag value and the poll must agree).
+	if again := withOp.agentStatusFileFor("dest", "gp@vm4"); again != remote {
+		t.Fatalf("path must be stable within a launch: %q vs %q", remote, again)
+	}
+	// A NEW launch (fault-recovery re-run of the same op-id, possibly with
+	// a reused controller pid) must get a DIFFERENT file: a stale file from
+	// the previous launch would hand the controller a dead control address.
+	other := NewProcessTwoAgentRunner(&config.Config{StateDir: "/var/lib/gpstream", OperationID: "op1"})
+	if got := other.agentStatusFileFor("dest", "gp@vm4"); got == remote {
+		t.Fatalf("two launches must not share a status file (stale read risk): %q", got)
+	}
+	// No op-id: still an absolute path (identical on both hosts).
 	noOp := &processTwoAgentRunner{cfg: &config.Config{}}
-	got := noOp.agentStatusFileFor("dest", "gp@vm4")
-	if got == "" {
-		t.Fatal("remote agent without op-id must still get a status file (control-port discovery)")
+	fb := noOp.agentStatusFileFor("dest", "gp@vm4")
+	if !filepath.IsAbs(fb) {
+		t.Fatalf("fallback status file must be absolute (identical on both hosts): %q", fb)
 	}
-	if !filepath.IsAbs(got) {
-		t.Fatalf("fallback status file must be absolute (identical on both hosts): %q", got)
-	}
-	if again := noOp.agentStatusFileFor("dest", "gp@vm4"); again != got {
-		t.Fatalf("fallback must be stable within a process: %q vs %q", again, got)
+	// Local agents: state-dir path, "" when unresolvable (no discovery).
+	if local := withOp.agentStatusFileFor("source", "gp@localhost"); local != "/var/lib/gpstream/op1/agent-source.json" {
+		t.Fatalf("local agent keeps the state-dir path, got %q", local)
 	}
 	if local := noOp.agentStatusFileFor("source", "gp@localhost"); local != "" {
-		t.Fatalf("local agent needs no discovery file, got %q", local)
+		t.Fatalf("local agent without op-id needs no discovery file, got %q", local)
+	}
+}
+
+// persistAgentRegistry records the paths the agents ACTUALLY write
+// (agentStatusFileFor), so `gpstream status` readback hits the same files —
+// for a remote agent that is the temp-dir path, not the state dir.
+func TestAgentRegistryUsesRemoteTmpPaths(t *testing.T) {
+	statedir := t.TempDir()
+	r := NewProcessTwoAgentRunner(&config.Config{
+		StateDir:       statedir,
+		OperationID:    "opR",
+		SourceAgentSSH: "gp@vm3",
+		DestAgentSSH:   "gp@vm4",
+		Dest:           "host=vm4 ...",
+	})
+	if err := os.MkdirAll(filepath.Join(statedir, "opR"), 0o750); err != nil {
+		t.Fatalf("mkdir op dir: %v", err)
+	}
+	r.persistAgentRegistry()
+	raw, err := os.ReadFile(filepath.Join(statedir, "opR", "agents.json"))
+	if err != nil {
+		t.Fatalf("agents.json: %v", err)
+	}
+	var reg agentRegistry
+	if err := json.Unmarshal(raw, &reg); err != nil {
+		t.Fatalf("agents.json parse: %v", err)
+	}
+	for side, e := range map[string]agentStatusEntry{"source": reg.Source, "dest": reg.Dest} {
+		if !strings.HasPrefix(e.StatusFile, os.TempDir()+string(filepath.Separator)) {
+			t.Fatalf("%s registry path %q must be the temp-dir path the agent actually writes", side, e.StatusFile)
+		}
+		if strings.Contains(e.StatusFile, statedir) {
+			t.Fatalf("%s registry path %q must not point into the state dir", side, e.StatusFile)
+		}
+	}
+	if reg.Source.SSHHost != "gp@vm3" || reg.Dest.SSHHost != "gp@vm4" {
+		t.Fatalf("registry must keep the full ssh targets: %+v", reg)
 	}
 }

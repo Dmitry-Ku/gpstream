@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -119,5 +120,34 @@ func TestControlFieldRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"control"`) {
 		t.Fatalf("empty Control must be omitted from JSON, got: %s", raw)
+	}
+}
+
+// A persistently failing status path (the dir not writable by the agent
+// user — the 26.11 r5 incident) must be reported, exactly once, instead of
+// failing silently for the whole run (the heartbeat would otherwise repeat
+// the error forever, and the controller's control-port discovery would
+// time out with no trace of the cause on the agent side).
+func TestWriterReportsWriteErrorOnce(t *testing.T) {
+	ro := filepath.Join(t.TempDir(), "ro")
+	if err := os.MkdirAll(ro, 0o500); err != nil {
+		t.Fatalf("mkdir ro: %v", err)
+	}
+	path := filepath.Join(ro, "deep", "agent-dest.json")
+	var mu sync.Mutex
+	var errs []error
+	w := NewWriter(path, 10*time.Millisecond, func() Status { return Status{Side: "dest"} })
+	w.ErrLog = func(err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
+	w.Start()
+	time.Sleep(80 * time.Millisecond) // >= 4 heartbeats
+	w.Stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) != 1 {
+		t.Fatalf("write error reported %d times, want exactly 1", len(errs))
 	}
 }

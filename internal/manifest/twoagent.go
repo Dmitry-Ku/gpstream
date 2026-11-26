@@ -274,6 +274,11 @@ type processTwoAgentRunner struct {
 	// (local read / SSH cat, the same readback `gpstream status` uses);
 	// tests inject a fake.
 	statusRead func(ctx context.Context, sshHost, file string) (*statusfile.Status, error)
+	// statusNonce is a per-launch token embedded in the remote agents'
+	// status-file names: a fault-recovery re-run of the same operation-id
+	// must not read a stale file left by the previous launch (identical
+	// controller pid after pid reuse).
+	statusNonce uint64
 	// Source agent (long-lived; owns the FR-02 snapshot).
 	ctrl      *agent.ControlClient
 	srcHandle *launch.Handle
@@ -325,7 +330,7 @@ type processTwoAgentRunner struct {
 
 func newProcessTwoAgentRunner(cfg *config.Config) *processTwoAgentRunner {
 	alloc, _ := portalloc.ParseRange(cfg.PortRange) // Validate already checked it
-	return &processTwoAgentRunner{cfg: cfg, portAlloc: alloc}
+	return &processTwoAgentRunner{cfg: cfg, portAlloc: alloc, statusNonce: uint64(time.Now().UnixNano())}
 }
 
 // NewProcessTwoAgentRunner builds the process two-agent runner (the production
@@ -499,14 +504,14 @@ func (r *processTwoAgentRunner) startSource(ctx context.Context) error {
 		if err != nil {
 			h.Stop()
 			r.srcHandle = nil
-			return fmt.Errorf("two-agent: source control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
+			return fmt.Errorf("two-agent: source control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-source-agent"), r.agentLogTail(r.cfg.SourceAgentSSH, agentLogPath("gpstream-source-agent")))
 		}
 	}
 	client, err := dialControlRetry(ctx, srcDial, controlDialDeadline(r.cfg.SourceAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.srcHandle = nil
-		return fmt.Errorf("two-agent: source control dial %s: %w (agent log: %s)\n%s", srcDial, err, agentLogPath("gpstream-source-agent"), tailLog(agentLogPath("gpstream-source-agent")))
+		return fmt.Errorf("two-agent: source control dial %s: %w (agent log: %s)\n%s", srcDial, err, agentLogPath("gpstream-source-agent"), r.agentLogTail(r.cfg.SourceAgentSSH, agentLogPath("gpstream-source-agent")))
 	}
 	r.ctrl = client
 	return nil
@@ -656,14 +661,14 @@ func (r *processTwoAgentRunner) startDest(ctx context.Context) error {
 		if err != nil {
 			h.Stop()
 			r.destHandle = nil
-			return fmt.Errorf("two-agent: dest control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
+			return fmt.Errorf("two-agent: dest control address: %w (agent log: %s)\n%s", err, agentLogPath("gpstream-dest-agent"), r.agentLogTail(r.cfg.DestAgentSSH, agentLogPath("gpstream-dest-agent")))
 		}
 	}
 	client, err := dialDestControlRetry(ctx, destDial, controlDialDeadline(r.cfg.DestAgentSSH), r.controlTLS())
 	if err != nil {
 		h.Stop()
 		r.destHandle = nil
-		return fmt.Errorf("two-agent: dest control dial %s: %w (agent log: %s)\n%s", destDial, err, agentLogPath("gpstream-dest-agent"), tailLog(agentLogPath("gpstream-dest-agent")))
+		return fmt.Errorf("two-agent: dest control dial %s: %w (agent log: %s)\n%s", destDial, err, agentLogPath("gpstream-dest-agent"), r.agentLogTail(r.cfg.DestAgentSSH, agentLogPath("gpstream-dest-agent")))
 	}
 	r.destCtrl = client
 	// The hello reports the real bound data address (auto :0 mode). It is the
@@ -753,24 +758,30 @@ func (r *processTwoAgentRunner) controlListen(host string) (listenAddr, dialAddr
 // agentStatusFileFor returns the status-file path the agent at sshTarget
 // heartbeats on its OWN host. Unlike statusFileFor it always yields a path
 // for a REMOTE agent - the controller needs it to discover the agent's
-// self-picked control port even when no operation-id / state-dir is set:
-// it falls back to a per-controller-process file in the OS temp dir (the
-// path is identical on both hosts, as with statusFileFor; the agent writes
-// on its own host). Local agents get pre-bound ports and need no discovery
-// ("" keeps their old behavior).
+// self-picked control port even when no operation-id / state-dir is set.
+//
+// A remote agent's file must NOT live under the state dir: the file is
+// written on the AGENT host, where the state dir may not exist and its
+// parent may not be writable by the SSH user (e.g. root-owned /var/lib —
+// the 26.11 r5 incident: the heartbeat silently failed to create
+// /var/lib/gpstream/<op>/ and control discovery timed out for every remote
+// pair). The OS temp dir is writable by any user, and the path string is
+// identical on both hosts, so the controller reads it over SSH. The name
+// embeds a per-launch nonce (see statusNonce) so a re-run of the same
+// operation-id can never read a stale file from a previous launch.
+//
+// Local agents get pre-bound ports and need no discovery: they keep the
+// state-dir path ("" when unresolvable) so `gpstream status` readback works.
 func (r *processTwoAgentRunner) agentStatusFileFor(side, sshTarget string) string {
-	if sf := r.statusFileFor(side); sf != "" {
-		return sf
-	}
 	host := r.agentHost(sshTarget)
 	if host == "" || agent.IsLocalHost(host) {
-		return ""
+		return r.statusFileFor(side)
 	}
 	op := r.cfg.OperationID
 	if op == "" {
 		op = "run"
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("gpstream-%s-%s-agent-%d.json", op, side, os.Getpid()))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("gpstream-%s-%s-agent-%d-%d.json", op, side, os.Getpid(), r.statusNonce))
 }
 
 // pollAgentControlAddr waits until the agent's status file reports its
@@ -917,6 +928,23 @@ func tailLog(path string) string {
 	return "  " + strings.Join(lines, "\n  ")
 }
 
+// agentLogTail tails the agent log ON THE AGENT'S HOST: a local file read
+// for a same-host agent, an SSH tail for a remote one. The controller's own
+// /tmp copy of the log is meaningless for a remote agent (its log lives on
+// the agent host) — before this, control-discovery errors pointed at an
+// empty local path and the real agent failure stayed hidden (26.11 r5).
+func (r *processTwoAgentRunner) agentLogTail(sshTarget, path string) string {
+	host := r.agentHost(sshTarget)
+	if host == "" || agent.IsLocalHost(host) {
+		return tailLog(path)
+	}
+	out, err := agent.RunRemoteOutput(context.Background(), host, "tail -n 10 "+agent.ShellQuote(path))
+	if err != nil {
+		return ""
+	}
+	return "  " + strings.TrimSpace(out)
+}
+
 // agentLogPath is the agent's stderr sink path (GPSTREAM_AGENT_STDERR when set
 // for diagnosis, else a per-agent default under /tmp). Remote agents append
 // here; local agents use the same path for parity.
@@ -967,10 +995,10 @@ func (r *processTwoAgentRunner) persistAgentRegistry() {
 	// The registry keeps the FULL ssh target (user@host:port): the status
 	// read runs RunRemoteOutput, which parses that exact form ("" = local).
 	reg := agentRegistry{
-		Source: agentStatusEntry{Side: "source", SSHHost: r.cfg.SourceAgentSSH, StatusFile: r.statusFileFor("source")},
+		Source: agentStatusEntry{Side: "source", SSHHost: r.cfg.SourceAgentSSH, StatusFile: r.agentStatusFileFor("source", r.cfg.SourceAgentSSH)},
 	}
 	if r.cfg.Dest != "" {
-		reg.Dest = agentStatusEntry{Side: "dest", SSHHost: r.cfg.DestAgentSSH, StatusFile: r.statusFileFor("dest")}
+		reg.Dest = agentStatusEntry{Side: "dest", SSHHost: r.cfg.DestAgentSSH, StatusFile: r.agentStatusFileFor("dest", r.cfg.DestAgentSSH)}
 	}
 	data, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
