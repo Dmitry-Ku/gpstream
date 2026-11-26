@@ -5,24 +5,7 @@ All notable changes to gpstream are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Added
-
-- **Sender-side counters, 2nd increment (relay): `--sender-stats`.** The
-  segreceivers now write per-segment sender-stats files
-  (`--stats-dir` / one `sender-<job>-<unit>-seg<content>.json` each); the
-  source agent pulls them from the source segment hosts after each unit
-  (SSH `cat` / local read) and the controller relays them into
-  `runstats.json` (`sender_retransmitted`, `sender_reconnects`, plus the
-  last unit's per-segment detail `sender_seg_stats`) and `gpstream status`.
-  Off by default; mesh ON-SEGMENT units only; any pull failure is a
-  warning, never a failed run. The stats directory is fixed to
-  `/tmp/gpstream-stats-<operation-id>` and the full path is re-validated
-  on the agent side (character set + prefix) — the value never reaches a
-  shell.
-
-## [v0.3.1] - 2026-11-19
+## [v0.3.1] - 2026-11-23
 
 ### Added
 
@@ -61,6 +44,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
   ring replay size, resume routing, duplicate frames) on stderr — off by
   default; the agent's stderr is captured in the controller's run log, the
   segreceiver's stderr lands in the GPDB segment log.
+- **Sender-side counters, 1st increment: `--stats-file` (segreceiver).**
+  The segreceiver's own ReliablePipe sender counters (Retransmitted /
+  Reconnects / AckLag) had no consumer: how many frames the SENDER had to
+  replay, and how often a sub-stream reconnected mid-stream, was
+  unobservable (the receiver-side replay counters already land in
+  runstats.json). `--stats-file <path>` (empty by default, so every
+  existing program string is untouched) writes the slice's cumulative
+  sender counters as one JSON line on a clean stream exit — both the
+  direct/on_segment path and the P9 routed path with its S x D x W
+  sub-stream pipes. A stats write failure warns on stderr and never
+  fails the stream (observability side-channel, not part of the transfer
+  contract).
+- **Sender-side counters, 2nd increment (relay): `--sender-stats`.** The
+  segreceivers now write per-segment sender-stats files
+  (`--stats-dir` / one `sender-<job>-<unit>-seg<content>.json` each); the
+  source agent pulls them from the source segment hosts after each unit
+  (SSH `cat` / local read) and the controller relays them into
+  `runstats.json` (`sender_retransmitted`, `sender_reconnects`, plus the
+  last unit's per-segment detail `sender_seg_stats`) and `gpstream status`.
+  Off by default; mesh ON-SEGMENT units only; any pull failure is a
+  warning, never a failed run. The stats directory is fixed to
+  `/tmp/gpstream-stats-<operation-id>` and the full path is re-validated
+  on the agent side (character set + prefix) — the value never reaches a
+  shell.
+- **Fuzzing: native fuzz targets for every attacker-facing wire surface
+  + a CI fuzz job.** `testing.F` targets (no new deps) for the surfaces
+  that parse untrusted input: the Frame v2 codec (peer-agent bytes over
+  the data and control links), stream-level `ReadFrame` (truncated
+  half-closed streams), the StreamID identity handshake body
+  (`decodeHelloID`), an Encode->Decode round-trip property (silent data
+  corruption is worse than a parse error), and the segment destination
+  address-book parser. CI runs 60 s per target on every push (timeout
+  30m); a found crash persists as a corpus entry under
+  `testdata/<target>/crashers`.
 
 ### Changed
 
@@ -103,6 +120,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
   page notes that rpm on EL7/8 compares SNAPSHOT build hashes
   lexicographically — installing a newer snapshot over an older one needs
   `rpm -Uvh --force`.
+- **CI: `integration-gp6` no longer queues forever when the lab bench is
+  off.** The lab is not powered on permanently; with the gp6 self-hosted
+  runner offline the integration job sat queued and the run showed
+  "in progress" indefinitely. The `integration-gate` step now reads a
+  file-based bench heartbeat — a loop on the always-on build host probes
+  vm1 every 5 minutes and pushes `<state> <unix-ts>` to the
+  `runner-heartbeat` branch (`online` only while the bench runner marker
+  exists) — and skips the lab job when the heartbeat is missing, stale
+  (>15 min), or offline: the run completes green instead of queueing.
+  No GitHub API and no extra token scope (the earlier runners-API
+  approach 401/403'd with the repo's workflow token); the gate step is
+  fail-proof (structurally unable to turn the run red — it logs
+  `gate: <detail> -> online=<v>` and exits 0). Runbook: docs/CI-LAB.md.
+- **CI: pgtest-dependent tests now skip without the PG 9.4.26
+  toolchain.** The stock CI runner has no `GPTEST_PGBIN`, so the two
+  routed watchdog tests and the version-check test (unlike all other
+  pgtest files, they carried no build tag) failed the default `go test`
+  pass. The shared staging-DSN helper now `t.Skip`s when `initdb` is
+  absent (the pure watchdog unit tests in the same file keep running in
+  CI), and the version-check file carries the `gp6lab` tag like its
+  siblings.
+- **CI: gosec runs in diff mode (new findings only).** The gosec job
+  (golangci-lint v2, `--new-from-rev=HEAD~1`): the 48 documented-accepted
+  baseline findings (docs/SECURITY.md §14) never block a push; only
+  findings introduced by the change do.
+- **docs/PERFORMANCE.md: F-14 measured input-stream rates** from the
+  23.11 lab pass (coordinator 38 MB/s vs mesh 79 MB/s on 10M rows /
+  2.4 GB).
 
 ### Fixed
 
@@ -141,11 +186,47 @@ project adheres to [Semantic Versioning](https://semver.org/).
   "bind: address already in use" under the parallel suite). NewDestServer
   now accepts pre-bound listeners (DestServerOptions.DataListener /
   ControlListener); the tests pass theirs.
+- **segreceiver stats dir/files did not survive the kernel's umask 077.**
+  The GPDB kernel launches `gpstream-segreceiver` (COPY TO PROGRAM ON
+  SEGMENT) with umask 077, so every file/dir it created landed
+  0600/0700 — unreadable when a different user had to read them later
+  (the relay pull runs the source agent as `gp`, the kernel user is
+  `gpadmin`). Explicit `os.Chmod` after MkdirAll/WriteFile now restores
+  the requested mode (stats dir 0755, files 0644, verified readable
+  across users). Regression: `TestStatsDirUmask077`.
+
+### Security
+
+- **Frame payload capped before allocation (fuzz-found OOM vector).**
+  `FuzzReadFrame` (CI fuzz job) drove `ReadFrame` with a peer-controlled
+  length field claiming a multi-gigabyte payload: the reader allocated
+  header+payload (up to ~4 GiB) BEFORE the short read could fail — one
+  forged frame header was an OOM against the dest agent.
+  `MaxFramePayload` = 1 MiB (4x the 256 KiB segstream chunk — the largest
+  legitimate frame) is now enforced in `checkFrameLen` (all Decode paths)
+  and in `ReadFrame` immediately before the allocation; an over-cap frame
+  is rejected as malformed before any allocation. Regression:
+  `TestFrameOversizedLengthRejected` / `TestFrameMaxPayloadAccepted`.
+- **Control/peer message lines capped (memory DoS, audit finding).**
+  Every control/peer receiver used `bufio.ReadBytes('\n')`, which grows
+  to the full line length — a peer streaming bytes without a newline
+  could exhaust the agent's memory (the control channel is plain TCP by
+  default and network-reachable). `readCappedLine` (ReadSlice-based,
+  `maxControlLine` = 1 MiB = 100x the largest legitimate onsegment
+  request) is now at all six receiver sites; an over-cap line is
+  rejected fail-closed (the connection dies, in-flight ops still drain).
+  docs/SECURITY.md gains §12 (peer-input bounds and wire trust): the
+  caps and the explicit trust boundary — the control port must be
+  protected (mTLS outside the lab); a peer on it can redirect a copy's
+  destination.
 
 ### Dependencies
 
 - Bumped `github.com/klauspost/compress` 1.20.1 -> 1.20.4 (PR #5).
 - Bumped `github.com/jackc/pgx/v5` 5.11.0 -> 5.13.0 (PR #6).
+- Bumped `github.com/klauspost/compress` 1.20.4 -> 1.20.5.
+- Bumped Go 1.27.1 -> 1.27.4 (govulncheck: the stdlib http2
+  GO-2026-66xx/68xx cluster is cleared; "No vulnerabilities found").
 
 ## [v0.3.0] - 2026-10-14
 
