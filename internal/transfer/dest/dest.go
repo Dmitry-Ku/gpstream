@@ -168,20 +168,20 @@ func asInt(v any) int {
 	}
 }
 
-// Truncate empties the final table in place (FR-11 --truncate). Unlike Swap
-// (which renames a staging table over the final name), Truncate keeps the
-// table's identity and just clears its rows so the source data can be copied
-// into it; the table then holds exactly the source data, so a content
-// checksum verifies it the same way as an overwrite.
+// Truncate empties a table in place. The live use is the FR-07 resume
+// path: the destination agent truncates a SURVIVING STAGING table (from a
+// crashed/failed run) before re-COPYing, so a re-copy starts from a clean
+// table. It takes the same (schema, table) shape as the other dest DDL
+// helpers.
 func (a *Agent) Truncate(ctx context.Context, schema, table string) error {
 	_, err := a.q.Exec(ctx, fmt.Sprintf(`TRUNCATE %s.%s`, quoteIdent(schema), quoteIdent(table)))
 	return err
 }
 
 // CreateTable creates the final table from the source's column layout (FR-11).
-// Used by the truncate/append paths when the destination table does not exist
-// yet (create-then-truncate/append). part is the partition spec (Fix 1), ""
-// for a plain table. It is a no-op if the table already exists.
+// Used when the destination table does not exist yet. part is the partition
+// spec (Fix 1), "" for a plain table. It is a no-op if the table already
+// exists.
 func (a *Agent) CreateTable(ctx context.Context, schema string, cols []pg.Column, table string, dist pg.Distribution, part pg.PartitionSpec) error {
 	return a.CreateStaging(ctx, schema, cols, table, dist, part)
 }

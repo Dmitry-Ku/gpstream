@@ -424,7 +424,7 @@ type MiniMapResp struct {
 type DDReq struct {
 	Op    string `json:"op"` // "ddl"
 	ReqID uint64 `json:"req_id"`
-	// Action: exists | create-table | drop-staging | swap | truncate |
+	// Action: exists | create-table | drop-staging | swap |
 	// create-sequence | set-sequence-value | add-constraints | balance |
 	// create-indexes | segments.
 	Action string `json:"action"`
@@ -432,8 +432,7 @@ type DDReq struct {
 	Schema string `json:"schema,omitempty"`
 	// Staging is the staging table name (drop-staging / swap source).
 	Staging string `json:"staging,omitempty"`
-	// Table is the final table name (exists / create-table / swap target /
-	// truncate).
+	// Table is the final table name (exists / create-table / swap target).
 	Table string `json:"table,omitempty"`
 	// Overwrite is the swap decision (the controller's
 	// ConflictAction==Overwrite || unit.Conflict).

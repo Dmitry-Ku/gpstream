@@ -95,7 +95,6 @@ type Config struct {
 	Dest   string
 
 	// Selection (FR-11).
-	Full    bool
 	DBs     []string
 	Schemas []string // "db.schema"
 	Tables  []string // "db.schema.table"

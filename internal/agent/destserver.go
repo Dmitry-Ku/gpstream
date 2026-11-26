@@ -1514,12 +1514,6 @@ func (s *DestServer) handleDDL(conn net.Conn, dd *DDReq) {
 		}); err != nil {
 			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
 		}
-	case "truncate":
-		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
-			return dest.New(q).Truncate(context.Background(), dd.Schema, dd.Table)
-		}); err != nil {
-			resp = DDResp{Op: "ddl-resp", ReqID: dd.ReqID, Error: err.Error()}
-		}
 	case "create-sequence":
 		if err := s.ddlExec(conn, dd, func(q pg.StreamingQuerier) error {
 			return dest.New(q).CreateSequence(context.Background(), dd.Sequence)
