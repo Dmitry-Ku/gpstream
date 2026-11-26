@@ -152,12 +152,9 @@ func parseConfig(args []string) (config.Config, error) {
 			k, v := splitKV(args[i])
 			cfg.RenameTable = setRename(cfg.RenameTable, k, v)
 
-		// v4 F-11: --metadata-only (structure without data) / --data-only
-		// (into existing structure). Mutual exclusion is enforced in Validate.
+		// v4 F-11: --metadata-only (structure without data).
 		case "--metadata-only":
 			cfg.MetadataOnly = true
-		case "--data-only":
-			cfg.DataOnly = true
 
 		// Conflict / safety (FR-10/FR-11). The DEFAULT is strict: conflicts
 		// STOP the run (FR-10 §8). --resolve-conflicts selects the policy;
@@ -1816,7 +1813,6 @@ Selection:
   --map-schema src=dst               rename a schema at the dest
   --map-table src=dst                rename a table at the dest
   --metadata-only                    structure only (DDL + sequences, no data)
-  --data-only                        data only, into the existing structure
 
 Conflicts:
   --resolve-conflicts stop|skip|overwrite     policy (default stop)

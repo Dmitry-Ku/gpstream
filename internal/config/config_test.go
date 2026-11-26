@@ -57,7 +57,6 @@ func TestValidateErrors(t *testing.T) {
 		{"workers zero", func(c *Config) { c.WorkersPerPair = 0 }},
 		{"negative auto-resume", func(c *Config) { c.AutoResume = -1 }},
 		{"bad on-unit-failure", func(c *Config) { c.OnUnitFailure = "bogus" }},
-		{"both metadata and data", func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }},
 		{"bad conflict action", func(c *Config) { c.ConflictAction = "bogus" }},
 		{"bad verify", func(c *Config) { c.Verify = "bogus" }},
 		{"removed copy-mode direct", func(c *Config) { c.CopyMode = "direct" }},

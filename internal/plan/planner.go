@@ -205,7 +205,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 	}
 
 	// 2b. Selection (FR-11): narrow the object graph to the requested
-	// db/schema/table set, honouring excludes and metadata/data-only modes.
+	// db/schema/table set, honouring excludes and the metadata-only mode.
 	tabs = selectUnits(cfg, tabs)
 
 	// 2c. Rename (FR-11): map source names to destination names. Conflicts are
@@ -508,7 +508,7 @@ func detectMissingExtensions(ctx context.Context, src, dst pg.Querier, tabs []Ta
 }
 
 // selectUnits narrows the object graph to the requested selection (FR-11):
-// database / schema / table inclusion, exclude-*, and metadata/data-only modes.
+// database / schema / table inclusion, exclude-*, and the metadata-only mode.
 // With no selection set the full graph is returned (the default whole-cluster
 // copy).
 func selectUnits(cfg *config.Config, tabs []Table) []Table {

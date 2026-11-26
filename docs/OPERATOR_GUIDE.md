@@ -84,11 +84,9 @@ Scope the **metadata** and **data** independently:
 | Goal | Flag |
 |------|------|
 | Copy schema/DDL only | `--metadata-only` |
-| Copy row data only | `--data-only` |
 
-`--metadata-only` and `--data-only` are **mutually exclusive** — set at most one.
-A typical pre-migration is `--metadata-only` (get the objects over first), then a
-follow-up `--data-only` for the rows.
+A typical pre-migration is `--metadata-only` (get the objects over first),
+then a normal run for the rows.
 
 ---
 

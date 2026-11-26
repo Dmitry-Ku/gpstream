@@ -16,6 +16,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
   failed at runtime. Both forms are now rejected at parse time (unknown flag /
   unknown value). Use `--resolve-conflicts overwrite` (staging + atomic swap,
   verified before the swap).
+- **`--data-only` flag.** Like the removed truncate path, it had no two-agent
+  equivalent (it needed an in-place copy into the pre-existing destination
+  table, which does not exist in the staging+swap data path) and every unit
+  failed at runtime. The flag is now rejected at parse time (unknown flag).
+  A "structure first, rows second" migration is `--metadata-only` followed by
+  a normal run.
+- **The legacy controller-side dry-run path (`dryrun.Run`).** The diagnostic
+  is agent-gathered only: each side's agent collects its own values on its
+  local connection (GatherSide) and the controller computes the report in
+  memory (FromSides). The operator-facing report is unchanged.
 
 ## [v0.3.1] - 2026-11-23
 

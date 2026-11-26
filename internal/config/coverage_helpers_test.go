@@ -156,7 +156,6 @@ func TestValidateErrorMatrix(t *testing.T) {
 	fail(func(c *Config) { c.WorkersPerPair = 0 }, "workers=0")
 	fail(func(c *Config) { c.AutoResume = -1 }, "auto-resume<0")
 	fail(func(c *Config) { c.OnUnitFailure = "stop" }, "on-unit-failure")
-	fail(func(c *Config) { c.MetadataOnly, c.DataOnly = true, true }, "metadata+data")
 	fail(func(c *Config) { c.ConflictAction = ConflictAction("bogus") }, "resolve-conflicts")
 	fail(func(c *Config) { c.Verify = VerifyMode("bogus") }, "verify")
 	fail(func(c *Config) { c.CopyMode = "bogus" }, "copy-mode")

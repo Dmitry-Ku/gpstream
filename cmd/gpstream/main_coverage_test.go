@@ -3,8 +3,6 @@ package main
 import (
 	"testing"
 	"time"
-
-	"github.com/gpstream/gpstream/internal/config"
 )
 
 // These tests exercise the large surface of parseConfig and the small helper
@@ -41,10 +39,10 @@ func TestParseConfigFull(t *testing.T) {
 	if !c.DryRun {
 		t.Fatalf("dry-run not bound")
 	}
-	// v4 F-11: object classes come from --metadata-only/--data-only; with
-	// neither flag both classes are copied (the default).
-	if c.MetadataOnly || c.DataOnly {
-		t.Fatalf("object classes: default run must copy both (md=%v data=%v)", c.MetadataOnly, c.DataOnly)
+	// v4 F-11: object classes come from --metadata-only; without the flag
+	// both classes are copied (the default).
+	if c.MetadataOnly {
+		t.Fatalf("object classes: default run must copy both (md=%v)", c.MetadataOnly)
 	}
 	if len(c.DBs) != 1 || c.DBs[0] != "db1" {
 		t.Fatalf("db = %v", c.DBs)
@@ -122,14 +120,9 @@ func TestParseCompressLevels(t *testing.T) {
 	}
 }
 
-// TestParseConfigValidationErrors: the mutual-exclusion and range checks in
+// TestParseConfigValidationErrors: the range and consistency checks in
 // Validate() must surface as errors through parseConfig.
 func TestParseConfigValidationErrors(t *testing.T) {
-	// MetadataOnly + DataOnly are mutually exclusive (Validate rule).
-	bad := config.Config{MetadataOnly: true, DataOnly: true}
-	if err := bad.Validate(); err == nil {
-		t.Fatal("expected error for MetadataOnly + DataOnly")
-	}
 	// --compress zstd:25 exceeds the valid zstd level range (1-19).
 	if _, err := parseConfig([]string{"--compress", "zstd:25"}); err == nil {
 		t.Fatal("expected error for --compress zstd:25 (level out of range)")

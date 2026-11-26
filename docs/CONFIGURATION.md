@@ -39,8 +39,7 @@ from the flags or the file.
 ### 1.3 Metadata / data (F-11)
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
-| `MetadataOnly` | bool | `false` | `--metadata-only` (mutually exclusive with `DataOnly`) |
-| `DataOnly` | bool | `false` | `--data-only` (mutually exclusive with `MetadataOnly`) |
+| `MetadataOnly` | bool | `false` | `--metadata-only` |
 
 ### 1.4 Conflict / safety (F-10)
 | Field | Type | Default | Source | Notes |

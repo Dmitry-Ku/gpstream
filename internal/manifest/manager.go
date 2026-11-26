@@ -1176,9 +1176,9 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 		// planner's u.Conflict and the live m.dst.Exists signal are the SAME
 		// check (does the destination table exist), so both are suppressed.
 		// --metadata-only is idempotent by design (spec F-11 acceptance:
-		// "a repeated run is idempotent"); --data-only loads into the existing
-		// structure, which it does not create. Both classes (the default)
-		// keep the strict FR-10 policy.
+		// "a repeated run is idempotent"): it re-creates the structure and
+		// loads no data. The default (both classes) keeps the strict FR-10
+		// policy.
 		if md, data := m.cfg.IncludeClasses(); md != data {
 			conflicted = false
 		}
@@ -1444,26 +1444,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return nil
 	}
 
-	// 3. F-11 --data-only: the destination structure ALREADY EXISTS and the
-	//    data is loaded INTO it, replacing its rows. The data-only copy target
-	//    (in-place into the final table, TRUNCATE first) has no two-agent
-	//    equivalent (the data path is staging+swap only, 2B-7) — a missing
-	//    destination table is a hard error (run --metadata-only or a full
-	//    copy first).
-	if md, data := m.cfg.IncludeClasses(); !md && data {
-		exists, err := m.dstExists(ctx, ds, dn)
-		if err != nil {
-			m.setUnitState(u, StateFailed)
-			return fmt.Errorf("--data-only: exists check: %w", err)
-		}
-		if !exists {
-			m.setUnitState(u, StateFailed)
-			return fmt.Errorf("--data-only: destination table %s.%s does not exist (create the structure first with --metadata-only or a full copy)", ds, dn)
-		}
-		m.setUnitState(u, StateFailed)
-		return fmt.Errorf("--data-only requires the in-place copy target, which the two-agent data path does not support; use the default staging+swap path")
-	}
-	// 3b. The copy target is the unit's staging table (the default /
+	// 3. The copy target is the unit's staging table (the default /
 	//     --overwrite path; in-place copy targets have no two-agent
 	//     equivalent — the data path is staging+swap only, 2B-7). The destination AGENT
 	//     owns the staging DDL (it creates it from the UnitSpec the source

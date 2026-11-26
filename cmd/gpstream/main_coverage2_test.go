@@ -108,7 +108,6 @@ func printPlanSummarySafe(p *plan.Plan, cfg config.Config) error {
 func TestParseConfigRemainingFlags(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--map-db", "a=b", "--map-schema", "c=d", "--map-table", "e=f",
-		"--data-only",
 		"--resolve-conflicts", "overwrite",
 		"--compress", "zlib",
 		"--rate-limit", "100",
@@ -132,9 +131,6 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	}
 	if c.RenameDB["a"] != "b" || c.RenameSchema["c"] != "d" || c.RenameTable["e"] != "f" {
 		t.Errorf("map-* = %v/%v/%v", c.RenameDB, c.RenameSchema, c.RenameTable)
-	}
-	if !c.DataOnly {
-		t.Error("data-only not set")
 	}
 	if c.ConflictAction != config.Overwrite {
 		t.Errorf("resolve-conflicts = %q, want overwrite", c.ConflictAction)

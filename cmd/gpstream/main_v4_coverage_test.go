@@ -312,9 +312,10 @@ func TestParseConfigInvalidArgs(t *testing.T) {
 	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--include", "metadata"}); err == nil {
 		t.Fatal("expected error for the removed --include flag")
 	}
-	// both metadata-only and data-only
-	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--metadata-only", "--data-only"}); err == nil {
-		t.Fatal("expected mutual exclusion error")
+	// --data-only was removed (the two-agent data path is staging+swap only):
+	// it must be an unknown flag
+	if _, err := parseConfig([]string{"run", "--source", "postgres://a", "--dest", "postgres://b", "--data-only"}); err == nil {
+		t.Fatal("expected error for the removed --data-only flag")
 	}
 	// out-of-range zstd level
 	if _, err := parseConfig([]string{"run", "--src", "postgres://a", "--dst", "postgres://b", "--zstd-level", "99"}); err == nil {

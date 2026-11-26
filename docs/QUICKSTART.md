@@ -88,9 +88,8 @@ Choose what to copy. Selection flags take **comma-separated lists**:
 | `--tables db.schema.table[,...]` | One or more tables. |
 | `--exclude <name>[,...]` | Exclude a database/schema/table. |
 
-Additional metadata/data flags: `--metadata-only` (structure only, no data)
-and `--data-only` (data only, into the existing structure — rows replaced, structure must already exist); they are mutually
-exclusive, and with neither flag both are copied (the default).
+Additional metadata flag: `--metadata-only` (structure only, no data).
+Without the flag both classes are copied (the default).
 You can also rename targets with `--map-db`, `--map-schema`, `--map-table`.
 
 Example — copy the `orders` database, excluding an audit schema:

@@ -12,7 +12,7 @@ import (
 // Bench resolves the read-only source selection for `gpstream bench` (F-14
 // input-stream benchmark): the exact table set a `run`/`dry-run` would copy
 // under the operator's CLI/env/toml selection (dbs, schemas, tables,
-// excludes, rename, metadata/data-only modes), WITHOUT touching the
+// excludes, rename, metadata-only mode), WITHOUT touching the
 // destination. The destination is irrelevant to an input-stream benchmark, so
 // no destination connection is opened (a --dest flag, if given, is ignored).
 //

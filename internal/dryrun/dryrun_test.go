@@ -1,103 +1,34 @@
 package dryrun
 
-import (
-	"context"
-	"testing"
+import "testing"
 
-	"github.com/gpstream/gpstream/internal/transfer/pg"
-)
-
-// healthy returns a fake that answers every diagnostic query with healthy values.
-// FakeConn matches by longest substring, so the probe is registered under
-// "to_regclass" (the probe SQL does NOT contain the catalog key) and the
-// catalog under "FROM gp_segment_configuration" (the probe SQL does not
-// contain "FROM " + the table name) — the two queries resolve disjointly.
-// Catalog rows: content, role, preferred_role, mode, status, hostname, port,
-// datname.
-func healthy() *pg.FakeConn {
-	f := pg.NewFakeConn()
-	f.On("version", [][]any{{"Greenplum 6.x (gpstream demo)"}})
-	f.On("to_regclass", [][]any{{int64(16384)}}) // probe -> OID (Greenplum)
-	f.On("FROM gp_segment_configuration", [][]any{
-		{int64(0), "p", "p", "n", "u", "host0", 6000, "dwh"},
-		{int64(1), "p", "p", "n", "u", "host1", 6000, "dwh"},
-		{int64(0), "m", "s", "n", "u", "host2", 7000, "dwh"},
-		{int64(1), "m", "s", "n", "u", "host3", 7000, "dwh"},
-		{int64(-1), "p", "p", "n", "u", "coordinator", 5432, "dwh"},
-	})
-	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
-	f.On("pg_database", [][]any{{"C"}})
-	f.On("pg_extension", extRow("plpgsql"))
-	f.On("SELECT 1", [][]any{{int64(1)}})
-	return f
-}
-
-// TestDryrunHealthy verifies a clean bench reports PASS with no FAIL.
-func TestDryrunHealthy(t *testing.T) {
-	rep := Run(context.Background(), healthy(), healthy(), Options{MinTLS: "1.2"})
-	if !rep.Healthy {
-		t.Fatalf("expected healthy, got %d FAILs", rep.Failures())
-	}
-}
-
-// plainPG returns a fake modeling plain PostgreSQL 9.4.26 (the GP6 kernel) —
-// no Greenplum catalogs exist. The to_regclass probe answers an empty row,
-// which Row/RowStr surface as NULL: plain-PG single-node mode.
-func plainPG() *pg.FakeConn {
-	f := pg.NewFakeConn()
-	f.On("version", [][]any{{"PostgreSQL 9.4.26 on x86_64-unknown-linux-gnu"}})
-	f.On("gp_segment_configuration", [][]any{{}}) // probe -> NULL (catalog absent)
-	f.On("has_database_privilege", [][]any{{int64(1), int64(1)}})
-	f.On("pg_database", [][]any{{"C"}})
-	f.On("pg_extension", extRow("plpgsql"))
-	f.On("SELECT 1", [][]any{{int64(1)}})
-	return f
-}
-
-// TestDryrunPlainPGMode is the M0 regression: against plain PostgreSQL (no
-// gp_segment_configuration) the diagnostic must degrade to WARN single-node mode
-// and stay healthy — never a hard FAIL on a working GP6-kernel instance.
-func TestDryrunPlainPGMode(t *testing.T) {
-	rep := Run(context.Background(), plainPG(), plainPG(), Options{MinTLS: "1.2"})
-	if !rep.Healthy {
-		t.Fatalf("plain PG (GP6 kernel) must be healthy, got %d FAILs", rep.Failures())
-	}
-	for _, side := range []string{"source", "dest"} {
-		if found := find(rep, side, "segments"); found != Warn {
-			t.Errorf("%s segments on plain PG: got %v, want WARN", side, found)
+// find returns the severity of the first check with the given side+name.
+func find(r *Report, side, name string) Severity {
+	for _, c := range r.Checks {
+		if c.Side == side && c.Name == name {
+			return c.Sev
 		}
 	}
+	return Pass
 }
 
-// TestDryrunDetectsFaults is the CR-7 criterion: the diagnostic must detect every
-// seeded fault. We inject distinct faults across source/dest and assert each
-// is surfaced (no fault is silently passed).
-func TestDryrunDetectsFaults(t *testing.T) {
-	src := healthy()
-	dst := healthy()
-
-	// Fault 1: source unreachable (ping fails)
-	src.SetPingError(errUnreachable)
-	// Fault 2: dest version query cannot be answered -> FAIL
-	dst.Off("version")
-	// Fault 3: dest has no up segments (all primaries down) -> FAIL
-	dst.On("FROM gp_segment_configuration", [][]any{
-		{int64(0), "p", "p", "n", "d", "host0", 6000, "dwh"},
-		{int64(1), "p", "p", "n", "d", "host1", 6000, "dwh"},
-	})
-	// Fault 4: dest missing gp_toolkit EXECUTE -> WARN
-	dst.On("has_database_privilege", [][]any{{int64(0), int64(1)}})
-	// Fault 5: dest disk probe cannot be answered -> FAIL
-	dst.Off("SELECT 1")
-	// Fault 6: collation differs (source=C, dest=C.UTF-8) -> WARN
-	src.On("pg_database", [][]any{{"C"}})
-	dst.On("pg_database", [][]any{{"C.UTF-8"}})
-
-	rep := Run(context.Background(), src, dst, Options{MinTLS: "1.2"})
+// TestFromSidesDetectsFaults is the CR-7 criterion on the production path:
+// seeded faults across source and destination must each be surfaced (no fault
+// is silently passed). The faults are SideValues the agents would report.
+func TestFromSidesDetectsFaults(t *testing.T) {
+	src := &SideValues{Side: "source", Reachable: false, ReachErr: "connection refused"}
+	dst := &SideValues{Side: "dest", Reachable: true,
+		Version: "",        // version query cannot be answered -> FAIL
+		Greenplum: true, UpCount: 0, // no up segments -> FAIL
+		HasCreate: false,   // no database privileges -> WARN
+		DiskOK: false, DiskErr: "disk probe returned no data",
+		Collation: "C.UTF-8",
+		Extensions: []string{"plpgsql"},
+	}
+	rep := FromSides(src, dst, Options{MinTLS: "1.2"})
 	if rep.Healthy {
 		t.Fatalf("expected unhealthy with injected faults")
 	}
-	// Each injected fault must appear as a FAIL/WARN finding (not a PASS).
 	if found := find(rep, "source", "reachability"); found != Fail {
 		t.Errorf("source unreachable: got %v, want FAIL", found)
 	}
@@ -113,23 +44,60 @@ func TestDryrunDetectsFaults(t *testing.T) {
 	if found := find(rep, "dest", "disk"); found != Fail {
 		t.Errorf("dest disk: got %v, want FAIL", found)
 	}
-	if found := find(rep, "network", "collation"); found != Warn {
-		t.Errorf("collation difference: got %v, want WARN", found)
-	}
-	if rep.Failures() < 3 {
-		t.Fatalf("expected >=3 FAILs from injected faults, got %d", rep.Failures())
+	if n := rep.Failures(); n < 3 {
+		t.Fatalf("expected >=3 FAILs from injected faults, got %d", n)
 	}
 }
 
-// find returns the severity of the first check with the given side+name.
-func find(r *Report, side, name string) Severity {
-	for _, c := range r.Checks {
-		if c.Side == side && c.Name == name {
-			return c.Sev
-		}
+// TestFromSidesDetectsSourceSideFaults mirrors the fault matrix on the SOURCE
+// side to prove both sides are checked — a one-sided checker would miss
+// source-side faults (CR-7).
+func TestFromSidesDetectsSourceSideFaults(t *testing.T) {
+	src := &SideValues{Side: "source", Reachable: true,
+		Version: "",        // FAIL
+		Greenplum: true, UpCount: 0, // FAIL
+		HasCreate: false,   // WARN
+		DiskOK: true,
+		Collation: "C",
 	}
-	return Pass
+	dst := &SideValues{Side: "dest", Reachable: true,
+		Version: "Greenplum 6.x", Greenplum: true, UpCount: 3,
+		HasCreate: true, DiskOK: true, Collation: "C",
+	}
+	rep := FromSides(src, dst, Options{MinTLS: "1.2"})
+	if find(rep, "source", "version") != Fail {
+		t.Errorf("source version: got %v, want FAIL", find(rep, "source", "version"))
+	}
+	if find(rep, "source", "segments") != Fail {
+		t.Errorf("source segments: got %v, want FAIL", find(rep, "source", "segments"))
+	}
+	if find(rep, "source", "permissions") != Warn {
+		t.Errorf("source permissions: got %v, want WARN", find(rep, "source", "permissions"))
+	}
+	if rep.Healthy {
+		t.Fatalf("expected unhealthy with source-side faults")
+	}
 }
 
-// errUnreachable simulates an unreachable cluster.
-var errUnreachable = context.Canceled
+// TestFromSidesCleanBench is the control: a fault-free pair of sides must
+// report healthy with zero FAILs (no false positives, CR-7).
+func TestFromSidesCleanBench(t *testing.T) {
+	src := &SideValues{Side: "source", Reachable: true,
+		Version: "Greenplum 6.x", Greenplum: true, UpCount: 3,
+		HasCreate: true, DiskOK: true, Collation: "C", CollationSig: "sig",
+		Encoding: "UTF8", Extensions: []string{"plpgsql"},
+	}
+	dst := &SideValues{Side: "dest", Reachable: true,
+		Version: "Greenplum 6.x", Greenplum: true, UpCount: 3,
+		HasCreate: true, DiskOK: true, Collation: "C", CollationSig: "sig",
+		Encoding: "UTF8", Extensions: []string{"plpgsql"},
+		DestCollationsInstalled: []string{"default", "C"},
+	}
+	rep := FromSides(src, dst, Options{MinTLS: "1.2"})
+	if !rep.Healthy {
+		t.Fatalf("expected a healthy report for a clean bench, got %d FAILs: %v", rep.Failures(), rep.Sorted())
+	}
+	if rep.Failures() != 0 {
+		t.Errorf("clean bench should have 0 FAILs, got %d", rep.Failures())
+	}
+}

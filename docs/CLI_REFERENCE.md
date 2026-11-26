@@ -196,11 +196,12 @@ selected.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--metadata-only` | `MetadataOnly` | `false` (structure only: DDL + sequences, no data; idempotent) |
-| `--data-only` | `DataOnly` | `false` (data only, into the existing structure: rows replaced — TRUNCATE + load; the structure must already exist) |
 
-With neither flag both classes are copied. The two are mutually exclusive
-(Validate). There is no `--include` flag: it duplicated the two shorthands
-and the default, and was removed.
+Without the flag both classes are copied (the default). There is no
+`--include` flag: it duplicated the shorthands and the default, and was
+removed. `--data-only` (data into a pre-existing structure) was removed as
+well: the two-agent data path is staging+swap only and had no in-place
+copy target.
 
 ### Rename (v4 §8 canonical + F-11)
 | Flag | Config field | Default |

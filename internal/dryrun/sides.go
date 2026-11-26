@@ -4,12 +4,9 @@
 // connection (the side's AGENT), over the control plane; the controller
 // collects both sides' SideValues and computes the diff in memory.
 //
-// This file is the side-gather + diff core. It is SEPARATE from Run (the
-// legacy controller-side diagnostic, still used by `gpstream dry-run` until
-// the controller flips to the agents in 2C-1/2/4/5); the two share the same
-// check names and severities so the operator-facing report is identical.
-// Run is deleted (or repurposed) when the controller stops opening its own
-// connections.
+// This file is the side-gather + diff core: GatherSide (the agent-side DB
+// queries) and FromSides (the controller-side pure diff, the single entry
+// point of the diagnostic).
 package dryrun
 
 import (
@@ -214,8 +211,7 @@ func GatherSide(ctx context.Context, q pg.Querier, side string, workers int) *Si
 // FromSides builds the aggregated dry-run Report from the two sides' gathered
 // values + the run options. It is PURE (no database access) — the controller
 // runs it in memory over the values the agents reported, so it holds no
-// direct connection. The check names/severities mirror Run (the legacy
-// controller-side diagnostic) so the operator-facing report is identical.
+// direct connection.
 func FromSides(src, dst *SideValues, opts Options) *Report {
 	r := &Report{Healthy: true}
 	r.addSideChecks(src, opts.Workers)

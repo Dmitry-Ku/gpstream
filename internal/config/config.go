@@ -49,14 +49,11 @@ const (
 )
 
 // IncludeClasses resolves the effective object classes for a run (v4 F-11):
-// --metadata-only (structure without data) / --data-only (into the existing
-// structure); with neither flag both classes are copied.
+// --metadata-only copies the structure without data; without the flag both
+// classes are copied.
 func (c *Config) IncludeClasses() (metadata, data bool) {
 	if c.MetadataOnly {
 		return true, false
-	}
-	if c.DataOnly {
-		return false, true
 	}
 	return true, true
 }
@@ -101,7 +98,6 @@ type Config struct {
 	Exclude []string // any exclude-* entries
 	// Metadata/data (FR-11).
 	MetadataOnly bool
-	DataOnly     bool
 
 	// Conflict / safety (FR-10/FR-11).
 	ConflictAction ConflictAction // default Stop (strict)
@@ -354,9 +350,6 @@ func (c *Config) Validate() error {
 	case "", "size", "fifo":
 	default:
 		return fmt.Errorf("unknown index-priority %q (want size|fifo)", c.IndexPriority)
-	}
-	if c.MetadataOnly && c.DataOnly {
-		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
 	}
 	switch c.ConflictAction {
 	case Stop, Skip, Overwrite:
