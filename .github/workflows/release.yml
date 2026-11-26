@@ -51,10 +51,36 @@ jobs:
 
       # proxy.golang.org intermittently 403s klauspost/compress; the direct
       # (git clone) fallback resolves it (ADR-000).
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          # The curated delta for this release is the section of
+          # CHANGELOG.md whose header names this tag (Keep a Changelog).
+          # The header line is dropped (GitHub shows the tag as the title);
+          # everything up to the next "## " section is the body. If the tag
+          # has no section (must not happen), goreleaser keeps its default
+          # body. Dots are escaped so v0.3.1 cannot match v0.3.10.
+          tag_re=$(printf '%s' "$GITHUB_REF_NAME" | sed 's/\./\\./g')
+          awk -v tag="$tag_re" '
+            $0 ~ "^## \\[(" tag ")\\\]" { insec = 1; next }
+            insec && /^## / { exit }
+            insec { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ -s /tmp/release-notes.md ]; then
+            echo "notes extracted: $(wc -l < /tmp/release-notes.md) lines"
+            echo "path=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "no CHANGELOG section for $GITHUB_REF_NAME — default body"
+          fi
+
       - name: Build + publish
         run: |
           export GOPROXY=https://proxy.golang.org,direct
-          scripts/package.sh release
+          if [ -n "${{ steps.notes.outputs.path }}" ]; then
+            scripts/package.sh release --release-notes "${{ steps.notes.outputs.path }}"
+          else
+            scripts/package.sh release
+          fi
         env:
           # goreleaser v1.24 auto-publishes to GitHub on `goreleaser release`
           # when GITHUB_TOKEN is set (there is NO --publish flag in v1.24 —
