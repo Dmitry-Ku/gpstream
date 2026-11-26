@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -13,32 +12,6 @@ import (
 
 	"github.com/gpstream/gpstream/internal/agent"
 )
-
-// findDestAgent locates a built gpstream-dest-agent binary (repo build dir or
-// PATH) for the local-launch test.
-func findDestAgent(t *testing.T) string {
-	t.Helper()
-	if b, err := exec.LookPath("gpstream-dest-agent"); err == nil {
-		return b
-	}
-	// Fall back to a fresh build (the repo is the working tree; go is on
-	// PATH in the gate). Build from the repo root.
-	wd, _ := os.Getwd()
-	root := wd
-	for i := 0; i < 6 && root != "/"; i++ {
-		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			break
-		}
-		root = filepath.Dir(root)
-	}
-	bin := filepath.Join(t.TempDir(), "gpstream-dest-agent")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/gpstream-dest-agent")
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("no dest-agent binary and go build failed: %v\n%s", err, out)
-	}
-	return bin
-}
 
 // prebind binds a loopback listener to learn a free port and releases it.
 func prebind(t *testing.T) string {

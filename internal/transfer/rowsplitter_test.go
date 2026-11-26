@@ -10,7 +10,6 @@ import (
 // splitter is forced to buffer across many reads (the realistic case for a
 // network stream). Used to prove the RowSplitter buffer stays bounded.
 type limitedReader struct {
-	r     io.Reader
 	left  []byte
 	limit int
 }

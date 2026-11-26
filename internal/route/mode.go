@@ -91,7 +91,7 @@ func EqualKeys(a, b []string) bool {
 		return false
 	}
 	for i := range a {
-		if strings.ToLower(a[i]) != strings.ToLower(b[i]) {
+		if !strings.EqualFold(a[i], b[i]) {
 			return false
 		}
 	}

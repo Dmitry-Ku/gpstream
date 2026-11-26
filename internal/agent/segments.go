@@ -263,7 +263,7 @@ func ServeSegments(ctx context.Context, o SegmentsOptions) (SegmentsResult, erro
 		// pipes, so a broken slice's re-dial reaches its own pipe and the
 		// merged COPY keeps reading the in-order stream.
 		results := make(chan frameAckSliceOut, o.Segments)
-		accErr, faWire = serveSegmentsFrameAck(sctx, o, l, mux, mode, results)
+		faWire, accErr = serveSegmentsFrameAck(sctx, o, l, mux, mode, results)
 		if accErr == nil {
 			for i := 0; i < o.Segments; i++ {
 				s := <-results
@@ -406,7 +406,7 @@ type frameAckSliceOut struct {
 // re-COPY, no re-UnitSpec). It returns the raw network bytes the router read
 // (FR-04 wire volume) and an error if a slice's pipe fails to establish or
 // the stream deadline elapses.
-func serveSegmentsFrameAck(sctx context.Context, o SegmentsOptions, l net.Listener, mux *segstream.SliceMux, mode compress.Mode, results chan frameAckSliceOut) (error, uint64) {
+func serveSegmentsFrameAck(sctx context.Context, o SegmentsOptions, l net.Listener, mux *segstream.SliceMux, mode compress.Mode, results chan frameAckSliceOut) (uint64, error) {
 	router := transfer.NewResumeRouter(l)
 	go router.Run()
 	// The per-unit listener is closed by the router; the long-lived listener
@@ -442,10 +442,10 @@ func serveSegmentsFrameAck(sctx context.Context, o SegmentsOptions, l net.Listen
 		select {
 		case <-finished:
 		case <-sctx.Done():
-			return sctx.Err(), 0
+			return 0, sctx.Err()
 		}
 	}
-	return nil, router.WireBytes()
+	return router.WireBytes(), nil
 }
 
 // xorDigestAcc XOR-folds b into acc (the per-slice digest composition).

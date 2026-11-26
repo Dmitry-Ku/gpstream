@@ -17,7 +17,6 @@ type bufPipe struct {
 
 	mu      sync.Mutex
 	buf     []byte
-	closed  bool
 	readers int
 	writers int
 	dataCv  *sync.Cond // data available (for Read)
@@ -62,8 +61,6 @@ func (p *bufPipe) Write(b []byte) (int, error) {
 	}
 	return total, nil
 }
-
-func (p *bufPipe) bufLen() int { return len(p.buf) }
 
 // Read reads bytes the peer sent. Blocks until data is available or the pipe
 // is closed and drained.

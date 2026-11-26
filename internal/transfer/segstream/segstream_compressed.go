@@ -62,10 +62,6 @@ func compressModeFromByte(b byte) compress.Mode {
 	return compress.ModeNone
 }
 
-func isModeAnnounce(f *transfer.Frame) bool {
-	return f.Flags&flagModeAnnounce != 0
-}
-
 // annMode extracts the announced compression mode from a mode-announcement frame.
 func annMode(f *transfer.Frame) compress.Mode {
 	return compressModeFromByte(f.Flags >> 3)

@@ -692,26 +692,24 @@ func (rp *ReliablePipe) Read(p []byte) (int, error) {
 	if rp.role != rpReceiver {
 		return 0, errors.New("reliablepipe: Read on the sender end")
 	}
-	for {
-		rp.outMu.Lock()
-		for len(rp.outBuf) == 0 && !rp.dead.Load() {
-			rp.outCv.Wait()
-		}
-		if len(rp.outBuf) == 0 {
-			rp.outMu.Unlock()
-			return 0, io.EOF
-		}
-		n := copy(p, rp.outBuf[0])
-		if n == len(rp.outBuf[0]) {
-			rp.outBuf = rp.outBuf[1:]
-		} else {
-			rp.outBuf[0] = rp.outBuf[0][n:]
-		}
-		rp.outBytes -= int64(n)
-		rp.outCv.Broadcast() // wake a blocked enqueue (buffer freed up)
-		rp.outMu.Unlock()
-		return n, nil
+	rp.outMu.Lock()
+	for len(rp.outBuf) == 0 && !rp.dead.Load() {
+		rp.outCv.Wait()
 	}
+	if len(rp.outBuf) == 0 {
+		rp.outMu.Unlock()
+		return 0, io.EOF
+	}
+	n := copy(p, rp.outBuf[0])
+	if n == len(rp.outBuf[0]) {
+		rp.outBuf = rp.outBuf[1:]
+	} else {
+		rp.outBuf[0] = rp.outBuf[0][n:]
+	}
+	rp.outBytes -= int64(n)
+	rp.outCv.Broadcast() // wake a blocked enqueue (buffer freed up)
+	rp.outMu.Unlock()
+	return n, nil
 }
 
 // ---- control/data receive loop (the sole reader, both ends) ----
@@ -836,18 +834,6 @@ func (rp *ReliablePipe) receiveLoop() {
 			}
 		}
 	}
-}
-
-// waitSwap blocks until the link's transport generation advances (the sender
-// dialed a fresh pair), the peer died (gone), or the pipe is closed.
-func (rp *ReliablePipe) waitSwap(gen int) bool {
-	l := rp.link
-	l.mu.Lock()
-	for l.swapGen == gen && !l.gone {
-		l.swapCv.Wait()
-	}
-	l.mu.Unlock()
-	return !rp.dead.Load()
 }
 
 // retransmitOne re-sends a single NACKed frame from the ring.

@@ -1058,12 +1058,3 @@ func freePort(host string) (int, error) {
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
-
-// getBool reads an env var as a boolean (true/1/on = true).
-func getBool(key string) (bool, bool) {
-	v, ok := os.LookupEnv("GPSTREAM_" + key)
-	if !ok {
-		return false, false
-	}
-	return v == "true" || v == "1" || v == "on", true
-}

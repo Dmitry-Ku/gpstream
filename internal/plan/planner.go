@@ -1014,7 +1014,7 @@ func detectCollations(ctx context.Context, tabs []Table, src, dst pg.Querier, de
 		// destination table is absent — gpstream will CREATE it from the
 		// source's column layout (which now reproduces the COLLATE clause),
 		// so there is no column-level diff to report.
-		if dstCols == nil || len(dstCols) == 0 {
+		if len(dstCols) == 0 {
 			continue
 		}
 		names := make([]string, 0, len(srcCols))

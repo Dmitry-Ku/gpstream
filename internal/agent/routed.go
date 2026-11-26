@@ -293,7 +293,7 @@ func ServeRouted(ctx context.Context, o RoutedOptions) (RoutedResult, error) {
 		// src/dst/worker) to their own pipes, so a broken sub-stream's
 		// re-dial reaches its own pipe.
 		results := make(chan routedFrameAckOut, nTotal)
-		accErr, faWire = serveRoutedFrameAck(sctx, o, l, nTotal, results, drainSubStream)
+		faWire, accErr = serveRoutedFrameAck(sctx, o, l, nTotal, results, drainSubStream)
 		if accErr == nil {
 			for i := 0; i < nTotal; i++ {
 				s := <-results
@@ -416,7 +416,7 @@ type routedFrameAckOut struct {
 // router binds a StreamID to a free slot on first sight. It returns the raw
 // network bytes the router read (FR-04) and an error on deadline / setup
 // failure.
-func serveRoutedFrameAck(sctx context.Context, o RoutedOptions, l net.Listener, nTotal int, results chan routedFrameAckOut, drain func(conn transfer.Pipe, res *segstream.SliceResult) error) (error, uint64) {
+func serveRoutedFrameAck(sctx context.Context, o RoutedOptions, l net.Listener, nTotal int, results chan routedFrameAckOut, drain func(conn transfer.Pipe, res *segstream.SliceResult) error) (uint64, error) {
 	router := transfer.NewResumeRouter(l)
 	go router.Run()
 	closer := router.Stop
@@ -450,8 +450,8 @@ func serveRoutedFrameAck(sctx context.Context, o RoutedOptions, l net.Listener, 
 		select {
 		case <-finished:
 		case <-sctx.Done():
-			return sctx.Err(), 0
+			return 0, sctx.Err()
 		}
 	}
-	return nil, router.WireBytes()
+	return router.WireBytes(), nil
 }

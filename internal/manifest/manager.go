@@ -2427,29 +2427,6 @@ func segmentDSN(destDSN string, seg destSegment) (string, error) {
 	return u.String(), nil
 }
 
-func (m *Manager) closePipes(w []io.Closer) error {
-	var first error
-	for _, c := range w {
-		if c != nil {
-			if err := c.Close(); err != nil && first == nil {
-				first = err
-			}
-		}
-	}
-	return first
-}
-
-// directDegradedError marks a table that cannot use the direct path; the
-// caller falls back to the coordinator path (correct, just not segment-direct).
-type directDegradedError struct{ reason string }
-
-func (e *directDegradedError) Error() string { return "direct mode: " + e.reason }
-
-func isDirectDegraded(err error) bool {
-	var d *directDegradedError
-	return errors.As(err, &d)
-}
-
 // quoteIdentDSN quotes a SQL identifier (the dest agent's helper is not
 // exported; keep a local copy for DSN/COPY building in this file).
 func quoteIdentDSN(s string) string {

@@ -41,9 +41,6 @@ const (
 	OidBytea   = 17
 )
 
-// hashUint16 == hash_uint32(uint32(v)) (PG hashfunc.c).
-func hashUint16(v uint16) uint32 { return HashUint32(uint32(v)) }
-
 // HashInt2 — cdbhash for one int2 attribute (non-legacy).
 func HashInt2(v int16) uint32 { return HashUint32(uint32(uint16(v))) }
 

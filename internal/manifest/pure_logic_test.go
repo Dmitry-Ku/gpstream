@@ -37,25 +37,6 @@ func configDefault() *config.Config {
 	return &c
 }
 
-// newPair builds two fake streaming conns (source + destination). The source
-// serves a binary COPY payload and the destination records COPY ... FROM STDIN
-// and re-reads its own payload for verify. Pure construction (no Run).
-func newPair(t *testing.T, srcPayload, dstPayload []byte) (src *pg.FakeConn, dst *pg.FakeConn) {
-	t.Helper()
-	src = pg.NewFakeConn()
-	src.On("format_type", [][]any{
-		{"id", "integer", true, ""},
-		{"customer", "text", false, `''::text`},
-	})
-	src.OnReadCopy("TO STDOUT", srcPayload)
-
-	dst = pg.NewFakeConn()
-	dst.OnWriteCopy("FROM STDIN")
-	dst.OnReadCopy("TO STDOUT", dstPayload)
-	dst.On("pg_class", [][]any{})
-	return src, dst
-}
-
 // newMgr builds a Manager over the given (possibly fake) streaming conns and a
 // file-mirrored journal. Pure construction (no Run); used by the pure logic
 // tests and the bench orchestration test.

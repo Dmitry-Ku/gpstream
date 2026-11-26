@@ -163,24 +163,22 @@ func NewReliablePipeReceiverOnSlot(cfg ReliablePipeConfig, slot <-chan dupConn, 
 	// slot. Bounded by ResumeTimeout so a dead segreceiver fails the slice.
 	rp.resumer = func() dupConn {
 		deadline := time.Now().Add(cfg.ResumeTimeout)
-		for {
-			if rp.dead.Load() || rp.link.aborted.Load() {
-				return nil
-			}
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				return nil
-			}
-			c := boundedSlotAccept(slot, remaining)
-			if c == nil {
-				return nil
-			}
-			if rp.dead.Load() || rp.link.aborted.Load() {
-				_ = c.Close()
-				return nil
-			}
-			return c
+		if rp.dead.Load() || rp.link.aborted.Load() {
+			return nil
 		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		c := boundedSlotAccept(slot, remaining)
+		if c == nil {
+			return nil
+		}
+		if rp.dead.Load() || rp.link.aborted.Load() {
+			_ = c.Close()
+			return nil
+		}
+		return c
 	}
 	rp.wg.Add(2)
 	go rp.receiveLoop()

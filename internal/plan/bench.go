@@ -3,7 +3,6 @@ package plan
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/transfer/pg"
@@ -65,23 +64,4 @@ func humanBytesN(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
-}
-
-// selectedNames returns the human-readable list of selected tables
-// (schema.name, source names), capped for display.
-func selectedNames(tabs []Table, capN int) string {
-	var sb strings.Builder
-	for i, t := range tabs {
-		if i >= capN {
-			fmt.Fprintf(&sb, " … +%d more", len(tabs)-capN)
-			break
-		}
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(t.Schema)
-		sb.WriteString(".")
-		sb.WriteString(t.Name)
-	}
-	return sb.String()
 }

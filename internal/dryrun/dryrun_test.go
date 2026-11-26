@@ -18,11 +18,11 @@ func find(r *Report, side, name string) Severity {
 func TestFromSidesDetectsFaults(t *testing.T) {
 	src := &SideValues{Side: "source", Reachable: false, ReachErr: "connection refused"}
 	dst := &SideValues{Side: "dest", Reachable: true,
-		Version: "",        // version query cannot be answered -> FAIL
+		Version:   "",               // version query cannot be answered -> FAIL
 		Greenplum: true, UpCount: 0, // no up segments -> FAIL
-		HasCreate: false,   // no database privileges -> WARN
-		DiskOK: false, DiskErr: "disk probe returned no data",
-		Collation: "C.UTF-8",
+		HasCreate: false, // no database privileges -> WARN
+		DiskOK:    false, DiskErr: "disk probe returned no data",
+		Collation:  "C.UTF-8",
 		Extensions: []string{"plpgsql"},
 	}
 	rep := FromSides(src, dst, Options{MinTLS: "1.2"})
@@ -54,10 +54,10 @@ func TestFromSidesDetectsFaults(t *testing.T) {
 // source-side faults (CR-7).
 func TestFromSidesDetectsSourceSideFaults(t *testing.T) {
 	src := &SideValues{Side: "source", Reachable: true,
-		Version: "",        // FAIL
+		Version:   "",               // FAIL
 		Greenplum: true, UpCount: 0, // FAIL
-		HasCreate: false,   // WARN
-		DiskOK: true,
+		HasCreate: false, // WARN
+		DiskOK:    true,
 		Collation: "C",
 	}
 	dst := &SideValues{Side: "dest", Reachable: true,

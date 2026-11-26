@@ -1927,19 +1927,6 @@ func (s *DestServer) acceptPersistent() {
 	}
 }
 
-// removePersConn drops a channel from the live set (its serve loop is
-// exiting).
-func (s *DestServer) removePersConn(w *persConnW) {
-	s.persMu.Lock()
-	for i, c := range s.persConns {
-		if c == w {
-			s.persConns = append(s.persConns[:i], s.persConns[i+1:]...)
-			break
-		}
-	}
-	s.persMu.Unlock()
-}
-
 // failUnitServe delivers an error report to the in-flight serve op for us
 // (its channel died before the unit's data arrived, or the run is over), so
 // the controller's WaitUnitDone unblocks with a failure instead of hanging.

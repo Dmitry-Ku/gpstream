@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -286,10 +285,6 @@ type processTwoAgentRunner struct {
 	// version exchange; empty when the dest has no peer listener).
 	destPeerAddr string
 	// --- P3 production-dispatch (mesh): the D destination-segment mini-agents ---
-	// supervisorReport is the dest-agent's (supervisor-mode) report listener
-	// address (from its hello): the D minis dial it once for the run. Empty
-	// outside supervisor mode.
-	supervisorReport string
 	// miniAddrs is the D-entry address book (seg order, comma-joined) from
 	// the supervisor's MiniMap: the segreceivers' --dest-addr D form (the
 	// source segreceiver dials mini d's endpoint for destination segment d).
@@ -940,16 +935,6 @@ func (r *processTwoAgentRunner) controlTLS() agent.ControlTLS {
 }
 
 // stopSource tears down the source agent (used when the dest launch fails).
-// agentStderr returns the agent stderr sink: GPSTREAM_AGENT_STDERR (a path,
-// appended) when set for diagnosis, else io.Discard.
-func agentStderr() io.Writer {
-	if p := os.Getenv("GPSTREAM_AGENT_STDERR"); p != "" {
-		if f, ferr := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
-			return f
-		}
-	}
-	return io.Discard
-}
 
 // Stream (coordinator) drives one unit through the LONG-LIVED destination
 // agent (design 04.10 port economy): the agent is already up (Start bound
@@ -1249,13 +1234,6 @@ func (r *processTwoAgentRunner) Release(ctx context.Context) error {
 	return cerr
 }
 
-// streamDeadline bounds the per-unit destination serve (the agents default to a
-// 6-hour stream timeout; the controller's own unit deadline dominates in
-// practice).
-func (r *processTwoAgentRunner) streamDeadline() time.Duration {
-	return 6*time.Hour + time.Minute
-}
-
 // snapshotMode maps the config's FR-02 scope to the agent's snapshot string.
 func (r *processTwoAgentRunner) snapshotMode() string {
 	// FR-02: the source agent always reads under the DB-scoped REPEATABLE
@@ -1387,11 +1365,6 @@ type InProcTwoAgentRunner struct {
 	// falls back to it, so the count survives the runner's cleanup. Atomic:
 	// KillDestAgent runs in a foreign goroutine (the test's kill).
 	finalPersAccepts atomic.Int64
-	// streamMu serializes the whole per-unit dest exchange (BeginServe ->
-	// stream -> WaitUnitDone): the dest agent's control loop is sequential,
-	// so concurrent manager workers must not interleave (mirrors the
-	// process runner).
-	streamMu sync.Mutex
 }
 
 // KillDestAgent (P1c test hook) kills the in-proc destination agent the way

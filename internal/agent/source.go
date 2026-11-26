@@ -323,34 +323,6 @@ func hostOf(listen string) (string, error) {
 	return host, nil
 }
 
-// dialDestRetry dials the destination agent's data socket, retrying while the
-// destination is still binding its listen socket. The controller launches the
-// per-unit destination agent and then instructs the source to dial it, so there
-// is a short window where the destination has not bound yet and the dial is
-// refused. A refused connection never reached the destination's (single)
-// accept, so retrying is safe and cannot consume the destination's one
-// connection. The retry is bounded (the destination binds within milliseconds
-// of starting).
-func dialDestRetry(ctx context.Context, addr string, perDial time.Duration) (net.Conn, error) {
-	deadline := time.Now().Add(30 * time.Second)
-	var lastErr error
-	for {
-		conn, err := net.DialTimeout("tcp", addr, perDial)
-		if err == nil {
-			return conn, nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("dial %s (retries exhausted): %w", addr, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
 // logicalCounter is an io.Writer that only counts bytes (the logical volume).
 type logicalCounter struct{ n int64 }
 

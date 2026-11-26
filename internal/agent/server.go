@@ -77,9 +77,8 @@ type SourceServer struct {
 	// UnitBegin/data/Trailer frames; the dest's per-channel serve loop reads one
 	// unit at a time. This lock makes the whole send atomic per channel (units on
 	// DIFFERENT channels stream in parallel; the serial case always finds it free).
-	persChanMu  []sync.Mutex
-	persReady   bool // the channel pool is established
-	persConnIdx int  // the channel the last (re)dial touched (for re-dial)
+	persChanMu []sync.Mutex
+	persReady  bool // the channel pool is established
 	// persFails (P1c): the consecutive units that failed on a DOWN persistent
 	// channel (a dial failure or a mid-unit break) since the last successful
 	// unit. Bounded by the re-dial budget (MaxReconnects, the run's
@@ -712,24 +711,6 @@ func pullStatsFiles(ctx context.Context, hosts []string, fetch func(host string)
 	sort.Slice(out, func(i, j int) bool { return out[i].Content < out[j].Content })
 	return out
 }
-
-// countingWriteConn wraps a net.Conn and counts every byte written to it (the
-// on-wire volume the source agent reports). Embedding net.Conn delegates all
-// other methods, so it satisfies the interface segstream.SendCompressed takes.
-type countingWriteConn struct {
-	net.Conn
-	n atomic.Uint64
-}
-
-func (w *countingWriteConn) Write(p []byte) (int, error) {
-	n, err := w.Conn.Write(p)
-	if n > 0 {
-		w.n.Add(uint64(n))
-	}
-	return n, err
-}
-
-func (w *countingWriteConn) Bytes() uint64 { return w.n.Load() }
 
 // dialDestTLS dials the destination agent's data socket (retrying while it is
 // still binding) and applies the data-plane TLS config when enabled (the
@@ -1458,25 +1439,6 @@ func (s *SourceServer) teardownPoolLocked() {
 		}
 	}
 	s.persReady = false
-}
-
-// teardownChannel tears down ONE channel (i) after a break on it, so the next
-// unit that rides it re-dials a fresh connection (P1d: per-channel re-dial).
-func (s *SourceServer) teardownChannel(i int) {
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	if i >= 0 && i < len(s.persSnds) {
-		if s.persSnds[i] != nil {
-			s.persSnds[i].Close()
-			s.persSnds[i] = nil
-		}
-		if i < len(s.persConns) {
-			s.persConns[i] = nil
-		}
-	}
-	// Mark the pool not-ready so ensurePersistentPool re-establishes it (it
-	// re-dials all N in order; the already-healthy ones are closed first).
-	s.teardownPoolLocked()
 }
 
 // ClosePersistent tears the channel down at run end (Release).

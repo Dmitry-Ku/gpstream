@@ -385,47 +385,45 @@ func readExact(r Pipe, p []byte) (int, error) {
 // ReadFrame reads one frame from a Pipe, honouring context cancellation
 // (back-pressure / shutdown, FR-01/FR-14). It auto-detects v1 vs v2 by magic.
 func ReadFrame(ctx context.Context, r Pipe) (*Frame, error) {
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		var hdr [8]byte // magic + len (v1 and v2 agree on these first 8 bytes)
-		if _, err := readExact(r, hdr[:]); err != nil {
-			return nil, err
-		}
-		var ver, hdrLen int
-		switch binary.LittleEndian.Uint32(hdr[0:4]) {
-		case magicV1:
-			ver, hdrLen = frameVer1, fixedHdrV1
-		case magicV2:
-			ver, hdrLen = frameVer2, fixedHdrV2
-		default:
-			return nil, fmt.Errorf("stream: bad magic 0x%08x", binary.LittleEndian.Uint32(hdr[0:4]))
-		}
-		payloadLen := int(binary.LittleEndian.Uint32(hdr[4:8])) - hdrLen
-		if payloadLen < 0 {
-			return nil, fmt.Errorf("stream: bad length %d", payloadLen)
-		}
-		// Enforce the payload cap before the allocation below: the length is
-		// peer-controlled, and ReadFrame must not allocate it unchecked
-		// (a forged 4 GiB length is a ~4 GiB allocation, i.e. an OOM).
-		if payloadLen > MaxFramePayload {
-			return nil, fmt.Errorf("stream: payload %d exceeds max %d", payloadLen, MaxFramePayload)
-		}
-		body := make([]byte, hdrLen+payloadLen+4)
-		copy(body[:8], hdr[:8])
-		if _, err := readExact(r, body[8:]); err != nil {
-			return nil, err
-		}
-		// Decode the assembled body with the version-specific parser (the
-		// magic already selected ver/hdrLen above).
-		if ver == frameVer1 {
-			return decodeV1(body)
-		}
-		return decodeV2(body)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
+	var hdr [8]byte // magic + len (v1 and v2 agree on these first 8 bytes)
+	if _, err := readExact(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	var ver, hdrLen int
+	switch binary.LittleEndian.Uint32(hdr[0:4]) {
+	case magicV1:
+		ver, hdrLen = frameVer1, fixedHdrV1
+	case magicV2:
+		ver, hdrLen = frameVer2, fixedHdrV2
+	default:
+		return nil, fmt.Errorf("stream: bad magic 0x%08x", binary.LittleEndian.Uint32(hdr[0:4]))
+	}
+	payloadLen := int(binary.LittleEndian.Uint32(hdr[4:8])) - hdrLen
+	if payloadLen < 0 {
+		return nil, fmt.Errorf("stream: bad length %d", payloadLen)
+	}
+	// Enforce the payload cap before the allocation below: the length is
+	// peer-controlled, and ReadFrame must not allocate it unchecked
+	// (a forged 4 GiB length is a ~4 GiB allocation, i.e. an OOM).
+	if payloadLen > MaxFramePayload {
+		return nil, fmt.Errorf("stream: payload %d exceeds max %d", payloadLen, MaxFramePayload)
+	}
+	body := make([]byte, hdrLen+payloadLen+4)
+	copy(body[:8], hdr[:8])
+	if _, err := readExact(r, body[8:]); err != nil {
+		return nil, err
+	}
+	// Decode the assembled body with the version-specific parser (the
+	// magic already selected ver/hdrLen above).
+	if ver == frameVer1 {
+		return decodeV1(body)
+	}
+	return decodeV2(body)
 }
 
 // WriteFrame writes a frame to a Pipe (v2, the current default).

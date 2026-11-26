@@ -8,7 +8,6 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/gpstream/gpstream/internal/agent"
 	"github.com/gpstream/gpstream/internal/config"
@@ -16,11 +15,6 @@ import (
 	"github.com/gpstream/gpstream/internal/transfer/compress"
 	"github.com/gpstream/gpstream/internal/transfer/segstream"
 )
-
-// benchDrainAcceptTO bounds the wait for the source to dial the bench drain
-// (the segreceivers dial right after the kernel launches them; a wedged
-// dispatch must not hold the unit open).
-const benchDrainAcceptTO = 60 * time.Second
 
 // benchDrainAddr picks the drain listen + dial addresses. A LOCAL source agent
 // (same host as the controller — the gp6lab / single-host layout) keeps the

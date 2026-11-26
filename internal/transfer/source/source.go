@@ -455,13 +455,13 @@ func (a *Agent) Constraints(ctx context.Context, schema, table string) ([]pg.Con
 	return out, nil
 }
 
-// quoteList turns a SOH-delimited () list of bare column names into a
+// quoteList turns a SOH-delimited (\x01) list of bare column names into a
 // comma-joined list of quoted identifiers ("a","b"). An empty input yields "".
 func quoteList(s string) string {
 	if s == "" {
 		return ""
 	}
-	parts := strings.Split(s, "")
+	parts := strings.Split(s, "\x01")
 	out := make([]string, len(parts))
 	for i, p := range parts {
 		out[i] = pg.QuoteIdent(p)

@@ -8,7 +8,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"github.com/gpstream/gpstream/internal/config"
 	"github.com/gpstream/gpstream/internal/manifest"
 	"github.com/gpstream/gpstream/internal/monitor"
@@ -18,8 +17,6 @@ import (
 	"path/filepath"
 	"testing"
 )
-
-var errBoom = errors.New("boom: drop failed")
 
 // richPlan builds a plan that exercises every branch of printPlanSummary:
 // conflicts, redistribution, route modes, partition guards, all three
