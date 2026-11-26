@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v0.3.2] - 2026-11-26
+
 ### Removed
 
 - **`--truncate` flag and the `truncate` conflict policy**
