@@ -57,12 +57,15 @@ jobs:
           # The curated delta for this release is the section of
           # CHANGELOG.md whose header names this tag (Keep a Changelog).
           # The header line is dropped (GitHub shows the tag as the title);
-          # everything up to the next "## " section is the body. If the tag
-          # has no section (must not happen), goreleaser keeps its default
-          # body. Dots are escaped so v0.3.1 cannot match v0.3.10.
+          # everything up to the next "## " section is the body. Dots are
+          # escaped so v0.3.1 cannot match v0.3.10. Regex escaping must
+          # stay mawk-compatible (CI's default awk): an unescaped ] in the
+          # dynamic regex, no \] (mawk does not match it).
+          # An empty extraction FAILS the run: a release without curated
+          # notes publishes an empty body, which is a defect.
           tag_re=$(printf '%s' "$GITHUB_REF_NAME" | sed 's/\./\\./g')
           awk -v tag="$tag_re" '
-            $0 ~ "^## \\[(" tag ")\\\]" { insec = 1; next }
+            $0 ~ "^## \\[(" tag ")\\]" { insec = 1; next }
             insec && /^## / { exit }
             insec { print }
           ' CHANGELOG.md > /tmp/release-notes.md
@@ -70,7 +73,8 @@ jobs:
             echo "notes extracted: $(wc -l < /tmp/release-notes.md) lines"
             echo "path=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
           else
-            echo "no CHANGELOG section for $GITHUB_REF_NAME — default body"
+            echo "::error::no CHANGELOG.md section for $GITHUB_REF_NAME — refusing to publish a release without curated notes"
+            exit 1
           fi
 
       - name: Build + publish

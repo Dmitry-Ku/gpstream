@@ -113,8 +113,10 @@ archives:
 
 # gzip the man pages once, into dist/man/, so both package formats ship .gz
 # (man(8) reads either, .gz is the conventional on-disk form)
-changelog:
-  disable: true
+# Release notes come from the CHANGELOG.md section of the tag: the release
+# workflow extracts it and passes --release-notes to goreleaser (the
+# changelog pipe loads that file and skips git-based generation). Do NOT
+# re-add `changelog: disable: true` — a skipped pipe never loads the flag.
 
 # ---- packages (deb + rpm) ----
 nfpms:
