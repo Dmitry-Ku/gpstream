@@ -104,16 +104,10 @@ deliberately.
 | `--resolve-conflicts stop` | **default** — a conflict stops the run |
 | `--resolve-conflicts skip` | skip conflicting objects (reported in `conflicts.jsonl`) |
 | `--resolve-conflicts overwrite` | replace the target (staging + atomic swap, verified) |
-| `--overwrite` | shorthand opt-in for `--resolve-conflicts overwrite` |
 
-`--truncate` and `--resolve-conflicts truncate` are **no longer accepted**
-(removed; the in-place copy target had no two-agent equivalent and used to
-fail every unit at runtime) — passing either is a parse error. Use
-`--resolve-conflicts overwrite` (staging + atomic swap).
-
-If you expected an overwrite, add `--resolve-conflicts overwrite` (or
-`--overwrite`). If you expected a skip, pass `--resolve-conflicts skip` —
-the default is to **stop**, not to skip.
+If you expected an overwrite, add `--resolve-conflicts overwrite`. If you
+expected a skip, pass `--resolve-conflicts skip` — the default is to
+**stop**, not to skip.
 
 ---
 

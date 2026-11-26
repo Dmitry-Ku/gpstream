@@ -855,9 +855,9 @@ func (m *Manager) Run(ctx context.Context, p *plan.Plan) error {
 	// index is in place (GP6 accepts an FK over a plain unique index — no PK
 	// constraint required, verified live), and a restored constraint creates a
 	// pg_depend entry that would otherwise block a later re-swap (DROP) of the
-	// referenced table. Only StateSwapped units qualify: the in-place
-	// --truncate/--append paths kept the existing destination table (same OID),
-	// whose constraints are already present. Non-fatal by design (like the
+	// referenced table. Only StateSwapped units qualify: only the swap
+	// replaces the destination table (fresh OID), so only swapped units need
+	// the FK set re-created. Non-fatal by design (like the
 	// index build): a fault is logged to events.jsonl (F-04) and the run
 	// returns it as the first error only when no data-path error occurred; a
 	// resume re-runs the pass and the idempotent constraintExists guard skips
@@ -1158,10 +1158,10 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 	//     policy or a rename). Nothing is clobbered.
 	//   skip: --resolve-conflicts skip. The conflicting unit is skipped; the
 	//     run continues.
-	//   proceed: --overwrite / --truncate explicitly opt in to rewriting the
-	//     destination (overwrite via staging+swap, truncate in-place); both
-	//     always rewrite — there is no pre-copy identical-data shortcut. The
-	//     only content check is the post-copy verify (--verify on).
+	//   proceed: --resolve-conflicts overwrite explicitly opts in to rewriting
+	//     the destination (staging+swap); it always rewrites — there is no
+	//     pre-copy identical-data shortcut. The only content check is the
+	//     post-copy verify (--verify on).
 	if !reReading && u.Table != "" {
 		conflicted := u.Conflict
 		if !conflicted {
@@ -1241,15 +1241,15 @@ func (m *Manager) addFailure() {
 // ConflictError is returned (FR-10 §8, strict default) when a unit collides
 // with an object that already exists on the destination and no conflict
 // policy was given. The run STOPS with this error so the operator sees the
-// collision and decides (re-run with --resolve-conflicts skip|overwrite,
-// --truncate, --append, or a rename). Nothing is clobbered.
+// collision and decides (re-run with --resolve-conflicts skip or overwrite,
+// or a rename). Nothing is clobbered.
 type ConflictError struct {
 	Schema string
 	Table  string
 }
 
 func (e *ConflictError) Error() string {
-	return fmt.Sprintf("conflict: %s.%s already exists on the destination (re-run with --resolve-conflicts skip|overwrite|truncate to proceed)",
+	return fmt.Sprintf("conflict: %s.%s already exists on the destination (re-run with --resolve-conflicts skip or overwrite to proceed)",
 		e.Schema, e.Table)
 }
 
@@ -1321,7 +1321,7 @@ func (m *Manager) resolve(u *Unit) (verifyDigest bool) {
 // (FR-01/FR-02/FR-11/FR-17), recording each transition in the journal. It takes
 // the pre-built unit (see Run) so the pool can share unit construction. The
 // copy target is the unit's staging table (the two-agent data path is
-// staging+swap only, 2B-7): the default and --overwrite copy into the staging
+// staging+swap only, 2B-7): the default and the overwrite policy copy into the staging
 // table and atomically swap it over the final name. In-place copy targets
 // were the single-process path, removed in 2B-7.
 func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
@@ -1445,7 +1445,7 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	}
 
 	// 3. The copy target is the unit's staging table (the default /
-	//     --overwrite path; in-place copy targets have no two-agent
+	//     overwrite path; in-place copy targets have no two-agent
 	//     equivalent — the data path is staging+swap only, 2B-7). The destination AGENT
 	//     owns the staging DDL (it creates it from the UnitSpec the source
 	//     agent sends — cols / dist / part captured on the source side); the
@@ -1755,7 +1755,7 @@ func (m *Manager) streamTwoAgent(ctx context.Context, t plan.Table, u *Unit, tar
 	uc, _ := m.unitCompressors(t)
 	jobID := jobIDFromHash(u.JobID)
 	// 2B-1: the destination performs the atomic swap itself, so it needs the
-	// controller's overwrite decision (a re-read / --overwrite unit replaces
+	// controller's overwrite decision (a re-read / overwrite unit replaces
 	// the existing final table; the default preserves it). The same expression
 	// runUnit used for its own swap (step 9).
 	overwrite := m.cfg.ConflictAction == config.Overwrite || u.Conflict

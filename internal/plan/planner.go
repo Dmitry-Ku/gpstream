@@ -214,7 +214,7 @@ func Build(ctx context.Context, cfg *config.Config, src, dst pg.Querier) (*Plan,
 
 	// 2c1. Self-copy guard: a unit whose destination is the SAME table on the
 	// SAME cluster (source and destination DSN identical, same schema+name)
-	// is always a mistake. With --overwrite the swap does
+	// is always a mistake. With the overwrite policy the swap does
 	// DROP TABLE <src>; RENAME staging -> <src>, destroying the source. A
 	// different destination NAME on the same cluster (orders -> orders_copy)
 	// is a normal in-cluster copy and stays allowed.
@@ -656,7 +656,7 @@ func applyRename(cfg *config.Config, tabs []Table) {
 		// documents --map-table src=dst (bare table name). Accept both; the
 		// qualified key wins when both are present. Before the fix the bare
 		// key was silently ignored -> the unit self-copied table -> table and
-		// --overwrite dropped the source (first live A->A mesh run).
+		// the overwrite policy dropped the source (first live A->A mesh run).
 		dn, ok := cfg.RenameTable[t.Schema+"."+t.Name]
 		if !ok {
 			dn, ok = cfg.RenameTable[t.Name]
@@ -702,7 +702,7 @@ func dsnIdentity(dsn string) string {
 // checkSelfCopy rejects a plan in which any unit copies a table onto itself:
 // same cluster (source and destination DSN resolve to the same host:port and
 // database) and the same destination schema+table as the source. Such a unit
-// cannot be safe under --overwrite (the swap drops the source) and is a
+// cannot be safe under the overwrite policy (the swap drops the source) and is a
 // silent no-op otherwise.
 func checkSelfCopy(cfg *config.Config, tabs []Table) error {
 	srcID := dsnIdentity(cfg.Source)
@@ -713,7 +713,7 @@ func checkSelfCopy(cfg *config.Config, tabs []Table) error {
 	for i := range tabs {
 		t := &tabs[i]
 		if t.DstSchema == t.Schema && t.DstName == t.Name {
-			return fmt.Errorf("self-copy: %s.%s would be copied onto itself (source and destination are the same cluster and table); with --overwrite the swap would DROP the source table. Rename the destination (--map-table %s=<new-name>) or copy from a different source",
+			return fmt.Errorf("self-copy: %s.%s would be copied onto itself (source and destination are the same cluster and table); with --resolve-conflicts overwrite the swap would DROP the source table. Rename the destination (--map-table %s=<new-name>) or copy from a different source",
 				t.Schema, t.Name, t.Name)
 		}
 	}

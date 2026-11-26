@@ -197,11 +197,7 @@ selected.
 |------|--------------|---------|
 | `--metadata-only` | `MetadataOnly` | `false` (structure only: DDL + sequences, no data; idempotent) |
 
-Without the flag both classes are copied (the default). There is no
-`--include` flag: it duplicated the shorthands and the default, and was
-removed. `--data-only` (data into a pre-existing structure) was removed as
-well: the two-agent data path is staging+swap only and had no in-place
-copy target.
+Without the flag both classes are copied (the default).
 
 ### Rename (v4 §8 canonical + F-11)
 | Flag | Config field | Default |
@@ -214,7 +210,6 @@ copy target.
 | Flag | Config field | Default |
 |------|--------------|---------|
 | `--resolve-conflicts stop\|skip\|overwrite` | `ConflictAction` | `stop` (the run stops on the first collision and the operator decides) |
-| `--overwrite` | `ConflictAction` | — (shorthand: sets `ConflictAction=overwrite`) |
 
 Conflict policy semantics:
 
@@ -231,7 +226,6 @@ Conflict policy semantics:
   table), the dependent FK constraints are dropped before the swap (equivalent
   to `DROP ... CASCADE` for the constraints — the source FK set is re-applied
   in the post-load restore pass, F-11).
-- **`truncate`** — removed. It copied in-place into the final table after `TRUNCATE` and had no two-agent equivalent (every unit failed at runtime); the flag and the value are now rejected at parse time — use `overwrite` (staging+swap).
 
 ### Performance (F-01/F-12/F-14)
 | Flag | Config field | Default |
@@ -501,7 +495,7 @@ gpstream is deliberately conservative about overwriting destination data:
   collision; nothing is clobbered and nothing is silently skipped unless the
   operator explicitly chooses `skip` or `overwrite`.
 - **Data is never overwritten** unless the operator passes
-  `--resolve-conflicts overwrite` (or the `--overwrite` shorthand).
+  `--resolve-conflicts overwrite`.
 - **Secrets (`--ssl-cert`/`--ssl-key`/`--ssl-ca`) come from env or a `0600`
   file, never argv (F-08).** Although the parser accepts them as flags,
   supply them via `GPSTREAM_SSL_CERT` / `GPSTREAM_SSL_KEY` / `GPSTREAM_SSL_CA`

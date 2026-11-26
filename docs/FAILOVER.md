@@ -166,11 +166,8 @@ Recovery is only safe because of two guarantees in `runUnit`
    verified copy, the staging table still holds the verified data — the run
    reports the error and a resume retries the swap, so no data is lost.
 
-**The data path is staging+swap only.** The in-place copy target
-(`--resolve-conflicts truncate`) had no two-agent equivalent and was removed:
-passing the flag or the value is now a parse error (re-run with
-`--resolve-conflicts overwrite`). The crash-recovery guarantees above therefore
-apply to every conflict policy that runs.
+**The data path is staging+swap only.** The crash-recovery guarantees above
+therefore apply to every conflict policy that runs.
 
 ## Fault isolation (one bad unit does not kill the batch)
 

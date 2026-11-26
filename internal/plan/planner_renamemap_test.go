@@ -81,7 +81,7 @@ func TestRenameTableBareKeyBuildPath(t *testing.T) {
 
 // TestSelfCopyRejected: source and destination are the SAME cluster (identical
 // DSN) and a unit would land on the same table -> the plan must be rejected
-// (with --overwrite the swap drops the source: the first live A->A run).
+// (with the overwrite policy the swap drops the source: the first live A->A run).
 func TestSelfCopyRejected(t *testing.T) {
 	cfg := config.Default()
 	same := "host=127.0.0.1 port=5432 dbname=t_live"

@@ -232,8 +232,7 @@ skipped**. You opt in to a policy with `--resolve-conflicts`:
 | `skip` | Skip conflicting units and continue. |
 | `overwrite` | Replace existing data (staging + atomic swap; verified before the swap). |
 
-`--overwrite` is the shorthand opt-in for `--resolve-conflicts overwrite`. The
-dry-run lists any conflicts and the **verdict that would apply**
+The dry-run lists any conflicts and the **verdict that would apply**
 (stop / skip / overwrite), so you can see the impact before you run.
 
 > **Choosing:** for a first copy of a fresh destination there are no conflicts
@@ -286,9 +285,9 @@ per database (F-02), so the whole copy sees a single point in time.
 | --- | --- |
 | Endpoints | `--source`, `--dest` |
 | Scope | `--dbs`, `--schemas`, `--tables`, `--exclude` |
-| Object class | `--metadata-only`, `--data-only` (default: both) |
+| Object class | `--metadata-only` (default: both) |
 | Rename | `--map-db`, `--map-schema`, `--map-table` |
-| Conflict | `--resolve-conflicts stop\|skip\|overwrite` (default `stop`), `--overwrite` |
+| Conflict | `--resolve-conflicts stop\|skip\|overwrite` (default `stop`) |
 | Compression | `--compress none\|zlib\|zstd[:1-19]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|mesh`, `--seg-listen` (optional; auto when omitted) |
 | Performance | `--workers N`, `--rate-limit <rate>` (ETA baseline + load diagnostics; the flow is paced by backpressure) |

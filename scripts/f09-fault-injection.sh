@@ -59,7 +59,7 @@ echo "=== PHASE 1: run + RST injection at +${INJECT_AT}s (hold ${HOLD_FOR}s) ===
 (
   /usr/bin/gpstream run \
     --source "$SRC" --dest "$DST" \
-    --dbs f09 --overwrite \
+    --dbs f09 --resolve-conflicts overwrite \
     --source-agent-binary /usr/bin/gpstream-source-agent \
     --dest-agent-binary /usr/bin/gpstream-dest-agent \
     --operation-id $OP --state-dir $STATE \
@@ -86,7 +86,7 @@ echo "=== PHASE 3: re-run (retries failed units, keeps completed) ==="
 T0=$(date +%s)
 /usr/bin/gpstream run \
   --source "$SRC" --dest "$DST" \
-  --dbs f09 --overwrite \
+  --dbs f09 --resolve-conflicts overwrite \
     --operation-id $OP --state-dir $STATE \
   --streams 4 --verify full 2>&1 | grep -vE "setlocale" | grep -E "units:|run:|conflicts:"
 T1=$(date +%s)

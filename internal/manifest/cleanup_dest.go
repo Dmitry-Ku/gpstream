@@ -23,11 +23,10 @@ type DropTarget struct {
 // CONSERVATIVE by design — a pre-existing destination object is never
 // reported for removal:
 //
-//   - staging table `_gs_<job>_<unit>` (default/--overwrite path): reported
+//   - staging table `_gs_<job>_<unit>` (default/overwrite path): reported
 //     for every unit that started copying. A DROP IF EXISTS is a no-op when
-//     the table is already gone (successful swap, or the in-place
-//     --truncate/--append path that never created staging), so the report is
-//     safe either way.
+//     the table is already gone (a successful swap renames it away), so the
+//     report is safe either way.
 //   - final table: reported when gpstream created it, which the journal can
 //     prove two ways — a rename (DstName/DstSchema differ from the source:
 //     the destination name did not exist at plan time) or an unconflicted

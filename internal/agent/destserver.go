@@ -1167,7 +1167,7 @@ func (s *DestServer) journalMiniUnit(ctx context.Context, ml *MiniLaunch, state,
 // This is runUnit step 9 moved to the destination agent: the destination
 // compares the SOURCE vs DEST digests, and when they match (or --verify off)
 // it commits the staging table to its final name itself. overwrite drops the
-// existing final table first (FR-11 --overwrite).
+// existing final table first (FR-11 overwrite policy).
 func (s *DestServer) swapMiniFinal(ctx context.Context, schema, staging, final string, overwrite bool) error {
 	q, err := pg.NewConn(ctx, s.opts.DestConn, s.opts.SSLCert, s.opts.SSLKey, s.opts.SSLCA, s.opts.SSLMinTLS)
 	if err != nil {

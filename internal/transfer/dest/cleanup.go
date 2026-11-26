@@ -42,8 +42,8 @@ type DropOutcome struct {
 // to restore the pre-operation state").
 //
 // It is CONSERVATIVE and IDEMPOTENT: every drop is DROP IF EXISTS (a table
-// already gone — a successful swap, or an in-place --truncate/--append unit
-// that never created staging — is a no-op, not an error), and a non-empty
+// already gone — a successful swap renamed it away — is a no-op, not an
+// error), and a non-empty
 // or absent schema is a no-op. The caller (the destination agent, which
 // runs on the destination coordinator and connects to its OWN coordinator
 // locally — architecture 08.10) reports the outcome; a per-object failure

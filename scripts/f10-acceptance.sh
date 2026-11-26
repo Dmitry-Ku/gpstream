@@ -15,7 +15,7 @@
 #  (3) dest holds EXACTLY the specified objects: 2 schemas, 2 tables each,
 #      t4_renamed present & t4 absent, no staging leftovers (*_gpstream*),
 #      all tables empty (no data)
-#  (4) idempotent re-run: re-run the same operation with --overwrite ->
+#  (4) idempotent re-run: re-run the same operation with --resolve-conflicts overwrite ->
 #      exit 0, tables checksum-skip, same object set, no duplicates
 source /usr/local/gpdb/greenplum_path.sh
 A="psql -p 5432"
@@ -85,13 +85,13 @@ STG2=$($C -d f10_dst2 -Atc "SELECT count(*) FROM pg_class WHERE relname LIKE '\_
 EMPTY=$($C -d f10_dst1 -Atc "SELECT (SELECT count(*) FROM s1.t1) + (SELECT count(*) FROM s2.t2);")
 [ "$EMPTY" = "0" ] && ok "dest tables empty (no data)" || bad "dest rows=$EMPTY"
 
-echo "########## 6. idempotent re-run (--overwrite, checksum-skip) ##########"
+echo "########## 6. idempotent re-run (--resolve-conflicts overwrite, checksum-skip) ##########"
 $BIN run --source "${SRCD}f10_db1?sslmode=disable" --dest "${DSTH}f10_dst1?sslmode=disable" --dbs f10_db1 \
-  --operation-id f10db1 --state-dir /tmp/gpstate-f10 --rate-limit 10 --overwrite > /tmp/f10-r1b.log 2>&1
+  --operation-id f10db1 --state-dir /tmp/gpstate-f10 --rate-limit 10 --resolve-conflicts overwrite > /tmp/f10-r1b.log 2>&1
 R1B=$?
 $BIN run --source "${SRCD}f10_db2?sslmode=disable" --dest "${DSTH}f10_dst2?sslmode=disable" --dbs f10_db2 \
   --map-table "s2.t4=s2.t4_renamed" \
-  --operation-id f10db2 --state-dir /tmp/gpstate-f10 --rate-limit 10 --overwrite > /tmp/f10-r2b.log 2>&1
+  --operation-id f10db2 --state-dir /tmp/gpstate-f10 --rate-limit 10 --resolve-conflicts overwrite > /tmp/f10-r2b.log 2>&1
 R2B=$?
 echo "rerun exits: $R1B $R2B"
 [ "$R1B" = "0" ] && [ "$R2B" = "0" ] && ok "re-run exited 0 (no conflict-stop)" || bad "re-run exits $R1B/$R2B"

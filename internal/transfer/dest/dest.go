@@ -250,7 +250,7 @@ func toStr(v any) string {
 // path (manager.go). An FK owned by a table OUTSIDE the migration set is not
 // re-applied (its referenced table's oid changed) — matching DROP ... CASCADE
 // semantics for the constraint, which is the operator's explicit choice when
-// opting into --overwrite.
+// opting into the overwrite policy.
 func (a *Agent) dropDependentFKs(ctx context.Context, schema, table string) error {
 	rows, err := a.q.Query(ctx,
 		`SELECT n.nspname, c.relname, con.conname

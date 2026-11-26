@@ -137,7 +137,7 @@ Create the destination object under another name.
 .SS Conflicts
 .TP
 .BR --resolve-conflicts
-stop|skip|overwrite|truncate
+stop|skip|overwrite
 Conflict policy. Default
 .B stop
 : the first conflict stops the run (nothing overwritten, nothing skipped).
@@ -151,15 +151,7 @@ load, F-11). An existing destination is ALWAYS rewritten — identical data is
 re-copied, never detected and skipped (a pre-copy content comparison would
 read the whole table twice, which is too expensive for large tables; the
 only content check is the post-copy
-.BR --verify );
-.B truncate
-= in-place after TRUNCATE — unsupported in the current two-agent
-topology (the run rejects it at runtime; use
-.B overwrite
-= staging + swap).
-.TP
-.BR --overwrite | --truncate
-Shorthand opt-ins that set the matching policy.
+.BR --verify ).
 .SS Performance
 .TP
 .BR --compress

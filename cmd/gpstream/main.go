@@ -157,10 +157,7 @@ func parseConfig(args []string) (config.Config, error) {
 			cfg.MetadataOnly = true
 
 		// Conflict / safety (FR-10/FR-11). The DEFAULT is strict: conflicts
-		// STOP the run (FR-10 §8). --resolve-conflicts selects the policy;
-		// --overwrite is the explicit opt-in for the staging+swap path.
-		case "--overwrite":
-			cfg.ConflictAction = config.Overwrite
+		// STOP the run (FR-10 §8); --resolve-conflicts selects the policy.
 		case "--resolve-conflicts":
 			i++
 			cfg.ConflictAction = config.ConflictAction(args[i])
@@ -1495,7 +1492,6 @@ func cmdVersion(args []string) error {
 // cmdRun executes a copy between two Greenplum 6 clusters (v4 §8):
 //
 //	gpstream run --source ... --dest ... --dbs sales,hr \
-//	             --overwrite \
 //	             --compress zstd --workers 32 --rate-limit 60 \
 //	             --auto-resume 3 --index-workers 8 --ssl-ca /etc/gpstream/ca.pem
 //
@@ -1816,7 +1812,6 @@ Selection:
 
 Conflicts:
   --resolve-conflicts stop|skip|overwrite     policy (default stop)
-  --overwrite                    shorthand opt-in for --resolve-conflicts overwrite
 
 Performance:
   --compress none|zlib|zstd[:1-19]  stream compression (default zstd level 3)

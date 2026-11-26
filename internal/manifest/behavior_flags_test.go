@@ -5,8 +5,8 @@ package manifest
 //
 //   - wantsRoutedWrite: the P9 routed segment-to-segment data path vs the
 //     merge fallback (the --no-routed-write escape hatch, manager.go).
-//   - resolve: the conflict-action -> (in-place, truncate, verify) mapping
-//     (the --overwrite / --verify semantics, manager.go).
+//   - resolve: the conflict-action -> (copy target, verify) mapping
+//     (the overwrite / --verify semantics, manager.go).
 //
 // Both are pure control-plane logic: no Run, no data path, no live cluster.
 

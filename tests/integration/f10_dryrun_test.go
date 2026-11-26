@@ -143,7 +143,7 @@ func TestDryRunAcceptance(t *testing.T) {
 }
 
 // TestDryRunOverwriteAction verifies the F-10 conflict report reflects the
-// operator's policy: with --overwrite the same conflicting table is reported
+// operator's policy: with the overwrite action the same conflicting table is reported
 // with the overwrite action (the report shows the impact BEFORE running).
 func TestDryRunOverwriteAction(t *testing.T) {
 	ctx := context.Background()
@@ -175,7 +175,7 @@ func TestDryRunOverwriteAction(t *testing.T) {
 	mustExec(t, dst, `INSERT INTO public.t SELECT g FROM generate_series(1,5) g`)
 
 	cfg := config.Default()
-	cfg.ConflictAction = config.Overwrite // --overwrite
+	cfg.ConflictAction = config.Overwrite // overwrite policy
 	p, err := plan.Build(ctx, &cfg, src, dst)
 	if err != nil {
 		t.Fatalf("plan.Build: %v", err)

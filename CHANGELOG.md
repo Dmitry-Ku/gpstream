@@ -22,6 +22,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   failed at runtime. The flag is now rejected at parse time (unknown flag).
   A "structure first, rows second" migration is `--metadata-only` followed by
   a normal run.
+- **`--overwrite` flag** (the shorthand for `--resolve-conflicts overwrite`).
+  The overwrite policy is unchanged — select it with
+  `--resolve-conflicts overwrite`.
 - **The legacy controller-side dry-run path (`dryrun.Run`).** The diagnostic
   is agent-gathered only: each side's agent collects its own values on its
   local connection (GatherSide) and the controller computes the report in

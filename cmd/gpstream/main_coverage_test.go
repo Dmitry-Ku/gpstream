@@ -17,7 +17,7 @@ func TestParseConfigFull(t *testing.T) {
 		"--source", "source://s", "--dest", "dest://d",
 		"--dbs", "db1", "--schemas", "sch1", "--tables", "tab1",
 		"--exclude", "x.1",
-		"--overwrite",
+		"--resolve-conflicts", "overwrite",
 		"--map-db", "old=New", "--map-schema", "o=n",
 		"--compress", "zstd:9",
 		"--rate-limit", "80gbit",
