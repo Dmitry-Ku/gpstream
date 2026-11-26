@@ -183,18 +183,27 @@ func remoteStop(t Target) {
 		fmt.Sprintf("pkill -f '%s'", remoteStopPattern(t)))
 }
 
-// remoteStopPattern builds the pkill -f pattern for one agent instance:
-// the binary basename + its control-listen flag/value. The source agent
-// carries the control listen in --serve; the destination agent in
-// --control-listen (both are present in every mode). The listen address is
-// unique per run (the controller allocates a fresh control port), which is
-// what makes the pattern instance-specific. When no control-listen arg is
-// found (unknown/legacy target shape) it falls back to the bare basename
-// so orphan cleanup still happens.
+// remoteStopPattern builds the pkill -f pattern for one agent instance.
+// Instance specificity must come from an argument that is UNIQUE PER
+// LAUNCH:
+//   - --status-file (preferred): every launch gets a fresh status-file
+//     name (per-launch token), so the pattern matches exactly this
+//     instance. This is the case once remote agents self-pick their
+//     control port ("0.0.0.0:0" for every run — the listen address is no
+//     longer a per-instance discriminator).
+//   - --serve / --control-listen (fallback): the pinned listen address,
+//     unique per run for local / pinned-remote layouts.
+//   - bare basename (last resort): unknown target shape; orphan cleanup
+//     still happens (with the documented sibling-kill caveat).
 func remoteStopPattern(t Target) string {
 	base := t.Binary
 	if i := strings.LastIndexByte(base, '/'); i >= 0 {
 		base = base[i+1:]
+	}
+	for i, a := range t.Args {
+		if a == "--status-file" && i+1 < len(t.Args) {
+			return base + `.*` + a + " " + escapeRegExp(t.Args[i+1])
+		}
 	}
 	for i, a := range t.Args {
 		if (a == "--serve" || a == "--control-listen") && i+1 < len(t.Args) {

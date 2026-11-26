@@ -146,6 +146,29 @@ func TestRemoteStopPatternIsInstanceSpecific(t *testing.T) {
 		t.Fatalf("dest pattern = %q", got)
 	}
 
+	// Self-pick layout (26.11): every remote launch carries the same
+	// listen address ("0.0.0.0:0"), so instance specificity comes from the
+	// per-launch status-file name instead.
+	selfPick := Target{
+		Binary: "gpstream-source-agent",
+		Args: []string{
+			"--src", "postgresql://u@h/db", "--serve", "0.0.0.0:0",
+			"--status-file", "/tmp/gpstream-opA-source-agent-123-111.json",
+		},
+	}
+	if got := remoteStopPattern(selfPick); got != `gpstream-source-agent.*--status-file /tmp/gpstream-opA-source-agent-123-111\.json` {
+		t.Fatalf("self-pick pattern = %q", got)
+	}
+	re2 := regexp.MustCompile(remoteStopPattern(selfPick))
+	sibling2 := "gpstream-source-agent --src postgresql://u@h/db --serve 0.0.0.0:0 --status-file /tmp/gpstream-opA-source-agent-124-222.json"
+	if re2.MatchString(sibling2) {
+		t.Fatalf("self-pick pattern %q matches a sibling launch (different status file): %q", remoteStopPattern(selfPick), sibling2)
+	}
+	own2 := "gpstream-source-agent --src postgresql://u@h/db --serve 0.0.0.0:0 --status-file /tmp/gpstream-opA-source-agent-123-111.json --connect-timeout 10s"
+	if !re2.MatchString(own2) {
+		t.Fatalf("self-pick pattern must match its own agent: %q", own2)
+	}
+
 	// Legacy/unknown shape: no control-listen arg -> bare basename (the
 	// orphan-cleanup guarantee is preserved, never weakened to nothing).
 	legacy := Target{Binary: "gpstream-source-agent", Args: []string{"--weird"}}

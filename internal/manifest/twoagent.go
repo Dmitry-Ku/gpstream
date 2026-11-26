@@ -791,11 +791,19 @@ func (r *processTwoAgentRunner) agentStatusFileFor(side, sshTarget string) strin
 // host rewrite the peer address gets). The statusRead seam is nil in
 // production: local read / SSH cat, the readback `gpstream status` uses.
 func (r *processTwoAgentRunner) pollAgentControlAddr(ctx context.Context, sshTarget, file string, deadline time.Duration) (string, error) {
-	if r.statusRead == nil {
-		sshHost := r.agentHost(sshTarget)
-		local := sshHost == "" || agent.IsLocalHost(sshHost)
-		r.statusRead = func(ctx context.Context, _, file string) (*statusfile.Status, error) {
-			if local {
+	// The production reader is built per CALL, not cached on the runner:
+	// one run polls the SOURCE agent's file on the source host and the
+	// DEST agent's file on the dest host — a reader cached from the first
+	// poll would keep reading the file from the WRONG host (26.11 r5: the
+	// dest status file existed with its Control address, but the poll
+	// catted it on the source host for the full 90s). r.statusRead (nil in
+	// production) is the test seam; the host comes from the call argument
+	// either way.
+	read := r.statusRead
+	if read == nil {
+		read = func(ctx context.Context, sshHostArg, file string) (*statusfile.Status, error) {
+			sshHost := r.agentHost(sshHostArg)
+			if sshHost == "" || agent.IsLocalHost(sshHost) {
 				return statusfile.ReadLocal(file)
 			}
 			out, err := agent.RunRemoteOutput(ctx, sshHost, "cat "+agent.ShellQuote(file))
@@ -807,7 +815,7 @@ func (r *processTwoAgentRunner) pollAgentControlAddr(ctx context.Context, sshTar
 	}
 	deadlineAt := time.Now().Add(deadline)
 	for {
-		st, _ := r.statusRead(ctx, sshTarget, file)
+		st, _ := read(ctx, sshTarget, file)
 		if st != nil && st.Control != "" {
 			return rewritePeerAddr(st.Control, sshTarget), nil
 		}

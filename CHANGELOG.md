@@ -78,6 +78,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   actually writes (so `gpstream status` readback hits the same file); and
   control-discovery/dial errors now tail the agent log FROM THE AGENT HOST
   (before, they tailed the controller's own empty local copy).
+- **Two-agent control discovery: the dest agent's status file was read
+  from the SOURCE host.** The per-run poll reader was built once, from the
+  first poll, with the source host captured — the dest poll then catted the
+  dest status file on the source host for the full 90s deadline, so every
+  cross-host pair failed at the dest step even though the dest agent was
+  healthy and its file carried the control address (26.11 r5: all matrix
+  pairs, file present with `Control` on the dest host the whole time). The
+  reader now resolves the host from each call's argument, and the
+  production reader is built per call instead of being cached on the
+  runner.
+- **Two-agent stop: the remote pkill pattern is now instance-specific
+  again.** With remote agents self-picking their control port, the listen
+  address is `0.0.0.0:0` for every run and no longer distinguishes
+  instances — the `--serve`/`--control-listen`-based pattern could match a
+  SIBLING run's agent on the shared host, and the observed orphaned agent
+  (26.11 r5, vm4) survived its run's Stop and lingered for ~20 minutes.
+  The pattern now matches the per-launch `--status-file` name (unique per
+  launch), falling back to the listen address, then the bare basename.
 
 ## [v0.3.1] - 2026-11-23
 
