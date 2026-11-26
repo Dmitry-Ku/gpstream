@@ -1203,8 +1203,8 @@ func (m *Manager) processUnit(ctx context.Context, u *Unit) error {
 				"action", "stop")
 			return &ConflictError{Schema: u.DstSchema, Table: u.DstName}
 		}
-		// Overwrite/Truncate: the conflict is expected — the destination is
-		// rewritten below (overwrite via staging+swap, truncate in-place).
+		// Overwrite: the conflict is expected — the destination is rewritten
+		// below via staging+swap.
 	}
 	if err := m.runUnit(ctx, u); err != nil {
 		m.addFailure()
@@ -1322,9 +1322,8 @@ func (m *Manager) resolve(u *Unit) (verifyDigest bool) {
 // the pre-built unit (see Run) so the pool can share unit construction. The
 // copy target is the unit's staging table (the two-agent data path is
 // staging+swap only, 2B-7): the default and --overwrite copy into the staging
-// table and atomically swap it over the final name; --truncate has no
-// two-agent equivalent and is rejected (in-place copy targets were the
-// single-process path, removed in 2B-7).
+// table and atomically swap it over the final name. In-place copy targets
+// were the single-process path, removed in 2B-7.
 func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 	// Source and destination names may differ (FR-11/§4.10 rename): the copy
 	// READS from the source (u.Schema/u.Table) and WRITES to the destination
@@ -1465,25 +1464,17 @@ func (m *Manager) runUnit(ctx context.Context, u *Unit) error {
 		return fmt.Errorf("--data-only requires the in-place copy target, which the two-agent data path does not support; use the default staging+swap path")
 	}
 	// 3b. The copy target is the unit's staging table (the default /
-	//     --overwrite path; --truncate/--append have no two-agent equivalent —
-	//     the data path is staging+swap only, 2B-7). The destination AGENT
+	//     --overwrite path; in-place copy targets have no two-agent
+	//     equivalent — the data path is staging+swap only, 2B-7). The destination AGENT
 	//     owns the staging DDL (it creates it from the UnitSpec the source
 	//     agent sends — cols / dist / part captured on the source side); the
 	//     controller must not create it here: the staging name is the
 	//     contract between the two agents.
 	target := dest.StagingName(u.JobID, u.UnitID)
 	// 3c. Content verification runs after the copy, only when the operator
-	//     asks for it (--verify on). The default (off) makes a run one source
-	//     read per unit: the data COPY itself.
+	// asks for it (--verify on). The default (off) makes a run one source
+	// read per unit: the data COPY itself.
 	verify := m.resolve(u)
-	// The --truncate copy target (in-place into the final table, cleared
-	// first) has no two-agent equivalent (the data path is staging+swap
-	// only) — reject it explicitly instead of silently degrading to a
-	// rename (2B-7 kept the two-agent hard-fail the P3 path had).
-	if m.cfg.ConflictAction == config.Truncate {
-		m.setUnitState(u, StateFailed)
-		return fmt.Errorf("two-agent topology does not support the in-place copy target (--truncate); use the default staging+swap path")
-	}
 
 	// 4. Mark copying (FR-06/FR-07 journal).
 	if err := m.setUnitState(u, StateCopying); err != nil {

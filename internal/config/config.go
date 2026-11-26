@@ -38,7 +38,6 @@ const (
 //	Skip        -> the conflicting unit is skipped and the run continues.
 //	Overwrite   -> copy to a staging table and swap over the final;
 //	  additionally skips tables whose checksum already matches.
-//	Truncate    -> copy in-place into the final table after TRUNCATE, verify.
 type ConflictAction string
 
 const (
@@ -47,7 +46,6 @@ const (
 	Stop      ConflictAction = "stop"
 	Skip      ConflictAction = "skip"
 	Overwrite ConflictAction = "overwrite"
-	Truncate  ConflictAction = "truncate"
 )
 
 // IncludeClasses resolves the effective object classes for a run (v4 F-11):
@@ -362,9 +360,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--metadata-only and --data-only are mutually exclusive")
 	}
 	switch c.ConflictAction {
-	case Stop, Skip, Overwrite, Truncate:
+	case Stop, Skip, Overwrite:
 	default:
-		return fmt.Errorf("unknown --resolve-conflicts value %q (want stop|skip|overwrite|truncate)", c.ConflictAction)
+		return fmt.Errorf("unknown --resolve-conflicts value %q (want stop|skip|overwrite)", c.ConflictAction)
 	}
 	switch c.Verify {
 	case VerifyOn, VerifyOff:

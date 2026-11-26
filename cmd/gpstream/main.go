@@ -161,11 +161,9 @@ func parseConfig(args []string) (config.Config, error) {
 
 		// Conflict / safety (FR-10/FR-11). The DEFAULT is strict: conflicts
 		// STOP the run (FR-10 §8). --resolve-conflicts selects the policy;
-		// --overwrite / --truncate are the two common explicit opt-ins.
+		// --overwrite is the explicit opt-in for the staging+swap path.
 		case "--overwrite":
 			cfg.ConflictAction = config.Overwrite
-		case "--truncate":
-			cfg.ConflictAction = config.Truncate
 		case "--resolve-conflicts":
 			i++
 			cfg.ConflictAction = config.ConflictAction(args[i])
@@ -1821,8 +1819,8 @@ Selection:
   --data-only                        data only, into the existing structure
 
 Conflicts:
-  --resolve-conflicts stop|skip|overwrite|truncate   policy (default stop)
-  --overwrite, --truncate          shorthand opt-ins that set the policy
+  --resolve-conflicts stop|skip|overwrite     policy (default stop)
+  --overwrite                    shorthand opt-in for --resolve-conflicts overwrite
 
 Performance:
   --compress none|zlib|zstd[:1-19]  stream compression (default zstd level 3)

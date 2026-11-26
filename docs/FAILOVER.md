@@ -166,12 +166,11 @@ Recovery is only safe because of two guarantees in `runUnit`
    verified copy, the staging table still holds the verified data — the run
    reports the error and a resume retries the swap, so no data is lost.
 
-**In-place mode (`--resolve-conflicts truncate`) is unsupported** in the
-two-agent topology: the flag is accepted by the CLI, but every unit fails at
-runtime with `two-agent topology does not support the in-place copy target
-(--truncate); use the default staging+swap path`. The data path is
-staging+swap only, so the crash-recovery guarantees above apply to every
-conflict policy that actually runs.
+**The data path is staging+swap only.** The in-place copy target
+(`--resolve-conflicts truncate`) had no two-agent equivalent and was removed:
+passing the flag or the value is now a parse error (re-run with
+`--resolve-conflicts overwrite`). The crash-recovery guarantees above therefore
+apply to every conflict policy that runs.
 
 ## Fault isolation (one bad unit does not kill the batch)
 

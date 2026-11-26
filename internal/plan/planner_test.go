@@ -76,7 +76,7 @@ func TestPlanVolumeAndConflict(t *testing.T) {
 	// FR-10 §8: the default (--resolve-conflicts stop) is STRICT —
 	// the run stops on a conflict, so the dry-run verdict says the copy ends
 	// in an error.
-	if p.Conflicts[0].Action != "STOP (default: re-run with --resolve-conflicts skip|overwrite|truncate)" {
+	if p.Conflicts[0].Action != "STOP (default: re-run with --resolve-conflicts skip|overwrite)" {
 		t.Errorf("conflict action = %q, want the strict STOP verdict", p.Conflicts[0].Action)
 	}
 	if len(p.Pairs) != 1 {

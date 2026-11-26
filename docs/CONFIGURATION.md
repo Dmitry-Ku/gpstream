@@ -45,7 +45,7 @@ from the flags or the file.
 ### 1.4 Conflict / safety (F-10)
 | Field | Type | Default | Source | Notes |
 |-------|------|---------|--------|-------|
-| `ConflictAction` | `ConflictAction` | **`stop`** | `--resolve-conflicts` / `--overwrite` / `--truncate` | One of `stop`/`skip`/`overwrite`/`truncate`. `stop` (default) halts the run on the first collision; `skip` skips conflicting units; `overwrite` = staging + swap; `truncate` = in-place after TRUNCATE. |
+| `ConflictAction` | `ConflictAction` | **`stop`** | `--resolve-conflicts` / `--overwrite` | One of `stop`/`skip`/`overwrite`. `stop` (default) halts the run on the first collision; `skip` skips conflicting units; `overwrite` = staging + swap. |
 
 ### 1.5 Rename (F-11)
 | Field | Type | Default | Source |
@@ -350,7 +350,7 @@ failed validation aborts the command.
 | auto-resume | `AutoResume` must be **≥ 0** | `auto-resume must be >= 0` |
 | on-unit-failure | must be `continue`/`abort` (or empty) | `unknown on-unit-failure "…" (want continue\|abort)` |
 | metadata vs data | `--metadata-only` and `--data-only` are **mutually exclusive** | `--metadata-only and --data-only are mutually exclusive` |
-| conflict action | must be `stop`/`skip`/`overwrite`/`truncate` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite\|truncate)` |
+| conflict action | must be `stop`/`skip`/`overwrite` | `unknown --resolve-conflicts value "…" (want stop\|skip\|overwrite)` |
 | verify mode | must be `on`/`off` | `unknown verify mode "…"` |
 | copy-mode mesh | `--seg-listen` must be a valid `host:port` when given (auto-resolved when empty); the segreceiver binary must resolve | `--seg-listen must be host:port` / `on_segment: gpstream-segreceiver not found` |
 | frame-ack | must be `on`/`off` (or empty) | `unknown --frame-ack "…" (want on\|off)` |

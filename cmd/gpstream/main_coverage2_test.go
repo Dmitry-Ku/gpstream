@@ -109,8 +109,7 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	c, err := parseConfig([]string{
 		"--map-db", "a=b", "--map-schema", "c=d", "--map-table", "e=f",
 		"--data-only",
-		"--truncate",
-		"--resolve-conflicts", "truncate",
+		"--resolve-conflicts", "overwrite",
 		"--compress", "zlib",
 		"--rate-limit", "100",
 		"--workers", "8",
@@ -137,8 +136,8 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	if !c.DataOnly {
 		t.Error("data-only not set")
 	}
-	if c.ConflictAction != config.Truncate {
-		t.Errorf("resolve-conflicts = %q, want truncate", c.ConflictAction)
+	if c.ConflictAction != config.Overwrite {
+		t.Errorf("resolve-conflicts = %q, want overwrite", c.ConflictAction)
 	}
 	if c.Compression != config.CompZlib {
 		t.Errorf("compression = %q, want zlib", c.Compression)
@@ -172,6 +171,19 @@ func TestParseConfigRemainingFlags(t *testing.T) {
 	}
 	if c.MetricsAddr != "127.0.0.1:9191" {
 		t.Error("metrics-addr not bound")
+	}
+}
+
+// TestParseConfigTruncateRemoved: the --truncate shorthand and the truncate
+// conflict policy were removed (the two-agent data path is staging+swap only;
+// the policy used to be accepted and then fail every unit at runtime). Both
+// forms must now be rejected at parse time: unknown flag / unknown value.
+func TestParseConfigTruncateRemoved(t *testing.T) {
+	if _, err := parseConfig([]string{"--truncate"}); err == nil {
+		t.Fatal("--truncate: want unknown-flag error, got nil")
+	}
+	if _, err := parseConfig([]string{"--resolve-conflicts", "truncate"}); err == nil {
+		t.Fatal("--resolve-conflicts truncate: want validation error, got nil")
 	}
 }
 

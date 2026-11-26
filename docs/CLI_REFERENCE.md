@@ -212,9 +212,8 @@ and the default, and was removed.
 ### Conflict / safety (F-10)
 | Flag | Config field | Default |
 |------|--------------|---------|
-| `--resolve-conflicts stop\|skip\|overwrite\|truncate` | `ConflictAction` | `stop` (the run stops on the first collision and the operator decides) |
+| `--resolve-conflicts stop\|skip\|overwrite` | `ConflictAction` | `stop` (the run stops on the first collision and the operator decides) |
 | `--overwrite` | `ConflictAction` | — (shorthand: sets `ConflictAction=overwrite`) |
-| `--truncate` | `ConflictAction` | — (shorthand: sets `ConflictAction=truncate`) |
 
 Conflict policy semantics:
 
@@ -231,7 +230,7 @@ Conflict policy semantics:
   table), the dependent FK constraints are dropped before the swap (equivalent
   to `DROP ... CASCADE` for the constraints — the source FK set is re-applied
   in the post-load restore pass, F-11).
-- **`truncate`** — copy in-place into the final table after `TRUNCATE`, verify. **Unsupported in two-agent (the only data path): the CLI accepts the flag, but every unit fails at runtime** — use `overwrite` (staging+swap).
+- **`truncate`** — removed. It copied in-place into the final table after `TRUNCATE` and had no two-agent equivalent (every unit failed at runtime); the flag and the value are now rejected at parse time — use `overwrite` (staging+swap).
 
 ### Performance (F-01/F-12/F-14)
 | Flag | Config field | Default |
@@ -499,9 +498,9 @@ gpstream is deliberately conservative about overwriting destination data:
 
 - **`ConflictAction` defaults to `stop`** — the run stops on the first
   collision; nothing is clobbered and nothing is silently skipped unless the
-  operator explicitly chooses `skip`, `overwrite`, or `truncate`.
+  operator explicitly chooses `skip` or `overwrite`.
 - **Data is never overwritten** unless the operator passes
-  `--resolve-conflicts overwrite` (or the `--overwrite` shorthand). The `truncate` policy is accepted by the CLI but rejected at runtime in two-agent (see the conflict semantics above).
+  `--resolve-conflicts overwrite` (or the `--overwrite` shorthand).
 - **Secrets (`--ssl-cert`/`--ssl-key`/`--ssl-ca`) come from env or a `0600`
   file, never argv (F-08).** Although the parser accepts them as flags,
   supply them via `GPSTREAM_SSL_CERT` / `GPSTREAM_SSL_KEY` / `GPSTREAM_SSL_CA`

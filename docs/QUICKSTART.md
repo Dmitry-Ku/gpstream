@@ -9,8 +9,8 @@ monitor, and recover if needed.
 > **never overwrites and never skips silently** — if a table already exists on
 > the destination, the copy halts with a conflict and nothing is clobbered.
 > To proceed you must opt in explicitly: `--resolve-conflicts skip` (skip
-> conflicting units and continue), or `--resolve-conflicts overwrite` /
-> `truncate` (replace / truncate+load).
+> conflicting units and continue), or `--resolve-conflicts overwrite`
+> (replace via staging + atomic swap).
 
 > **Cluster requirement:** `--help` needs no cluster. **`run` and
 > `dry-run` require a reachable source and destination cluster** (a dry-run
@@ -232,16 +232,15 @@ skipped**. You opt in to a policy with `--resolve-conflicts`:
 | `stop` (default) | **A conflict stops the run.** Nothing is overwritten, nothing is skipped. |
 | `skip` | Skip conflicting units and continue. |
 | `overwrite` | Replace existing data (staging + atomic swap; verified before the swap). |
-| `truncate` | Truncate the target, then load into it (in-place). **Rejected at runtime in two-agent — use `overwrite`.** |
 
-`--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
-policy. The dry-run lists any conflicts and the **verdict that would apply**
-(stop / skip / overwrite / truncate), so you can see the impact before you run.
+`--overwrite` is the shorthand opt-in for `--resolve-conflicts overwrite`. The
+dry-run lists any conflicts and the **verdict that would apply**
+(stop / skip / overwrite), so you can see the impact before you run.
 
 > **Choosing:** for a first copy of a fresh destination there are no conflicts
 > and the run proceeds. When re-copying into a cluster that already holds data,
 > decide deliberately: `--resolve-conflicts skip` to keep what's there, or
-> `overwrite` / `truncate` to replace it.
+> `overwrite` to replace it.
 
 ---
 
@@ -290,7 +289,7 @@ per database (F-02), so the whole copy sees a single point in time.
 | Scope | `--dbs`, `--schemas`, `--tables`, `--exclude` |
 | Object class | `--metadata-only`, `--data-only` (default: both) |
 | Rename | `--map-db`, `--map-schema`, `--map-table` |
-| Conflict | `--resolve-conflicts stop\|skip\|overwrite\|truncate` (default `stop`), `--overwrite`, `--truncate` |
+| Conflict | `--resolve-conflicts stop\|skip\|overwrite` (default `stop`), `--overwrite` |
 | Compression | `--compress none\|zlib\|zstd[:1-19]`, `--zstd-level N`, `--small-table-threshold SIZE` (F-12) |
 | Copy mode | `--copy-mode coordinator\|mesh`, `--seg-listen` (optional; auto when omitted) |
 | Performance | `--workers N`, `--rate-limit <rate>` (ETA baseline + load diagnostics; the flow is paced by backpressure) |

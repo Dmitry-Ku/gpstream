@@ -128,12 +128,12 @@ To change behavior you opt in with a single flag:
 | `--resolve-conflicts stop` | **default** — a conflict stops the run |
 | `--resolve-conflicts skip` | skip conflicting objects (reported in `conflicts.jsonl`) |
 | `--resolve-conflicts overwrite` | replace the target (staging + atomic swap, verified) |
-| `--resolve-conflicts truncate` | **unsupported in the two-agent topology** — accepted by the CLI, but rejected at runtime (every unit fails); see `TROUBLESHOOTING.md` §4 |
 | `--overwrite` | shorthand opt-in for `--resolve-conflicts overwrite` |
-| `--truncate` | accepted (it sets the truncate policy) but the policy is rejected at runtime as above |
 
-`--overwrite` / `--truncate` are **not** the default; the safe default is
-`stop`.
+`--overwrite` is **not** the default; the safe default is `stop`. The
+`--truncate` shorthand and the `truncate` conflict policy were removed (the
+in-place copy target had no two-agent equivalent; they used to be accepted
+and then fail every unit at runtime) — passing either is now a parse error.
 
 ---
 

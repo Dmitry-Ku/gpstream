@@ -5,6 +5,18 @@ All notable changes to gpstream are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- **`--truncate` flag and the `truncate` conflict policy**
+  (`--resolve-conflicts truncate`). The in-place copy target (TRUNCATE the
+  destination, then COPY into it) had no two-agent equivalent — the data path
+  is staging+swap only — so the flag was accepted by the CLI but every unit
+  failed at runtime. Both forms are now rejected at parse time (unknown flag /
+  unknown value). Use `--resolve-conflicts overwrite` (staging + atomic swap,
+  verified before the swap).
+
 ## [v0.3.1] - 2026-11-23
 
 ### Added

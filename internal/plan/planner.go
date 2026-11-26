@@ -870,13 +870,11 @@ func detectConflicts(ctx context.Context, tabs []Table, dst pg.Querier, cfg *con
 				// FR-10 §8: the DEFAULT is STRICT — the run STOPS on a
 				// conflict, so the dry-run must say the copy will end in an
 				// error (spec §3 verdict). --resolve-conflicts skip skips.
-				c.Action = "STOP (default: re-run with --resolve-conflicts skip|overwrite|truncate)"
+				c.Action = "STOP (default: re-run with --resolve-conflicts skip|overwrite)"
 			case config.Skip:
 				c.Action = "skip (--resolve-conflicts skip)"
 			case config.Overwrite:
 				c.Action = "overwrite"
-			case config.Truncate:
-				c.Action = "truncate"
 			}
 			t.HasConflict = true
 			out = append(out, c)

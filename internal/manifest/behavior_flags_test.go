@@ -6,7 +6,7 @@ package manifest
 //   - wantsRoutedWrite: the P9 routed segment-to-segment data path vs the
 //     merge fallback (the --no-routed-write escape hatch, manager.go).
 //   - resolve: the conflict-action -> (in-place, truncate, verify) mapping
-//     (the --truncate / --overwrite / --verify semantics, manager.go).
+//     (the --overwrite / --verify semantics, manager.go).
 //
 // Both are pure control-plane logic: no Run, no data path, no live cluster.
 
@@ -71,10 +71,8 @@ func TestResolveVerify(t *testing.T) {
 		{"stop (default), verify off", config.Stop, config.VerifyOff, false},
 		{"skip, verify off", config.Skip, config.VerifyOff, false},
 		{"overwrite, verify off", config.Overwrite, config.VerifyOff, false},
-		{"truncate, verify off", config.Truncate, config.VerifyOff, false},
 		{"stop, verify on", config.Stop, config.VerifyOn, true},
 		{"overwrite, verify on", config.Overwrite, config.VerifyOn, true},
-		{"truncate, verify on", config.Truncate, config.VerifyOn, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

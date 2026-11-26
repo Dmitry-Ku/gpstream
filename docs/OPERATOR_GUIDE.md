@@ -104,10 +104,9 @@ operator decides deliberately.
 | `stop` | **default** | A conflict **stops the run**. Nothing overwritten, nothing skipped. |
 | `skip` | — | Skip conflicting objects and continue; they are reported in `conflicts.jsonl`. |
 | `overwrite` | — | Replace the destination object (staging + atomic swap). Always rewrites — an existing destination is re-copied even when its data already matches the source; there is no pre-copy content comparison (it would read the whole table twice). Dependent foreign keys on other destination tables are dropped before the swap and re-applied from the source after the load (F-11). |
-| `truncate` | — | Truncate then reload (in-place). **Rejected at runtime in two-agent — use `overwrite` (staging+swap).** |
 
-`--overwrite` and `--truncate` are shorthand opt-ins that set the corresponding
-policy. The **default is `stop`**, so a bare `gpstream run` **stops on the
+`--overwrite` is the shorthand opt-in for `--resolve-conflicts overwrite`.
+The **default is `stop`**, so a bare `gpstream run` **stops on the
 first conflict** rather than silently skipping or overwriting.
 
 Also, `--map-db src=dst`, `--map-schema src=dst`, and `--map-table src=dst`
@@ -254,7 +253,7 @@ It is the operator's audit trail for the run's self-diagnosis (spec F-04/F-14):
 |--------|------|-----------|
 | `rate_limit_shift` | every adaptive rate-limit change (F-14) | `from_gbps`, `to_gbps`, `reason` (cpu %, disk latency, queue) |
 | `compression_off` | a small table is copied with compression off (F-12 auto-disable) | `table`, `bytes` (estimated size), `threshold` (`--small-table-threshold`), `reason` |
-| `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (default) / `skip` / `overwrite` / `truncate` |
+| `conflict` | a destination collision is hit (F-04) | `schema`, `table`, `action` = `stop` (default) / `skip` / `overwrite` |
 | `unit_failed` | a unit fails or panics (retried by resume/re-run) | `schema`, `table`, `attempts`, `on_unit_failure` (`continue`/`abort`, spec F-06), `error` |
 | `unit_reread` | a resume re-reads a table under the fresh snapshot (T5) | `schema`, `table`, `reason`, `epoch` |
 | `resume_swap_completed` | a re-run finished the swap of a unit a crashed run left `completed` (data verified in staging, rename never ran) — the destination now has the table (FR-06/FR-07) | `schema`, `table`, `rows` |
